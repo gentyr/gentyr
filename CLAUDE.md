@@ -757,6 +757,12 @@ cd packages/playwright-helpers && npm run build
 
 Curated product walkthroughs mapped to personas. Managed by product-manager agent, implemented by code-writer agents. Only `gui` and `adk` consumption_mode personas can have scenarios. `*.demo.ts` naming convention enforced.
 
+**Demo task enforcement** (4 layers):
+- **`create_task` auto-correction**: Tasks with `demo_involved: true` automatically get `strict_infra_guidance: true` and are rerouted to the `demo-design` category. Warnings are returned in the response.
+- **`secret_run_command` blocklist**: `validateCommand()` in the secret-sync server blocks `playwright test` and `playwright show-report` commands with an error redirecting to `run_demo`/`run_tests` MCP tools.
+- **`playwright-cli-guard` scope**: The PreToolUse hook intercepts both `Bash` and `mcp__secret-sync__secret_run_command` tool calls, blocking Playwright CLI patterns on both paths.
+- **Task gate demo check**: When `demo_involved: true`, the gate agent checks task descriptions for anti-patterns: direct CLI commands via `secret_run_command`, "main tree" / "DO NOT worktree" instructions, and wrong category routing.
+
 **`headed` flag on scenarios** (`demo_scenarios.headed` column in `user-feedback.db`): Boolean field (default `false`) indicating a scenario requires a headed browser (i.e., display access). When `headed: true`, `run_demo` automatically acquires the display lock before launching (if not already held), serializing access to avoid window capture conflicts. Set via `create_demo_scenario`/`update_demo_scenario` tools on the `user-feedback` server.
 
 > Full details: [Demo Scenario System](docs/CLAUDE-REFERENCE.md#demo-scenario-system)
@@ -1054,7 +1060,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | interactive-lockdown-guard.js | `""` (all) | Block file-editing tools in interactive CTO sessions |
 | block-no-verify.js | `Bash` | Block `--no-verify` on git commands |
 | credential-file-guard.js | `Bash,Read,Write,Edit,NotebookEdit,Grep,Glob` | Block access to credential files |
-| playwright-cli-guard.js | `Bash` | Block direct `npx playwright` CLI (use MCP tools) |
+| playwright-cli-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block direct Playwright CLI via Bash or secret_run_command (use MCP tools) |
 | branch-checkout-guard.js | `Bash` | Block branch switching in main tree |
 | main-tree-commit-guard.js | `Bash` | Block git add/commit on protected branches |
 | worktree-cwd-guard.js | `Bash` | Block Bash when CWD is deleted worktree |

@@ -741,6 +741,18 @@ const DEFAULT_ALLOWED_EXECUTABLES = new Set([
 /** Blocked arg prefixes — matches both `-e` and `--eval=<code>` forms */
 const BLOCKED_ARG_PREFIXES = ['-e', '--eval', '-c', '--print', '-p'];
 
+/** Blocked command patterns — commands that must use specialized MCP tools */
+const BLOCKED_COMMAND_PATTERNS: Array<{ pattern: RegExp; message: string }> = [
+  {
+    pattern: /\bplaywright\b.*\btest\b/i,
+    message: 'Playwright tests must use MCP tools: mcp__playwright__run_demo (demos) or mcp__playwright__run_tests (E2E). Direct CLI bypasses prerequisite execution, credential injection, and result tracking.',
+  },
+  {
+    pattern: /\bplaywright\b.*\bshow-report\b/i,
+    message: 'Use the Playwright MCP server tools instead of direct CLI.',
+  },
+];
+
 /**
  * Validate command against executable allowlist and blocked args.
  * Throws on violation.
@@ -765,6 +777,14 @@ function validateCommand(command: string[], allowedExtras: string[] = []): void 
           `Inline code execution is not allowed.`
         );
       }
+    }
+  }
+
+  // Blocked command patterns — redirect to specialized MCP tools
+  const commandStr = command.join(' ');
+  for (const { pattern, message } of BLOCKED_COMMAND_PATTERNS) {
+    if (pattern.test(commandStr)) {
+      throw new Error(message);
     }
   }
 }

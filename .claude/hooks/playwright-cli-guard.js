@@ -211,34 +211,33 @@ process.stdin.on('end', () => {
     const toolName = hookInput.tool_name;
     const toolInput = hookInput.tool_input || {};
 
-    // Only intercept Bash tool calls
-    if (toolName !== 'Bash') {
-      process.exit(0);
-    }
-
-    const command = toolInput.command || '';
-    if (!command) {
-      process.exit(0);
-    }
-
-    // Split into sub-commands on shell operators (&&, ||, |, ;)
-    const subCommands = splitOnShellOperators(command);
-
-    // Check each sub-command independently.
-    // A sub-command is only allowed if it has the bypass prefix on itself.
-    for (const sub of subCommands) {
-      const { matched, label } = matchesPlaywright(sub);
-      if (!matched) continue;
-
-      // Check if THIS sub-command has the bypass prefix
-      if (hasBypassPrefix(sub)) {
-        console.error(`[playwright-cli-guard] PLAYWRIGHT_CLI_BYPASS=1 detected on sub-command — allowing`);
-        continue;
+    // Helper: check a command string for playwright patterns and block if found
+    function checkPlaywrightPatterns(commandString) {
+      const subCommands = splitOnShellOperators(commandString);
+      for (const sub of subCommands) {
+        const { matched, label } = matchesPlaywright(sub);
+        if (!matched) continue;
+        if (hasBypassPrefix(sub)) {
+          console.error(`[playwright-cli-guard] PLAYWRIGHT_CLI_BYPASS=1 detected on sub-command — allowing`);
+          continue;
+        }
+        blockCommand(label);
+        return; // blockCommand calls process.exit, but just in case
       }
+    }
 
-      // Playwright sub-command without bypass — block the entire command
-      blockCommand(label);
-      return; // blockCommand calls process.exit, but just in case
+    // Intercept Bash and secret_run_command tool calls
+    if (toolName === 'Bash') {
+      const command = toolInput.command || '';
+      if (!command) process.exit(0);
+      checkPlaywrightPatterns(command);
+    } else if (toolName === 'mcp__secret-sync__secret_run_command') {
+      // secret_run_command uses an argv array, not a shell string
+      const commandArray = toolInput.command;
+      if (!Array.isArray(commandArray) || commandArray.length === 0) process.exit(0);
+      checkPlaywrightPatterns(commandArray.join(' '));
+    } else {
+      process.exit(0);
     }
 
     // No unbypasssed playwright commands found — allow
