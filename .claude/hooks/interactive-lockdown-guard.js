@@ -29,6 +29,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -317,6 +318,20 @@ async function main() {
       const resolved = path.resolve(filePath);
       const plansDir = path.join(PROJECT_DIR, '.claude', 'plans');
       if (resolved === plansDir || resolved.startsWith(plansDir + path.sep)) {
+        process.stdout.write(JSON.stringify({ decision: 'approve' }));
+        return;
+      }
+    }
+  }
+
+  // Memory file whitelist: CTO can write/edit memory files even in lockdown.
+  // Memory files are auto-memory persistence, not code.
+  if (toolName === 'Write' || toolName === 'Edit') {
+    const filePath = event?.tool_input?.file_path || '';
+    if (filePath) {
+      const resolved = path.resolve(filePath);
+      const memoryBase = path.join(os.homedir(), '.claude', 'projects');
+      if (resolved.startsWith(memoryBase + path.sep) && resolved.includes(path.sep + 'memory' + path.sep)) {
         process.stdout.write(JSON.stringify({ decision: 'approve' }));
         return;
       }
