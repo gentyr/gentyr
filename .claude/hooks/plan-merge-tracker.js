@@ -218,6 +218,12 @@ async function main() {
           trigger: 'all_tasks_complete',
         });
       }
+      if (planCompleted) {
+        auditEvent('plan_completed', {
+          plan_id: planTask.plan_id,
+          trigger: 'all_phases_complete',
+        });
+      }
       if (readyTasks.length > 0) {
         auditEvent('plan_tasks_ready', {
           plan_id: planTask.plan_id,
