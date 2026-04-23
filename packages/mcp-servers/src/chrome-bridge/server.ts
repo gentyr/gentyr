@@ -2347,6 +2347,97 @@ async function handleInspectInput(
 }
 
 // ============================================================================
+// Auto-screenshot capture
+// ============================================================================
+
+const PROJECT_DIR_SCREENSHOTS = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const SCREENSHOT_DIR = path.join(PROJECT_DIR_SCREENSHOTS, '.claude', 'screenshots', 'chrome-bridge');
+
+/**
+ * Capture a screenshot from Chrome via the bridge and save to disk.
+ * Returns the absolute file path, or null on any error.
+ * Never throws — screenshot failures must not break the action.
+ */
+async function captureAndSaveScreenshot(
+  tabId: number | undefined,
+  actionLabel: string,
+): Promise<string | null> {
+  try {
+    const args: Record<string, unknown> = { action: 'screenshot' };
+    if (tabId !== undefined) args.tabId = tabId;
+
+    const result = await client.executeTool('computer', args);
+    if (!result || result.isError) return null;
+
+    // Extract base64 image data from result
+    const content = Array.isArray(result.content) ? result.content : [];
+    const imageBlock = content.find((c: McpContent) =>
+      c.type === 'image' && ((c as { data?: string }).data || (c as { source?: { data?: string } }).source?.data),
+    );
+    if (!imageBlock) return null;
+
+    const imgBlock = imageBlock as { type: string; data?: string; source?: { data?: string } };
+    const base64Data = imgBlock.data ?? imgBlock.source?.data;
+    if (!base64Data) return null;
+
+    // Build filename: {timestamp}-{action}.png
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const safeLabel = actionLabel.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
+    const filename = `${ts}-${safeLabel}.png`;
+
+    // Save to disk, scoped by tabId
+    const dir = path.join(SCREENSHOT_DIR, String(tabId ?? 'default'));
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, filename);
+    fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append a screenshot path annotation to a tool result.
+ * Mutates result.content in-place. Never throws.
+ */
+async function appendScreenshotToResult(
+  result: { content: McpContent[]; isError?: boolean },
+  tabId: number | undefined,
+  actionLabel: string,
+): Promise<void> {
+  try {
+    const screenshotPath = await captureAndSaveScreenshot(tabId, actionLabel);
+    if (screenshotPath) {
+      if (!Array.isArray(result.content)) {
+        result.content = [{ type: 'text', text: String(result.content) }];
+      }
+      result.content.push({
+        type: 'text',
+        text: `\n[Screenshot saved: ${screenshotPath}]`,
+      });
+    }
+  } catch {
+    // Never break the action due to screenshot failure
+  }
+}
+
+/** Tools that get auto-screenshots after server-side execution */
+const SCREENSHOT_AFTER_SERVER_TOOLS = new Set([
+  'click_by_text', 'fill_input', 'react_fill_input', 'click_and_wait',
+  'find_elements', 'wait_for_element',
+]);
+
+/** Socket-proxied tools that get auto-screenshots (mutating non-computer tools) */
+const SOCKET_SCREENSHOT_TOOLS = new Set(['navigate', 'form_input']);
+
+/** Computer tool actions that are mutating (screenshot taken after these) */
+const MUTATING_COMPUTER_ACTIONS = new Set([
+  'left_click', 'right_click', 'double_click', 'triple_click',
+  'type', 'key', 'left_click_drag', 'scroll',
+]);
+
+// ============================================================================
 // Connection Diagnostics
 // ============================================================================
 
@@ -2524,32 +2615,53 @@ async function executeServerSideTool(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<{ content: McpContent[]; isError?: boolean }> {
+  let result: { content: McpContent[]; isError?: boolean };
+
   switch (toolName) {
     case 'list_chrome_extensions':
-      return handleListExtensions(args);
+      result = await handleListExtensions(args);
+      break;
     case 'reload_chrome_extension':
-      return handleReloadExtension(args);
+      result = await handleReloadExtension(args);
+      break;
     case 'find_elements':
-      return handleFindElements(args);
+      result = await handleFindElements(args);
+      break;
     case 'click_by_text':
-      return handleClickByText(args);
+      result = await handleClickByText(args);
+      break;
     case 'fill_input':
-      return handleFillInput(args);
+      result = await handleFillInput(args);
+      break;
     case 'wait_for_element':
-      return handleWaitForElement(args);
+      result = await handleWaitForElement(args);
+      break;
     case 'health_check':
-      return handleHealthCheck();
+      result = await handleHealthCheck();
+      break;
     case 'react_fill_input':
-      return handleReactFillInput(args);
+      result = await handleReactFillInput(args);
+      break;
     case 'click_and_wait':
-      return handleClickAndWait(args);
+      result = await handleClickAndWait(args);
+      break;
     case 'page_diagnostic':
-      return handlePageDiagnostic(args);
+      result = await handlePageDiagnostic(args);
+      break;
     case 'inspect_input':
-      return handleInspectInput(args);
+      result = await handleInspectInput(args);
+      break;
     default:
       return { content: [{ type: 'text', text: `Unknown server-side tool: ${toolName}` }], isError: true };
   }
+
+  // Auto-screenshot after mutating server-side tools
+  if (!result.isError && SCREENSHOT_AFTER_SERVER_TOOLS.has(toolName)) {
+    const tabId = typeof args.tabId === 'number' ? args.tabId : undefined;
+    await appendScreenshotToResult(result, tabId, toolName);
+  }
+
+  return result;
 }
 
 // ============================================================================
@@ -2630,6 +2742,25 @@ async function handleRequest(request: JsonRpcRequest): Promise<JsonRpcResponse |
       }
 
       const result = await client.executeTool(name, args ?? {});
+
+      // Auto-screenshot after mutating socket-proxied tools
+      if (!result.isError) {
+        const toolArgs = args ?? {};
+        const tabId = typeof toolArgs.tabId === 'number' ? toolArgs.tabId : undefined;
+        const action = typeof toolArgs.action === 'string' ? toolArgs.action : undefined;
+
+        const isMutatingComputer = name === 'computer'
+          && action !== undefined
+          && MUTATING_COMPUTER_ACTIONS.has(action);
+
+        // Don't screenshot the screenshot action itself (infinite loop prevention)
+        const isScreenshotAction = name === 'computer' && action === 'screenshot';
+
+        if (!isScreenshotAction && (SOCKET_SCREENSHOT_TOOLS.has(name) || isMutatingComputer)) {
+          const label = name === 'computer' ? `computer-${action}` : name;
+          await appendScreenshotToResult(result, tabId, label);
+        }
+      }
 
       // Prepend warning to result content if present
       if (displayLockWarning) {
