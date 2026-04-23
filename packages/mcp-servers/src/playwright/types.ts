@@ -257,6 +257,9 @@ export const RunDemoArgsSchema = z.object({
     .describe('Skip window recording even in headed mode. Useful for automated validation runs.'),
   success_pause_ms: z.coerce.number().int().min(0).max(30000).optional().default(0)
     .describe('Milliseconds to keep the browser open after a successful demo before teardown (0-30000, default 0). Only applies in headed mode when all tests pass. The technical flush buffer (5s) is always added on top.'),
+  stall_timeout_ms: z.coerce.number().int().min(0).max(300000).optional()
+    .refine(v => v === undefined || v === 0 || v >= 10000, 'stall_timeout_ms must be 0 (disable) or >= 10000ms (10s)')
+    .describe('Stall detection timeout in milliseconds (0 to disable, or 10000-300000). If no stdout/stderr/progress output is produced for this long after the 30s startup grace period, the demo process is killed. Default: 45000 (45s). Increase for demos with slow fixture setup (bridge server, extension rebuild).'),
   extra_env: z.record(z.string(), z.string())
     .optional()
     .describe(
@@ -318,6 +321,7 @@ export interface CheckDemoResultResult {
   ended_at?: string;
   exit_code?: number;
   failure_summary?: string;
+  stderr_tail?: string;
   screenshot_paths?: string[];
   trace_summary?: string;
   progress?: DemoProgress;
@@ -346,6 +350,7 @@ export interface DemoRunState {
   trace_summary?: string;
   progress_file?: string;
   stdout_tail?: string;
+  stderr_tail?: string;
   artifacts?: string[];
   scenario_id?: string;
   window_recorder_pid?: number;

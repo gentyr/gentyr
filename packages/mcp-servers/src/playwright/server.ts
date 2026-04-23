@@ -270,7 +270,7 @@ function persistDemoRuns(): void {
     const entries = [...demoRuns.values()]
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .slice(0, 20)
-      .map(({ trace_summary, progress_file, stdout_tail, screenshot_interval, suite_end_detected_at, interrupt_detected_at, ...rest }) => rest);
+      .map(({ trace_summary, screenshot_interval, suite_end_detected_at, interrupt_detected_at, ...rest }) => rest);
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
@@ -1757,21 +1757,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const webPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
   const devServerUrl = base_url || `http://localhost:${webPort}`;
 
-  // Execute registered prerequisites FIRST — this starts the dev server if registered as a background prereq
-  const prereqResult = await executePrerequisites({
-    scenario_id: args.scenario_id,
-    base_url: devServerUrl,
-  });
-  if (!prereqResult.success) {
-    return {
-      success: false,
-      project,
-      message: `Demo prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.`,
-      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
-    };
-  }
-
-  // Worktree freshness gate — auto-sync or block stale demos
+  // Worktree freshness gate — auto-sync or block stale demos (before prerequisites so
+  // prerequisites run against up-to-date code)
   const freshness = checkAndSyncWorktree();
   if (!freshness.fresh) {
     return {
@@ -1782,13 +1769,27 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
-  // Build artifact verification — detect stale compiled code before running demos
+  // Build artifact verification — detect stale compiled code before running prerequisites
   const distWarnings = verifyDistArtifacts();
   if (distWarnings.length > 0) {
     return {
       success: false,
       project,
       message: `Build artifact verification failed:\n${distWarnings.map(w => `  - ${w}`).join('\n')}\nRebuild the affected artifacts before running the demo.`,
+      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
+    };
+  }
+
+  // Execute registered prerequisites — this starts the dev server if registered as a background prereq
+  const prereqResult = await executePrerequisites({
+    scenario_id: args.scenario_id,
+    base_url: devServerUrl,
+  });
+  if (!prereqResult.success) {
+    return {
+      success: false,
+      project,
+      message: `Demo prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.`,
       context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
     };
   }
@@ -2026,7 +2027,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
     // Progress-based monitoring constants
     const GRACE_MS = 30_000; // 30s startup grace — demos must emit progress early
-    const STALL_MS = 45_000; // 45s silence = stalled — demos must checkpoint every 30s
+    const STALL_MS = args.stall_timeout_ms ?? 45_000; // configurable stall threshold
     const CHECK_INTERVAL_MS = 5_000;
     const STARTUP_CHECK_MS = 15_000;
     let lastProgressEventAt = Date.now();
@@ -2216,15 +2217,16 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         }
       }
 
-      // Stall detection (only after grace period)
-      if (Date.now() - bgMonitorStart >= GRACE_MS) {
+      // Stall detection (only after grace period, skip if disabled)
+      if (STALL_MS > 0 && Date.now() - bgMonitorStart >= GRACE_MS) {
         const lastActivity = Math.max(lastProgressAt, lastProgressEventAt);
         const silenceMs = Date.now() - lastActivity;
         if (silenceMs >= STALL_MS) {
           clearInterval(bgMonitorInterval);
           const entry = demoRuns.get(demoPid);
           if (entry && entry.status === 'running') {
-            entry.failure_summary = `Stalled: no progress for ${Math.round(STALL_MS / 1000)}s after ${Math.round(GRACE_MS / 1000)}s grace period. Last output: ${lastOutputLine || '(none)'}. FIX: The demo has a long-running operation that produces no output. Add console.warn('[demo-progress] ...') checkpoints every 10-15s inside helpers, or break the operation into multiple test.step() blocks. See "Progress Checkpoints" in the demo-manager agent definition.`;
+            entry.failure_summary = `Stalled: no progress for ${Math.round(STALL_MS / 1000)}s after ${Math.round(GRACE_MS / 1000)}s grace period. Last output: ${lastOutputLine || '(none)'}. FIX: The demo has a long-running operation that produces no output. Add console.warn('[demo-progress] ...') checkpoints every 10-15s inside helpers, break the operation into multiple test.step() blocks, or pass stall_timeout_ms with a higher value to run_demo. See "Progress Checkpoints" in the demo-manager agent definition.`;
+            persistDemoRuns();
           }
           if (child.pid) {
             try { process.kill(-child.pid, 'SIGTERM'); } catch {}
@@ -2264,6 +2266,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       entry.ended_at = new Date().toISOString();
       entry.exit_code = code ?? undefined;
       entry.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
+      entry.stderr_tail = Buffer.concat(stderrChunks).toString('utf8').trim().slice(0, 5000);
 
       if (entry.status === 'failed') {
         // Read lastDemoFailure from test-failure-state.json for enriched context
@@ -2428,13 +2431,37 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       };
     }
 
-    // ── Process still running — detach and return PID for polling ──
+    // ── Process still running — detach data accumulation but KEEP activity tracking ──
+    // The stall detector needs stdout/stderr activity signals after the 15s startup check.
+    // Without these listeners, lastProgressAt freezes and the stall detector relies solely
+    // on JSONL progress events, causing false kills for demos with slow fixture setup.
     if (child.stdout) {
       child.stdout.removeAllListeners('data');
+      child.stdout.on('data', (chunk: Buffer) => {
+        lastProgressAt = Date.now();
+        const lines = chunk.toString('utf8').split('\n').filter(l => l.trim());
+        stdoutLines.push(...lines);
+        if (stdoutLines.length > MAX_STDOUT_LINES) stdoutLines = stdoutLines.slice(-MAX_STDOUT_LINES);
+      });
       child.stdout.resume();
     }
     if (child.stderr) {
       child.stderr.removeAllListeners('data');
+      child.stderr.on('data', (chunk: Buffer) => {
+        lastProgressAt = Date.now();
+        stderrChunks.push(chunk);
+        // Cap stderr buffer at 10KB to prevent unbounded memory growth
+        let totalSize = stderrChunks.reduce((sum, c) => sum + c.length, 0);
+        while (totalSize > 10240 && stderrChunks.length > 1) {
+          const removed = stderrChunks.shift();
+          if (removed) totalSize -= removed.length;
+        }
+        const text = chunk.toString('utf8');
+        const lines = text.split('\n').filter(l => l.trim());
+        if (lines.length > 0) {
+          lastOutputLine = lines[lines.length - 1].trim().slice(0, 200);
+        }
+      });
       child.stderr.resume();
     }
     child.unref();
@@ -2847,6 +2874,10 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
           : undefined;
       } else {
         entry.status = 'unknown';
+        // Use stderr as fallback failure summary when no other diagnostics are available
+        if (!entry.failure_summary && entry.stderr_tail) {
+          entry.failure_summary = `Process stderr: ${entry.stderr_tail.slice(0, 2000)}`;
+        }
       }
 
       // Scan for artifacts when process ended unexpectedly
@@ -2924,6 +2955,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
         started_at: entry.started_at,
         ended_at: entry.ended_at,
         failure_summary: entry.failure_summary,
+        stderr_tail: entry.stderr_tail,
         screenshot_paths: entry.screenshot_paths,
         trace_summary: entry.trace_summary,
         progress: finalProgress ?? undefined,
@@ -3051,6 +3083,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
     ended_at: entry.ended_at,
     exit_code: entry.exit_code,
     failure_summary: failureSummary,
+    stderr_tail: entry.stderr_tail,
     screenshot_paths: entry.screenshot_paths,
     trace_summary: entry.trace_summary,
     progress: progress ?? undefined,
@@ -4006,8 +4039,21 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   const warnings: string[] = [];
   const recoverySteps: string[] = [];
 
-  // 0. Prerequisites (run FIRST — may start the dev server)
+  // 0. Worktree freshness (auto-sync if possible — run FIRST so prerequisites run on fresh code)
   const preflightBaseUrl = args.base_url || `http://localhost:${process.env.PLAYWRIGHT_WEB_PORT || '3000'}`;
+  if (WORKTREE_DIR) {
+    const freshnessStart = Date.now();
+    const freshness = checkAndSyncWorktree();
+    if (freshness.fresh) {
+      checks.push({ name: 'worktree_freshness', status: 'pass', message: 'Worktree is up to date with base branch', duration_ms: Date.now() - freshnessStart });
+    } else {
+      checks.push({ name: 'worktree_freshness', status: 'fail', message: freshness.message || 'Worktree is behind base branch', duration_ms: Date.now() - freshnessStart });
+      failures.push(`Worktree freshness: ${freshness.message}`);
+      recoverySteps.push('Commit any changes, then run: git fetch origin && git merge origin/preview --no-edit');
+    }
+  }
+
+  // 0.5. Prerequisites (may start the dev server)
   const prereqStart = Date.now();
   try {
     const prereqResult = await executePrerequisites({ dry_run: false, base_url: preflightBaseUrl });
@@ -4027,19 +4073,6 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
   } catch (err) {
     checks.push({ name: 'prerequisites', status: 'warn', message: `Could not run prerequisites: ${err instanceof Error ? err.message : String(err)}`, duration_ms: Date.now() - prereqStart });
     warnings.push(`Prerequisites check failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // 0.5. Worktree freshness (auto-sync if possible)
-  if (WORKTREE_DIR) {
-    const freshnessStart = Date.now();
-    const freshness = checkAndSyncWorktree();
-    if (freshness.fresh) {
-      checks.push({ name: 'worktree_freshness', status: 'pass', message: 'Worktree is up to date with base branch', duration_ms: Date.now() - freshnessStart });
-    } else {
-      checks.push({ name: 'worktree_freshness', status: 'fail', message: freshness.message || 'Worktree is behind base branch', duration_ms: Date.now() - freshnessStart });
-      failures.push(`Worktree freshness: ${freshness.message}`);
-      recoverySteps.push('Commit any changes, then run: git fetch origin && git merge origin/preview --no-edit');
-    }
   }
 
   // 1. Config exists
@@ -5276,16 +5309,17 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   const batchWebPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
   const devServerUrl = args.base_url || `http://localhost:${batchWebPort}`;
 
-  // Execute prerequisites FIRST — starts dev server if registered as background prereq
-  const prereqResult = await executePrerequisites({ base_url: devServerUrl });
-  if (!prereqResult.success) {
-    return JSON.stringify({ error: `Prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.` });
-  }
-
-  // Worktree freshness gate — auto-sync or block stale demos
+  // Worktree freshness gate — auto-sync or block stale demos (before prerequisites so
+  // prerequisites run against up-to-date code)
   const batchFreshness = checkAndSyncWorktree();
   if (!batchFreshness.fresh) {
     return JSON.stringify({ error: `Worktree stale: ${batchFreshness.message}` });
+  }
+
+  // Execute prerequisites — starts dev server if registered as background prereq
+  const prereqResult = await executePrerequisites({ base_url: devServerUrl });
+  if (!prereqResult.success) {
+    return JSON.stringify({ error: `Prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.` });
   }
 
   // Verify dev server is healthy (fallback if no prerequisite started it)
