@@ -348,6 +348,39 @@ export default async function sync(args) {
     }
   }
 
+  // 1.6. Apply pending secrets.local entries (staged by populate_secrets_local MCP tool)
+  const pendingSecretsPath = path.join(projectDir, '.claude', 'state', 'secrets-local-pending.json');
+  if (fs.existsSync(pendingSecretsPath)) {
+    console.log(`\n${YELLOW}Applying pending secrets.local entries...${NC}`);
+    try {
+      const pending = JSON.parse(fs.readFileSync(pendingSecretsPath, 'utf8'));
+      const entries = pending.entries || {};
+      // Validate all values are op:// references
+      for (const [key, val] of Object.entries(entries)) {
+        if (typeof val !== 'string' || !val.startsWith('op://')) {
+          throw new Error(`Invalid entry: ${key} is not an op:// reference`);
+        }
+      }
+      let current = {};
+      if (fs.existsSync(svcConfigPath)) {
+        try {
+          current = JSON.parse(fs.readFileSync(svcConfigPath, 'utf8'));
+        } catch (parseErr) {
+          console.log(`  ${RED}Warning: services.json is malformed — skipping secrets.local merge${NC}`);
+          throw parseErr;
+        }
+      }
+      if (!current.secrets) current.secrets = {};
+      if (!current.secrets.local) current.secrets.local = {};
+      Object.assign(current.secrets.local, entries);
+      fs.writeFileSync(svcConfigPath, JSON.stringify(current, null, 2) + '\n');
+      fs.unlinkSync(pendingSecretsPath);
+      console.log(`  Applied ${Object.keys(entries).length} secrets.local entry/entries`);
+    } catch (err) {
+      console.log(`  ${RED}Warning: Failed to apply pending secrets.local: ${err.message}${NC}`);
+    }
+  }
+
   // 2. Regenerate .mcp.json
   console.log(`\n${YELLOW}Regenerating .mcp.json...${NC}`);
   generateMcpJson(projectDir, frameworkDir, frameworkRel);

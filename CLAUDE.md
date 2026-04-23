@@ -945,6 +945,12 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 
 **Auto-background gate**: `secret_run_command` automatically promotes commands with `timeout > 55s` to background mode to avoid the Claude Code MCP transport's ~60-second hard limit. When auto-backgrounded, a JSONL progress file at `.claude/state/run-command-{label}-{timestamp}.jsonl` captures stdout/stderr/exit events and the response includes `mode: "auto_background"` with the progress file path and a poll hint. The `secret_run_command_poll` tool retrieves results by `label` or `pid` — returns running state, exit code, recent output lines, and progress file path. The `long-command-warning.js` PostToolUse hook detects two failure modes after `secret_run_command` calls: (1) auto-backgrounded responses (guides the agent to poll), and (2) empty foreground output where the MCP transport silently killed the call (warns and suggests background mode). `MAX_OUTPUT_LINES` is 500 (raised from 50).
 
+**`populate_secrets_local` tool**: Allows agents to add `op://` references to `secrets.local` in `services.json` without CTO involvement. Accepts `{ entries: Record<string, string> }` where values must be `op://` references. If the file is root-owned, stages to `.claude/state/secrets-local-pending.json` for the next `npx gentyr sync` (step 1.6). Use `mcp__onepassword__op_vault_map` to discover available `op://` references first.
+
+**`op_vault_map` tool** (on the 1Password MCP server): Full map of all items and their `op://` field references across all accessible vaults. Returns reference paths (NOT secret values). Use to discover the correct `op://` references for `populate_secrets_local`.
+
+**`secrets-local-health.js` UserPromptSubmit hook**: Warns on every message (5-minute cooldown) if `secrets.local` is empty or missing keys referenced by secret profiles. Instructs agents to call `op_vault_map` + `populate_secrets_local` immediately. Skipped in local mode and spawned sessions.
+
 > Full details: [Secret Management](docs/CLAUDE-REFERENCE.md#secret-management)
 
 ## Icon Processor MCP Server

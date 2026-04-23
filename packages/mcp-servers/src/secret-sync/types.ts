@@ -441,3 +441,13 @@ export interface RunCommandPollResult {
   outputLines: string[];
   progressFile: string | null;
 }
+
+// Populate secrets.local
+export const PopulateSecretsLocalArgsSchema = z.object({
+  entries: z.record(
+    z.string().min(1),
+    z.string().regex(/^op:\/\//, 'Values must be op:// references'),
+  ).refine(obj => Object.keys(obj).length > 0, { message: 'At least one entry is required' })
+    .describe('Map of env var names to op:// references. Example: { "AWS_ACCESS_KEY_ID": "op://Preview/AWS/access-key-id" }'),
+});
+export type PopulateSecretsLocalArgs = z.infer<typeof PopulateSecretsLocalArgsSchema>;
