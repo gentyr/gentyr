@@ -535,6 +535,14 @@
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-activation-spawner.js",
           "timeout": 15
         }]
+      },
+      {
+        "matcher": "mcp__plan-orchestrator__update_task_progress",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-audit-spawner.js",
+          "timeout": 15
+        }]
       }
     ],
     "Stop": [
