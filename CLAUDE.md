@@ -791,6 +791,10 @@ Video recording is automatic in headed demo modes on macOS. Scenario videos: `.c
 
 **Periodic screenshot capture** (headed demos, macOS only): `run_demo` also calls `getChromeWindowId()` (uses `swift -e` + CoreGraphics `CGWindowListCopyWindowInfo` to find Chrome's CGWindowID) and passes the result to `startScreenshotCapture()`. When a `windowId` is available, `screencapture` is invoked with `-l <windowId>` to capture only that specific Chrome window instead of the full screen, producing clean window-only screenshots at the display's native resolution. `startScreenshotCapture()` runs `screencapture -x` every 3 seconds throughout the demo. Screenshots are stored in `DemoRunState` as `screenshot_dir`, `screenshot_start_time`, and `screenshot_interval`. `check_demo_result` returns `screenshot_hint` (path pattern for retrieving screenshots) and `analysis_guidance` (REQUIRED instructions for agents to analyze captured screenshots and verify UI state matches user requirements). When a demo fails with video recording, failure frames are auto-extracted from 3 seconds before the failure end using `extract_video_frames` (ffprobe+ffmpeg at 0.5s intervals) and returned as `failure_frames` in the result. `check_demo_result` also returns `duration_seconds` for the total demo run time. The `get_demo_screenshot` MCP tool retrieves screenshots by timestamp; `extract_video_frames` extracts frames from any recording around a given timestamp.
 
+**Automatic Screenshot Reminder** (`screenshot-reminder.js` PostToolUse hook): Fires on every tool call. When a tool response contains a screenshot file path (e.g., `[Screenshot saved: /path/to/file.png]`, `"file_path": "...png"`, or `"screenshot_hint": "..."`), injects a `hookSpecificOutput.additionalContext` reminder instructing the agent to use the `Read` tool to view the screenshot before proceeding. Fast path: exits in under 1ms when no screenshot path is present (regex-only check). Skips reminder when the current tool is `Read` (agent is already viewing a screenshot). Caps at 5 paths per response. Registered in the global empty-matcher PostToolUse block in `settings.json.template`.
+
+**Screenshot and recording cleanup** (30-day retention): The `screenshot_cleanup` runIfDue block in `hourly-automation.js` (24h cooldown) walks `.claude/screenshots/` and `.claude/recordings/demos/`, removes `.png` and `.mp4` files whose `mtime` is older than 30 days, and prunes empty directories. Non-fatal on any I/O error. Empty parent directories are removed after their contents are pruned.
+
 **Escape key interrupt** (headed demos): Pressing Escape during a headed demo triggers a clean interrupt. The persona overlay immediately shows "Demo Interrupted — interact freely" (updated directly by the Chrome extension content script for instant visual feedback). All in-progress helper actions in `playwright-helpers` (cursor highlight, terminal/editor tab operations, persona overlay interactions) check `isInterrupted()` and exit early. On the server side, the Playwright MCP server detects the interrupt (via progress JSONL event or signal file — see Interrupt mechanism below), discards any in-progress recording (window recorder is killed without persisting the MP4), keeps the browser alive for manual inspection, and returns `status: 'interrupted'` with `interrupted_at` and `interrupt_reason` fields from `stopDemo`/`autoKillDemo`/`check_demo_result`. The associated task (if any) is paused via `submit_bypass_request` so the parent persistent task monitor receives a signal to wait rather than retrying.
 
 **Interrupt mechanism**: Two paths deliver the interrupt signal, one framework-level and one in-process:
@@ -1039,7 +1043,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 69 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 70 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 18 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
@@ -1080,7 +1084,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
 | protected-action-gate.js | `mcp__*` | Block protected MCP actions without approval |
 
-#### PostToolUse (28 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (29 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1109,6 +1113,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | persistent-task-spawner.js | `activate/resume/amend/pause/cancel_persistent_task` | Spawn/stop persistent monitors |
 | plan-persistent-sync.js | `complete_persistent_task` | Sync completion to plan tasks |
 | plan-activation-spawner.js | `update_plan_status` | Spawn plan manager on plan activation |
+| screenshot-reminder.js | `""` (all) | Remind agents to Read screenshot paths in tool responses |
 
 #### SessionStart (9 hooks — set initial context)
 

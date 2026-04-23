@@ -4084,6 +4084,63 @@ async function main() {
   });
 
   // =========================================================================
+  // SCREENSHOT CLEANUP (24h cooldown)
+  // Removes .png screenshots and .mp4 recordings older than 30 days
+  // =========================================================================
+  await runIfDue('screenshot_cleanup', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastScreenshotCleanup',
+    config,
+    label: 'Screenshot cleanup',
+    fn: async () => {
+      const screenshotDirs = [
+        path.join(PROJECT_DIR, '.claude', 'screenshots'),
+        path.join(PROJECT_DIR, '.claude', 'recordings', 'demos'),
+      ];
+
+      const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - THIRTY_DAYS_MS;
+      let totalRemoved = 0;
+
+      function pruneDir(dir) {
+        if (!fs.existsSync(dir)) return;
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              pruneDir(fullPath);
+              // Remove empty directories after pruning their contents
+              try {
+                const remaining = fs.readdirSync(fullPath);
+                if (remaining.length === 0) fs.rmdirSync(fullPath);
+              } catch { /* non-fatal */ }
+            } else if (entry.name.endsWith('.png') || entry.name.endsWith('.mp4')) {
+              try {
+                const stat = fs.statSync(fullPath);
+                if (stat.mtimeMs < cutoff) {
+                  fs.unlinkSync(fullPath);
+                  totalRemoved++;
+                }
+              } catch { /* non-fatal */ }
+            }
+          }
+        } catch { /* non-fatal — dir may not be readable */ }
+      }
+
+      for (const dir of screenshotDirs) {
+        pruneDir(dir);
+      }
+
+      if (totalRemoved > 0) {
+        log(`Screenshot cleanup: removed ${totalRemoved} file(s) older than 30 days.`);
+      } else {
+        log('Screenshot cleanup: no files to remove.');
+      }
+    },
+  });
+
+  // =========================================================================
   // STALE WORK DETECTOR (24h cooldown)
   // Reports uncommitted changes, unpushed branches, and stale feature branches
   // =========================================================================
