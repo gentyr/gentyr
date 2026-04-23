@@ -77,10 +77,14 @@ const BLOCKED_PATH_SUFFIXES = [
  * (protect-framework.sh); this is defense-in-depth.
  *
  * Uses .includes() matching (not .endsWith()) since these are directory prefixes.
+ * The '.claude/config' entry matches both '.claude/config/services.json' and
+ * '.claude/config' itself (directory rm/mkdir), preventing agents from destroying
+ * the config directory and recreating it with a blank services.json.
  */
 const WRITE_BLOCKED_PATH_CONTAINS = [
   '.claude/hooks/',   // All hook scripts and config — modifying any hook bypasses protections
   '.husky/',          // Git hook entry points — modifying bypasses pre-commit enforcement
+  '.claude/config',   // Service configuration — destroying and recreating wipes services.json
 ];
 
 /**
@@ -138,6 +142,10 @@ const WRITE_COMMANDS = new Set([
   'tee', 'cp', 'mv', 'install', 'rsync', 'scp', 'dd',
   'sed', 'awk', 'perl', 'python', 'python3', 'node', 'ruby',
   'patch',
+  // Destructive file-system operations — rm, rmdir, mkdir all modify paths and
+  // must trigger WRITE_BLOCKED_PATH_CONTAINS checks so agents cannot destroy
+  // or recreate protected directories like .claude/config/.
+  'rm', 'rmdir', 'mkdir',
 ]);
 
 /**
@@ -155,7 +163,10 @@ const WRITE_REDIRECT_PATTERN = /(?:^|\s)(?:1?>?>|2>>?)\s/;
  */
 const NON_FILE_COMMANDS = new Set([
   'echo', 'printf',           // Output text, don't access files
-  'mkdir', 'rmdir',           // Create/remove directories
+  // NOTE: 'mkdir' and 'rmdir' are intentionally NOT listed here — they operate
+  // on directory paths that must be scanned against WRITE_BLOCKED_PATH_CONTAINS.
+  // They are listed in WRITE_COMMANDS instead so isBashWriteOperation() returns
+  // true and the raw command scan checks for protected directory references.
   'cd', 'pushd', 'popd',     // Change directory
   'touch',                    // Create/update timestamps (not reading)
   'chmod', 'chown', 'chgrp',  // Change permissions (not reading contents)

@@ -2680,4 +2680,198 @@ describe('credential-file-guard.js (PreToolUse Hook)', () => {
     });
   });
 
+  // ==========================================================================
+  // .claude/config/ Write Protection
+  //
+  // Agents have historically bypassed services.json protection by running:
+  //   rm .claude/config && mkdir -p .claude/config
+  // and then writing a blank services.json. This suite verifies that rm,
+  // rmdir, and mkdir are all treated as write operations so that
+  // WRITE_BLOCKED_PATH_CONTAINS checks fire for .claude/config paths.
+  //
+  // ==========================================================================
+
+  describe('.claude/config write protection', () => {
+    it('should block rm .claude/config (directory removal)', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'rm .claude/config' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'rm .claude/config should be blocked (write to protected directory)');
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /\.claude\/config/,
+        'Block reason should reference .claude/config');
+    });
+
+    it('should block rm -rf .claude/config (recursive directory removal)', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf .claude/config' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'rm -rf .claude/config should be blocked');
+    });
+
+    it('should block rm .claude/config/services.json (file removal)', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'rm .claude/config/services.json' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'rm .claude/config/services.json should be blocked');
+    });
+
+    it('should block mkdir -p .claude/config (directory recreation)', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'mkdir -p .claude/config' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'mkdir -p .claude/config should be blocked');
+    });
+
+    it('should block rmdir .claude/config (directory removal via rmdir)', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'rmdir .claude/config' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'rmdir .claude/config should be blocked');
+    });
+
+    it('should block the full bypass sequence: rm .claude/config && mkdir -p .claude/config', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'rm .claude/config && mkdir -p .claude/config' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'The full bypass sequence should be blocked at the first write-blocked path hit');
+    });
+
+    it('should block Write to .claude/config/services.json', async () => {
+      const result = await runHook({
+        tool_name: 'Write',
+        tool_input: { file_path: `${tempDir.path}/.claude/config/services.json` },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Write to .claude/config/services.json should be blocked');
+    });
+
+    it('should block Edit to .claude/config/services.json', async () => {
+      const result = await runHook({
+        tool_name: 'Edit',
+        tool_input: {
+          file_path: `${tempDir.path}/.claude/config/services.json`,
+          old_string: 'foo',
+          new_string: 'bar',
+        },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'Edit to .claude/config/services.json should be blocked');
+    });
+
+    it('should ALLOW Read of .claude/config/services.json (read access is permitted)', async () => {
+      const configDir = path.join(tempDir.path, '.claude', 'config');
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(path.join(configDir, 'services.json'), '{}');
+
+      const result = await runHook({
+        tool_name: 'Read',
+        tool_input: { file_path: `${tempDir.path}/.claude/config/services.json` },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          'Read of .claude/config/services.json should be allowed');
+      }
+    });
+
+    it('should ALLOW Grep in .claude/config/ (read access is permitted)', async () => {
+      const configDir = path.join(tempDir.path, '.claude', 'config');
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(path.join(configDir, 'services.json'), '{}');
+
+      const result = await runHook({
+        tool_name: 'Grep',
+        tool_input: { pattern: 'devServices', path: `${tempDir.path}/.claude/config/` },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      if (jsonMatch) {
+        const output = JSON.parse(jsonMatch[0]);
+        assert.notStrictEqual(output.hookSpecificOutput?.permissionDecision, 'deny',
+          'Grep in .claude/config/ should be allowed');
+      }
+    });
+
+    it('should block cp over .claude/config/services.json (cp is a write command)', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'cp /tmp/empty.json .claude/config/services.json' },
+        cwd: tempDir.path,
+      });
+
+      assert.strictEqual(result.exitCode, 0);
+      const jsonMatch = result.stdout.match(/\{.*\}/s);
+      assert.ok(jsonMatch, 'Should output JSON');
+      const output = JSON.parse(jsonMatch[0]);
+      assert.strictEqual(output.hookSpecificOutput.permissionDecision, 'deny',
+        'cp over services.json should be blocked (cp is a write command)');
+    });
+  });
+
 });

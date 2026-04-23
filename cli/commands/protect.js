@@ -161,8 +161,14 @@ function doProtect(projectDir) {
   // .claude/ directory is NOT root-owned — git stash/checkout/merge need to create/unlink
   // files inside it. Symlink target verification (pre-commit + SessionStart) replaces
   // directory ownership as the anti-tampering mechanism for .claude/hooks.
+  //
+  // .claude/config/ IS root-owned as a directory to prevent agents from running
+  // `rm .claude/config && mkdir -p .claude/config` to destroy services.json and
+  // replace it with an empty file. Root-owning the directory prevents unlink() of
+  // files inside it and mkdir() of replacement directories even when hook guards fail.
   const dirs = [
     path.join(projectDir, '.husky'),
+    path.join(projectDir, '.claude', 'config'),
   ];
 
   // Write state BEFORE protecting directories (user needs write access to .claude/)
