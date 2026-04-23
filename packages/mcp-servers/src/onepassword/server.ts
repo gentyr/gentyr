@@ -217,6 +217,7 @@ async function opVaultMap(args: OpVaultMapArgs) {
 
   let totalItems = 0;
   let totalFields = 0;
+  let failedItems = 0;
 
   for (const vault of vaults) {
     // Step 2: List items in vault
@@ -228,7 +229,7 @@ async function opVaultMap(args: OpVaultMapArgs) {
     for (const item of items) {
       // Step 3: Get full item detail with field references
       try {
-        const detailJson = opCommand(['item', 'get', item.id, '--format', 'json']);
+        const detailJson = opCommand(['item', 'get', item.id, '--vault', vault.name, '--format', 'json']);
         const detail = JSON.parse(detailJson) as {
           fields?: Array<{
             label?: string;
@@ -259,6 +260,7 @@ async function opVaultMap(args: OpVaultMapArgs) {
           totalFields += fields.length;
         }
       } catch (err) {
+        failedItems++;
         process.stderr.write(`[op_vault_map] Failed to read item ${item.id} (${item.title}): ${err instanceof Error ? err.message : String(err)}\n`);
       }
       totalItems++;
@@ -271,7 +273,10 @@ async function opVaultMap(args: OpVaultMapArgs) {
     vaults: result,
     totalItems,
     totalFields,
-    note: `Fetched ${totalItems} items across ${vaults.length} vault(s). Use the 'reference' field values as op:// entries for populate_secrets_local.`,
+    failedItems,
+    note: failedItems > 0
+      ? `Fetched ${totalItems} items across ${vaults.length} vault(s), but ${failedItems} item(s) failed to load fields. Check MCP daemon logs for details.`
+      : `Fetched ${totalItems} items across ${vaults.length} vault(s). Use the 'reference' field values as op:// entries for populate_secrets_local.`,
   };
 }
 
