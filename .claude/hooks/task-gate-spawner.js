@@ -58,7 +58,7 @@ process.stdin.on('data', (chunk) => {
   input += chunk.toString();
 });
 
-process.stdin.on('end', () => {
+process.stdin.on('end', async () => {
   try {
     const hookInput = JSON.parse(input);
 
