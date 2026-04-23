@@ -17,18 +17,21 @@ import {
   createServiceAccountSchema,
   getAuditLogSchema,
   checkAuthSchema,
+  opVaultMapSchema,
   type ReadSecretArgs,
   type ListItemsArgs,
   type CreateServiceAccountArgs,
   type GetAuditLogArgs,
   type CheckAuthArgs,
+  type OpVaultMapArgs,
 } from './types.js';
 
 // Helper: Execute op CLI command (uses execFileSync to prevent shell injection)
-function opCommand(args: string[]): string {
+function opCommand(args: string[], timeoutMs = 30000): string {
   try {
     const result = execFileSync('op', args, {
       encoding: 'utf-8',
+      timeout: timeoutMs,
       env: {
         ...process.env,
         OP_SERVICE_ACCOUNT_TOKEN: process.env.OP_SERVICE_ACCOUNT_TOKEN,
@@ -189,6 +192,89 @@ async function checkAuth(args: CheckAuthArgs) {
   }
 }
 
+// Tool: Full vault map with op:// references for all items and fields
+async function opVaultMap(args: OpVaultMapArgs) {
+  const parsed = opVaultMapSchema.parse(args);
+
+  // Step 1: Get vaults
+  let vaults: Array<{ id: string; name: string }>;
+  if (parsed.vault) {
+    vaults = [{ id: parsed.vault, name: parsed.vault }];
+  } else {
+    const vaultJson = opCommand(['vault', 'list', '--format', 'json']);
+    vaults = JSON.parse(vaultJson) as Array<{ id: string; name: string }>;
+  }
+
+  const result: Array<{
+    name: string;
+    items: Array<{
+      id: string;
+      title: string;
+      category: string;
+      fields: Array<{ label: string; reference: string; type: string; section: string | null }>;
+    }>;
+  }> = [];
+
+  let totalItems = 0;
+  let totalFields = 0;
+
+  for (const vault of vaults) {
+    // Step 2: List items in vault
+    const itemsJson = opCommand(['item', 'list', '--vault', vault.name, '--format', 'json']);
+    const items = JSON.parse(itemsJson) as Array<{ id: string; title: string; category: string }>;
+
+    const vaultItems: typeof result[0]['items'] = [];
+
+    for (const item of items) {
+      // Step 3: Get full item detail with field references
+      try {
+        const detailJson = opCommand(['item', 'get', item.id, '--format', 'json']);
+        const detail = JSON.parse(detailJson) as {
+          fields?: Array<{
+            label?: string;
+            reference?: string;
+            type?: string;
+            section?: { label?: string };
+            purpose?: string;
+          }>;
+        };
+
+        // SECURITY: only extract reference metadata — never include f.value (contains actual secret)
+        const fields = (detail.fields || [])
+          .filter(f => f.reference && f.purpose !== 'NOTES')
+          .map(f => ({
+            label: f.label || '(unlabeled)',
+            reference: f.reference!,
+            type: f.type || 'STRING',
+            section: f.section?.label || null,
+          }));
+
+        if (fields.length > 0) {
+          vaultItems.push({
+            id: item.id,
+            title: item.title,
+            category: item.category,
+            fields,
+          });
+          totalFields += fields.length;
+        }
+      } catch (err) {
+        process.stderr.write(`[op_vault_map] Failed to read item ${item.id} (${item.title}): ${err instanceof Error ? err.message : String(err)}\n`);
+      }
+      totalItems++;
+    }
+
+    result.push({ name: vault.name, items: vaultItems });
+  }
+
+  return {
+    vaults: result,
+    totalItems,
+    totalFields,
+    note: `Fetched ${totalItems} items across ${vaults.length} vault(s). Use the 'reference' field values as op:// entries for populate_secrets_local.`,
+  };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -223,6 +309,12 @@ export const tools: AnyToolHandler[] = [
     description: 'Check if 1Password is authenticated and accessible. Returns structured status — no secret access, no CTO approval needed. Use before demos or any workflow that requires credentials.',
     schema: checkAuthSchema,
     handler: checkAuth as (args: unknown) => unknown,
+  },
+  {
+    name: 'op_vault_map',
+    description: 'Full map of all 1Password items and their op:// field references across all accessible vaults. Returns reference paths (NOT secret values). Use to discover op:// references for populate_secrets_local. May be slow for large vaults.',
+    schema: opVaultMapSchema,
+    handler: opVaultMap as (args: unknown) => unknown,
   },
 ];
 

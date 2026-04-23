@@ -66,7 +66,9 @@ import {
   UpdateServicesConfigArgsSchema,
   GetServicesConfigArgsSchema,
   ServicesConfigSchema,
+  PopulateSecretsLocalArgsSchema,
   type UpdateServicesConfigArgs,
+  type PopulateSecretsLocalArgs,
 } from './types.js';
 
 const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID } = process.env;
@@ -1563,7 +1565,7 @@ async function listSecretProfiles(): Promise<string> {
 
 async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<string> {
   if ('secrets' in args.updates) {
-    return JSON.stringify({ error: 'Cannot modify secrets via this tool. Use secret_sync_secrets for secret management.' });
+    return JSON.stringify({ error: 'Cannot modify secrets via this tool. Use populate_secrets_local to add op:// entries to secrets.local.' });
   }
   if ('secretProfiles' in args.updates) {
     return JSON.stringify({ error: 'Cannot modify secretProfiles via this tool. Use register_secret_profile / delete_secret_profile for profile management.' });
@@ -1625,6 +1627,79 @@ async function getServicesConfig(): Promise<string> {
     return JSON.stringify(safe, null, 2);
   } catch {
     return JSON.stringify({ error: 'services.json not found or unreadable' });
+  }
+}
+
+// ============================================================================
+// Populate secrets.local
+// ============================================================================
+
+async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<string> {
+  const parsed = PopulateSecretsLocalArgsSchema.parse(args);
+  const entries = parsed.entries as Record<string, string>;
+
+  const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
+  const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'secrets-local-pending.json');
+
+  // Load current config
+  let current: Record<string, unknown> = { secrets: {} };
+  try {
+    current = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+  } catch { /* file may not exist */ }
+
+  // Merge into secrets.local
+  const secrets = (current.secrets || {}) as Record<string, unknown>;
+  const existingLocal = (secrets.local || {}) as Record<string, string>;
+  const merged = { ...existingLocal, ...entries };
+
+  let newCount = 0;
+  let updatedCount = 0;
+  for (const key of Object.keys(entries)) {
+    if (key in existingLocal) { updatedCount++; } else { newCount++; }
+  }
+
+  // Build the updated config
+  const updated = { ...current, secrets: { ...secrets, local: merged } };
+
+  // Validate against schema
+  const result = ServicesConfigSchema.safeParse(updated);
+  if (!result.success) {
+    return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
+  }
+
+  // Try direct write
+  try {
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify(result.data, null, 2) + '\n');
+    return JSON.stringify({
+      applied: true,
+      pending: false,
+      newCount,
+      updatedCount,
+      totalLocalSecrets: Object.keys(merged).length,
+      message: `${newCount} new + ${updatedCount} updated entries in secrets.local.`,
+    });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      // Root-owned — stage for next sync, merging with existing pending
+      let existingPending: Record<string, string> = {};
+      try {
+        const raw = JSON.parse(readFileSync(pendingPath, 'utf-8')) as { entries?: Record<string, string> };
+        existingPending = raw.entries || {};
+      } catch { /* new */ }
+      const mergedPending = { ...existingPending, ...entries };
+      mkdirSync(dirname(pendingPath), { recursive: true });
+      writeFileSync(pendingPath, JSON.stringify({ entries: mergedPending, timestamp: new Date().toISOString() }, null, 2) + '\n');
+      return JSON.stringify({
+        applied: false,
+        pending: true,
+        newCount,
+        updatedCount,
+        stagedEntries: Object.keys(mergedPending).length,
+        message: `Entries staged in secrets-local-pending.json. Run 'npx gentyr sync' to apply (requires sudo for root-owned files).`,
+      });
+    }
+    throw err;
   }
 }
 
@@ -1716,6 +1791,12 @@ export const tools = [
     description: 'Read current services.json config (excluding secrets). Returns all non-secret configuration fields.',
     schema: GetServicesConfigArgsSchema,
     handler: getServicesConfig as (args: unknown) => unknown,
+  },
+  {
+    name: 'populate_secrets_local',
+    description: 'Add or update op:// references in secrets.local (services.json). Use mcp__onepassword__op_vault_map to discover available op:// references first. If services.json is root-protected, stages entries for next "npx gentyr sync". Values must be op:// references (e.g., "op://Preview/AWS/access-key-id").',
+    schema: PopulateSecretsLocalArgsSchema,
+    handler: populateSecretsLocal as (args: unknown) => unknown,
   },
 ] satisfies AnyToolHandler[];
 

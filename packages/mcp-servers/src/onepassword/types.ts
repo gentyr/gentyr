@@ -28,9 +28,14 @@ export const getAuditLogSchema = z.object({
 
 export const checkAuthSchema = z.object({});
 
+export const opVaultMapSchema = z.object({
+  vault: z.string().optional().describe('Filter to a specific vault name. Omit for all accessible vaults.'),
+});
+
 // Type exports
 export type ReadSecretArgs = z.infer<typeof readSecretSchema>;
 export type ListItemsArgs = z.infer<typeof listItemsSchema>;
 export type CreateServiceAccountArgs = z.infer<typeof createServiceAccountSchema>;
 export type GetAuditLogArgs = z.infer<typeof getAuditLogSchema>;
 export type CheckAuthArgs = z.infer<typeof checkAuthSchema>;
+export type OpVaultMapArgs = z.infer<typeof opVaultMapSchema>;
