@@ -2135,9 +2135,24 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     // ── Background stall/suite_end/interrupt monitoring (fire-and-forget) ──
     // Continues running after runDemo returns. Cleaned up on child exit.
     const bgMonitorStart = Date.now();
+    let lastBgPersistedAt = Date.now();
+    const BG_PERSIST_INTERVAL_MS = 30_000; // Persist stdio data every 30s for crash recovery
     const INTERRUPT_GRACE_MS = 3_000; // 3s grace for test to wind down after interrupt
     const bgMonitorInterval = setInterval(() => {
       readNewProgressEvents();
+
+      // Periodic crash-safe persistence of stdio data.
+      // If the MCP server dies mid-demo, the most recent stdout/stderr
+      // will be on disk for check_demo_result to recover.
+      if (Date.now() - lastBgPersistedAt >= BG_PERSIST_INTERVAL_MS) {
+        const bgEntry = demoRuns.get(demoPid);
+        if (bgEntry && bgEntry.status === 'running') {
+          bgEntry.stdout_tail = stdoutLines.join('\n').slice(0, 5000);
+          bgEntry.stderr_tail = Buffer.concat(stderrChunks).toString('utf8').trim().slice(0, 5000);
+          persistDemoRuns();
+          lastBgPersistedAt = Date.now();
+        }
+      }
 
       // Check for extension-based interrupt signal (written by native host
       // when the Chrome extension content script detects Escape keydown).
@@ -6033,6 +6048,14 @@ const tools: AnyToolHandler[] = [
     handler: getDisplayQueueStatusTool,
   },
 ];
+
+// Crash-safe persistence: if the server crashes, persist the latest demo state
+// so check_demo_result on restart can recover diagnostics instead of "unknown".
+process.on('uncaughtException', (err) => {
+  process.stderr.write(`[playwright] Uncaught exception: ${err.message}\n${err.stack}\n`);
+  try { persistDemoRuns(); } catch { /* last resort */ }
+  process.exit(1);
+});
 
 const server = new McpServer({
   name: 'playwright',
