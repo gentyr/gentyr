@@ -8,7 +8,7 @@ import { VALID_SECTIONS, TASK_STATUS, TASK_PRIORITY, type ValidSection, type Tas
 // Re-export for convenience
 export { VALID_SECTIONS, TASK_STATUS, TASK_PRIORITY };
 export type { ValidSection, TaskStatus, TaskPriority };
-export { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_CREATORS } from '../shared/constants.js';
+export { SECTION_CREATOR_RESTRICTIONS, FORCED_FOLLOWUP_CREATORS, GATE_BYPASS_CREATORS, URGENCY_AUTHORIZED_CREATORS } from '../shared/constants.js';
 
 // ============================================================================
 // Zod Schemas (G003 Compliance)
@@ -70,6 +70,20 @@ export const CompleteTaskArgsSchema = z.object({
 
 export const DeleteTaskArgsSchema = z.object({
   id: z.string().describe('Task UUID'),
+});
+
+export const GateApproveTaskArgsSchema = z.object({
+  id: z.string().describe('Task UUID to approve (must be in pending_review status)'),
+});
+
+export const GateKillTaskArgsSchema = z.object({
+  id: z.string().describe('Task UUID to kill (must be in pending_review status)'),
+  reason: z.string().describe('Reason for killing the task'),
+});
+
+export const GateEscalateTaskArgsSchema = z.object({
+  id: z.string().describe('Task UUID to escalate (must be in pending_review status)'),
+  reason: z.string().describe('Reason for escalation — task is approved AND a deputy-CTO report is created'),
 });
 
 export const GetSummaryArgsSchema = z.object({});
