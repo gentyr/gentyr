@@ -39,6 +39,11 @@ import {
   VALID_SECTIONS,
   SECTION_CREATOR_RESTRICTIONS,
   FORCED_FOLLOWUP_CREATORS,
+  GATE_BYPASS_CREATORS,
+  URGENCY_AUTHORIZED_CREATORS,
+  GateApproveTaskArgsSchema,
+  GateKillTaskArgsSchema,
+  GateEscalateTaskArgsSchema,
   type ListTasksArgs,
   type GetTaskArgs,
   type CreateTaskArgs,
@@ -65,7 +70,6 @@ import {
   type DeleteTaskResult,
   type SummaryResult,
   type SectionStats,
-  type CategoryStats,
   type CleanupResult,
   type GetSessionsForTaskResult,
   type BrowseSessionResult,
@@ -117,7 +121,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_section TEXT,
     followup_prompt TEXT,
     priority TEXT NOT NULL DEFAULT 'normal',
-    CONSTRAINT valid_status CHECK (status IN ('pending', 'in_progress', 'completed')),
+    CONSTRAINT valid_status CHECK (status IN ('pending', 'pending_review', 'in_progress', 'completed')),
     CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
@@ -269,6 +273,18 @@ function initializeDatabase(): Database.Database {
   try {
     const testId = 'migration-wm-check-' + Date.now();
     db.prepare("INSERT INTO tasks (id, section, status, title, created_at, created_timestamp) VALUES (?, 'WORKSTREAM-MANAGER', 'pending', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
+  } catch {
+    db.exec("ALTER TABLE tasks RENAME TO tasks_old");
+    db.exec(SCHEMA);
+    db.exec(`INSERT INTO tasks (id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, priority, started_timestamp) SELECT id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt, COALESCE(priority, 'normal'), started_timestamp FROM tasks_old`);
+    db.exec("DROP TABLE tasks_old");
+  }
+
+  // Auto-migration: ensure pending_review is in status CHECK constraint
+  try {
+    const testId = 'migration-gate-status-' + Date.now();
+    db.prepare("INSERT INTO tasks (id, status, title, created_at, created_timestamp) VALUES (?, 'pending_review', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
     db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
   } catch {
     db.exec("ALTER TABLE tasks RENAME TO tasks_old");
@@ -941,17 +957,28 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const created_at = now.toISOString();
   const created_timestamp = Math.floor(now.getTime() / 1000);
 
-  const priority = args.priority ?? 'normal';
+  let priority = args.priority ?? 'normal';
   const userPromptUuidsJson = userPromptUuids ? JSON.stringify(userPromptUuids) : null;
   const persistentTaskId = args.persistent_task_id ?? null;
   const strictInfraGuidance = effectiveStrictInfra ? 1 : 0;
   const demoInvolved = args.demo_involved ? 1 : 0;
 
+  // Urgency auto-downgrade: only authorized creators can set urgent priority
+  if (priority === 'urgent' && (!args.assigned_by || !(URGENCY_AUTHORIZED_CREATORS as readonly string[]).includes(args.assigned_by))) {
+    priority = 'normal';
+    const w = warning ? warning + ' | ' : '';
+    warning = w + `Urgency downgrade: '${args.assigned_by || '(none)'}' is not urgency-authorized. Priority set to 'normal'.`;
+  }
+
+  // Gate status: trusted creators bypass to 'pending', others enter 'pending_review'
+  const isTrustedCreator = !!args.assigned_by && (GATE_BYPASS_CREATORS as readonly string[]).includes(args.assigned_by);
+  const taskStatus = isTrustedCreator ? 'pending' : 'pending_review';
+
   try {
     db.prepare(`
       INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, strict_infra_guidance, demo_involved)
-      VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, resolvedSection, resolvedCategoryId, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, strictInfraGuidance, demoInvolved);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, resolvedSection, resolvedCategoryId, taskStatus, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, strictInfraGuidance, demoInvolved);
   } catch (err: unknown) {
     if (
       err instanceof Error &&
@@ -981,7 +1008,7 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   return {
     id,
     section: resolvedSection,
-    status: 'pending',
+    status: taskStatus,
     title: args.title,
     description: args.description ?? null,
     created_at,
@@ -1006,6 +1033,10 @@ function startTask(args: StartTaskArgs): StartTaskResult | ErrorResult {
 
   if (!task) {
     return { error: `Task not found: ${args.id}` };
+  }
+
+  if (task.status === 'pending_review') {
+    return { error: `Task is pending gate review and cannot be started yet: ${args.id}` };
   }
 
   if (task.status === 'completed') {
@@ -1152,9 +1183,13 @@ function getSummary(): SummaryResult {
 
   for (const row of tasks) {
     result.total += row.count;
-    result[row.status as keyof Pick<SummaryResult, 'pending' | 'in_progress' | 'completed'>] += row.count;
+    // Aggregate pending_review into pending for display
+    const displayStatus = row.status === 'pending_review' ? 'pending' : row.status;
+    result[displayStatus as keyof Pick<SummaryResult, 'pending' | 'in_progress' | 'completed'>] += row.count;
     if (row.section && result.by_section[row.section]) {
-      (result.by_section[row.section] as SectionStats)[row.status as keyof SectionStats] = row.count;
+      (result.by_section[row.section] as SectionStats)[displayStatus as keyof SectionStats] = (
+        ((result.by_section[row.section] as SectionStats)[displayStatus as keyof SectionStats] || 0) + row.count
+      );
     }
   }
 
@@ -1178,7 +1213,9 @@ function getSummary(): SummaryResult {
     if (!result.by_category[row.category_id]) {
       result.by_category[row.category_id] = { name: row.name, pending: 0, in_progress: 0, completed: 0 };
     }
-    (result.by_category[row.category_id] as CategoryStats)[row.status as keyof SectionStats] = row.count;
+    const catDisplayStatus = row.status === 'pending_review' ? 'pending' : row.status;
+    const catStats = result.by_category[row.category_id] as unknown as Record<string, unknown>;
+    catStats[catDisplayStatus] = ((catStats[catDisplayStatus] as number) || 0) + row.count;
   }
 
   return result;
@@ -1925,6 +1962,56 @@ function deleteCategory(args: DeleteCategoryArgs): { deleted: boolean; id: strin
 }
 
 // ============================================================================
+// Gate Decision Tools
+// ============================================================================
+
+function gateApproveTask(args: { id: string }): object {
+  const parsed = GateApproveTaskArgsSchema.parse(args);
+  const db = getDb();
+  const task = db.prepare('SELECT id, status, title FROM tasks WHERE id = ?').get(parsed.id) as { id: string; status: string; title: string } | undefined;
+  if (!task) return { error: `Task not found: ${parsed.id}` };
+  if (task.status !== 'pending_review') return { error: `Task is not in pending_review status (current: ${task.status}). Only pending_review tasks can be approved.` };
+
+  db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(parsed.id);
+  return { id: parsed.id, title: task.title, old_status: 'pending_review', new_status: 'pending', message: 'Task approved and moved to pending queue.' };
+}
+
+function gateKillTask(args: { id: string; reason: string }): object {
+  const parsed = GateKillTaskArgsSchema.parse(args);
+  const db = getDb();
+  const task = db.prepare('SELECT id, status, title FROM tasks WHERE id = ?').get(parsed.id) as { id: string; status: string; title: string } | undefined;
+  if (!task) return { error: `Task not found: ${parsed.id}` };
+  if (task.status !== 'pending_review') return { error: `Task is not in pending_review status (current: ${task.status}). Only pending_review tasks can be killed.` };
+
+  db.prepare('DELETE FROM tasks WHERE id = ?').run(parsed.id);
+  return { id: parsed.id, title: task.title, killed: true, reason: parsed.reason, message: `Task killed: ${parsed.reason}` };
+}
+
+function gateEscalateTask(args: { id: string; reason: string }): object {
+  const parsed = GateEscalateTaskArgsSchema.parse(args);
+  const db = getDb();
+  const task = db.prepare('SELECT id, status, title, description, assigned_by, metadata FROM tasks WHERE id = ?').get(parsed.id) as { id: string; status: string; title: string; description: string | null; assigned_by: string | null; metadata: string | null } | undefined;
+  if (!task) return { error: `Task not found: ${parsed.id}` };
+  if (task.status !== 'pending_review') return { error: `Task is not in pending_review status (current: ${task.status}). Only pending_review tasks can be escalated.` };
+
+  // Approve and store escalation reason atomically
+  let existingMeta: Record<string, unknown> = {};
+  try { if (task.metadata) existingMeta = JSON.parse(task.metadata as string); } catch { /* ignore */ }
+  const mergedMeta = JSON.stringify({ ...existingMeta, gate_escalation: { reason: parsed.reason, escalated_at: new Date().toISOString() } });
+  db.prepare("UPDATE tasks SET status = 'pending', metadata = ? WHERE id = ?").run(mergedMeta, parsed.id);
+
+  return {
+    id: parsed.id,
+    title: task.title,
+    old_status: 'pending_review',
+    new_status: 'pending',
+    escalated: true,
+    reason: parsed.reason,
+    message: `Task approved and escalated. Escalation reason stored in task metadata for deputy-CTO review.`,
+  };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -2042,6 +2129,24 @@ const tools: AnyToolHandler[] = [
     description: 'Delete a task category. Blocked if any active (non-completed) tasks reference it.',
     schema: DeleteCategoryArgsSchema,
     handler: deleteCategory,
+  },
+  {
+    name: 'gate_approve_task',
+    description: 'Approve a pending_review task, moving it to pending status for spawning. Only works on pending_review tasks.',
+    schema: GateApproveTaskArgsSchema,
+    handler: gateApproveTask,
+  },
+  {
+    name: 'gate_kill_task',
+    description: 'Kill a pending_review task with a reason. Deletes the task entirely. Only works on pending_review tasks.',
+    schema: GateKillTaskArgsSchema,
+    handler: gateKillTask,
+  },
+  {
+    name: 'gate_escalate_task',
+    description: 'Approve AND escalate a pending_review task. Moves to pending status and stores escalation reason in metadata for deputy-CTO review.',
+    schema: GateEscalateTaskArgsSchema,
+    handler: gateEscalateTask,
   },
 ];
 
