@@ -37,6 +37,9 @@ import {
   PlanAuditArgsSchema,
   PlanSessionsArgsSchema,
   ForceClosePlanArgsSchema,
+  CheckVerificationAuditArgsSchema,
+  VerificationAuditPassArgsSchema,
+  VerificationAuditFailArgsSchema,
   type CreatePlanArgs,
   type GetPlanArgs,
   type ListPlansArgs,
@@ -55,11 +58,15 @@ import {
   type PlanAuditArgs,
   type PlanSessionsArgs,
   type ForceClosePlanArgs,
+  type CheckVerificationAuditArgs,
+  type VerificationAuditPassArgs,
+  type VerificationAuditFailArgs,
   type PlanRecord,
   type PhaseRecord,
   type PlanTaskRecord,
   type SubstepRecord,
   type StateChangeRecord,
+  type PlanAuditRecord,
   type ErrorResult,
 } from './types.js';
 import {
@@ -132,12 +139,13 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
     pr_merged INTEGER DEFAULT 0,
     branch_name TEXT,
     agent_type TEXT,
+    verification_strategy TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     started_at TEXT,
     completed_at TEXT,
     metadata TEXT,
-    CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','completed','skipped'))
+    CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','pending_audit','completed','skipped'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_phase ON plan_tasks(phase_id);
@@ -184,6 +192,24 @@ CREATE TABLE IF NOT EXISTS state_changes (
 
 CREATE INDEX IF NOT EXISTS idx_changes_entity ON state_changes(entity_id);
 CREATE INDEX IF NOT EXISTS idx_changes_time ON state_changes(changed_at);
+
+CREATE TABLE IF NOT EXISTS plan_audits (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES plan_tasks(id) ON DELETE CASCADE,
+    plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+    verification_strategy TEXT NOT NULL,
+    verdict TEXT,
+    evidence TEXT,
+    failure_reason TEXT,
+    auditor_agent_id TEXT,
+    requested_at TEXT NOT NULL,
+    completed_at TEXT,
+    attempt_number INTEGER NOT NULL DEFAULT 1,
+    CONSTRAINT valid_audit_verdict CHECK (verdict IS NULL OR verdict IN ('pass','fail'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_audits_task ON plan_audits(task_id);
+CREATE INDEX IF NOT EXISTS idx_audits_pending ON plan_audits(verdict) WHERE verdict IS NULL;
 `;
 
 // ============================================================================
@@ -316,6 +342,58 @@ function initializeDatabase(): Database.Database {
     db.exec('ALTER TABLE phases ADD COLUMN gate INTEGER NOT NULL DEFAULT 0');
   }
 
+  // ── plan_tasks table: add verification_strategy column (idempotent) ─────
+  try {
+    db.prepare('SELECT verification_strategy FROM plan_tasks LIMIT 0').get();
+  } catch {
+    db.exec('ALTER TABLE plan_tasks ADD COLUMN verification_strategy TEXT');
+  }
+
+  // ── plan_tasks table: CHECK constraint migration (add 'pending_audit') ──
+  const tasksSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='plan_tasks'").get() as { sql: string } | undefined)?.sql ?? '';
+  if (tasksSql && !tasksSql.includes("'pending_audit'")) {
+    db.pragma('foreign_keys = OFF');
+    db.pragma('legacy_alter_table = ON');
+    db.exec('DROP TABLE IF EXISTS plan_tasks_old');
+    const migrateTasks = db.transaction(() => {
+      db.exec('ALTER TABLE plan_tasks RENAME TO plan_tasks_old');
+      db.exec(`CREATE TABLE plan_tasks (
+        id TEXT PRIMARY KEY,
+        phase_id TEXT NOT NULL REFERENCES phases(id) ON DELETE CASCADE,
+        plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        task_order INTEGER NOT NULL,
+        todo_task_id TEXT,
+        pr_number INTEGER,
+        pr_merged INTEGER DEFAULT 0,
+        branch_name TEXT,
+        agent_type TEXT,
+        verification_strategy TEXT,
+        persistent_task_id TEXT,
+        category_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        metadata TEXT,
+        CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','pending_audit','completed','skipped'))
+      )`);
+      db.exec(`INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order,
+        todo_task_id, pr_number, pr_merged, branch_name, agent_type, verification_strategy,
+        persistent_task_id, category_id, created_at, updated_at, started_at, completed_at, metadata)
+        SELECT id, phase_id, plan_id, title, description, status, task_order,
+        todo_task_id, pr_number, pr_merged, branch_name, agent_type, verification_strategy,
+        persistent_task_id, category_id, created_at, updated_at, started_at, completed_at, metadata
+        FROM plan_tasks_old`);
+      db.exec('DROP TABLE plan_tasks_old');
+    });
+    migrateTasks();
+    db.pragma('legacy_alter_table = OFF');
+    db.pragma('foreign_keys = ON');
+  }
+
   return db;
 }
 
@@ -359,7 +437,9 @@ function getTaskProgress(db: Database.Database, taskId: string): number {
   const total = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ?').get(taskId) as { c: number }).c;
   if (total === 0) {
     const task = db.prepare('SELECT status FROM plan_tasks WHERE id = ?').get(taskId) as { status: string } | undefined;
-    return task?.status === 'completed' || task?.status === 'skipped' ? 100 : 0;
+    if (task?.status === 'completed' || task?.status === 'skipped') return 100;
+    if (task?.status === 'pending_audit') return 95;
+    return 0;
   }
   const completed = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ? AND completed = 1').get(taskId) as { c: number }).c;
   return Math.round((completed / total) * 100);
@@ -495,8 +575,8 @@ function createPlan(args: CreatePlanArgs) {
             const task = phase.tasks[ti];
             const taskId = randomUUID();
             db.prepare(
-              'INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order, agent_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            ).run(taskId, phaseId, planId, task.title, task.description ?? null, 'pending', ti + 1, task.agent_type ?? null, ts, ts);
+              'INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order, agent_type, verification_strategy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            ).run(taskId, phaseId, planId, task.title, task.description ?? null, 'pending', ti + 1, task.agent_type ?? null, task.verification_strategy ?? null, ts, ts);
 
             if (task.substeps) {
               for (let si = 0; si < task.substeps.length; si++) {
@@ -547,6 +627,7 @@ function getPlan(args: GetPlanArgs) {
         task_order: task.task_order,
         agent_type: task.agent_type,
         category_id: task.category_id ?? null,
+        verification_strategy: task.verification_strategy ?? null,
         todo_task_id: task.todo_task_id,
         persistent_task_id: task.persistent_task_id ?? null,
         pr_number: task.pr_number,
@@ -784,8 +865,8 @@ function addPlanTask(args: AddPlanTaskArgs) {
 
   const addTaskTx = db.transaction(() => {
     db.prepare(
-      'INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order, agent_type, category_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(taskId, args.phase_id, phase.plan_id, args.title, args.description ?? null, 'pending', maxOrder + 1, args.agent_type ?? null, args.category_id ?? null, ts, ts);
+      'INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order, agent_type, category_id, verification_strategy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(taskId, args.phase_id, phase.plan_id, args.title, args.description ?? null, 'pending', maxOrder + 1, args.agent_type ?? null, args.category_id ?? null, args.verification_strategy ?? null, ts, ts);
 
     // Add substeps
     if (args.substeps) {
@@ -836,9 +917,61 @@ function addPlanTask(args: AddPlanTaskArgs) {
     title: args.title,
     task_order: maxOrder + 1,
     category_id: args.category_id ?? null,
+    verification_strategy: args.verification_strategy ?? null,
     substeps_created: args.substeps?.length ?? 0,
     created_at: ts,
   };
+}
+
+/**
+ * Run phase/plan auto-completion cascade after a task reaches completed/skipped.
+ * Extracted as a shared helper so both updateTaskProgress and verificationAuditPass
+ * can trigger the same cascade logic.
+ */
+function runCompletionCascade(
+  db: Database.Database,
+  phaseId: string,
+  planId: string,
+): { phaseCompleted: boolean; planCompleted: boolean; readyTasks: Array<{ id: string; title: string; agent_type: string | null }> } {
+  const ts = now();
+  let phaseCompleted = false;
+  let planCompleted = false;
+
+  // Phase cascade
+  const phaseForCascade = db.prepare('SELECT * FROM phases WHERE id = ?').get(phaseId) as PhaseRecord;
+  const allTasks = db.prepare('SELECT status FROM plan_tasks WHERE phase_id = ?').all(phaseId) as Array<{ status: string }>;
+  const allTasksResolved = allTasks.every(t => t.status === 'completed' || t.status === 'skipped');
+
+  if (allTasksResolved && phaseForCascade.status !== 'completed' && phaseForCascade.status !== 'skipped') {
+    const hasAnyCompleted = allTasks.some(t => t.status === 'completed');
+    if (hasAnyCompleted) {
+      db.prepare("UPDATE phases SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, phaseId);
+      recordStateChange(db, 'phase', phaseId, 'status', phaseForCascade.status, 'completed');
+    } else {
+      db.prepare("UPDATE phases SET status = 'skipped', updated_at = ? WHERE id = ?").run(ts, phaseId);
+      recordStateChange(db, 'phase', phaseId, 'status', phaseForCascade.status, 'skipped');
+    }
+    phaseCompleted = true;
+  }
+
+  // Update downstream tasks
+  const readyTasks = updateAndGetReadyTasks(db, planId);
+
+  // Plan cascade
+  const allPhases = db.prepare('SELECT status, required FROM phases WHERE plan_id = ?').all(planId) as Array<{ status: string; required: number }>;
+  const allPhasesResolved = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
+  const anyRequiredSkipped = allPhases.some(p => p.status === 'skipped' && p.required);
+
+  if (allPhasesResolved && !anyRequiredSkipped) {
+    const plan = db.prepare('SELECT status FROM plans WHERE id = ?').get(planId) as { status: string };
+    if (plan.status === 'active') {
+      db.prepare("UPDATE plans SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, planId);
+      recordStateChange(db, 'plan', planId, 'status', 'active', 'completed');
+      planCompleted = true;
+    }
+  }
+
+  return { phaseCompleted, planCompleted, readyTasks };
 }
 
 function updateTaskProgress(args: UpdateTaskProgressArgs) {
@@ -849,6 +982,9 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
   const ts = now();
   const updates: string[] = ['updated_at = ?'];
   const values: (string | number | null)[] = [ts];
+
+  // Track the actual status that gets written (may differ from args.status due to audit gate)
+  let resolvedStatus: string | undefined;
 
   if (args.status) {
     // Skip guard: enforce gate phases and record skip metadata
@@ -869,19 +1005,54 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
       });
       updates.push('metadata = ?');
       values.push(mergedMeta);
-    }
+      updates.push('status = ?');
+      values.push('skipped');
+      resolvedStatus = 'skipped';
+      recordStateChange(db, 'task', args.task_id, 'status', task.status, 'skipped', `skip:${args.skip_authorization}`);
+    } else if (args.status === 'completed') {
+      // Audit gate: check for verification_strategy
+      if (args.force_complete) {
+        // CTO bypass — complete directly
+        updates.push('status = ?', 'completed_at = ?');
+        values.push('completed', ts);
+        resolvedStatus = 'completed';
+        recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed', 'cto-force-complete');
+      } else {
+        const taskFull = db.prepare('SELECT verification_strategy FROM plan_tasks WHERE id = ?')
+          .get(args.task_id) as { verification_strategy: string | null };
 
-    updates.push('status = ?');
-    values.push(args.status);
-    recordStateChange(db, 'task', args.task_id, 'status', task.status, args.status,
-      args.status === 'skipped' ? `skip:${args.skip_authorization}` : undefined);
+        if (taskFull.verification_strategy) {
+          // Route through audit gate → pending_audit
+          updates.push('status = ?');
+          values.push('pending_audit');
+          resolvedStatus = 'pending_audit';
+          recordStateChange(db, 'task', args.task_id, 'status', task.status, 'pending_audit');
+
+          // Create audit record
+          const auditId = randomUUID();
+          const attemptNum = ((db.prepare('SELECT COUNT(*) as c FROM plan_audits WHERE task_id = ?')
+            .get(args.task_id) as { c: number }).c) + 1;
+          db.prepare(
+            'INSERT INTO plan_audits (id, task_id, plan_id, verification_strategy, requested_at, attempt_number) VALUES (?, ?, ?, ?, ?, ?)'
+          ).run(auditId, args.task_id, task.plan_id, taskFull.verification_strategy, ts, attemptNum);
+        } else {
+          // No verification strategy — complete directly
+          updates.push('status = ?', 'completed_at = ?');
+          values.push('completed', ts);
+          resolvedStatus = 'completed';
+          recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed');
+        }
+      }
+    } else {
+      // All other status transitions (pending, blocked, ready, in_progress)
+      updates.push('status = ?');
+      values.push(args.status);
+      resolvedStatus = args.status;
+      recordStateChange(db, 'task', args.task_id, 'status', task.status, args.status);
+    }
 
     if (args.status === 'in_progress' && !task.started_at) {
       updates.push('started_at = ?');
-      values.push(ts);
-    }
-    if (args.status === 'completed') {
-      updates.push('completed_at = ?');
       values.push(ts);
     }
   }
@@ -906,58 +1077,46 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
     values.push(args.pr_merged ? 1 : 0);
 
     // Auto-complete on PR merge (only if no explicit status was provided)
-    if (args.pr_merged && !args.status && task.status !== 'completed') {
-      updates.push('status = ?');
-      values.push('completed');
-      updates.push('completed_at = ?');
-      values.push(ts);
-      recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed');
+    if (args.pr_merged && !args.status && task.status !== 'completed' && task.status !== 'pending_audit') {
+      const taskFull = db.prepare('SELECT verification_strategy FROM plan_tasks WHERE id = ?')
+        .get(args.task_id) as { verification_strategy: string | null };
+
+      if (taskFull.verification_strategy) {
+        updates.push('status = ?');
+        values.push('pending_audit');
+        resolvedStatus = 'pending_audit';
+        recordStateChange(db, 'task', args.task_id, 'status', task.status, 'pending_audit');
+
+        const auditId = randomUUID();
+        const attemptNum = ((db.prepare('SELECT COUNT(*) as c FROM plan_audits WHERE task_id = ?')
+          .get(args.task_id) as { c: number }).c) + 1;
+        db.prepare(
+          'INSERT INTO plan_audits (id, task_id, plan_id, verification_strategy, requested_at, attempt_number) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(auditId, args.task_id, task.plan_id, taskFull.verification_strategy, ts, attemptNum);
+      } else {
+        updates.push('status = ?');
+        values.push('completed');
+        updates.push('completed_at = ?');
+        values.push(ts);
+        resolvedStatus = 'completed';
+        recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed');
+      }
     }
   }
 
   db.prepare(`UPDATE plan_tasks SET ${updates.join(', ')} WHERE id = ?`).run(...values, args.task_id);
 
-  // Check if phase should auto-complete (or auto-skip)
-  const phaseForCascade = db.prepare('SELECT * FROM phases WHERE id = ?').get(task.phase_id) as PhaseRecord;
-  const allTasks = db.prepare('SELECT status FROM plan_tasks WHERE phase_id = ?').all(task.phase_id) as Array<{ status: string }>;
-  const allTasksResolved = allTasks.every(t => t.status === 'completed' || t.status === 'skipped');
-
-  if (allTasksResolved && phaseForCascade.status !== 'completed' && phaseForCascade.status !== 'skipped') {
-    const hasAnyCompleted = allTasks.some(t => t.status === 'completed');
-    if (hasAnyCompleted) {
-      // At least one task genuinely completed — phase is completed
-      db.prepare("UPDATE phases SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, task.phase_id);
-      recordStateChange(db, 'phase', task.phase_id, 'status', phaseForCascade.status, 'completed');
-    } else {
-      // ALL tasks were skipped — phase becomes skipped, not completed
-      db.prepare("UPDATE phases SET status = 'skipped', updated_at = ? WHERE id = ?").run(ts, task.phase_id);
-      recordStateChange(db, 'phase', task.phase_id, 'status', phaseForCascade.status, 'skipped');
-    }
-  }
-
-  // Update downstream tasks
-  const readyTasks = updateAndGetReadyTasks(db, task.plan_id);
-
-  // Check if plan should auto-complete
-  // Only auto-complete if ALL phases are completed (no skipped phases)
-  // Plans with skipped phases require explicit update_plan_status with force_complete
-  const allPhases = db.prepare('SELECT status, required FROM phases WHERE plan_id = ?').all(task.plan_id) as Array<{ status: string; required: number }>;
-  const allPhasesResolved = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
-  const anyRequiredSkipped = allPhases.some(p => p.status === 'skipped' && p.required);
-
-  if (allPhasesResolved && !anyRequiredSkipped) {
-    const plan = db.prepare('SELECT status FROM plans WHERE id = ?').get(task.plan_id) as { status: string };
-    if (plan.status === 'active') {
-      db.prepare("UPDATE plans SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, task.plan_id);
-      recordStateChange(db, 'plan', task.plan_id, 'status', 'active', 'completed');
-    }
-  }
+  // Run completion cascade (pending_audit naturally blocks it — not completed or skipped)
+  const cascade = runCompletionCascade(db, task.phase_id, task.plan_id);
 
   return {
     task_id: args.task_id,
+    status: resolvedStatus ?? task.status,
+    verification_strategy: (db.prepare('SELECT verification_strategy FROM plan_tasks WHERE id = ?')
+      .get(args.task_id) as { verification_strategy: string | null })?.verification_strategy ?? null,
     updated_at: ts,
     progress_pct: getTaskProgress(db, args.task_id),
-    newly_ready: readyTasks.map(t => ({ id: t.id, title: t.title, agent_type: t.agent_type })),
+    newly_ready: cascade.readyTasks.map(t => ({ id: t.id, title: t.title, agent_type: t.agent_type })),
   };
 }
 
@@ -1608,6 +1767,126 @@ function planSessions(args: PlanSessionsArgs) {
   return { sessions: lines.join('\n') };
 }
 
+// ============================================================================
+// Verification Audit Tools
+// ============================================================================
+
+function checkVerificationAudit(args: CheckVerificationAuditArgs) {
+  const db = getDb();
+  const audit = db.prepare(
+    'SELECT * FROM plan_audits WHERE task_id = ? ORDER BY attempt_number DESC LIMIT 1'
+  ).get(args.task_id) as PlanAuditRecord | undefined;
+
+  if (!audit) {
+    return { task_id: args.task_id, status: 'no_audit_pending' };
+  }
+
+  return {
+    task_id: args.task_id,
+    audit_id: audit.id,
+    verdict: audit.verdict,
+    status: audit.verdict === null ? 'pending_audit' : audit.verdict === 'pass' ? 'completed' : 'audit_failed',
+    evidence: audit.evidence,
+    failure_reason: audit.failure_reason,
+    verification_strategy: audit.verification_strategy,
+    attempt_number: audit.attempt_number,
+    requested_at: audit.requested_at,
+    completed_at: audit.completed_at,
+  };
+}
+
+function verificationAuditPass(args: VerificationAuditPassArgs) {
+  const db = getDb();
+  const ts = now();
+
+  // Find pending audit for this task
+  const audit = db.prepare(
+    "SELECT * FROM plan_audits WHERE task_id = ? AND verdict IS NULL ORDER BY attempt_number DESC LIMIT 1"
+  ).get(args.task_id) as PlanAuditRecord | undefined;
+
+  if (!audit) {
+    return { error: `No pending audit found for task: ${args.task_id}` } as ErrorResult;
+  }
+
+  // Verify task is still in pending_audit
+  const task = db.prepare('SELECT * FROM plan_tasks WHERE id = ?').get(args.task_id) as PlanTaskRecord | undefined;
+  if (!task) return { error: `Task not found: ${args.task_id}` } as ErrorResult;
+  if (task.status !== 'pending_audit') {
+    return { error: `Task is not in pending_audit status (current: ${task.status})` } as ErrorResult;
+  }
+
+  const passTx = db.transaction(() => {
+    // Record verdict
+    db.prepare(
+      'UPDATE plan_audits SET verdict = ?, evidence = ?, completed_at = ? WHERE id = ?'
+    ).run('pass', args.evidence, ts, audit.id);
+
+    // Transition task to completed
+    db.prepare(
+      "UPDATE plan_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
+    ).run(ts, ts, args.task_id);
+
+    recordStateChange(db, 'task', args.task_id, 'status', 'pending_audit', 'completed', 'plan-auditor');
+  });
+  passTx();
+
+  // Run completion cascade (phase/plan auto-complete)
+  const cascade = runCompletionCascade(db, task.phase_id, task.plan_id);
+
+  return {
+    task_id: args.task_id,
+    verdict: 'pass',
+    completed_at: ts,
+    attempt_number: audit.attempt_number,
+    phase_completed: cascade.phaseCompleted,
+    plan_completed: cascade.planCompleted,
+    newly_ready: cascade.readyTasks.map(t => ({ id: t.id, title: t.title, agent_type: t.agent_type })),
+  };
+}
+
+function verificationAuditFail(args: VerificationAuditFailArgs) {
+  const db = getDb();
+  const ts = now();
+
+  // Find pending audit for this task
+  const audit = db.prepare(
+    "SELECT * FROM plan_audits WHERE task_id = ? AND verdict IS NULL ORDER BY attempt_number DESC LIMIT 1"
+  ).get(args.task_id) as PlanAuditRecord | undefined;
+
+  if (!audit) {
+    return { error: `No pending audit found for task: ${args.task_id}` } as ErrorResult;
+  }
+
+  // Verify task is still in pending_audit
+  const task = db.prepare('SELECT * FROM plan_tasks WHERE id = ?').get(args.task_id) as PlanTaskRecord | undefined;
+  if (!task) return { error: `Task not found: ${args.task_id}` } as ErrorResult;
+  if (task.status !== 'pending_audit') {
+    return { error: `Task is not in pending_audit status (current: ${task.status})` } as ErrorResult;
+  }
+
+  const failTx = db.transaction(() => {
+    // Record verdict
+    db.prepare(
+      'UPDATE plan_audits SET verdict = ?, failure_reason = ?, evidence = ?, completed_at = ? WHERE id = ?'
+    ).run('fail', args.failure_reason, args.evidence ?? null, ts, audit.id);
+
+    // Transition task back to in_progress
+    db.prepare(
+      "UPDATE plan_tasks SET status = 'in_progress', completed_at = NULL, updated_at = ? WHERE id = ?"
+    ).run(ts, args.task_id);
+
+    recordStateChange(db, 'task', args.task_id, 'status', 'pending_audit', 'in_progress', 'plan-auditor-fail');
+  });
+  failTx();
+
+  return {
+    task_id: args.task_id,
+    verdict: 'fail',
+    failure_reason: args.failure_reason,
+    attempt_number: audit.attempt_number,
+  };
+}
+
 function forceClosePlan(args: ForceClosePlanArgs): object {
   const db = getDb();
 
@@ -1686,13 +1965,13 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'add_plan_task',
-    description: 'Add a task to a phase. Optionally create a linked todo-db task and add inline substeps.',
+    description: 'Add a task to a phase. Set verification_strategy to require independent auditor approval before completion. Optionally create a linked todo-db task and add inline substeps.',
     schema: AddPlanTaskArgsSchema,
     handler: addPlanTask,
   },
   {
     name: 'update_task_progress',
-    description: 'Update task status, PR info, or branch. Auto-completes on pr_merged=true. Returns newly ready tasks. Setting status to "skipped" requires skip_reason and skip_authorization fields. Tasks in gate phases cannot be skipped.',
+    description: 'Update task status, PR info, or branch. Tasks with verification_strategy enter pending_audit instead of completed (auditor must pass them). Use force_complete: true for CTO bypass. Auto-completes on pr_merged=true. Returns newly ready tasks. Setting status to "skipped" requires skip_reason and skip_authorization fields. Tasks in gate phases cannot be skipped.',
     schema: UpdateTaskProgressArgsSchema,
     handler: updateTaskProgress,
   },
@@ -1755,6 +2034,24 @@ const tools: AnyToolHandler[] = [
     description: 'Force-close a plan and cancel all running work. WARNING: Only use when directly asked by the CTO. Returns persistent task IDs that must be separately cancelled via cancel_persistent_task.',
     schema: ForceClosePlanArgsSchema,
     handler: forceClosePlan,
+  },
+  {
+    name: 'check_verification_audit',
+    description: 'Check audit status for a plan task. Returns verdict (pass/fail/pending) and evidence. Use to poll auditor progress after a task enters pending_audit.',
+    schema: CheckVerificationAuditArgsSchema,
+    handler: checkVerificationAudit,
+  },
+  {
+    name: 'verification_audit_pass',
+    description: 'Mark a plan task audit as PASSED. Only called by independent auditor agents. Transitions task from pending_audit to completed and runs phase/plan completion cascade.',
+    schema: VerificationAuditPassArgsSchema,
+    handler: verificationAuditPass,
+  },
+  {
+    name: 'verification_audit_fail',
+    description: 'Mark a plan task audit as FAILED. Only called by independent auditor agents. Transitions task from pending_audit back to in_progress so the plan manager can investigate and retry.',
+    schema: VerificationAuditFailArgsSchema,
+    handler: verificationAuditFail,
   },
 ];
 

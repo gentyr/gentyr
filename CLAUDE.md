@@ -973,11 +973,11 @@ The icon-processor MCP server provides 12 tools for sourcing, downloading, proce
 
 The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`) manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db` and the persistent task system. State is in `.claude/state/plans.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
 
-**18 tools**: `create_plan`, `get_plan`, `list_plans`, `update_plan_status`, `add_phase`, `update_phase`, `add_plan_task`, `update_task_progress`, `link_task`, `add_substeps`, `complete_substep`, `add_dependency`, `get_spawn_ready_tasks`, `plan_dashboard`, `plan_timeline`, `plan_audit`, `plan_sessions`, `force_close_plan`.
+**21 tools**: `create_plan`, `get_plan`, `list_plans`, `update_plan_status`, `add_phase`, `update_phase`, `add_plan_task`, `update_task_progress`, `link_task`, `add_substeps`, `complete_substep`, `add_dependency`, `get_spawn_ready_tasks`, `plan_dashboard`, `plan_timeline`, `plan_audit`, `plan_sessions`, `force_close_plan`, `check_verification_audit`, `verification_audit_pass`, `verification_audit_fail`.
 
 **`force_close_plan`**: CTO-only tool (requires `cto_bypass: true`). Cancels a plan and returns the IDs of linked persistent tasks for separate cancellation. Irreversible.
 
-**6-table SQLite schema**: `plans`, `phases`, `plan_tasks`, `substeps`, `dependencies`, `state_changes`. Cycle detection on dependency graph. Progress rollup from substep → task → phase → plan.
+**7-table SQLite schema**: `plans`, `phases`, `plan_tasks`, `substeps`, `dependencies`, `state_changes`, `plan_audits`. Cycle detection on dependency graph. Progress rollup from substep → task → phase → plan.
 
 **Plan completion gate enforcement**: Multi-layer protection preventing plans from being marked "completed" when verification phases were skipped:
 - **Skip guard**: `update_task_progress` with `status: "skipped"` requires `skip_reason` and `skip_authorization` (`cto`, `blocked_external`, `superseded`). Tasks in gate phases cannot be skipped (server-side rejection).
@@ -985,6 +985,15 @@ The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`)
 - **Phase metadata**: `phases` table has `required` (default 1) and `gate` (default 0) columns. Set `gate: true` on verification/proof phases to block any task skipping. Set `required: false` on optional phases that don't block plan completion.
 - **Stop hook escape hatch**: Plan-managers blocked by external dependencies can pause their persistent task, and the stop hook will allow exit instead of pressuring them to skip tasks.
 - **`update_plan_status` validation**: Transitioning to `completed` requires all phases to be resolved. If any phase is skipped, `force_complete: true` with `completion_note` is required.
+
+**Verification audit gate**: Independent auditor agents verify plan task completion claims before they can be marked complete. Tasks with a `verification_strategy` field (set at creation time via `add_plan_task` or inline in `create_plan`) enter `pending_audit` instead of `completed` when marked done. A Haiku-tier auditor spawns in the `audit` lane (5 concurrent limit, signal-excluded — auditors cannot receive messages from plan managers), verifies the strategy against actual artifacts, and renders a pass/fail verdict via `verification_audit_pass` or `verification_audit_fail`. On pass: task transitions to `completed` and the normal phase/plan cascade runs. On fail: task reverts to `in_progress` for the plan manager to investigate. Tasks without a `verification_strategy` complete directly (backward compatible). CTO bypass: `update_task_progress(status: 'completed', force_complete: true)` skips the audit gate. The `plan-persistent-sync.js` hook also routes through `pending_audit` when `verification_strategy` exists. Stale `pending_audit` tasks (auditor died) can be re-attempted by calling `update_task_progress(status: 'completed')` again or force-completed by the CTO. `plan_audits` table tracks audit history (verdicts, evidence, retry counts).
+
+**3 verification audit tools** (on `plan-orchestrator` server):
+- `check_verification_audit` — read-only poll: returns verdict status (pending/pass/fail), evidence, and attempt number
+- `verification_audit_pass` — auditor-only: marks audit passed, transitions task `pending_audit → completed`, runs cascade
+- `verification_audit_fail` — auditor-only: marks audit failed, transitions task `pending_audit → in_progress`
+
+**Plan audit spawner hook** (`plan-audit-spawner.js`, PostToolUse): Fires on `update_task_progress`. When the response shows `status: 'pending_audit'`, enqueues a Haiku auditor in the `audit` lane with 5-minute TTL. The auditor's prompt includes the task title and `verification_strategy`.
 
 **Plan-persistent task marriage schema**: Plans and persistent tasks are linked at two levels. The `plans` table carries `persistent_task_id` (the plan manager's own persistent task), `manager_agent_id`, `manager_pid`, `manager_session_id`, and `last_heartbeat`. The `plan_tasks` table carries `persistent_task_id` (the persistent task executing that plan step) and `category_id`. Plan status now includes `cancelled` in addition to `draft`, `active`, `paused`, `completed`, and `archived`. `add_plan_task` accepts an optional `category_id` for routing.
 
@@ -998,12 +1007,13 @@ The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`)
 
 **Plan-manager env var preservation on revival**: When a plan-manager monitor crashes or is resumed, all revival/spawn paths extract `plan_id` from the persistent task's `metadata` JSON and inject `GENTYR_PLAN_MANAGER=true` and `GENTYR_PLAN_ID` into the session's environment. This is applied in: `requeueDeadPersistentMonitor()` (session-queue.js), `buildPersistentMonitorRevivalPrompt()` (persistent-monitor-revival-prompt.js), `persistent-task-spawner.js` (resume/amend hook), and `reviveOrphanedPlan()` (hourly-automation.js). The revival prompt also includes plan-manager role context so the revived monitor knows it must follow plan-manager agent instructions. The `stop-continue-hook.js` plan completion gate reads `GENTYR_PLAN_MANAGER` and `GENTYR_PLAN_ID` to verify plan completion before allowing the monitor to stop.
 
-**5 hooks registered in `settings.json.template`**:
+**6 hooks registered in `settings.json.template`**:
 - `plan-briefing.js` (SessionStart) — briefs the active session on current plan state
 - `plan-work-tracker.js` (PostToolUse `summarize_work`) — records agent work against plan tasks
 - `plan-merge-tracker.js` (PostToolUse Bash) — detects PR merges and auto-completes plan tasks
-- `plan-persistent-sync.js` (PostToolUse) — syncs persistent task completion back to the linked plan task
+- `plan-persistent-sync.js` (PostToolUse) — syncs persistent task completion back to the linked plan task; routes through `pending_audit` when `verification_strategy` exists
 - `plan-activation-spawner.js` (PostToolUse) — spawns plan-manager persistent task on plan activation
+- `plan-audit-spawner.js` (PostToolUse `update_task_progress`) — spawns independent auditor on `pending_audit` status
 
 **5 slash commands**: `/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`, `/plan-sessions`.
 
@@ -1018,6 +1028,8 @@ All 4 hooks are in the `criticalHooks` list in `cli/commands/protect.js` and are
 **Plan task granularity rule**: Each plan task must represent a persistent-task-grade objective — work requiring multiple sessions. If a task can be completed by a single category sequence (one task-runner session), it should be a substep inside a plan task, NOT a standalone plan task.
 
 **`plan-updater` agent** (`agents/plan-updater.md`): Haiku-tier lightweight sync agent. Given a `plan_task_id` and `plan_id`, reads completed standalone tasks for the linked persistent task, maps them to plan substeps by title/description matching, calls `complete_substep` for each match, and updates plan task progress. Completes in under 30 seconds. Does not create tasks or edit files.
+
+**`plan-auditor` agent** (`agents/plan-auditor.md`): Haiku-tier independent verification agent. Spawned automatically when a plan task with `verification_strategy` enters `pending_audit`. Verifies completion claims against actual artifacts (files, test output, PR status, directory contents). Renders exactly one verdict via `verification_audit_pass` or `verification_audit_fail`, then exits. Runs in the `audit` lane — cannot receive signals or messages from the plan manager. 5-minute TTL. Does not edit files or create tasks.
 
 ## CTO Dashboard Development
 
@@ -1045,8 +1057,8 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 70 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
-| 2. Agent Definitions | 18 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
+| 1. Hooks | 71 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 2. Agent Definitions | 19 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
@@ -1086,7 +1098,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
 | protected-action-gate.js | `mcp__*` | Block protected MCP actions without approval |
 
-#### PostToolUse (29 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (30 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1115,6 +1127,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | persistent-task-spawner.js | `activate/resume/amend/pause/cancel_persistent_task` | Spawn/stop persistent monitors |
 | plan-persistent-sync.js | `complete_persistent_task` | Sync completion to plan tasks |
 | plan-activation-spawner.js | `update_plan_status` | Spawn plan manager on plan activation |
+| plan-audit-spawner.js | `update_task_progress` | Spawn independent auditor on pending_audit |
 | screenshot-reminder.js | `""` (all) | Remind agents to Read screenshot paths in tool responses |
 
 #### SessionStart (9 hooks — set initial context)
@@ -1174,7 +1187,7 @@ Key modules consumed by hooks:
 - `spawn-env.js` — Environment variable injection for spawned agents
 - `feature-branch-helper.js` — Branch naming and detection
 
-### Agent Definitions (18 shared)
+### Agent Definitions (19 shared)
 
 | Agent | Model | Purpose | Key Constraints |
 |-------|-------|---------|----------------|
@@ -1188,6 +1201,7 @@ Key modules consumed by hooks:
 | persistent-monitor | opus | Long-running orchestrator | Never edits files, spawns sub-agents via create_task |
 | plan-manager | opus | Plan execution | Spawns persistent tasks for plan steps |
 | plan-updater | haiku | Sync plan substeps | Lightweight, completes in <30s |
+| plan-auditor | haiku | Verify plan task completion | Independent, 5-min TTL, audit lane |
 | demo-manager | sonnet | Demo lifecycle | Only agent that creates/modifies .demo.ts files |
 | feedback-agent | sonnet | User persona testing | No source code access |
 | product-manager | opus | PMF analysis | External research only |

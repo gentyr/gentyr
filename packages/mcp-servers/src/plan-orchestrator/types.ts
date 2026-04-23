@@ -17,7 +17,7 @@ export type PlanStatus = (typeof PLAN_STATUS)[number];
 export const PHASE_STATUS = ['pending', 'in_progress', 'completed', 'skipped'] as const;
 export type PhaseStatus = (typeof PHASE_STATUS)[number];
 
-export const TASK_STATUS = ['pending', 'blocked', 'ready', 'in_progress', 'completed', 'skipped'] as const;
+export const TASK_STATUS = ['pending', 'blocked', 'ready', 'in_progress', 'pending_audit', 'completed', 'skipped'] as const;
 export type TaskStatus = (typeof TASK_STATUS)[number];
 
 export const ENTITY_TYPES = ['plan', 'phase', 'task', 'substep'] as const;
@@ -41,6 +41,7 @@ const InlineTaskSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().optional(),
   agent_type: z.string().optional(),
+  verification_strategy: z.string().optional(),
   substeps: z.array(InlineSubstepSchema).optional(),
 });
 
@@ -108,6 +109,8 @@ export const AddPlanTaskArgsSchema = z.object({
   agent_type: z.string().optional().describe('Agent type for spawning'),
   category_id: z.string().optional()
     .describe('Category ID for this task. Determines the agent workflow sequence when spawned.'),
+  verification_strategy: z.string().optional()
+    .describe('Concrete verification criteria for independent audit. E.g. "Run pytest and verify 250/250 pass", "Verify PR #N merged to preview", "Check generated/ has 250 directories". Tasks with this field require auditor approval before completing.'),
   blocked_by: z.array(z.string()).optional().describe('Task IDs that must complete first'),
   create_todo: z.coerce.boolean().optional().default(false).describe('Also create a linked todo-db task'),
   todo_section: z.string().optional().default('GENERAL').describe('Section for todo-db task'),
@@ -123,6 +126,8 @@ export const UpdateTaskProgressArgsSchema = z.object({
   pr_merged: z.coerce.boolean().optional().describe('Whether PR has been merged'),
   branch_name: z.string().optional().describe('Git branch name'),
   persistent_task_id: z.string().optional().describe('Persistent task UUID executing this plan task — links the plan step to its persistent task'),
+  force_complete: z.boolean().optional()
+    .describe('CTO bypass: skip audit gate and mark task directly completed. Only valid when status is "completed".'),
 }).refine(
   (data) => {
     if (data.status === 'skipped') {
@@ -195,6 +200,9 @@ export type GetSpawnReadyTasksArgs = z.infer<typeof GetSpawnReadyTasksArgsSchema
 export type PlanDashboardArgs = z.infer<typeof PlanDashboardArgsSchema>;
 export type PlanTimelineArgs = z.infer<typeof PlanTimelineArgsSchema>;
 export type PlanAuditArgs = z.infer<typeof PlanAuditArgsSchema>;
+export type CheckVerificationAuditArgs = z.infer<typeof CheckVerificationAuditArgsSchema>;
+export type VerificationAuditPassArgs = z.infer<typeof VerificationAuditPassArgsSchema>;
+export type VerificationAuditFailArgs = z.infer<typeof VerificationAuditFailArgsSchema>;
 
 // ============================================================================
 // Record Types (SQLite rows)
@@ -252,8 +260,23 @@ export interface PlanTaskRecord {
   started_at: string | null;
   completed_at: string | null;
   metadata: string | null;
+  verification_strategy: string | null;
   persistent_task_id: string | null;
   category_id: string | null;
+}
+
+export interface PlanAuditRecord {
+  id: string;
+  task_id: string;
+  plan_id: string;
+  verification_strategy: string;
+  verdict: string | null;
+  evidence: string | null;
+  failure_reason: string | null;
+  auditor_agent_id: string | null;
+  requested_at: string;
+  completed_at: string | null;
+  attempt_number: number;
 }
 
 export interface SubstepRecord {
@@ -292,6 +315,22 @@ export const PlanSessionsArgsSchema = z.object({
   hours: z.coerce.number().optional().default(24).describe('Hours of history'),
 });
 export type PlanSessionsArgs = z.infer<typeof PlanSessionsArgsSchema>;
+
+// Verification Audit
+export const CheckVerificationAuditArgsSchema = z.object({
+  task_id: z.string().describe('Plan task UUID to check audit status for'),
+});
+
+export const VerificationAuditPassArgsSchema = z.object({
+  task_id: z.string().describe('Plan task UUID'),
+  evidence: z.string().describe('What was verified and what was found — must include concrete data (counts, file paths, test output)'),
+});
+
+export const VerificationAuditFailArgsSchema = z.object({
+  task_id: z.string().describe('Plan task UUID'),
+  failure_reason: z.string().describe('Why the verification failed'),
+  evidence: z.string().optional().describe('What was found during verification'),
+});
 
 // Force-close plan
 export const ForceClosePlanArgsSchema = z.object({

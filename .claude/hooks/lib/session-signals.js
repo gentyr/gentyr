@@ -421,7 +421,7 @@ export function broadcastSignal({ fromAgentId, fromAgentType, fromTaskTitle, tie
   let runningAgents;
   try {
     runningAgents = db.prepare(
-      "SELECT agent_id, agent_type, title FROM queue_items WHERE status = 'running' AND lane != 'gate'"
+      "SELECT agent_id, agent_type, title FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'audit')"
     ).all();
   } finally {
     try { db.close(); } catch (_) { /* best-effort */ }

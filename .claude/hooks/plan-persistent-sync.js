@@ -114,82 +114,151 @@ async function main() {
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 3000');
 
-    const planTask = db.prepare('SELECT status, phase_id FROM plan_tasks WHERE id = ?').get(planTaskId);
-    if (!planTask || planTask.status === 'completed') {
+    const planTask = db.prepare('SELECT status, phase_id, verification_strategy, title FROM plan_tasks WHERE id = ?').get(planTaskId);
+    if (!planTask || planTask.status === 'completed' || planTask.status === 'pending_audit') {
       db.close();
       process.stdout.write(NOOP);
       return;
     }
 
     const now = new Date().toISOString();
-
-    // Mark plan task completed
-    db.prepare(
-      "UPDATE plan_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
-    ).run(now, now, planTaskId);
-
-    // Record state change
-    db.prepare(
-      "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'task', ?, 'status', ?, 'completed', ?, 'plan-persistent-sync')"
-    ).run(randomUUID(), planTaskId, planTask.status, now);
-
-    // Check if phase should auto-complete (or auto-skip)
-    const allTasks = db.prepare('SELECT status FROM plan_tasks WHERE phase_id = ?')
-      .all(planTask.phase_id);
-    const allTasksResolved = allTasks.every(t => t.status === 'completed' || t.status === 'skipped');
-
     let phaseCompleted = false;
-    if (allTasksResolved) {
-      const phase = db.prepare('SELECT status FROM phases WHERE id = ?').get(planTask.phase_id);
-      if (phase && phase.status !== 'completed' && phase.status !== 'skipped') {
-        const hasAnyCompleted = allTasks.some(t => t.status === 'completed');
-        if (hasAnyCompleted) {
-          // At least one task genuinely completed — phase is completed
-          db.prepare(
-            "UPDATE phases SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
-          ).run(now, now, planTask.phase_id);
-          db.prepare(
-            "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'phase', ?, 'status', ?, 'completed', ?, 'plan-persistent-sync')"
-          ).run(randomUUID(), planTask.phase_id, phase.status, now);
-          phaseCompleted = true;
-        } else {
-          // ALL tasks were skipped — phase becomes skipped, not completed
-          db.prepare(
-            "UPDATE phases SET status = 'skipped', updated_at = ? WHERE id = ?"
-          ).run(now, planTask.phase_id);
-          db.prepare(
-            "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'phase', ?, 'status', ?, 'skipped', ?, 'plan-persistent-sync')"
-          ).run(randomUUID(), planTask.phase_id, phase.status, now);
+    let planCompleted = false;
+
+    if (planTask.verification_strategy) {
+      // Route through audit gate — set pending_audit instead of completed
+      db.prepare(
+        "UPDATE plan_tasks SET status = 'pending_audit', updated_at = ? WHERE id = ?"
+      ).run(now, planTaskId);
+
+      db.prepare(
+        "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'task', ?, 'status', ?, 'pending_audit', ?, 'plan-persistent-sync')"
+      ).run(randomUUID(), planTaskId, planTask.status, now);
+
+      // Create audit record
+      const auditId = randomUUID();
+      // Ensure plan_audits table exists (may not on first run after upgrade)
+      db.exec(`CREATE TABLE IF NOT EXISTS plan_audits (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+        verification_strategy TEXT NOT NULL, verdict TEXT, evidence TEXT,
+        failure_reason TEXT, auditor_agent_id TEXT, requested_at TEXT NOT NULL,
+        completed_at TEXT, attempt_number INTEGER NOT NULL DEFAULT 1,
+        CONSTRAINT valid_audit_verdict CHECK (verdict IS NULL OR verdict IN ('pass','fail'))
+      )`);
+      const attemptNum = (db.prepare('SELECT COUNT(*) as c FROM plan_audits WHERE task_id = ?')
+        .get(planTaskId)?.c || 0) + 1;
+      db.prepare(
+        'INSERT INTO plan_audits (id, task_id, plan_id, verification_strategy, requested_at, attempt_number) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(auditId, planTaskId, planId, planTask.verification_strategy, now, attemptNum);
+
+      db.close();
+
+      // Spawn auditor inline (same logic as plan-audit-spawner.js)
+      try {
+        const { enqueueSession } = await import('./lib/session-queue.js');
+        const { AGENT_TYPES, HOOK_TYPES } = await import('./agent-tracker.js');
+
+        enqueueSession({
+          title: `Plan audit: ${planTask.title || planTaskId}`,
+          agentType: AGENT_TYPES.PLAN_AUDITOR,
+          hookType: HOOK_TYPES.PLAN_AUDITOR,
+          tagContext: 'plan-auditor',
+          source: 'plan-persistent-sync',
+          model: 'claude-haiku-4-5-20251001',
+          agent: 'plan-auditor',
+          lane: 'audit',
+          priority: 'normal',
+          ttlMs: 5 * 60 * 1000,
+          projectDir: PROJECT_DIR,
+          metadata: { taskId: planTaskId, planId },
+          buildPrompt: (agentId) => {
+            return `[Automation][plan-auditor][AGENT:${agentId}] Audit plan task ${planTaskId}.
+
+## Task
+"${planTask.title || planTaskId}"
+
+## Verification Strategy
+${planTask.verification_strategy}
+
+## Your Job
+You are an INDEPENDENT auditor. Verify the verification strategy against actual artifacts.
+Do NOT trust the agent's claims — check actual files, test results, PR status, directory contents, etc.
+
+## Verdict (pick ONE, then exit immediately)
+- PASS: mcp__plan-orchestrator__verification_audit_pass({ task_id: "${planTaskId}", evidence: "<what you found>" })
+- FAIL: mcp__plan-orchestrator__verification_audit_fail({ task_id: "${planTaskId}", failure_reason: "<why>", evidence: "<what you found>" })
+
+You have 5 minutes. Be efficient.`;
+          },
+        });
+      } catch (err) {
+        process.stderr.write(`[plan-persistent-sync] Warning: could not enqueue auditor: ${err.message}\n`);
+      }
+
+      // pending_audit blocks cascade — skip phase/plan auto-completion
+    } else {
+      // No verification strategy — complete directly (existing behavior)
+      db.prepare(
+        "UPDATE plan_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
+      ).run(now, now, planTaskId);
+
+      db.prepare(
+        "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'task', ?, 'status', ?, 'completed', ?, 'plan-persistent-sync')"
+      ).run(randomUUID(), planTaskId, planTask.status, now);
+
+      // Check if phase should auto-complete (or auto-skip)
+      const allTasks = db.prepare('SELECT status FROM plan_tasks WHERE phase_id = ?')
+        .all(planTask.phase_id);
+      const allTasksResolved = allTasks.every(t => t.status === 'completed' || t.status === 'skipped');
+
+      if (allTasksResolved) {
+        const phase = db.prepare('SELECT status FROM phases WHERE id = ?').get(planTask.phase_id);
+        if (phase && phase.status !== 'completed' && phase.status !== 'skipped') {
+          const hasAnyCompleted = allTasks.some(t => t.status === 'completed');
+          if (hasAnyCompleted) {
+            db.prepare(
+              "UPDATE phases SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
+            ).run(now, now, planTask.phase_id);
+            db.prepare(
+              "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'phase', ?, 'status', ?, 'completed', ?, 'plan-persistent-sync')"
+            ).run(randomUUID(), planTask.phase_id, phase.status, now);
+            phaseCompleted = true;
+          } else {
+            db.prepare(
+              "UPDATE phases SET status = 'skipped', updated_at = ? WHERE id = ?"
+            ).run(now, planTask.phase_id);
+            db.prepare(
+              "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'phase', ?, 'status', ?, 'skipped', ?, 'plan-persistent-sync')"
+            ).run(randomUUID(), planTask.phase_id, phase.status, now);
+          }
         }
       }
-    }
 
-    // Check if plan should auto-complete
-    // Only auto-complete if ALL phases are completed (no skipped required phases)
-    const allPhases = db.prepare('SELECT status, required FROM phases WHERE plan_id = ?').all(planId);
-    const allPhasesResolved = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
-    const anyRequiredSkipped = allPhases.some(p => p.status === 'skipped' && p.required);
+      // Check if plan should auto-complete
+      const allPhases = db.prepare('SELECT status, required FROM phases WHERE plan_id = ?').all(planId);
+      const allPhasesResolved = allPhases.every(p => p.status === 'completed' || p.status === 'skipped');
+      const anyRequiredSkipped = allPhases.some(p => p.status === 'skipped' && p.required);
 
-    let planCompleted = false;
-    if (allPhasesResolved && !anyRequiredSkipped) {
-      const plan = db.prepare('SELECT status FROM plans WHERE id = ?').get(planId);
-      if (plan && plan.status === 'active') {
-        db.prepare(
-          "UPDATE plans SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
-        ).run(now, now, planId);
-        db.prepare(
-          "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'plan', ?, 'status', 'active', 'completed', ?, 'plan-persistent-sync')"
-        ).run(randomUUID(), planId, now);
-        planCompleted = true;
+      if (allPhasesResolved && !anyRequiredSkipped) {
+        const plan = db.prepare('SELECT status FROM plans WHERE id = ?').get(planId);
+        if (plan && plan.status === 'active') {
+          db.prepare(
+            "UPDATE plans SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
+          ).run(now, now, planId);
+          db.prepare(
+            "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'plan', ?, 'status', 'active', 'completed', ?, 'plan-persistent-sync')"
+          ).run(randomUUID(), planId, now);
+          planCompleted = true;
+        }
       }
-    }
 
-    db.close();
+      db.close();
+    }
 
     // Audit trail for plan lifecycle events
     try {
       const { auditEvent } = await import('./lib/session-audit.js');
-      auditEvent('plan_task_completed', {
+      auditEvent(planTask.verification_strategy ? 'plan_task_pending_audit' : 'plan_task_completed', {
         plan_id: planId,
         plan_task_id: planTaskId,
         trigger: 'persistent_task_complete',
@@ -211,7 +280,9 @@ async function main() {
     } catch (_) { /* non-fatal */ }
 
     const details = [
-      `Persistent task ${persistentTaskId} completion synced to plan task ${planTaskId}.`,
+      planTask.verification_strategy
+        ? `Persistent task ${persistentTaskId} completion routed plan task ${planTaskId} to pending_audit.`
+        : `Persistent task ${persistentTaskId} completion synced to plan task ${planTaskId}.`,
       phaseCompleted ? 'Phase auto-completed.' : '',
       planCompleted ? 'Plan auto-completed!' : '',
     ].filter(Boolean).join(' ');

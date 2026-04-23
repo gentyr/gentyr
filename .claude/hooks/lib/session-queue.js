@@ -44,6 +44,7 @@ const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.j
 
 // Lane sub-limits
 const GATE_LANE_LIMIT = 5;
+const AUDIT_LANE_LIMIT = 5;
 
 /**
  * Parse a SQLite datetime string as UTC.
@@ -442,7 +443,7 @@ export function enqueueSession(spec) {
   if (isFocusModeEnabled()) {
     const allowed =
       spec.priority === 'cto' || spec.priority === 'critical' ||
-      spec.lane === 'persistent' || spec.lane === 'gate' || spec.lane === 'revival' ||
+      spec.lane === 'persistent' || spec.lane === 'gate' || spec.lane === 'audit' || spec.lane === 'revival' ||
       spec.source === 'force-spawn-tasks' ||
       spec.source === 'persistent-task-spawner' ||
       spec.source === 'stop-continue-hook' ||
@@ -1000,8 +1001,9 @@ export function drainQueue() {
   } catch (_) { /* non-fatal — port allocator may not be available */ }
 
   // Step 3: Count running items by lane (suspended items do NOT count toward capacity)
-  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')").get().cnt;
+  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent', 'audit')").get().cnt;
   const gateRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'gate'").get().cnt;
+  const auditRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'audit'").get().cnt;
   const maxConcurrent = getMaxConcurrentSessions();
   const reservedSlots = getReservedSlots();
 
@@ -1023,6 +1025,7 @@ export function drainQueue() {
   // Track spawns per lane this drain cycle to avoid stale counter bugs
   let standardSpawnedThisDrain = 0;
   let gateSpawnedThisDrain = 0;
+  let auditSpawnedThisDrain = 0;
   let persistentSpawnedThisDrain = 0;
 
   for (const item of queued) {
@@ -1032,6 +1035,11 @@ export function drainQueue() {
       // Gate lane has its own sub-limit (tracked separately from main capacity)
       if (gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
         continue; // Skip, gate full
+      }
+    } else if (item.lane === 'audit') {
+      // Audit lane has its own sub-limit (independent auditors, signal-excluded)
+      if (auditRunning + auditSpawnedThisDrain >= AUDIT_LANE_LIMIT) {
+        continue; // Skip, audit full
       }
     } else {
       // Standard + revival lanes share the main limit (gate and persistent spawns don't consume it)
@@ -1116,6 +1124,8 @@ export function drainQueue() {
       result.spawned++;
       if (item.lane === 'gate') {
         gateSpawnedThisDrain++;
+      } else if (item.lane === 'audit') {
+        auditSpawnedThisDrain++;
       } else if (item.lane === 'persistent') {
         persistentSpawnedThisDrain++;
       } else {
