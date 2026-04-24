@@ -772,7 +772,9 @@ function getTaskProgressPct(db: Database.Database, taskId: string): number {
     const total = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ?').get(taskId) as { c: number }).c;
     if (total === 0) {
       const task = db.prepare('SELECT status FROM plan_tasks WHERE id = ?').get(taskId) as { status: string } | undefined;
-      return task?.status === 'completed' ? 100 : 0;
+      if (task?.status === 'completed' || task?.status === 'skipped') return 100;
+      if (task?.status === 'pending_audit') return 95;
+      return 0;
     }
     const completed = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ? AND completed = 1').get(taskId) as { c: number }).c;
     return Math.round((completed / total) * 100);
@@ -835,10 +837,10 @@ export function readPage3Data(selectedPlanId?: string | null): Page3Data {
 
       const phases: PlanPhaseItem[] = phaseRows.map(ph => {
         const taskRows = db!.prepare(
-          'SELECT id, title, status, agent_type, category_id, pr_number, pr_merged, persistent_task_id FROM plan_tasks WHERE phase_id = ? ORDER BY task_order'
+          'SELECT id, title, status, agent_type, category_id, pr_number, pr_merged, persistent_task_id, verification_strategy FROM plan_tasks WHERE phase_id = ? ORDER BY task_order'
         ).all(ph.id) as Array<{
           id: string; title: string; status: string; agent_type: string | null; category_id: string | null;
-          pr_number: number | null; pr_merged: number; persistent_task_id: string | null;
+          pr_number: number | null; pr_merged: number; persistent_task_id: string | null; verification_strategy: string | null;
         }>;
 
         const tasks: PlanTaskItem[] = taskRows.map(t => {
@@ -857,6 +859,42 @@ export function readPage3Data(selectedPlanId?: string | null): Page3Data {
           const blockedBy = depRows.map(r => r.title);
 
           const completedSubsteps = substeps.filter(s => s.completed).length;
+
+          // Audit info (latest audit record for this task)
+          let auditInfo: import('./types.js').PlanAuditInfo | null = null;
+          if (t.verification_strategy) {
+            try {
+              const auditRow = db!.prepare(
+                'SELECT verdict, evidence, failure_reason, attempt_number, requested_at, completed_at FROM plan_audits WHERE task_id = ? ORDER BY attempt_number DESC LIMIT 1'
+              ).get(t.id) as {
+                verdict: string | null; evidence: string | null; failure_reason: string | null;
+                attempt_number: number; requested_at: string; completed_at: string | null;
+              } | undefined;
+              if (auditRow) {
+                auditInfo = {
+                  verdict: auditRow.verdict as 'pass' | 'fail' | null,
+                  evidence: auditRow.evidence,
+                  failureReason: auditRow.failure_reason,
+                  attemptNumber: auditRow.attempt_number,
+                  requestedAt: auditRow.requested_at,
+                  completedAt: auditRow.completed_at,
+                  verificationStrategy: t.verification_strategy,
+                };
+              } else if (t.status === 'pending_audit' || t.status === 'completed') {
+                // Task has verification_strategy but no audit row yet
+                auditInfo = {
+                  verdict: null,
+                  evidence: null,
+                  failureReason: null,
+                  attemptNumber: 0,
+                  requestedAt: '',
+                  completedAt: null,
+                  verificationStrategy: t.verification_strategy,
+                };
+              }
+            } catch { /* plan_audits table may not exist yet */ }
+          }
+
           return {
             id: t.id, title: t.title, status: t.status,
             agentType: t.agent_type, categoryId: t.category_id,
@@ -866,6 +904,7 @@ export function readPage3Data(selectedPlanId?: string | null): Page3Data {
             substepProgress: substeps.length > 0 ? `${completedSubsteps}/${substeps.length}` : '',
             progressPct: getTaskProgressPct(db!, t.id),
             blockedBy,
+            auditInfo,
           };
         });
 

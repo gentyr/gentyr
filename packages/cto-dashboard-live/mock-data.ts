@@ -109,16 +109,19 @@ const mockTasksPhase1: PlanTaskItem[] = [
     id: 'pt-task-a', title: 'Configure AWS regions', status: 'completed',
     agentType: 'code-writer', categoryId: null, prNumber: 42, prMerged: true,
     persistentTaskId: null, substeps: mockSubstepsA, substepProgress: '3/3', progressPct: 100, blockedBy: [],
+    auditInfo: { verdict: 'pass', evidence: 'All 3 VPCs confirmed in us-east-1, eu-west-1, ap-southeast-1. Security groups verified.', failureReason: null, attemptNumber: 1, requestedAt: ago(60), completedAt: ago(55), verificationStrategy: 'Verify VPCs exist in all 3 regions via AWS CLI' },
   },
   {
-    id: 'pt-task-b', title: 'Deploy base CloudFormation templates', status: 'in_progress',
-    agentType: 'code-writer', categoryId: null, prNumber: null, prMerged: false,
-    persistentTaskId: 'mock-persistent-1', substeps: mockSubstepsB, substepProgress: '2/5', progressPct: 40, blockedBy: [],
+    id: 'pt-task-b', title: 'Deploy base CloudFormation templates', status: 'pending_audit',
+    agentType: 'code-writer', categoryId: null, prNumber: 53, prMerged: true,
+    persistentTaskId: 'mock-persistent-1', substeps: mockSubstepsB, substepProgress: '2/5', progressPct: 95, blockedBy: [],
+    auditInfo: { verdict: null, evidence: null, failureReason: null, attemptNumber: 1, requestedAt: ago(3), completedAt: null, verificationStrategy: 'Run cfn-lint on all templates and verify staging stack outputs match expected values' },
   },
   {
     id: 'pt-task-c', title: 'Setup monitoring and alerting', status: 'pending',
     agentType: null, categoryId: null, prNumber: null, prMerged: false,
     persistentTaskId: null, substeps: mockSubstepsC, substepProgress: '0/4', progressPct: 0, blockedBy: [],
+    auditInfo: null,
   },
 ];
 
@@ -127,18 +130,21 @@ const mockTasksPhase2: PlanTaskItem[] = [
     id: 'pt-task-d', title: 'Plan migration strategy', status: 'ready',
     agentType: null, categoryId: null, prNumber: null, prMerged: false,
     persistentTaskId: null, substeps: mockSubstepsD, substepProgress: '0/3', progressPct: 0, blockedBy: [],
+    auditInfo: null,
   },
   {
     id: 'pt-task-e', title: 'Execute data migration', status: 'blocked',
     agentType: null, categoryId: null, prNumber: null, prMerged: false,
     persistentTaskId: null, substeps: [], substepProgress: '0/0', progressPct: 0,
     blockedBy: ['Plan migration strategy'],
+    auditInfo: null,
   },
   {
     id: 'pt-task-f', title: 'Validate migrated data', status: 'pending',
     agentType: null, categoryId: null, prNumber: null, prMerged: false,
     persistentTaskId: null, substeps: [], substepProgress: '0/0', progressPct: 0,
     blockedBy: ['Execute data migration'],
+    auditInfo: { verdict: 'fail', evidence: 'Only 180/250 rows migrated. Missing foreign key constraints on user_sessions table.', failureReason: 'Row count mismatch: expected 250, found 180', attemptNumber: 2, requestedAt: ago(90), completedAt: ago(85), verificationStrategy: 'Verify all 250 rows migrated with FK constraints intact' },
   },
 ];
 
@@ -147,6 +153,7 @@ const mockTasksPhase3: PlanTaskItem[] = [
     id: 'pt-task-g', title: 'Smoke test production', status: 'pending',
     agentType: null, categoryId: null, prNumber: null, prMerged: false,
     persistentTaskId: null, substeps: [], substepProgress: '0/0', progressPct: 0, blockedBy: [],
+    auditInfo: null,
   },
 ];
 
