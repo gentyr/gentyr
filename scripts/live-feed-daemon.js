@@ -41,15 +41,13 @@ const POLL_INTERVAL_MS = 60_000; // 60 seconds
 const MAX_ENTRIES = 500;         // prune old entries beyond this
 const LLM_MODEL = 'haiku';
 
-const SYSTEM_PROMPT = `You produce one entry for a continuously scrolling live ticker feed. You are called every 60 seconds to write the NEXT ticker entry. You are NOT completing a task — you are adding one more update to an infinite feed. NEVER say "done", "no further work", "task complete", "I'll stop", or anything suggesting you are finished. There is always a next update.
+const SYSTEM_PROMPT = `You produce one ticker entry. Output ONLY the entry text — nothing else. No preamble, no explanation, no meta-commentary about your process.
 
-Rules:
-- Write EXACTLY 2-3 sentences for this ticker entry.
-- Give a bird's-eye snapshot: how many agents active, what they're each doing (one phrase per agent), notable progress or blockers.
-- NEVER use first person. Neutral third-person narrator.
-- NEVER quote agent output verbatim. Summarize at a high level.
-- Present tense only.
-- If previous entries covered the same state, note what changed or say "System state unchanged" in one sentence.`;
+FORBIDDEN phrases (will break the feed): "No additional investigation", "I've completed", "I'll stop", "task complete", "no further work", "investigation needed", any first-person language.
+
+Format: 2-3 plain text sentences. No markdown. No asterisks. No bold. No bullets. No timestamps.
+
+Content: Bird's-eye snapshot of agent activity. How many agents running, what each does (one phrase per agent), any blockers or progress.`;
 
 // ============================================================================
 // Logging
