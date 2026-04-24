@@ -22,6 +22,7 @@ export const INFRA_CRED_KEYS = new Set([
   'VERCEL_TEAM_ID',
   'GH_TOKEN',
   'GITHUB_TOKEN',
+  'FLY_API_TOKEN',
 ]);
 
 /**

@@ -1,0 +1,18 @@
+app = '{{APP_NAME}}'
+primary_region = '{{REGION}}'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[mounts]
+  source = 'playwright_cache'
+  destination = '/cache'
+  initial_size = '5gb'
+
+[vm]
+  size = '{{MACHINE_SIZE}}'
+  memory = '{{MACHINE_RAM}}'
+  cpus = 2
+
+# Machines are ephemeral — auto-stop when process exits
+# No services/ports exposed — this is a batch runner, not a web server

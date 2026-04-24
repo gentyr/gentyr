@@ -4141,6 +4141,112 @@ async function main() {
   });
 
   // =========================================================================
+  // FLY.IO STALE MACHINE CLEANUP (15min cooldown)
+  // Kills Fly.io machines that have been running > 30 minutes (stuck).
+  // Gate-exempt: cleanup is best-effort and does not require CTO activity.
+  // =========================================================================
+  await runIfDue('fly_stale_machine_cleanup', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastFlyStaleCleanup',
+    label: 'Fly.io stale machine cleanup',
+    fn: async () => {
+      const services = readServiceConfig();
+      if (!services) return;
+      if (!services.fly || services.fly.enabled === false || !services.fly.appName || !services.fly.apiToken) return;
+
+      // Resolve API token — may be an op:// reference or a plain value
+      let apiToken;
+      const rawToken = services.fly.apiToken;
+      if (typeof rawToken === 'string' && rawToken.startsWith('op://')) {
+        try {
+          apiToken = execFileSync('op', ['read', rawToken, '--no-newline'], {
+            encoding: 'utf-8',
+            timeout: 10000,
+            stdio: ['pipe', 'pipe', 'pipe'],
+          }).trim();
+        } catch {
+          log('Fly.io stale machine cleanup: could not resolve API token — skipping.');
+          return;
+        }
+      } else if (typeof rawToken === 'string' && rawToken.length > 0) {
+        apiToken = rawToken;
+      }
+
+      if (!apiToken) {
+        log('Fly.io stale machine cleanup: API token empty — skipping.');
+        return;
+      }
+
+      const MAX_RUNTIME_MINUTES = 30;
+      const API_BASE = 'https://api.machines.dev/v1';
+      const headers = { 'Authorization': `Bearer ${apiToken}`, 'Content-Type': 'application/json' };
+
+      // List all machines in the app
+      let machines;
+      try {
+        const listResponse = await fetch(`${API_BASE}/apps/${services.fly.appName}/machines`, {
+          headers,
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!listResponse.ok) {
+          log(`Fly.io stale machine cleanup: list machines failed (HTTP ${listResponse.status}) — skipping.`);
+          return;
+        }
+        machines = await listResponse.json();
+      } catch (err) {
+        log(`Fly.io stale machine cleanup: failed to list machines: ${err.message || err}`);
+        return;
+      }
+
+      if (!Array.isArray(machines) || machines.length === 0) return;
+
+      const now2 = Date.now();
+      let cleaned = 0;
+
+      for (const machine of machines) {
+        if (machine.state !== 'started' && machine.state !== 'starting') continue;
+
+        const createdAt = new Date(machine.created_at).getTime();
+        if (isNaN(createdAt)) continue;
+
+        const ageMinutes = (now2 - createdAt) / 60000;
+        if (ageMinutes <= MAX_RUNTIME_MINUTES) continue;
+
+        try {
+          // Stop the machine gracefully
+          await fetch(`${API_BASE}/apps/${services.fly.appName}/machines/${machine.id}/stop`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ signal: 'SIGTERM' }),
+            signal: AbortSignal.timeout(10000),
+          });
+
+          // Brief wait for graceful stop before deletion
+          await new Promise(r => setTimeout(r, 5000));
+
+          // Destroy the machine
+          await fetch(`${API_BASE}/apps/${services.fly.appName}/machines/${machine.id}`, {
+            method: 'DELETE',
+            headers,
+            signal: AbortSignal.timeout(10000),
+          });
+
+          cleaned++;
+          log(`Fly.io stale machine cleanup: destroyed machine ${machine.id} (${Math.round(ageMinutes)} min old).`);
+        } catch (err) {
+          log(`Fly.io stale machine cleanup: failed to destroy machine ${machine.id}: ${err.message || err}`);
+        }
+      }
+
+      if (cleaned > 0) {
+        log(`Fly.io stale machine cleanup: removed ${cleaned} stale machine(s).`);
+      } else {
+        log('Fly.io stale machine cleanup: no stale machines found.');
+      }
+    },
+  });
+
+  // =========================================================================
   // STALE WORK DETECTOR (24h cooldown)
   // Reports uncommitted changes, unpushed branches, and stale feature branches
   // =========================================================================

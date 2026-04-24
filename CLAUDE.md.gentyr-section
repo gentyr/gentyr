@@ -160,6 +160,33 @@ Project-level env overrides (e.g., skip rebuilds) can be declared in `.claude/co
 
 **Use `/demo` for interactive demos** — runs preflight automatically.
 
+### Remote Playwright Execution (Fly.io)
+
+When Fly.io is configured (`fly` section in `services.json`), headless demos automatically run on ephemeral Fly.io machines instead of locally. This eliminates display lock contention — the #1 cause of demo agent deadlock.
+
+**Setup**: `/setup-fly` slash command guides through Fly.io account creation, credential registration via 1Password, and app provisioning.
+
+**Auto-routing**: `run_demo` automatically routes headless demos to Fly.io when configured:
+- `headless: true` + Fly.io configured → remote (auto)
+- Display lock contended + headless-eligible → remote (contention bypass)
+- `remote: true` → forced remote
+- `remote: false` → forced local
+- Headed, chrome-bridge, or extension demos → always local
+
+**Same interface**: Progress reporting, `check_demo_result`, `stop_demo`, and artifact retrieval work identically for remote runs. The `execution_target` field in the response indicates where it ran. Remote runs return a synthetic negative PID.
+
+**Not available for**: headed demos (window recording requires local display), chrome-bridge scenarios (require real Chrome with extension socket), extension demos (require loaded extension).
+
+**Batch parallelization**: `run_demo_batch` with `headless: true` (default) can run multiple scenarios simultaneously across Fly.io machines, limited by `fly.maxConcurrentMachines` (default 3).
+
+**Cost control**: Machines auto-stop on completion, have a 30-minute hard kill safety net, and `maxConcurrentMachines` caps concurrent usage. `get_fly_status` tool shows current machine count and health.
+
+**Agent decision tree**:
+- Need video recording? → `headless: false` (local, display lock required)
+- Need real Chrome/extension? → local only
+- Validation/repair run? → `headless: true` → auto-routes to Fly.io
+- Batch validation? → `run_demo_batch` (headless by default) → parallel remote
+
 ### Shared Resource Registry (Headed Mode and Infrastructure Coordination)
 
 Headed demos (Playwright with `headless: false`, real Chrome via chrome-bridge) and shared infrastructure (main-tree dev server) require exclusive access. The shared resource registry serializes access per resource:

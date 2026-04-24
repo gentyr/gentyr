@@ -267,6 +267,8 @@ export const RunDemoArgsSchema = z.object({
       'Use for replay data (REPLAY_SESSION_ID, REPLAY_AUDIT_DATA) or custom flags. ' +
       'Max 25 keys, max 512KB total size. Values are not persisted to demo-runs.json.'
     ),
+  remote: z.coerce.boolean().optional()
+    .describe('Run on remote Fly.io machine. Auto-routes when Fly.io is configured and demo is headless-eligible. Pass false to force local execution.'),
 });
 
 export type RunDemoArgs = z.infer<typeof RunDemoArgsSchema>;
@@ -279,6 +281,10 @@ export interface RunDemoResult {
   slow_mo?: number;
   test_file?: string;
   context?: string;
+  remote?: boolean;
+  execution_target?: 'local' | 'remote';
+  execution_target_reason?: string;
+  fly_machine_id?: string;
 }
 
 export const CheckDemoResultArgsSchema = z.object({
@@ -321,6 +327,7 @@ export interface CheckDemoResultResult {
   ended_at?: string;
   exit_code?: number;
   failure_summary?: string;
+  stdout_tail?: string;
   stderr_tail?: string;
   screenshot_paths?: string[];
   trace_summary?: string;
@@ -334,6 +341,9 @@ export interface CheckDemoResultResult {
   screenshot_hint?: string;
   failure_frames?: Array<{ file_path: string; timestamp_seconds: number }>;
   analysis_guidance?: string;
+  remote?: boolean;
+  fly_machine_id?: string;
+  fly_region?: string;
   message: string;
 }
 
@@ -364,6 +374,10 @@ export interface DemoRunState {
   bypass_request_id?: string;      // Links interrupted demo to its bypass request for auto-resolution
   // Runtime-only — NOT persisted (NodeJS.Timeout is not serializable)
   screenshot_interval?: ReturnType<typeof setInterval>;
+  // Remote execution fields (set when run is on Fly.io)
+  remote?: boolean;
+  fly_machine_id?: string;
+  fly_app_name?: string;
 }
 
 export interface StopDemoResult {
@@ -480,6 +494,8 @@ export const RunDemoBatchArgsSchema = z.object({
     .describe('Override the base URL (default: http://localhost:3000).'),
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording.'),
+  remote: z.coerce.boolean().optional()
+    .describe('Run batch on remote Fly.io machines. Default: auto-route headless scenarios remotely when Fly.io is configured.'),
 });
 
 export type RunDemoBatchArgs = z.infer<typeof RunDemoBatchArgsSchema>;
@@ -551,6 +567,9 @@ export interface DemoBatchState {
   current_progress_file?: string;
   stop_on_failure: boolean;
 }
+
+export const GetFlyStatusArgsSchema = z.object({});
+export type GetFlyStatusArgs = z.infer<typeof GetFlyStatusArgsSchema>;
 
 export type ListExtensionTabsArgs = z.infer<typeof ListExtensionTabsArgsSchema>;
 export type ScreenshotExtensionTabArgs = z.infer<typeof ScreenshotExtensionTabArgsSchema>;

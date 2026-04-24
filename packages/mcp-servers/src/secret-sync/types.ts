@@ -278,6 +278,26 @@ export const ServicesConfigSchema = z.object({
     allowedExecutables: z.array(z.string()).optional()
       .describe('Additional executables to allow beyond defaults'),
   }).optional(),
+  fly: z.object({
+    apiToken: z.string().regex(/^op:\/\//, 'Must be an op:// reference')
+      .describe('op:// reference to FLY_API_TOKEN for Fly Machines API'),
+    appName: z.string().regex(/^[a-z][a-z0-9-]*$/, 'Must be a valid Fly.io app name')
+      .describe('Fly.io app name (e.g., "gentyr-playwright")'),
+    region: z.string().default('iad')
+      .describe('Fly.io region (default: iad)'),
+    machineSize: z.string().default('shared-cpu-2x')
+      .describe('Fly.io machine size preset'),
+    machineRam: z.number().int().min(512).max(16384).default(2048)
+      .describe('Machine RAM in MB'),
+    image: z.string().optional()
+      .describe('Custom container image override (default: built from gentyr infra/fly-playwright/)'),
+    maxConcurrentMachines: z.number().int().min(1).max(10).default(3)
+      .describe('Max concurrent Fly machines for parallel batch runs'),
+    cacheVolumeId: z.string().optional()
+      .describe('Fly volume ID for dependency caching'),
+    enabled: z.boolean().default(true)
+      .describe('Enable/disable remote Playwright execution'),
+  }).optional().describe('Fly.io remote Playwright execution configuration. When configured, headless demos auto-route to ephemeral Fly machines.'),
   secretProfiles: z.record(z.string(), SecretProfileSchema).optional(),
   secrets: z.object({
     renderProduction: z.record(z.string(), z.string()).optional(),
