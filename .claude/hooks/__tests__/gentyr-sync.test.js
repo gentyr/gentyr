@@ -654,3 +654,85 @@ describe('statBasedSync bug fixes — code structure (gentyr-sync.js)', () => {
     );
   });
 });
+
+// ===========================================================================
+// Code structure tests: verify project-local MCP server preservation is
+// wired correctly in the statBasedSync .mcp.json re-merge path
+// ===========================================================================
+
+describe('statBasedSync project-local MCP server preservation — code structure (gentyr-sync.js)', () => {
+  it('should import extractProjectServers from shared-mcp-config', () => {
+    const code = fs.readFileSync(HOOK_PATH, 'utf8');
+    assert.match(
+      code,
+      /extractProjectServers/,
+      'gentyr-sync.js must import and use extractProjectServers',
+    );
+  });
+
+  it('should import mergeProjectServers from shared-mcp-config', () => {
+    const code = fs.readFileSync(HOOK_PATH, 'utf8');
+    assert.match(
+      code,
+      /mergeProjectServers/,
+      'gentyr-sync.js must import and use mergeProjectServers',
+    );
+  });
+
+  it('should call extractProjectServers before writing the new .mcp.json', () => {
+    const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    const extractIdx = code.indexOf('extractProjectServers(');
+    const writeIdx = code.indexOf('fs.writeFileSync(outputPath, content)');
+
+    assert.ok(extractIdx > 0, 'extractProjectServers call must exist');
+    assert.ok(writeIdx > 0, 'fs.writeFileSync(outputPath, content) must exist in re-merge block');
+    assert.ok(
+      extractIdx < writeIdx,
+      'extractProjectServers must be called BEFORE the template is written to disk',
+    );
+  });
+
+  it('should call mergeProjectServers after writing the new .mcp.json', () => {
+    const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    const writeIdx = code.indexOf('fs.writeFileSync(outputPath, content)');
+    const mergeIdx = code.indexOf('mergeProjectServers(config, projectServers)');
+
+    assert.ok(writeIdx > 0, 'fs.writeFileSync(outputPath, content) must exist');
+    assert.ok(mergeIdx > 0, 'mergeProjectServers call must exist');
+    assert.ok(
+      writeIdx < mergeIdx,
+      'mergeProjectServers must be called AFTER the template is written to disk',
+    );
+  });
+
+  it('should gate mergeProjectServers behind a projectServers length check', () => {
+    const code = fs.readFileSync(HOOK_PATH, 'utf8');
+    assert.match(
+      code,
+      /Object\.keys\(projectServers\)\.length/,
+      'Must check that projectServers is non-empty before calling mergeProjectServers',
+    );
+  });
+
+  it('should wrap the mergeProjectServers call in the .mcp.json outer try-catch (non-fatal)', () => {
+    const code = fs.readFileSync(HOOK_PATH, 'utf8');
+
+    // The entire .mcp.json re-merge block (which includes mergeProjectServers) is
+    // wrapped in a try/catch starting just before fs.accessSync(outputPath, W_OK).
+    // Locate the outer try that guards the whole block and confirm its catch exists
+    // within a bounded window after the mergeProjectServers call.
+    const mergeIdx = code.indexOf('mergeProjectServers(config, projectServers)');
+    assert.ok(mergeIdx > 0, 'mergeProjectServers must be called');
+
+    // The catch for the outer .mcp.json block appears after changes.push('.mcp.json')
+    // which itself comes after the merge call. Use a 800-char window to span the gap.
+    const afterMerge = code.slice(mergeIdx, mergeIdx + 800);
+    assert.match(
+      afterMerge,
+      /\} catch/,
+      'A catch clause must follow the mergeProjectServers call, closing the outer .mcp.json try block',
+    );
+  });
+});

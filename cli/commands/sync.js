@@ -381,6 +381,54 @@ export default async function sync(args) {
     }
   }
 
+  // 1.7. Apply pending MCP server additions (staged by stage_mcp_server MCP tool)
+  const pendingMcpPath = path.join(projectDir, '.claude', 'state', 'mcp-servers-pending.json');
+  if (fs.existsSync(pendingMcpPath)) {
+    console.log(`\n${YELLOW}Applying staged MCP servers...${NC}`);
+    try {
+      const pending = JSON.parse(fs.readFileSync(pendingMcpPath, 'utf8'));
+      const servers = pending.servers || {};
+      const serverNames = Object.keys(servers);
+      if (serverNames.length > 0) {
+        const mcpJsonPath = path.join(projectDir, '.mcp.json');
+        let mcpConfig = { mcpServers: {} };
+        if (fs.existsSync(mcpJsonPath)) {
+          mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+          mcpConfig.mcpServers = mcpConfig.mcpServers || {};
+        }
+        // Derive gentyr server names from template to prevent collisions
+        const templatePath = path.join(frameworkDir, '.mcp.json.template');
+        let gentyrNames = new Set();
+        try {
+          const tpl = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+          gentyrNames = new Set(Object.keys(tpl.mcpServers || {}));
+        } catch {}
+        let applied = 0;
+        let skipped = 0;
+        for (const [name, config] of Object.entries(servers)) {
+          if (gentyrNames.has(name) || name === 'plugin-manager' || name.startsWith('plugin-')) {
+            console.log(`  Skipped "${name}" (collides with GENTYR server)`);
+            skipped++;
+          } else {
+            mcpConfig.mcpServers[name] = config;
+            applied++;
+          }
+        }
+        if (applied > 0) {
+          fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2) + '\n');
+        }
+        fs.unlinkSync(pendingMcpPath);
+        console.log(`  Applied ${applied} staged MCP server(s)${skipped > 0 ? `, skipped ${skipped} collision(s)` : ''}`);
+      } else {
+        fs.unlinkSync(pendingMcpPath);
+        console.log('  No servers in pending file (cleaned up)');
+      }
+    } catch (err) {
+      console.log(`  ${RED}Warning: Failed to apply staged MCP servers: ${err.message}${NC}`);
+      // Preserve pending file for inspection on failure
+    }
+  }
+
   // 2. Regenerate .mcp.json
   console.log(`\n${YELLOW}Regenerating .mcp.json...${NC}`);
   generateMcpJson(projectDir, frameworkDir, frameworkRel);

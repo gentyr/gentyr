@@ -18,6 +18,7 @@ import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import { openReadonlyDb } from '../shared/readonly-db.js';
+import { resolveFrameworkDir } from '../shared/resolve-framework.js';
 import {
   ListSpawnedAgentsArgsSchema,
   GetAgentPromptArgsSchema,
@@ -69,6 +70,7 @@ import {
   SubmitBypassRequestArgsSchema,
   ResolveBypassRequestArgsSchema,
   ListBypassRequestsArgsSchema,
+  StageMcpServerArgsSchema,
   AcquireSharedResourceArgsSchema,
   ReleaseSharedResourceArgsSchema,
   RenewSharedResourceArgsSchema,
@@ -120,6 +122,7 @@ import {
   type SubmitBypassRequestArgs,
   type ResolveBypassRequestArgs,
   type ListBypassRequestsArgs,
+  type StageMcpServerArgs,
   type AcquireSharedResourceArgs,
   type ReleaseSharedResourceArgs,
   type RenewSharedResourceArgs,
@@ -3150,6 +3153,113 @@ function getLocalMode(): object {
 }
 
 // ============================================================================
+// MCP Server Staging
+// ============================================================================
+
+/**
+ * Stage a project-local MCP server for installation.
+ *
+ * Attempts direct write to .mcp.json. If the file is root-owned (EACCES),
+ * stages to .claude/state/mcp-servers-pending.json for the next npx gentyr sync.
+ * Rejects server names that collide with GENTYR template servers.
+ */
+async function stageMcpServer(args: StageMcpServerArgs): Promise<object> {
+  const mcpJsonPath = path.join(PROJECT_DIR, '.mcp.json');
+  const pendingPath = path.join(PROJECT_DIR, '.claude', 'state', 'mcp-servers-pending.json');
+
+  // Resolve framework dir to read template server names
+  const frameworkDir = resolveFrameworkDir(PROJECT_DIR);
+  const gentyrNames = new Set<string>();
+  if (frameworkDir) {
+    try {
+      const templatePath = path.join(frameworkDir, '.mcp.json.template');
+      const tpl = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+      for (const name of Object.keys(tpl.mcpServers || {})) {
+        gentyrNames.add(name);
+      }
+    } catch { /* non-fatal — template may not be readable */ }
+  }
+
+  // Also exclude dynamic gentyr server names
+  if (gentyrNames.has(args.name) || args.name === 'plugin-manager' || args.name.startsWith('plugin-')) {
+    return {
+      applied: false,
+      pending: false,
+      server_name: args.name,
+      error: `Server name "${args.name}" collides with a GENTYR-managed server. Choose a different name.`,
+    };
+  }
+
+  // Build clean config object (strip undefined fields)
+  const config: Record<string, unknown> = {};
+  if (args.config.command) config.command = args.config.command;
+  if (args.config.args) config.args = args.config.args;
+  if (args.config.env) config.env = args.config.env;
+  if (args.config.type) config.type = args.config.type;
+  if (args.config.url) config.url = args.config.url;
+
+  // Try direct write
+  try {
+    let mcpConfig: Record<string, unknown> = { mcpServers: {} };
+    if (fs.existsSync(mcpJsonPath)) {
+      // Check writability first
+      fs.accessSync(mcpJsonPath, fs.constants.W_OK);
+      mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+    }
+    (mcpConfig.mcpServers as Record<string, unknown>)[args.name] = config;
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2) + '\n');
+    return {
+      applied: true,
+      pending: false,
+      server_name: args.name,
+      message: `Server "${args.name}" added to .mcp.json. Restart the Claude Code session for new MCP tools to appear.`,
+    };
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EACCES' && code !== 'EPERM') {
+      return {
+        applied: false,
+        pending: false,
+        server_name: args.name,
+        error: `Failed to write .mcp.json: ${(err as Error).message}`,
+      };
+    }
+  }
+
+  // EACCES — stage for next npx gentyr sync
+  try {
+    const stateDir = path.join(PROJECT_DIR, '.claude', 'state');
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(stateDir, { recursive: true });
+    }
+    let pending: { servers: Record<string, unknown>; stagedAt: string } = { servers: {}, stagedAt: '' };
+    if (fs.existsSync(pendingPath)) {
+      try {
+        pending = JSON.parse(fs.readFileSync(pendingPath, 'utf8'));
+        if (!pending.servers) pending.servers = {};
+      } catch { pending = { servers: {}, stagedAt: '' }; }
+    }
+    pending.servers[args.name] = config;
+    pending.stagedAt = new Date().toISOString();
+    fs.writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + '\n');
+    return {
+      applied: false,
+      pending: true,
+      server_name: args.name,
+      message: `Server "${args.name}" staged for next \`npx gentyr sync\` (project is protected). Run sync and restart the Claude Code session for new MCP tools to appear.`,
+    };
+  } catch (stageErr: unknown) {
+    return {
+      applied: false,
+      pending: false,
+      server_name: args.name,
+      error: `Failed to stage server: ${(stageErr as Error).message}`,
+    };
+  }
+}
+
+// ============================================================================
 // Session Signal Tool Implementations
 // ============================================================================
 
@@ -5293,6 +5403,13 @@ const tools: AnyToolHandler[] = [
     description: 'Get the current local prototyping mode state, including which servers are excluded.',
     schema: GetLocalModeArgsSchema,
     handler: getLocalMode,
+  },
+  // Project-Local MCP Server Tools
+  {
+    name: 'stage_mcp_server',
+    description: 'Add a project-local MCP server. Writes directly to .mcp.json if writable, or stages to mcp-servers-pending.json for the next `npx gentyr sync` if the file is protected. Server names that collide with GENTYR template servers are rejected. After installation, restart the Claude Code session for new tools to appear.',
+    schema: StageMcpServerArgsSchema,
+    handler: stageMcpServer,
   },
   // User Prompt Index Tools
   {

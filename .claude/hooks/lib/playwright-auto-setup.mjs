@@ -22,7 +22,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // .claude/hooks/ is a symlink into gentyr, so bare imports like '@playwright/test'
 // would resolve from gentyr's node_modules (where it doesn't exist).
 // createRequire from the project dir finds the project's installed packages.
-const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const projectDir = process.cwd();
 const projectRequire = createRequire(join(projectDir, 'package.json'));
 
 // ─── Cursor Highlight Init Script (injected via context.addInitScript) ────────
