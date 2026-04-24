@@ -12,7 +12,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 // Single source of truth for shared MCP daemon config
-import { TIER1_SERVERS as TIER1_SHARED_SERVERS, MCP_DAEMON_PORT as DEFAULT_MCP_DAEMON_PORT, REMOTE_SERVERS, isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
+import { TIER1_SERVERS as TIER1_SHARED_SERVERS, MCP_DAEMON_PORT as DEFAULT_MCP_DAEMON_PORT, REMOTE_SERVERS, isLocalModeEnabled, extractProjectServers, mergeProjectServers } from '../../lib/shared-mcp-config.js';
 import { readOpTokenFromPlist } from '../../lib/op-token-resolver.js';
 
 /**
@@ -35,16 +35,28 @@ export function generateMcpJson(projectDir, frameworkDir, frameworkRel, opts = {
     return;
   }
 
-  // Preserve existing OP token before regenerating
+  // Preserve existing OP token and project-local servers before regenerating
   let existingOpToken = '';
-  if (!opts.opToken && fs.existsSync(outputPath)) {
+  let projectServers = {};
+  if (fs.existsSync(outputPath)) {
     try {
       const existing = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
-      for (const server of Object.values(existing.mcpServers || {})) {
-        if (server.env && server.env.OP_SERVICE_ACCOUNT_TOKEN) {
-          existingOpToken = server.env.OP_SERVICE_ACCOUNT_TOKEN;
-          break;
+      // Extract OP token
+      if (!opts.opToken) {
+        for (const server of Object.values(existing.mcpServers || {})) {
+          if (server.env && server.env.OP_SERVICE_ACCOUNT_TOKEN) {
+            existingOpToken = server.env.OP_SERVICE_ACCOUNT_TOKEN;
+            break;
+          }
         }
+      }
+      // Extract project-local servers (derive gentyr names from template)
+      try {
+        const templateObj = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+        const gentyrNames = new Set(Object.keys(templateObj.mcpServers || {}));
+        projectServers = extractProjectServers(gentyrNames, existing);
+      } catch (err) {
+        console.log(`  Warning: could not extract project-local servers: ${err.message}`);
       }
     } catch {}
   }
@@ -69,6 +81,20 @@ export function generateMcpJson(projectDir, frameworkDir, frameworkRel, opts = {
   } catch {
     console.log('  Skipped .mcp.json (not writable)');
     return;
+  }
+
+  // --- Merge project-local MCP servers back ---
+  if (Object.keys(projectServers).length > 0) {
+    try {
+      const config = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+      const merged = mergeProjectServers(config, projectServers);
+      if (merged > 0) {
+        fs.writeFileSync(outputPath, JSON.stringify(config, null, 2) + '\n');
+        console.log(`  Preserved ${merged} project-local MCP server(s)`);
+      }
+    } catch (err) {
+      console.log(`  Warning: could not merge project-local servers: ${err.message}`);
+    }
   }
 
   // --- Local Prototyping Mode: exclude remote servers ---
