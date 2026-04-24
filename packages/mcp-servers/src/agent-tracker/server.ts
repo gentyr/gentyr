@@ -3181,6 +3181,9 @@ async function stageMcpServer(args: StageMcpServerArgs): Promise<object> {
   }
 
   // Also exclude dynamic gentyr server names
+  const collisionWarning = (frameworkDir && gentyrNames.size === 0)
+    ? ' Warning: could not read GENTYR template — collision detection is degraded. If this name collides with a GENTYR server, it will be overwritten on the next sync.'
+    : '';
   if (gentyrNames.has(args.name) || args.name === 'plugin-manager' || args.name.startsWith('plugin-')) {
     return {
       applied: false,
@@ -3213,7 +3216,7 @@ async function stageMcpServer(args: StageMcpServerArgs): Promise<object> {
       applied: true,
       pending: false,
       server_name: args.name,
-      message: `Server "${args.name}" added to .mcp.json. Restart the Claude Code session for new MCP tools to appear.`,
+      message: `Server "${args.name}" added to .mcp.json. Restart the Claude Code session for new MCP tools to appear.${collisionWarning}`,
     };
   } catch (err: unknown) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -3247,7 +3250,7 @@ async function stageMcpServer(args: StageMcpServerArgs): Promise<object> {
       applied: false,
       pending: true,
       server_name: args.name,
-      message: `Server "${args.name}" staged for next \`npx gentyr sync\` (project is protected). Run sync and restart the Claude Code session for new MCP tools to appear.`,
+      message: `Server "${args.name}" staged for next \`npx gentyr sync\` (project is protected). Run sync and restart the Claude Code session for new MCP tools to appear.${collisionWarning}`,
     };
   } catch (stageErr: unknown) {
     return {

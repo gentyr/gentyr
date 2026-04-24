@@ -1,12 +1,12 @@
 /**
  * 1Password MCP Server
  *
- * Tools for reading secrets, listing vault items, managing service accounts,
- * and reviewing audit logs via the 1Password CLI.
+ * Tools for reading secrets, listing vault items, creating items,
+ * managing service accounts, and reviewing audit logs via the 1Password CLI.
  *
  * Protocol: JSON-RPC 2.0 over stdin/stdout (stdio MCP)
  *
- * @version 2.0.0
+ * @version 3.0.0
  */
 
 import { execFileSync } from 'child_process';
@@ -18,12 +18,16 @@ import {
   getAuditLogSchema,
   checkAuthSchema,
   opVaultMapSchema,
+  createItemSchema,
+  addFieldsSchema,
   type ReadSecretArgs,
   type ListItemsArgs,
   type CreateServiceAccountArgs,
   type GetAuditLogArgs,
   type CheckAuthArgs,
   type OpVaultMapArgs,
+  type CreateItemArgs,
+  type AddFieldsArgs,
 } from './types.js';
 
 // Helper: Execute op CLI command (uses execFileSync to prevent shell injection)
@@ -280,6 +284,118 @@ async function opVaultMap(args: OpVaultMapArgs) {
   };
 }
 
+// Helper: Build assignment statement for op CLI field assignments
+// Format: [section.]field[[type]]=value
+function buildAssignment(field: { field: string; value: string; type?: string; section?: string }): string {
+  let stmt = '';
+  if (field.section) {
+    // Escape dots and backslashes in section name per op CLI docs
+    stmt += field.section.replace(/[\\=.]/g, '\\$&') + '.';
+  }
+  // Escape dots and backslashes in field name
+  stmt += field.field.replace(/[\\=.]/g, '\\$&');
+  if (field.type && field.type !== 'text') {
+    stmt += `[${field.type}]`;
+  }
+  stmt += `=${field.value}`;
+  return stmt;
+}
+
+// Tool: Create a new item in 1Password
+async function createItem(args: CreateItemArgs) {
+  const parsed = createItemSchema.parse(args);
+
+  const cmdArgs = ['item', 'create', '--format', 'json'];
+  cmdArgs.push('--category', parsed.category);
+  cmdArgs.push('--title', parsed.title);
+
+  if (parsed.vault) { cmdArgs.push('--vault', parsed.vault); }
+  if (parsed.url) { cmdArgs.push('--url', parsed.url); }
+  if (parsed.tags?.length) { cmdArgs.push('--tags', parsed.tags.join(',')); }
+  if (parsed.generate_password) { cmdArgs.push('--generate-password'); }
+
+  // Add field assignments
+  if (parsed.fields?.length) {
+    for (const field of parsed.fields) {
+      cmdArgs.push(buildAssignment(field));
+    }
+  }
+
+  // Add notes via buildAssignment for consistent escaping
+  if (parsed.notes) {
+    cmdArgs.push(buildAssignment({ field: 'notesPlain', value: parsed.notes, type: 'text' }));
+  }
+
+  const output = opCommand(cmdArgs);
+  const created = JSON.parse(output) as {
+    id: string;
+    title: string;
+    category: string;
+    vault?: { id: string; name: string };
+    fields?: Array<{ label?: string; reference?: string; type?: string; section?: { label?: string } }>;
+  };
+
+  // Return references (NOT values) so agents can use them with populate_secrets_local
+  const fieldRefs = (created.fields || [])
+    .filter(f => f.reference)
+    .map(f => ({
+      label: f.label || '(unlabeled)',
+      reference: f.reference!,
+      type: f.type || 'STRING',
+      section: f.section?.label || null,
+    }));
+
+  return {
+    id: created.id,
+    title: created.title,
+    category: created.category,
+    vault: created.vault?.name,
+    fields: fieldRefs,
+    message: `Item "${created.title}" created in vault "${created.vault?.name || 'default'}". Use the op:// references above with populate_secrets_local to wire secrets into your project.`,
+  };
+}
+
+// Tool: Add fields to an existing 1Password item
+async function addFields(args: AddFieldsArgs) {
+  const parsed = addFieldsSchema.parse(args);
+
+  const cmdArgs = ['item', 'edit', parsed.item, '--format', 'json'];
+  if (parsed.vault) { cmdArgs.push('--vault', parsed.vault); }
+
+  for (const field of parsed.fields) {
+    cmdArgs.push(buildAssignment(field));
+  }
+
+  const output = opCommand(cmdArgs);
+  const updated = JSON.parse(output) as {
+    id: string;
+    title: string;
+    category: string;
+    vault?: { id: string; name: string };
+    fields?: Array<{ label?: string; reference?: string; type?: string; section?: { label?: string } }>;
+  };
+
+  // Return only references for the fields that were added/modified
+  const addedFieldNames = new Set(parsed.fields.map(f => f.field.toLowerCase()));
+  const fieldRefs = (updated.fields || [])
+    .filter(f => f.reference && f.label && addedFieldNames.has(f.label.toLowerCase()))
+    .map(f => ({
+      label: f.label!,
+      reference: f.reference!,
+      type: f.type || 'STRING',
+      section: f.section?.label || null,
+    }));
+
+  return {
+    id: updated.id,
+    title: updated.title,
+    vault: updated.vault?.name,
+    added_fields: fieldRefs,
+    total_fields_matched: fieldRefs.length,
+    message: `Added ${parsed.fields.length} field(s) to "${updated.title}". Use the op:// references above with populate_secrets_local.`,
+  };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -321,11 +437,23 @@ export const tools: AnyToolHandler[] = [
     schema: opVaultMapSchema,
     handler: opVaultMap as (args: unknown) => unknown,
   },
+  {
+    name: 'create_item',
+    description: 'Create a new item in 1Password. Returns op:// field references (NOT secret values) for use with populate_secrets_local. Use category "API Credential" for API keys, "Login" for username/password, "Database" for DB credentials, "Secure Note" for arbitrary secrets. Secret values are passed directly to the op CLI and never returned to conversation context.',
+    schema: createItemSchema,
+    handler: createItem as (args: unknown) => unknown,
+  },
+  {
+    name: 'add_item_fields',
+    description: 'Add new fields to an existing 1Password item. Specify the item by name or ID. Returns op:// references for the added fields. Use to enrich existing items with additional credentials (e.g. adding a service-role-key to an existing Supabase item). Values are passed directly to the op CLI and never returned to conversation context.',
+    schema: addFieldsSchema,
+    handler: addFields as (args: unknown) => unknown,
+  },
 ];
 
 export const server = new McpServer({
   name: 'onepassword',
-  version: '2.0.0',
+  version: '3.0.0',
   tools,
 });
 

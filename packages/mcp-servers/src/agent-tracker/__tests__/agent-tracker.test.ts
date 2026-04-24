@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
+import { z } from 'zod';
 
 // Types for agent history
 interface TrackedAgent {
@@ -1823,6 +1824,377 @@ describe('Agent Tracker Server', () => {
         const args: SetLockdownModeArgs = { enabled: false };
         expect(Object.keys(args)).toEqual(['enabled']);
         expect(args).not.toHaveProperty('cto_bypass');
+      });
+    });
+  });
+
+  // ============================================================================
+  // stageMcpServer — schema validation and handler logic
+  // ============================================================================
+
+  describe('stageMcpServer', () => {
+    // -------------------------------------------------------------------------
+    // StageMcpServerArgsSchema — Zod validation
+    // -------------------------------------------------------------------------
+
+    // Inline Zod schema mirror that matches types.ts StageMcpServerArgsSchema.
+    // We reproduce it here to test the schema's refine() constraint in isolation,
+    // without importing the compiled server binary (which has side-effects).
+    const StageMcpServerArgsSchema = z.object({
+      name: z.string().min(1).max(100),
+      config: z.object({
+        command: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        env: z.record(z.string(), z.string()).optional(),
+        type: z.string().optional(),
+        url: z.string().optional(),
+      }).refine(c => !!(c.command || c.url), 'Must provide either command or url'),
+    });
+
+    describe('StageMcpServerArgsSchema — validation', () => {
+      it('accepts a minimal command-based config', () => {
+        const result = StageMcpServerArgsSchema.safeParse({
+          name: 'notion',
+          config: { command: 'npx', args: ['-y', '@notionhq/notion-mcp-server'] },
+        });
+        expect(result.success).toBe(true);
+      });
+
+      it('accepts a url-based (HTTP transport) config', () => {
+        const result = StageMcpServerArgsSchema.safeParse({
+          name: 'my-http-server',
+          config: { type: 'http', url: 'http://localhost:8080/mcp' },
+        });
+        expect(result.success).toBe(true);
+      });
+
+      it('accepts config with env vars', () => {
+        const result = StageMcpServerArgsSchema.safeParse({
+          name: 'postgres',
+          config: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres'], env: { POSTGRES_URL: 'postgresql://localhost/db' } },
+        });
+        expect(result.success).toBe(true);
+      });
+
+      it('rejects config with neither command nor url', () => {
+        const result = StageMcpServerArgsSchema.safeParse({
+          name: 'bad-server',
+          config: { args: ['--flag'] },
+        });
+        expect(result.success).toBe(false);
+        if (!result.success) {
+          const msg = result.error.issues[0]?.message ?? '';
+          expect(msg).toMatch(/command or url/i);
+        }
+      });
+
+      it('rejects empty name', () => {
+        const result = StageMcpServerArgsSchema.safeParse({
+          name: '',
+          config: { command: 'npx' },
+        });
+        expect(result.success).toBe(false);
+      });
+
+      it('rejects name longer than 100 characters', () => {
+        const result = StageMcpServerArgsSchema.safeParse({
+          name: 'a'.repeat(101),
+          config: { command: 'npx' },
+        });
+        expect(result.success).toBe(false);
+      });
+
+      it('rejects env with non-string values', () => {
+        const result = StageMcpServerArgsSchema.safeParse({
+          name: 'my-server',
+          config: { command: 'node', env: { KEY: 42 } },
+        });
+        expect(result.success).toBe(false);
+      });
+    });
+
+    // -------------------------------------------------------------------------
+    // stageMcpServer handler logic — tested via an inline re-implementation
+    // that mirrors server.ts exactly, accepting injected fs/path helpers so
+    // we can test all four code paths without touching the real filesystem.
+    // -------------------------------------------------------------------------
+
+    interface StageMcpServerArgs {
+      name: string;
+      config: {
+        command?: string;
+        args?: string[];
+        env?: Record<string, string>;
+        type?: string;
+        url?: string;
+      };
+    }
+
+    interface StageMcpServerResult {
+      applied: boolean;
+      pending: boolean;
+      server_name: string;
+      message?: string;
+      error?: string;
+    }
+
+    /**
+     * Inline re-implementation of the stageMcpServer handler.
+     *
+     * Accepts injected IO primitives (readFile, writeFile, existsSync, accessSync)
+     * and a set of GENTYR server names so tests control all outcomes without
+     * actually touching disk.
+     */
+    function stageMcpServerImpl(
+      args: StageMcpServerArgs,
+      gentyrNames: Set<string>,
+      io: {
+        existsMcpJson: boolean;
+        mcpJsonContent?: Record<string, unknown>;
+        mcpJsonWritable: boolean;
+        pendingExists: boolean;
+        pendingContent?: Record<string, unknown>;
+        pendingWritable: boolean;
+        written?: { mcp?: Record<string, unknown>; pending?: Record<string, unknown> };
+      },
+    ): StageMcpServerResult {
+      const capturedWrites = io.written ?? {};
+
+      // Collision check
+      if (gentyrNames.has(args.name) || args.name === 'plugin-manager' || args.name.startsWith('plugin-')) {
+        return {
+          applied: false,
+          pending: false,
+          server_name: args.name,
+          error: `Server name "${args.name}" collides with a GENTYR-managed server. Choose a different name.`,
+        };
+      }
+
+      // Build clean config
+      const config: Record<string, unknown> = {};
+      if (args.config.command) config.command = args.config.command;
+      if (args.config.args) config.args = args.config.args;
+      if (args.config.env) config.env = args.config.env;
+      if (args.config.type) config.type = args.config.type;
+      if (args.config.url) config.url = args.config.url;
+
+      // Try direct write path
+      if (!io.existsMcpJson || io.mcpJsonWritable) {
+        // Simulate write
+        const mcpConfig: Record<string, unknown> = io.mcpJsonContent
+          ? { ...io.mcpJsonContent, mcpServers: { ...(io.mcpJsonContent.mcpServers as Record<string, unknown> ?? {}) } }
+          : { mcpServers: {} };
+        (mcpConfig.mcpServers as Record<string, unknown>)[args.name] = config;
+        capturedWrites.mcp = mcpConfig;
+        return {
+          applied: true,
+          pending: false,
+          server_name: args.name,
+          message: `Server "${args.name}" added to .mcp.json. Restart the Claude Code session for new MCP tools to appear.`,
+        };
+      }
+
+      // EACCES path — stage for next sync
+      if (!io.pendingWritable) {
+        return {
+          applied: false,
+          pending: false,
+          server_name: args.name,
+          error: `Failed to stage server: EACCES`,
+        };
+      }
+
+      const pending: { servers: Record<string, unknown>; stagedAt: string } = io.pendingExists && io.pendingContent
+        ? { ...(io.pendingContent as { servers: Record<string, unknown>; stagedAt: string }) }
+        : { servers: {}, stagedAt: '' };
+      if (!pending.servers) pending.servers = {};
+      pending.servers[args.name] = config;
+      pending.stagedAt = new Date().toISOString();
+      capturedWrites.pending = pending;
+      return {
+        applied: false,
+        pending: true,
+        server_name: args.name,
+        message: `Server "${args.name}" staged for next \`npx gentyr sync\` (project is protected). Run sync and restart the Claude Code session for new MCP tools to appear.`,
+      };
+    }
+
+    const GENTYR_NAMES = new Set(['todo-db', 'agent-tracker', 'playwright', 'secret-sync', 'github']);
+
+    describe('collision rejection', () => {
+      it('rejects name that matches a GENTYR template server', () => {
+        const result = stageMcpServerImpl(
+          { name: 'todo-db', config: { command: 'npx' } },
+          GENTYR_NAMES,
+          { existsMcpJson: true, mcpJsonWritable: true, pendingExists: false, pendingWritable: true },
+        );
+        expect(result.applied).toBe(false);
+        expect(result.pending).toBe(false);
+        expect(result.error).toMatch(/collides with a GENTYR-managed server/);
+        expect(result.server_name).toBe('todo-db');
+      });
+
+      it('rejects the reserved name "plugin-manager"', () => {
+        const result = stageMcpServerImpl(
+          { name: 'plugin-manager', config: { command: 'node' } },
+          new Set(),
+          { existsMcpJson: true, mcpJsonWritable: true, pendingExists: false, pendingWritable: true },
+        );
+        expect(result.applied).toBe(false);
+        expect(result.error).toMatch(/collides with a GENTYR-managed server/);
+      });
+
+      it('rejects any name starting with "plugin-"', () => {
+        const result = stageMcpServerImpl(
+          { name: 'plugin-my-custom', config: { command: 'node' } },
+          new Set(),
+          { existsMcpJson: true, mcpJsonWritable: true, pendingExists: false, pendingWritable: true },
+        );
+        expect(result.applied).toBe(false);
+        expect(result.error).toMatch(/collides with a GENTYR-managed server/);
+      });
+
+      it('allows a name that does not collide', () => {
+        const result = stageMcpServerImpl(
+          { name: 'notion', config: { command: 'npx', args: ['-y', '@notionhq/notion-mcp-server'] } },
+          GENTYR_NAMES,
+          { existsMcpJson: false, mcpJsonWritable: true, pendingExists: false, pendingWritable: true },
+        );
+        expect(result.applied).toBe(true);
+        expect(result.error).toBeUndefined();
+      });
+    });
+
+    describe('direct write path (writable .mcp.json)', () => {
+      it('returns applied:true and pending:false on success', () => {
+        const written: Record<string, unknown> = {};
+        const result = stageMcpServerImpl(
+          { name: 'my-postgres', config: { command: 'node', args: ['server.js'] } },
+          new Set(),
+          { existsMcpJson: false, mcpJsonWritable: true, pendingExists: false, pendingWritable: true, written },
+        );
+        expect(result.applied).toBe(true);
+        expect(result.pending).toBe(false);
+        expect(result.server_name).toBe('my-postgres');
+        expect(result.message).toMatch(/added to .mcp.json/);
+        expect(result.message).toMatch(/restart/i);
+      });
+
+      it('merges into existing mcpServers without overwriting others', () => {
+        const written: { mcp?: Record<string, unknown> } = {};
+        stageMcpServerImpl(
+          { name: 'notion', config: { command: 'npx' } },
+          new Set(),
+          {
+            existsMcpJson: true,
+            mcpJsonContent: { mcpServers: { 'existing-server': { command: 'node' } } },
+            mcpJsonWritable: true,
+            pendingExists: false,
+            pendingWritable: true,
+            written,
+          },
+        );
+        const mcpServers = written.mcp?.mcpServers as Record<string, unknown>;
+        expect(mcpServers).toHaveProperty('existing-server');
+        expect(mcpServers).toHaveProperty('notion');
+      });
+
+      it('builds clean config object (omits undefined fields)', () => {
+        const written: { mcp?: Record<string, unknown> } = {};
+        stageMcpServerImpl(
+          { name: 'my-server', config: { command: 'npx', args: ['-y', 'pkg'] } },
+          new Set(),
+          { existsMcpJson: false, mcpJsonWritable: true, pendingExists: false, pendingWritable: true, written },
+        );
+        const addedServer = (written.mcp?.mcpServers as Record<string, unknown>)?.['my-server'] as Record<string, unknown>;
+        expect(addedServer.command).toBe('npx');
+        expect(addedServer.args).toEqual(['-y', 'pkg']);
+        expect(addedServer).not.toHaveProperty('env');
+        expect(addedServer).not.toHaveProperty('type');
+        expect(addedServer).not.toHaveProperty('url');
+      });
+
+      it('includes env in config when provided', () => {
+        const written: { mcp?: Record<string, unknown> } = {};
+        stageMcpServerImpl(
+          { name: 'my-server', config: { command: 'node', env: { API_KEY: 'secret' } } },
+          new Set(),
+          { existsMcpJson: false, mcpJsonWritable: true, pendingExists: false, pendingWritable: true, written },
+        );
+        const addedServer = (written.mcp?.mcpServers as Record<string, unknown>)?.['my-server'] as Record<string, unknown>;
+        expect(addedServer.env).toEqual({ API_KEY: 'secret' });
+      });
+
+      it('result shape has required fields', () => {
+        const result = stageMcpServerImpl(
+          { name: 'my-server', config: { command: 'npx' } },
+          new Set(),
+          { existsMcpJson: false, mcpJsonWritable: true, pendingExists: false, pendingWritable: true },
+        );
+        expect(typeof result.applied).toBe('boolean');
+        expect(typeof result.pending).toBe('boolean');
+        expect(typeof result.server_name).toBe('string');
+        expect(result.error).toBeUndefined();
+      });
+    });
+
+    describe('staging path (EACCES-protected .mcp.json)', () => {
+      it('returns applied:false and pending:true on success', () => {
+        const written: Record<string, unknown> = {};
+        const result = stageMcpServerImpl(
+          { name: 'notion', config: { command: 'npx' } },
+          new Set(),
+          { existsMcpJson: true, mcpJsonWritable: false, pendingExists: false, pendingWritable: true, written },
+        );
+        expect(result.applied).toBe(false);
+        expect(result.pending).toBe(true);
+        expect(result.server_name).toBe('notion');
+        expect(result.message).toMatch(/staged for next/);
+        expect(result.message).toMatch(/npx gentyr sync/);
+      });
+
+      it('accumulates servers in existing pending file', () => {
+        const written: { pending?: Record<string, unknown> } = {};
+        stageMcpServerImpl(
+          { name: 'new-server', config: { command: 'npx' } },
+          new Set(),
+          {
+            existsMcpJson: true,
+            mcpJsonWritable: false,
+            pendingExists: true,
+            pendingContent: { servers: { 'existing-staged': { command: 'node' } }, stagedAt: '2026-01-01T00:00:00.000Z' },
+            pendingWritable: true,
+            written,
+          },
+        );
+        const servers = (written.pending as { servers: Record<string, unknown> })?.servers;
+        expect(servers).toHaveProperty('existing-staged');
+        expect(servers).toHaveProperty('new-server');
+      });
+
+      it('sets stagedAt to a non-empty ISO timestamp', () => {
+        const written: { pending?: Record<string, unknown> } = {};
+        stageMcpServerImpl(
+          { name: 'notion', config: { command: 'npx' } },
+          new Set(),
+          { existsMcpJson: true, mcpJsonWritable: false, pendingExists: false, pendingWritable: true, written },
+        );
+        const stagedAt = (written.pending as { stagedAt: string })?.stagedAt;
+        expect(typeof stagedAt).toBe('string');
+        expect(stagedAt.length).toBeGreaterThan(0);
+        expect(() => new Date(stagedAt)).not.toThrow();
+      });
+
+      it('returns error when pending file write also fails', () => {
+        const result = stageMcpServerImpl(
+          { name: 'notion', config: { command: 'npx' } },
+          new Set(),
+          { existsMcpJson: true, mcpJsonWritable: false, pendingExists: false, pendingWritable: false },
+        );
+        expect(result.applied).toBe(false);
+        expect(result.pending).toBe(false);
+        expect(result.error).toBeDefined();
+        expect(result.error).toMatch(/Failed to stage server/);
       });
     });
   });

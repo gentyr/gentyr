@@ -491,6 +491,7 @@ REVIVAL_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-revival-daemon.plist"
 MCP_DAEMON_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-mcp-daemon.plist"
 PREVIEW_WATCHER_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-preview-watcher.plist"
 SESSION_ACTIVITY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-session-activity-broadcaster.plist"
+LIVE_FEED_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-live-feed-daemon.plist"
 
 setup_macos() {
   log_info "Setting up launchd agent..."
@@ -748,6 +749,57 @@ EOF
     log_warn "Session activity broadcaster script not found — skipping."
   fi
 
+  # --- Live Feed Daemon (KeepAlive, 60s polling, writes to live-feed.db) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/live-feed-daemon.js" ]; then
+    cat > "$LIVE_FEED_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-live-feed-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/live-feed-daemon.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/live-feed-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/live-feed-daemon.log</string>
+</dict>
+</plist>
+EOF
+
+    launchctl unload "$LIVE_FEED_PLIST_FILE" 2>/dev/null || true
+    launchctl load "$LIVE_FEED_PLIST_FILE"
+    log_info "Live feed daemon loaded (KeepAlive, RunAtLoad)."
+  else
+    log_warn "Live feed daemon script not found — skipping."
+  fi
+
   # --- Automation Service (10-min interval) ---
   # Create plist file
   cat > "$PLIST_FILE" << EOF
@@ -829,6 +881,11 @@ remove_macos() {
   launchctl unload "$PREVIEW_WATCHER_PLIST_FILE" 2>/dev/null || true
   rm -f "$PREVIEW_WATCHER_PLIST_FILE"
   log_info "Preview watcher daemon service removed."
+
+  # Unload and remove live feed daemon
+  launchctl unload "$LIVE_FEED_PLIST_FILE" 2>/dev/null || true
+  rm -f "$LIVE_FEED_PLIST_FILE"
+  log_info "Live feed daemon service removed."
 
   # Unload and remove automation agent
   launchctl unload "$PLIST_FILE" 2>/dev/null || true

@@ -1,6 +1,7 @@
 /**
  * CommentaryView — Page 5 of the CTO Dashboard.
  * Full-width scrollable feed of AI-generated commentary with streaming support.
+ * Reads from live-feed.db (written by daemon). Supports load-more for history.
  */
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -9,7 +10,7 @@ import type { Page5Data, FeedMessage } from '../types.js';
 import { truncate, formatTimestamp } from '../utils/formatters.js';
 
 interface CommentaryViewProps {
-  data: Page5Data;
+  data: Page5Data & { loadMore: () => void; hasMore: boolean };
   bodyHeight: number;
   bodyWidth: number;
   isActive: boolean;
@@ -42,7 +43,6 @@ function buildMessageLines(msg: FeedMessage, width: number): DisplayLine[] {
   const time = formatTimestamp(msg.timestamp.includes('T') ? msg.timestamp : msg.timestamp.replace(' ', 'T') + 'Z');
   const divider = '\u2500'.repeat(Math.max(1, contentWidth - time.length - 3));
 
-  // Header line
   lines.push({
     key: `msg-hdr-${msg.id}`,
     content: (
@@ -52,7 +52,6 @@ function buildMessageLines(msg: FeedMessage, width: number): DisplayLine[] {
     ),
   });
 
-  // Body lines (word-wrapped)
   const wrapped = wrapText(msg.text, contentWidth);
   for (let i = 0; i < wrapped.length; i++) {
     lines.push({
@@ -65,7 +64,6 @@ function buildMessageLines(msg: FeedMessage, width: number): DisplayLine[] {
     });
   }
 
-  // Blank separator
   lines.push({
     key: `msg-sep-${msg.id}`,
     content: <Box height={1} key={`msg-sep-${msg.id}`}><Text> </Text></Box>,
@@ -79,7 +77,6 @@ function buildStreamingLines(text: string, width: number): DisplayLine[] {
   const contentWidth = Math.max(10, width - 4);
   const divider = '\u2500'.repeat(Math.max(1, contentWidth - 16));
 
-  // Header
   lines.push({
     key: 'stream-hdr',
     content: (
@@ -91,7 +88,6 @@ function buildStreamingLines(text: string, width: number): DisplayLine[] {
     ),
   });
 
-  // Body with cursor
   const wrapped = wrapText(text, contentWidth - 1);
   for (let i = 0; i < wrapped.length; i++) {
     const isLast = i === wrapped.length - 1;
@@ -114,17 +110,28 @@ export function CommentaryView({ data, bodyHeight, bodyWidth, isActive }: Commen
   const [scrollOffset, setScrollOffset] = useState(0);
   const [following, setFollowing] = useState(true);
   const prevMessageCountRef = useRef(data.messages.length);
-  const prevStreamingRef = useRef(data.streamingText);
 
   // Build all display lines
   const allLines: DisplayLine[] = [];
+
+  // Load-more indicator at top
+  if (data.hasMore) {
+    allLines.push({
+      key: 'load-more',
+      content: (
+        <Box height={1} key="load-more">
+          <Text dimColor>  {'--- scroll up for older entries ---'}</Text>
+        </Box>
+      ),
+    });
+  }
 
   if (data.messages.length === 0 && !data.isGenerating) {
     allLines.push({
       key: 'empty',
       content: (
         <Box height={1} key="empty">
-          <Text dimColor>  Waiting for session activity...</Text>
+          <Text dimColor>  Waiting for feed entries... (daemon writes every 60s when activity detected)</Text>
         </Box>
       ),
     });
@@ -157,41 +164,45 @@ export function CommentaryView({ data, bodyHeight, bodyWidth, isActive }: Commen
     }
   }, [following, maxScroll, data.messages.length, data.streamingText]);
 
-  // Detect new messages to re-engage following if on the page
+  // Detect new messages to re-engage following
   useEffect(() => {
     if (data.messages.length > prevMessageCountRef.current && isActive) {
       setFollowing(true);
     }
     prevMessageCountRef.current = data.messages.length;
-    prevStreamingRef.current = data.streamingText;
-  }, [data.messages.length, data.streamingText, isActive]);
+  }, [data.messages.length, isActive]);
 
   // Keyboard
   useInput((input, key) => {
     if (key.upArrow) {
       setFollowing(false);
-      setScrollOffset(prev => Math.max(0, prev - 1));
+      const newOffset = Math.max(0, scrollOffset - 1);
+      setScrollOffset(newOffset);
+      // Trigger load-more when scrolled to top
+      if (newOffset === 0 && data.hasMore) {
+        data.loadMore();
+      }
       return;
     }
     if (key.downArrow) {
-      setScrollOffset(prev => {
-        const next = Math.min(maxScroll, prev + 1);
-        if (next >= maxScroll) setFollowing(true);
-        return next;
-      });
+      const next = Math.min(maxScroll, scrollOffset + 1);
+      if (next >= maxScroll) setFollowing(true);
+      setScrollOffset(next);
       return;
     }
     if (key.pageUp) {
       setFollowing(false);
-      setScrollOffset(prev => Math.max(0, prev - feedHeight));
+      const newOffset = Math.max(0, scrollOffset - feedHeight);
+      setScrollOffset(newOffset);
+      if (newOffset === 0 && data.hasMore) {
+        data.loadMore();
+      }
       return;
     }
     if (key.pageDown) {
-      setScrollOffset(prev => {
-        const next = Math.min(maxScroll, prev + feedHeight);
-        if (next >= maxScroll) setFollowing(true);
-        return next;
-      });
+      const next = Math.min(maxScroll, scrollOffset + feedHeight);
+      if (next >= maxScroll) setFollowing(true);
+      setScrollOffset(next);
       return;
     }
     if (input === 'end' || (key.meta && key.downArrow)) {
@@ -208,18 +219,17 @@ export function CommentaryView({ data, bodyHeight, bodyWidth, isActive }: Commen
   if (data.error) {
     statusText = `Error: ${data.error}`;
   } else if (data.isGenerating) {
-    statusText = `Generating... | ${data.messages.length} messages`;
+    statusText = `Generating... | ${data.messages.length} entries`;
   } else if (data.lastGeneratedAt) {
     const ageMs = Date.now() - new Date(data.lastGeneratedAt).getTime();
     const ageSec = Math.floor(ageMs / 1000);
-    const nextIn = Math.max(0, 60 - ageSec);
-    statusText = `Last: ${ageSec}s ago | Next check in ${nextIn}s | ${data.messages.length} messages`;
+    statusText = `Last entry: ${ageSec}s ago | ${data.messages.length} entries loaded`;
   } else {
-    statusText = 'Waiting for activity...';
+    statusText = 'Waiting for daemon...';
   }
 
   if (!following && allLines.length > feedHeight) {
-    statusText += ` | scrolled (${scrollOffset}/${maxScroll}, end to follow)`;
+    statusText += ` | scrolled (end to follow)`;
   }
 
   return (
