@@ -49,6 +49,19 @@ export function Footer({ activePage }: FooterProps): React.ReactElement {
     );
   }
 
+  if (activePage === 5) {
+    return (
+      <Box>
+        <Text dimColor>
+          {' '}<Text bold inverse>{' \u2191\u2193 '}</Text> scroll
+          {'  '}<Text bold inverse>{' end '}</Text> follow
+          {'  '}<Text bold inverse>{' Tab '}</Text> page
+          {'  '}<Text bold inverse>{' q '}</Text> quit{' '}
+        </Text>
+      </Box>
+    );
+  }
+
   return (
     <Box>
       <Text dimColor>

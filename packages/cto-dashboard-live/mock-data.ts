@@ -2,7 +2,7 @@
  * Mock data for the live CTO dashboard.
  */
 
-import type { LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem, WorklogEntry, Page2Data, DemoScenarioItem, TestFileItem, Page3Data, PlanItem, PlanPhaseItem, PlanTaskItem, PlanSubstepItem, PlanStateChange, Page4Data, SpecCategoryItem, SpecItem, SuiteItem } from './types.js';
+import type { LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem, WorklogEntry, Page2Data, DemoScenarioItem, TestFileItem, Page3Data, PlanItem, PlanPhaseItem, PlanTaskItem, PlanSubstepItem, PlanStateChange, Page4Data, SpecCategoryItem, SpecItem, SuiteItem, Page5Data, FeedMessage } from './types.js';
 
 function ago(minutes: number): string { return new Date(Date.now() - minutes * 60 * 1000).toISOString(); }
 
@@ -254,5 +254,34 @@ export function getMockPage4Data(): Page4Data {
     suites: mockSuites,
     totalSpecs: mockFrameworkSpecs.length + mockPatternSpecs.length + mockGlobalSpecs.length,
     selectedSpecContent: mockSelectedSpecContent,
+  };
+}
+
+// ============================================================================
+// Page 5: Live AI Commentary Feed
+// ============================================================================
+
+const mockFeedMessages: FeedMessage[] = [
+  {
+    id: 'mock-feed-001',
+    text: 'Three agents are actively working: a code-writer implementing the OAuth2 PKCE flow, a test-writer adding integration tests for the payments API, and a suspended refactoring agent. The PKCE implementation is progressing well — last action was editing src/auth/pkce.ts about 30 seconds ago.',
+    timestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    tokensUsed: 312,
+  },
+  {
+    id: 'mock-feed-002',
+    text: 'The payments test-writer has been running npm test for the past minute. One task is queued for a CTO-priority code review of deployment pipeline changes. The OAuth Integration plan is at 67% with the "Core OAuth Flow" phase currently active — 3 of 4 substeps complete.',
+    timestamp: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+    tokensUsed: 289,
+  },
+];
+
+export function getMockPage5Data(): Page5Data {
+  return {
+    messages: mockFeedMessages,
+    streamingText: '',
+    isGenerating: false,
+    lastGeneratedAt: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+    error: null,
   };
 }

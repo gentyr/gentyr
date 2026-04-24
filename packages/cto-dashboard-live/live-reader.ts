@@ -18,6 +18,7 @@ import type {
   DemoScenarioItem, TestFileItem, Page2Data,
   Page3Data, PlanItem, PlanPhaseItem, PlanTaskItem, PlanSubstepItem, PlanStateChange,
   Page4Data, SpecCategoryItem, SpecItem, SuiteItem,
+  CommentaryContext, CommentaryContextSession, CommentaryContextPlan, CommentaryContextSummary,
 } from './types.js';
 import { formatElapsed } from './utils/formatters.js';
 
@@ -1082,4 +1083,169 @@ export function readPage4Data(selectedSpecId?: string | null): Page4Data {
 
   const totalSpecs = categories.reduce((sum, c) => sum + c.specs.length, 0);
   return { categories, suites, totalSpecs, selectedSpecContent };
+}
+
+// ============================================================================
+// Page 5: Commentary Context
+// ============================================================================
+
+/**
+ * Read the tail of a session JSONL to extract last tool + last assistant message.
+ * Named distinctly to avoid collision with the exported readSessionTail(agentId, ...).
+ */
+function readSessionTailForCommentary(filePath: string): { lastTool: string | null; lastMessage: string | null } {
+  let lastTool: string | null = null;
+  let lastMessage: string | null = null;
+  try {
+    // Read last 8KB
+    const stat = fs.statSync(filePath);
+    const readSize = Math.min(8192, stat.size);
+    const buf = Buffer.alloc(readSize);
+    const fd = fs.openSync(filePath, 'r');
+    fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+    fs.closeSync(fd);
+    const lines = buf.toString('utf8').split('\n').filter(l => l.trim());
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const obj = JSON.parse(lines[i]) as { type?: string; toolName?: string; content?: Array<{ type: string; text?: string }> };
+        if (!lastTool && obj.type === 'tool_use' && obj.toolName) {
+          lastTool = obj.toolName;
+        }
+        if (!lastMessage && obj.type === 'assistant' && Array.isArray(obj.content)) {
+          for (const block of obj.content) {
+            if (block.type === 'text' && block.text) {
+              lastMessage = block.text.slice(0, 200);
+              break;
+            }
+          }
+        }
+        if (lastTool && lastMessage) break;
+      } catch { /* */ }
+    }
+  } catch { /* */ }
+  return { lastTool, lastMessage };
+}
+
+/**
+ * Build a CommentaryContext from live data (session queue, plans, session-activity DB).
+ * All reads are best-effort; missing data produces empty fields.
+ */
+export function readCommentaryContext(): CommentaryContext {
+  const sessions: CommentaryContextSession[] = [];
+  const recentSummaries: CommentaryContextSummary[] = [];
+  let projectSummary: string | null = null;
+  const plans: CommentaryContextPlan[] = [];
+
+  // --- Running sessions from session-queue.db ---
+  const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+  const queueDb = openDb(queueDbPath);
+  if (queueDb) {
+    try {
+      const rows = queueDb.prepare(`
+        SELECT agent_type, metadata, pid, cwd
+        FROM queue_items
+        WHERE status IN ('running', 'spawning')
+        ORDER BY spawned_at DESC
+        LIMIT 20
+      `).all() as Array<{ agent_type: string; metadata: string | null; pid: number | null; cwd: string | null }>;
+
+      for (const row of rows) {
+        let title = row.agent_type;
+        let agentId: string | null = null;
+        try {
+          const meta = row.metadata ? JSON.parse(row.metadata) as Record<string, unknown> : {};
+          if (typeof meta['title'] === 'string') title = meta['title'];
+          if (typeof meta['agentId'] === 'string') agentId = meta['agentId'];
+        } catch { /* */ }
+
+        const sessionFile = agentId ? findSessionFile(agentId) : null;
+        const { lastTool, lastMessage } = sessionFile ? readSessionTailForCommentary(sessionFile) : { lastTool: null, lastMessage: null };
+
+        sessions.push({ agentType: row.agent_type, title, lastTool, lastMessage });
+      }
+    } catch { /* */ }
+    closeDb(queueDb);
+  }
+
+  // --- Recent session summaries from session-activity.db ---
+  const activityDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-activity.db');
+  if (fs.existsSync(activityDbPath)) {
+    try {
+      const actDb = new Database(activityDbPath, { readonly: true, fileMustExist: true });
+      try {
+        // Project summary
+        const projRow = actDb.prepare(`
+          SELECT summary FROM project_summaries ORDER BY created_at DESC LIMIT 1
+        `).get() as { summary: string } | undefined;
+        if (projRow) projectSummary = projRow.summary.slice(0, 600);
+
+        // Recent individual session summaries (last 5 completed sessions)
+        const sumRows = actDb.prepare(`
+          SELECT title, summary FROM session_summaries
+          ORDER BY created_at DESC LIMIT 5
+        `).all() as Array<{ title: string; summary: string }>;
+        for (const row of sumRows) {
+          recentSummaries.push({ title: row.title ?? 'unknown', summary: row.summary.slice(0, 300) });
+        }
+      } catch { /* */ }
+      closeDb(actDb);
+    } catch { /* */ }
+  }
+
+  // --- Active plans from plans.db ---
+  const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+  const plansDb = openDb(plansDbPath);
+  if (plansDb) {
+    try {
+      const planRows = plansDb.prepare(`
+        SELECT title, status, progress_pct, current_phase
+        FROM plans
+        WHERE status IN ('active', 'paused')
+        ORDER BY updated_at DESC
+        LIMIT 5
+      `).all() as Array<{ title: string; status: string; progress_pct: number; current_phase: string | null }>;
+      for (const row of planRows) {
+        plans.push({ title: row.title, status: row.status, progressPct: row.progress_pct ?? 0, currentPhase: row.current_phase ?? null });
+      }
+    } catch { /* */ }
+    closeDb(plansDb);
+  }
+
+  return { sessions, recentSummaries, projectSummary, plans };
+}
+
+/**
+ * Produce a short fingerprint of current system activity.
+ * Changes when new sessions start, plans update, or summaries appear.
+ * Returns null if no data is available.
+ */
+export function getActivityFingerprint(): string | null {
+  const parts: string[] = [];
+
+  try {
+    const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+    if (fs.existsSync(queueDbPath)) {
+      const stat = fs.statSync(queueDbPath);
+      parts.push(`q:${stat.mtimeMs}`);
+    }
+  } catch { /* */ }
+
+  try {
+    const activityDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-activity.db');
+    if (fs.existsSync(activityDbPath)) {
+      const stat = fs.statSync(activityDbPath);
+      parts.push(`a:${stat.mtimeMs}`);
+    }
+  } catch { /* */ }
+
+  try {
+    const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+    if (fs.existsSync(plansDbPath)) {
+      const stat = fs.statSync(plansDbPath);
+      parts.push(`p:${stat.mtimeMs}`);
+    }
+  } catch { /* */ }
+
+  if (parts.length === 0) return null;
+  return crypto.createHash('md5').update(parts.join('|')).digest('hex').slice(0, 12);
 }
