@@ -88,9 +88,10 @@ process.stdin.on('end', () => {
     let prompt = '';
     try {
       const parsed = JSON.parse(input);
-      prompt = parsed.user_prompt || parsed.prompt || '';
+      if (typeof parsed.user_prompt === 'string') prompt = parsed.user_prompt;
+      else if (typeof parsed.prompt === 'string') prompt = parsed.prompt;
     } catch {
-      prompt = input || '';
+      prompt = typeof input === 'string' ? input : '';
     }
     prompt = prompt.trim();
 

@@ -1101,9 +1101,13 @@ function readSessionTailForCommentary(filePath: string): { lastTool: string | nu
     const stat = fs.statSync(filePath);
     const readSize = Math.min(8192, stat.size);
     const buf = Buffer.alloc(readSize);
-    const fd = fs.openSync(filePath, 'r');
-    fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
-    fs.closeSync(fd);
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(filePath, 'r');
+      fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+    } finally {
+      if (fd !== undefined) try { fs.closeSync(fd); } catch { /* */ }
+    }
     const lines = buf.toString('utf8').split('\n').filter(l => l.trim());
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
@@ -1201,7 +1205,7 @@ export function readCommentaryContext(): CommentaryContext {
         SELECT id, title, status
         FROM plans
         WHERE status IN ('active', 'paused')
-        ORDER BY updated_at DESC
+        ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC
         LIMIT 5
       `).all() as Array<{ id: string; title: string; status: string }>;
       for (const row of planRows) {
@@ -1252,4 +1256,76 @@ export function getActivityFingerprint(): string | null {
 
   if (parts.length === 0) return null;
   return crypto.createHash('md5').update(parts.join('|')).digest('hex').slice(0, 12);
+}
+
+// ============================================================================
+// Page 5: Feed Reader (reads from live-feed.db written by daemon)
+// ============================================================================
+
+import type { FeedMessage } from './types.js';
+
+export function readFeedEntries(opts?: { afterId?: number; beforeId?: number; limit?: number }): {
+  entries: FeedMessage[];
+  hasMore: boolean;
+} {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'live-feed.db');
+  const db = openDb(dbPath);
+  if (!db) return { entries: [], hasMore: false };
+  try {
+    const limit = opts?.limit ?? 50;
+
+    let rows: Array<{ id: number; text: string; tokens_used: number; created_at: string }>;
+
+    if (opts?.afterId != null) {
+      // New entries since last poll
+      rows = db.prepare(
+        'SELECT id, text, tokens_used, created_at FROM feed_entries WHERE id > ? ORDER BY id ASC'
+      ).all(opts.afterId) as typeof rows;
+      return {
+        entries: rows.map(r => ({ id: String(r.id), text: r.text, tokensUsed: r.tokens_used, timestamp: r.created_at })),
+        hasMore: false,
+      };
+    }
+
+    if (opts?.beforeId != null) {
+      // Load older (scroll-up pagination)
+      rows = db.prepare(
+        'SELECT id, text, tokens_used, created_at FROM feed_entries WHERE id < ? ORDER BY id DESC LIMIT ?'
+      ).all(opts.beforeId, limit) as typeof rows;
+      rows.reverse(); // chronological order
+      const hasMore = rows.length === limit;
+      return {
+        entries: rows.map(r => ({ id: String(r.id), text: r.text, tokensUsed: r.tokens_used, timestamp: r.created_at })),
+        hasMore,
+      };
+    }
+
+    // Initial load — newest entries
+    rows = db.prepare(
+      'SELECT id, text, tokens_used, created_at FROM feed_entries ORDER BY id DESC LIMIT ?'
+    ).all(limit) as typeof rows;
+    rows.reverse(); // chronological order
+    const totalCount = (db.prepare('SELECT COUNT(*) as c FROM feed_entries').get() as { c: number }).c;
+    return {
+      entries: rows.map(r => ({ id: String(r.id), text: r.text, tokensUsed: r.tokens_used, timestamp: r.created_at })),
+      hasMore: totalCount > rows.length,
+    };
+  } catch { return { entries: [], hasMore: false }; }
+  finally { closeDb(db); }
+}
+
+export function readFeedStreamingState(): { text: string; isGenerating: boolean } {
+  const filePath = path.join(PROJECT_DIR, '.claude', 'state', 'live-feed-streaming.json');
+  try {
+    const stat = fs.statSync(filePath);
+    // Stale check: if file hasn't been updated in 2 minutes, ignore it
+    if (Date.now() - stat.mtimeMs > 120_000) return { text: '', isGenerating: false };
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return {
+      text: typeof data.text === 'string' ? data.text : '',
+      isGenerating: data.isGenerating === true,
+    };
+  } catch {
+    return { text: '', isGenerating: false };
+  }
 }

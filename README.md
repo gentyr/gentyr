@@ -285,7 +285,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-38 MCP servers. 19 agents. 72 hooks. 39 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+38 MCP servers. 19 agents. 73 hooks. 42 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 

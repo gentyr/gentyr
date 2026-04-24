@@ -741,7 +741,17 @@ The **Interactive Session Lockdown Guard** (`.claude/hooks/interactive-lockdown-
 
 ## Playwright MCP Server
 
-The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`, `get_demo_screenshot`, `extract_video_frames`.
+The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`, `get_demo_screenshot`, `extract_video_frames`, `get_fly_status`.
+
+**Remote Playwright Execution (Fly.io)**: When the `fly` section is configured in `services.json`, headless demos automatically route to ephemeral Fly.io machines. Key behaviors:
+- `run_demo` with `headless: true` (or omitted default) auto-routes to Fly.io when configured. Pass `remote: false` to force local.
+- `run_demo_batch` runs multiple scenarios in parallel across Fly machines (limited by `fly.maxConcurrentMachines`, default 3).
+- Headed demos, chrome-bridge scenarios, and extension demos always run locally — Fly.io is headless-only.
+- `check_demo_result` returns `execution_target` (`'local'` or `'remote'`), `fly_machine_id`, and `fly_region` for remote runs.
+- `get_fly_status` reports configured/healthy state, current machine count, and region.
+- Infrastructure: `infra/fly-playwright/` contains the Dockerfile, fly.toml template, and provisioning scripts. Setup via `/setup-fly` slash command.
+- Config fields in `services.json` `fly` object: `apiToken` (op:// ref), `appName`, `region`, `machineSize`, `machineRam`, `maxConcurrentMachines`, `enabled`.
+- `FLY_API_TOKEN` is in the `INFRA_CRED_KEYS` set — treated as an infrastructure credential by the secret-sync server.
 
 > Full details: [Playwright MCP Server](docs/CLAUDE-REFERENCE.md#playwright-mcp-server)
 
@@ -969,6 +979,10 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 
 **`op_vault_map` tool** (on the 1Password MCP server): Full map of all items and their `op://` field references across all accessible vaults. Returns reference paths (NOT secret values). Use to discover the correct `op://` references for `populate_secrets_local`.
 
+**`create_item` tool** (on the 1Password MCP server, version 3.0.0): Creates a new item in a 1Password vault. Accepts `title`, `category` (e.g. `"API Credential"`, `"Login"`, `"Database"`, `"Secure Note"`), optional `vault`, `fields` (array of `{ field, value, type, section }`), `tags`, `url`, `generate_password`, and `notes`. Returns `op://` field references (NOT raw values) for use with `populate_secrets_local`. Secret values are passed directly to the `op` CLI and never appear in agent context.
+
+**`add_item_fields` tool** (on the 1Password MCP server, version 3.0.0): Adds or updates fields on an existing 1Password item. Accepts `item` (name or ID), optional `vault`, and `fields` (array of `{ field, value, type, section }`). Returns `op://` references for the added/updated fields only. Use to enrich existing items (e.g. adding a service-role-key to an existing Supabase item) without recreating the item.
+
 **`secrets-local-health.js` UserPromptSubmit hook**: Warns on every message (5-minute cooldown) if `secrets.local` is empty or missing keys referenced by secret profiles. Instructs agents to call `op_vault_map` + `populate_secrets_local` immediately. Skipped in local mode and spawned sessions.
 
 > Full details: [Secret Management](docs/CLAUDE-REFERENCE.md#secret-management)
@@ -1069,7 +1083,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 72 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 73 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 19 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
@@ -1110,7 +1124,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
 | protected-action-gate.js | `mcp__*` | Block protected MCP actions without approval |
 
-#### PostToolUse (30 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (27 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1156,7 +1170,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | plan-briefing.js | Brief agent on active plan state |
 | session-briefing.js | Comprehensive context dump: queue, tasks, bypass requests, focus mode |
 
-#### UserPromptSubmit (9 hooks — process user/CTO input)
+#### UserPromptSubmit (11 hooks — process user/CTO input)
 
 | Hook | Purpose |
 |------|---------|
@@ -1169,6 +1183,8 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | comms-notifier.js | Notify about pending inter-agent communications |
 | workstream-notifier.js | Notify about workstream updates |
 | cto-prompt-detector.js | Detect CTO-directed prompts in spawned sessions |
+| secrets-local-health.js | Warn about missing secrets.local entries |
+| mcp-guidance-hook.js | Inject MCP server guidance and pending server notifications |
 
 #### Stop (1 hook — gate session termination)
 
@@ -1292,7 +1308,7 @@ feedback-reporter, playwright-feedback, programmatic-feedback
 ```
 User/CTO Message
     |
-    +-- UserPromptSubmit hooks (9) --> Context injection, leak detection, notification
+    +-- UserPromptSubmit hooks (11) --> Context injection, leak detection, notification
     |
     v
 Agent Reasoning (informed by CLAUDE.md + session briefing + plan briefing)
@@ -1302,7 +1318,7 @@ Agent Reasoning (informed by CLAUDE.md + session briefing + plan briefing)
     v
 Tool Execution (MCP tools, Bash, Read, Write, Edit, Agent)
     |
-    +-- PostToolUse hooks (28) --> REACT: inject context, spawn agents, track progress
+    +-- PostToolUse hooks (27) --> REACT: inject context, spawn agents, track progress
     |
     v
 Agent Spawn (via Agent tool or session queue)
