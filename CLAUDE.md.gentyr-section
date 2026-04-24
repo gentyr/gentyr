@@ -77,6 +77,13 @@ Some MCP actions require CTO approval before execution. When you call a protecte
 
 **To check pending requests:** Use `mcp__deputy-cto__get_protected_action_request({ code: "XXXXXX" })`
 
+### Project-Local MCP Servers
+
+GENTYR preserves project-local MCP servers across `npx gentyr sync`. To add a new MCP server:
+- Use `mcp__agent-tracker__stage_mcp_server({ name: "...", config: { command: "...", args: [...], env: {...} } })`
+- If `.mcp.json` is protected (root-owned), the server is staged for the next `npx gentyr sync`
+- Restart the Claude Code session after installation for new MCP tools to appear
+
 ### Deployment Flow
 
 GENTYR enforces a strict merge chain: **feature -> preview -> staging -> production**.

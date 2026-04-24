@@ -486,6 +486,18 @@ export const ListBypassRequestsArgsSchema = z.object({
 });
 export type ListBypassRequestsArgs = z.infer<typeof ListBypassRequestsArgsSchema>;
 
+export const StageMcpServerArgsSchema = z.object({
+  name: z.string().min(1).max(100).describe('Server name (e.g., "notion", "my-postgres"). Must not collide with a GENTYR template server name.'),
+  config: z.object({
+    command: z.string().optional().describe('Command to run (e.g., "npx", "node")'),
+    args: z.array(z.string()).optional().describe('Arguments (e.g., ["-y", "@notionhq/notion-mcp-server"])'),
+    env: z.record(z.string(), z.string()).optional().describe('Environment variables for the server'),
+    type: z.string().optional().describe('Transport type (e.g., "http" for HTTP transport)'),
+    url: z.string().optional().describe('URL for HTTP transport servers'),
+  }).refine(c => !!(c.command || c.url), 'Must provide either command or url'),
+});
+export type StageMcpServerArgs = z.infer<typeof StageMcpServerArgsSchema>;
+
 export const LaunchInteractiveMonitorArgsSchema = z.object({
   task_id: z.string().min(1).optional().describe('Persistent task UUID or prefix — resolves to the monitor session and kills the headless monitor'),
   session_id: z.string().min(1).optional().describe('Claude session UUID to resume directly in Terminal.app'),

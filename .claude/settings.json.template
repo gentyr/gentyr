@@ -293,6 +293,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/secrets-local-health.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/mcp-guidance-hook.js",
+            "timeout": 5
           }
         ]
       }
