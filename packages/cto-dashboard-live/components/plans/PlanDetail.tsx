@@ -6,7 +6,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import type { PlanPhaseItem, PlanTaskItem, PlanStateChange } from '../../types.js';
+import type { PlanPhaseItem, PlanTaskItem, PlanAuditInfo, PlanStateChange } from '../../types.js';
 import { truncate, renderProgressBar, formatTimestamp } from '../../utils/formatters.js';
 
 interface PlanDetailProps {
@@ -19,18 +19,77 @@ interface PlanDetailProps {
 
 function taskStatusDot(status: string): { char: string; color: string } {
   switch (status) {
-    case 'completed':   return { char: '\u25CF', color: 'green' };
-    case 'in_progress': return { char: '\u25CF', color: 'yellow' };
-    case 'ready':       return { char: '\u25CF', color: 'blue' };
-    case 'blocked':     return { char: '\u25CF', color: 'red' };
-    case 'skipped':     return { char: '\u25E6', color: 'gray' };
-    default:            return { char: '\u25CF', color: 'gray' };
+    case 'completed':     return { char: '\u25CF', color: 'green' };
+    case 'pending_audit': return { char: '\u25CF', color: 'magenta' };
+    case 'in_progress':   return { char: '\u25CF', color: 'yellow' };
+    case 'ready':         return { char: '\u25CF', color: 'blue' };
+    case 'blocked':       return { char: '\u25CF', color: 'red' };
+    case 'skipped':       return { char: '\u25E6', color: 'gray' };
+    default:              return { char: '\u25CF', color: 'gray' };
   }
 }
 
 interface DisplayLine {
   key: string;
   content: React.ReactElement;
+}
+
+function buildAuditLines(taskId: string, audit: PlanAuditInfo, width: number): DisplayLine[] {
+  const lines: DisplayLine[] = [];
+  const indent = '     ';
+  const maxText = Math.max(4, width - indent.length - 2);
+
+  if (audit.verdict === 'pass') {
+    const evidence = audit.evidence ? truncate(audit.evidence, maxText - 16) : '';
+    lines.push({
+      key: `audit-${taskId}`,
+      content: (
+        <Box height={1} key={`audit-${taskId}`}>
+          <Text>{indent}</Text>
+          <Text color="green">{'\u2713 Audit passed'}</Text>
+          {evidence ? <Text dimColor>{' \u2014 '}{evidence}</Text> : null}
+        </Box>
+      ),
+    });
+  } else if (audit.verdict === 'fail') {
+    const reason = audit.failureReason ? truncate(audit.failureReason, maxText - 15) : '';
+    lines.push({
+      key: `audit-${taskId}`,
+      content: (
+        <Box height={1} key={`audit-${taskId}`}>
+          <Text>{indent}</Text>
+          <Text color="red">{'\u2717 Audit failed'}</Text>
+          {reason ? <Text dimColor>{' \u2014 '}{reason}</Text> : null}
+        </Box>
+      ),
+    });
+    if (audit.evidence) {
+      lines.push({
+        key: `audit-ev-${taskId}`,
+        content: (
+          <Box height={1} key={`audit-ev-${taskId}`}>
+            <Text dimColor>{indent}  evidence: {truncate(audit.evidence, maxText - 12)}</Text>
+          </Box>
+        ),
+      });
+    }
+  } else {
+    // verdict is null = pending
+    const attempt = audit.attemptNumber > 0 ? ` (attempt #${audit.attemptNumber})` : '';
+    const strategy = truncate(audit.verificationStrategy, maxText - 22 - attempt.length);
+    lines.push({
+      key: `audit-${taskId}`,
+      content: (
+        <Box height={1} key={`audit-${taskId}`}>
+          <Text>{indent}</Text>
+          <Text color="magenta">{'\u23F3 Audit pending'}{attempt}</Text>
+          <Text dimColor>{' \u2014 '}{strategy}</Text>
+        </Box>
+      ),
+    });
+  }
+
+  return lines;
 }
 
 function buildLines(phases: PlanPhaseItem[], width: number): DisplayLine[] {
@@ -84,6 +143,10 @@ function buildLines(phases: PlanPhaseItem[], width: number): DisplayLine[] {
             </Box>
           ),
         });
+      }
+
+      if (task.auditInfo) {
+        lines.push(...buildAuditLines(task.id, task.auditInfo, width));
       }
     }
 

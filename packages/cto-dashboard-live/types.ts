@@ -169,10 +169,20 @@ export interface PlanSubstepItem {
   completed: boolean;
 }
 
+export interface PlanAuditInfo {
+  verdict: 'pass' | 'fail' | null;  // null = pending
+  evidence: string | null;
+  failureReason: string | null;
+  attemptNumber: number;
+  requestedAt: string;
+  completedAt: string | null;
+  verificationStrategy: string;
+}
+
 export interface PlanTaskItem {
   id: string;
   title: string;
-  status: string;             // pending, ready, in_progress, completed, skipped, blocked
+  status: string;             // pending, ready, in_progress, pending_audit, completed, skipped, blocked
   agentType: string | null;
   categoryId: string | null;
   prNumber: number | null;
@@ -182,6 +192,7 @@ export interface PlanTaskItem {
   substepProgress: string;    // "3/5"
   progressPct: number;
   blockedBy: string[];        // titles of blocking tasks
+  auditInfo: PlanAuditInfo | null;
 }
 
 export interface PlanPhaseItem {
