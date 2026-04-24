@@ -54,6 +54,75 @@ PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
   pnpm install --frozen-lockfile 2>&1 | tee -a /app/.error.log
 
 # ---------------------------------------------------------------------------
+# Execute prerequisites from GENTYR_PREREQUISITES JSON
+# ---------------------------------------------------------------------------
+if [[ -n "${GENTYR_PREREQUISITES:-}" ]]; then
+  log "Executing prerequisites..."
+
+  # Count prerequisites
+  PREREQ_COUNT=$(echo "$GENTYR_PREREQUISITES" | jq 'length')
+  log "  Found $PREREQ_COUNT prerequisite(s)"
+
+  for i in $(seq 0 $((PREREQ_COUNT - 1))); do
+    PREREQ_DESC=$(echo "$GENTYR_PREREQUISITES" | jq -r ".[$i].description")
+    PREREQ_CMD=$(echo "$GENTYR_PREREQUISITES" | jq -r ".[$i].command")
+    PREREQ_HEALTH=$(echo "$GENTYR_PREREQUISITES" | jq -r ".[$i].health_check // empty")
+    PREREQ_HEALTH_TIMEOUT=$(echo "$GENTYR_PREREQUISITES" | jq -r ".[$i].health_check_timeout_ms // 5000")
+    PREREQ_TIMEOUT=$(echo "$GENTYR_PREREQUISITES" | jq -r ".[$i].timeout_ms // 30000")
+    PREREQ_BG=$(echo "$GENTYR_PREREQUISITES" | jq -r ".[$i].run_as_background // false")
+    PREREQ_SCOPE=$(echo "$GENTYR_PREREQUISITES" | jq -r ".[$i].scope")
+
+    log "  [$((i+1))/$PREREQ_COUNT] $PREREQ_DESC (scope: $PREREQ_SCOPE)"
+
+    # Check health first — skip if already satisfied
+    if [[ -n "$PREREQ_HEALTH" ]]; then
+      HEALTH_TIMEOUT_SEC=$((PREREQ_HEALTH_TIMEOUT / 1000))
+      [[ $HEALTH_TIMEOUT_SEC -lt 1 ]] && HEALTH_TIMEOUT_SEC=5
+      if timeout "${HEALTH_TIMEOUT_SEC}s" bash -c "$PREREQ_HEALTH" >/dev/null 2>&1; then
+        log "    Health check passed — skipping"
+        continue
+      fi
+      log "    Health check failed — running setup"
+    fi
+
+    PREREQ_TIMEOUT_SEC=$((PREREQ_TIMEOUT / 1000))
+    [[ $PREREQ_TIMEOUT_SEC -lt 1 ]] && PREREQ_TIMEOUT_SEC=30
+
+    if [[ "$PREREQ_BG" == "1" || "$PREREQ_BG" == "true" ]]; then
+      # Background: spawn and poll health check
+      log "    Starting background: $PREREQ_CMD"
+      bash -c "$PREREQ_CMD" >/dev/null 2>&1 &
+      BG_PID=$!
+
+      if [[ -n "$PREREQ_HEALTH" ]]; then
+        ELAPSED=0
+        while ! timeout "${HEALTH_TIMEOUT_SEC}s" bash -c "$PREREQ_HEALTH" >/dev/null 2>&1; do
+          if [[ $ELAPSED -ge $PREREQ_TIMEOUT_SEC ]]; then
+            log "    WARNING: Background prereq '$PREREQ_DESC' health check did not pass within ${PREREQ_TIMEOUT_SEC}s — continuing anyway"
+            break
+          fi
+          sleep 2
+          ELAPSED=$((ELAPSED + 2))
+        done
+        if [[ $ELAPSED -lt $PREREQ_TIMEOUT_SEC ]]; then
+          log "    Background prerequisite healthy after ${ELAPSED}s"
+        fi
+      else
+        sleep 2  # Brief settle time
+      fi
+    else
+      # Foreground: run with timeout
+      log "    Running: $PREREQ_CMD"
+      if ! timeout "${PREREQ_TIMEOUT_SEC}s" bash -c "$PREREQ_CMD" 2>&1; then
+        log "    WARNING: Prerequisite '$PREREQ_DESC' failed — continuing anyway"
+      fi
+    fi
+  done
+
+  log "Prerequisites complete"
+fi
+
+# ---------------------------------------------------------------------------
 # Optional build step
 # ---------------------------------------------------------------------------
 if [[ -n "${WORKTREE_BUILD_CMD:-}" ]]; then
@@ -118,17 +187,66 @@ export DEMO_PROGRESS_FILE="$PROGRESS_FILE"
 log "Progress file: $PROGRESS_FILE"
 
 # ---------------------------------------------------------------------------
-# Run Playwright tests
+# Run Playwright tests (with stall-detection watchdog)
 # ---------------------------------------------------------------------------
 log "Running Playwright tests: $TEST_FILE"
 
 PLAYWRIGHT_EXIT=0
+STALL_TIMEOUT=${GENTYR_STALL_TIMEOUT_S:-120}
+GRACE_PERIOD=${GENTYR_STALL_GRACE_S:-60}
+
+# Launch Playwright in the background; tee stdout/stderr to log files while
+# still streaming them to the terminal so container logs capture output.
 npx playwright test "$TEST_FILE" \
   --reporter=json,line \
   --trace=on \
-  2> >(tee /app/.stderr.log >&2) \
-  1> >(tee /app/.stdout.log) \
-  || PLAYWRIGHT_EXIT=$?
+  > >(tee /app/.stdout.log) \
+  2> >(tee /app/.stderr.log >&2) &
+PLAYWRIGHT_PID=$!
+
+# Start watchdog subshell: after the grace period, poll file sizes every 10s.
+# If no file growth is observed for STALL_TIMEOUT seconds, kill Playwright.
+(
+  sleep "$GRACE_PERIOD"
+  LAST_SIZE=0
+  LAST_CHANGE=$(date +%s)
+  while kill -0 "$PLAYWRIGHT_PID" 2>/dev/null; do
+    CURRENT_SIZE=0
+    for f in /app/.progress.jsonl /app/.stdout.log /app/.stderr.log; do
+      if [[ -f "$f" ]]; then
+        # Use stat to get file size (handle both GNU and BSD stat)
+        S=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null || echo 0)
+        CURRENT_SIZE=$((CURRENT_SIZE + S))
+      fi
+    done
+
+    if [[ "$CURRENT_SIZE" -ne "$LAST_SIZE" ]]; then
+      LAST_SIZE=$CURRENT_SIZE
+      LAST_CHANGE=$(date +%s)
+    fi
+
+    NOW=$(date +%s)
+    SILENCE=$((NOW - LAST_CHANGE))
+    if [[ "$SILENCE" -ge "$STALL_TIMEOUT" ]]; then
+      echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] STALL DETECTED: no activity for ${SILENCE}s" >> /app/.stderr.log
+      echo '{"type":"crash","stderr_snippet":"Stall detected: no output for '${SILENCE}'s after '${GRACE_PERIOD}'s grace"}' >> /app/.progress.jsonl
+      kill "$PLAYWRIGHT_PID" 2>/dev/null
+      sleep 2
+      kill -9 "$PLAYWRIGHT_PID" 2>/dev/null
+      break
+    fi
+
+    sleep 10
+  done
+) &
+WATCHDOG_PID=$!
+
+# Wait for Playwright to finish
+wait "$PLAYWRIGHT_PID" || PLAYWRIGHT_EXIT=$?
+
+# Kill the watchdog (it may already be done)
+kill "$WATCHDOG_PID" 2>/dev/null
+wait "$WATCHDOG_PID" 2>/dev/null
 
 log "Playwright exited with code: $PLAYWRIGHT_EXIT"
 

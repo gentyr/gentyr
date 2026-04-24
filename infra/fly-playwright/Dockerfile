@@ -3,6 +3,9 @@ FROM mcr.microsoft.com/playwright:v1.48.0-noble
 # Install pnpm globally
 RUN npm install -g pnpm@9
 
+# Install jq for JSON processing in remote-runner.sh
+RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
+
 # Create working directories
 WORKDIR /app
 RUN mkdir -p /cache /app/.artifacts /app/project
