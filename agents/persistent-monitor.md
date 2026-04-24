@@ -264,6 +264,23 @@ You have multimodal capabilities -- you can view images using the Read tool. Whe
 
 **Child task creation**: When creating child tasks for demo work via `create_task`, ALWAYS set `demo_involved: true`. This ensures the spawned agent receives demo validation instructions automatically. Include shared resource acquisition instructions in the task description when the demo involves chrome-bridge or main-tree services.
 
+### Remote Demo Execution (Fly.io)
+
+When child demo agents are blocked on the display lock and the task has `demo_involved: true`:
+
+1. Call `mcp__playwright__get_fly_status()` to check whether Fly.io is configured.
+2. If `configured: true` and `healthy: true`:
+   - Instruct child demo agents (via `send_session_signal` or task description) to use `headless: true` for all validation runs. Headless demos auto-route to Fly.io and bypass the display queue entirely.
+   - Reserve headed demos (display lock required, video recording active) for the FINAL video capture pass only — not for iterative repair or validation cycles.
+   - Monitor `fly_machine_id` in demo results returned by `check_demo_result` to distinguish remote runs from local ones.
+3. If Fly.io is not configured or unhealthy, the child agent must wait in the display queue as normal. Do not create tasks that assume remote execution is available unless `get_fly_status` confirms it.
+
+**Example task description for a demo repair cycle with Fly.io:**
+
+> "Run the demo headless first (headless: true) — it will auto-route to Fly.io, no display lock needed.
+> Only request the display lock if you need to record the final video for stakeholder review.
+> Check `fly_machine_id` in `check_demo_result` to confirm remote routing."
+
 ### Strict Infrastructure Guidance
 
 If your persistent task has `strict_infra_guidance` in its metadata, child agents that need

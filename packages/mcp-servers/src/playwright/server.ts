@@ -17,7 +17,7 @@ import * as http from 'http';
 import * as https from 'https';
 import * as net from 'net';
 import * as crypto from 'crypto';
-import { spawn, execFile, execFileSync } from 'child_process';
+import { spawn, execFile, execFileSync, execSync } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 import Database from 'better-sqlite3';
@@ -67,6 +67,7 @@ import {
   type CheckDemoResultResult,
   type StopDemoResult,
   type DemoRunState,
+  type DemoRunStatus,
   type DemoProgress,
   RunDemoBatchArgsSchema,
   CheckDemoBatchResultArgsSchema,
@@ -93,6 +94,8 @@ import {
   RenewDisplayLockArgsSchema,
   GetDisplayQueueStatusArgsSchema,
   type AcquireDisplayLockArgs,
+  GetFlyStatusArgsSchema,
+  type GetFlyStatusArgs,
 } from './types.js';
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -108,6 +111,66 @@ const WORKTREE_DIR = process.env.CLAUDE_WORKTREE_DIR || null;
 const EFFECTIVE_CWD = WORKTREE_DIR ? path.resolve(WORKTREE_DIR) : PROJECT_DIR;
 const pwConfig = discoverPlaywrightConfig(EFFECTIVE_CWD);
 const REPORT_DIR = path.join(PROJECT_DIR, 'playwright-report');
+
+// ============================================================================
+// Fly.io Configuration Helper
+// ============================================================================
+
+interface FlyConfig {
+  enabled: boolean;
+  appName: string;
+  apiToken: string;
+  region?: string;
+  machineSize?: string;
+  machineRam?: number;
+  maxConcurrentMachines?: number;
+}
+
+/** Simple string hash for generating synthetic PIDs for remote demo runs. */
+function hashCode(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return hash;
+}
+
+/**
+ * Read the `fly` section from services.json.
+ * Returns null if the file is missing, malformed, or has no `fly` section.
+ */
+function getFlyConfigFromServices(): FlyConfig | null {
+  try {
+    const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (!fs.existsSync(servicesPath)) return null;
+    const raw = fs.readFileSync(servicesPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('fly' in parsed) ||
+      typeof (parsed as Record<string, unknown>)['fly'] !== 'object' ||
+      (parsed as Record<string, unknown>)['fly'] === null
+    ) {
+      return null;
+    }
+    const fly = (parsed as Record<string, unknown>)['fly'] as Record<string, unknown>;
+    if (typeof fly['appName'] !== 'string' || typeof fly['apiToken'] !== 'string') return null;
+    return {
+      enabled: fly['enabled'] !== false,
+      appName: fly['appName'],
+      apiToken: fly['apiToken'],
+      region: typeof fly['region'] === 'string' ? fly['region'] : undefined,
+      machineSize: typeof fly['machineSize'] === 'string' ? fly['machineSize'] : undefined,
+      machineRam: typeof fly['machineRam'] === 'number' ? fly['machineRam'] : undefined,
+      maxConcurrentMachines: typeof fly['maxConcurrentMachines'] === 'number' ? fly['maxConcurrentMachines'] : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Resolve user-feedback.db path — falls back to main tree when running in a worktree.
@@ -1945,6 +2008,199 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
+  // ── Remote execution routing (Fly.io) ──
+  // All dynamic imports use .js extension for ESM. Both modules may not exist
+  // in all environments — all errors fall through to local execution.
+  remoteRoutingBlock: {
+    const flyConfig = getFlyConfigFromServices();
+    if (!flyConfig || flyConfig.enabled === false || !flyConfig.appName || !flyConfig.apiToken) break remoteRoutingBlock;
+
+    const { resolved: flyResolved, failedKeys: flyFailedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
+    if (flyFailedKeys.length > 0) break remoteRoutingBlock;
+    const resolvedFlyToken = flyResolved['FLY_API_TOKEN'];
+
+    let scenarioHeaded = false;
+    let usesChromeBridge = false;
+    if (args.scenario_id) {
+      try {
+        const feedbackDbPath = getUserFeedbackDbPath();
+        if (fs.existsSync(feedbackDbPath)) {
+          const scenarioDb = new Database(feedbackDbPath, { readonly: true });
+          try {
+            const scenarioRow = scenarioDb.prepare('SELECT headed, consumption_mode FROM demo_scenarios WHERE id = ?')
+              .get(args.scenario_id) as { headed: number | null; consumption_mode: string | null } | undefined;
+            if (scenarioRow?.headed === 1) scenarioHeaded = true;
+          } catch { /* column may not exist */ }
+          scenarioDb.close();
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    if (effectiveTestFile) {
+      const chromeBridgePatterns = [/\bext-[^/]+\.demo\.ts$/, /\bplatform[^/]*\.demo\.ts$/i, /\/extension\//i, /\/platform-fixtures/i];
+      usesChromeBridge = chromeBridgePatterns.some(p => p.test(effectiveTestFile!));
+    }
+
+    let displayLockContended = false;
+    try {
+      const displayLockMod = await loadDisplayLock();
+      if (displayLockMod) {
+        const lockStatus = displayLockMod.getDisplayLockStatus();
+        const callerAgentId = getCallerAgentId();
+        const holderAgentId = lockStatus.holder ? (lockStatus.holder as Record<string, unknown>)['agent_id'] as string : null;
+        displayLockContended = lockStatus.locked && holderAgentId !== callerAgentId;
+      }
+    } catch { /* non-fatal */ }
+
+    try {
+      const [executionTargetMod, flyRunnerMod] = await Promise.all([
+        import('./execution-target.js'),
+        import('./fly-runner.js'),
+      ]);
+      const { resolveExecutionTarget } = executionTargetMod;
+      const { listActiveMachines, spawnRemoteMachine, isMachineAlive } = flyRunnerMod;
+
+      const machineConfig = {
+        apiToken: resolvedFlyToken,
+        appName: flyConfig.appName,
+        region: flyConfig.region || 'iad',
+        machineSize: flyConfig.machineSize || 'shared-cpu-2x',
+        machineRam: flyConfig.machineRam || 2048,
+        maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+      };
+
+      let activeMachineCount = 0;
+      try {
+        const machines = await listActiveMachines(machineConfig);
+        activeMachineCount = machines.length;
+      } catch { /* non-fatal */ }
+
+      const target = resolveExecutionTarget({
+        headless: args.headless,
+        flyConfigured: true,
+        flyHealthy: true,
+        displayLockContended,
+        scenarioHeaded,
+        usesChromeBridge,
+        explicitRemote: args.remote,
+        activeMachineCount,
+        maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+      });
+
+      if (target.target !== 'remote') break remoteRoutingBlock;
+
+      // ── REMOTE EXECUTION PATH ──
+      const remoteEnv: Record<string, string> = {};
+      if (scenarioEnvVars) Object.assign(remoteEnv, scenarioEnvVars);
+      if (args.extra_env) Object.assign(remoteEnv, args.extra_env);
+
+      try {
+        const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+        if (fs.existsSync(servicesPath)) {
+          const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+          if (services.secrets?.local) {
+            const { resolved: localResolved, failedKeys: localFailed } = resolveOpReferencesStrict(services.secrets.local as Record<string, string>);
+            if (localFailed.length === 0) Object.assign(remoteEnv, localResolved);
+          }
+          if (services.demoDevModeEnv && devServer.ready) Object.assign(remoteEnv, services.demoDevModeEnv);
+        }
+      } catch { /* non-fatal */ }
+
+      if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
+
+      let gitRemote = '';
+      let gitRef = 'main';
+      try {
+        gitRemote = execSync('git remote get-url origin', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+        gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+        if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+      } catch { /* non-fatal */ }
+
+      let devServerCmd: string | undefined;
+      let devServerPort: number | undefined;
+      let devServerHealthCheck: string | undefined;
+      try {
+        const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+        if (fs.existsSync(servicesPath)) {
+          const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+          if (services.devServices) {
+            const firstService = Object.values(services.devServices)[0] as { filter?: string; command?: string; port?: number } | undefined;
+            if (firstService) {
+              devServerCmd = firstService.filter
+                ? `pnpm --filter ${firstService.filter} ${firstService.command || 'dev'}`
+                : `pnpm ${firstService.command || 'dev'}`;
+              devServerPort = firstService.port || 3000;
+              devServerHealthCheck = `curl -sf http://localhost:${devServerPort}`;
+            }
+          }
+        }
+      } catch { /* non-fatal */ }
+
+      const handle = await spawnRemoteMachine(machineConfig, {
+        gitRemote,
+        gitRef,
+        testFile: effectiveTestFile || '',
+        env: remoteEnv,
+        timeout: args.timeout ?? 120000,
+        slowMo: args.slow_mo ?? 0,
+        devServerCmd,
+        devServerPort,
+        devServerHealthCheck,
+        buildCmd: undefined,
+        scenarioId: args.scenario_id,
+      });
+
+      const syntheticPid = -(Math.abs(hashCode(handle.machineId)) % 1_000_000 + 1);
+      const remoteDemoState: DemoRunState = {
+        pid: syntheticPid,
+        project,
+        test_file: effectiveTestFile,
+        started_at: new Date().toISOString(),
+        status: 'running',
+        scenario_id: args.scenario_id,
+        remote: true,
+        fly_machine_id: handle.machineId,
+        fly_app_name: handle.appName,
+      };
+      demoRuns.set(syntheticPid, remoteDemoState);
+      persistDemoRuns();
+
+      const pollInterval = setInterval(async () => {
+        try {
+          const alive = await isMachineAlive(handle, machineConfig);
+          if (!alive) {
+            const remoteEntry = demoRuns.get(syntheticPid);
+            if (remoteEntry && remoteEntry.status === 'running') {
+              remoteEntry.status = 'unknown';
+              persistDemoRuns();
+            }
+            clearInterval(pollInterval);
+          }
+        } catch { /* non-fatal */ }
+      }, 10_000);
+
+      const remoteEntry = demoRuns.get(syntheticPid);
+      if (remoteEntry) {
+        (remoteEntry as DemoRunState & { _remotePollInterval?: ReturnType<typeof setInterval> })._remotePollInterval = pollInterval;
+      }
+
+      return {
+        success: true,
+        project,
+        message: `Demo launched remotely on Fly.io machine ${handle.machineId} in ${handle.region}. Use check_demo_result with pid ${syntheticPid} to get results.`,
+        pid: syntheticPid,
+        slow_mo: args.slow_mo,
+        test_file: effectiveTestFile,
+        remote: true,
+        execution_target: 'remote',
+        execution_target_reason: target.reason,
+        fly_machine_id: handle.machineId,
+      };
+    } catch (remoteErr) {
+      process.stderr.write(`[fly-runner] Remote execution unavailable, falling back to local: ${remoteErr instanceof Error ? remoteErr.message : String(remoteErr)}\n`);
+    }
+  }
+
   const cmdArgs = ['playwright', 'test', '--project', project];
   if (args.trace) {
     cmdArgs.push('--trace', 'on');
@@ -2647,7 +2903,7 @@ function extractDegradedFeatures(progress: DemoProgress | null | undefined): str
  * Check the result of a previously launched demo run.
  * Reads from the in-memory tracking map (primary) or persisted state file (after MCP restart).
  */
-function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
+async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResultResult> {
   const { pid } = args;
 
   // Check in-memory map first
@@ -2666,6 +2922,100 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
       scenario_id: undefined,
       message: `No demo run found for PID ${pid}. The process may have been launched before the MCP server started, or the PID is incorrect.`,
     };
+  }
+
+  // ── Remote demo result check ──
+  if (entry.remote && entry.fly_machine_id) {
+    try {
+      const flyConfig = getFlyConfigFromServices();
+      if (!flyConfig) {
+        return { status: 'unknown', pid, message: 'Fly.io configuration not found — cannot check remote demo result.' };
+      }
+      const { resolved: flyResolved, failedKeys: flyFailedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
+      if (flyFailedKeys.length > 0) {
+        return { status: 'unknown', pid, message: 'Failed to resolve FLY_API_TOKEN for remote demo result check.' };
+      }
+      const remoteMachineConfig = {
+        apiToken: flyResolved['FLY_API_TOKEN'],
+        appName: flyConfig.appName,
+        region: flyConfig.region || 'iad',
+        machineSize: flyConfig.machineSize || 'shared-cpu-2x',
+        machineRam: flyConfig.machineRam || 2048,
+        maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+      };
+      const remoteHandle = {
+        machineId: entry.fly_machine_id,
+        appName: entry.fly_app_name || flyConfig.appName,
+        region: flyConfig.region || 'iad',
+        startedAt: new Date(entry.started_at).getTime(),
+      };
+
+      const { isMachineAlive, pullRemoteArtifacts, stopRemoteMachine, pollRemoteProgress } = await import('./fly-runner.js');
+      const alive = await isMachineAlive(remoteHandle, remoteMachineConfig);
+
+      if (alive) {
+        const progressEvents = await pollRemoteProgress(remoteHandle, remoteMachineConfig);
+        const durationSeconds = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+        return {
+          status: 'running',
+          pid,
+          project: entry.project,
+          scenario_id: entry.scenario_id,
+          started_at: entry.started_at,
+          duration_seconds: durationSeconds,
+          message: `Remote demo still running on Fly.io machine ${entry.fly_machine_id}. ${progressEvents.length} progress events. Elapsed: ${durationSeconds}s.`,
+        };
+      }
+
+      // Machine stopped — pull artifacts
+      const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${entry.fly_machine_id}`);
+      fs.mkdirSync(destDir, { recursive: true });
+
+      try { await pullRemoteArtifacts(remoteHandle, remoteMachineConfig, destDir); }
+      catch (e) { process.stderr.write(`[fly-runner] Artifact pull failed: ${e instanceof Error ? e.message : String(e)}\n`); }
+
+      let remoteExitCode = -1;
+      try {
+        const exitCodePath = path.join(destDir, 'exit-code');
+        if (fs.existsSync(exitCodePath)) remoteExitCode = parseInt(fs.readFileSync(exitCodePath, 'utf-8').trim(), 10);
+      } catch { /* non-fatal */ }
+
+      let remoteStdoutTail = '';
+      let remoteStderrTail = '';
+      try { const p = path.join(destDir, 'stdout.log'); if (fs.existsSync(p)) remoteStdoutTail = fs.readFileSync(p, 'utf-8').slice(-5000); } catch { /* */ }
+      try { const p = path.join(destDir, 'stderr.log'); if (fs.existsSync(p)) remoteStderrTail = fs.readFileSync(p, 'utf-8').slice(-5000); } catch { /* */ }
+
+      try { await stopRemoteMachine(remoteHandle, remoteMachineConfig); } catch { /* non-fatal */ }
+
+      const entryWithInterval = entry as DemoRunState & { _remotePollInterval?: ReturnType<typeof setInterval> };
+      if (entryWithInterval._remotePollInterval) clearInterval(entryWithInterval._remotePollInterval);
+
+      const remoteStatus: DemoRunStatus = remoteExitCode === 0 ? 'passed' : remoteExitCode === -1 ? 'unknown' : 'failed';
+      entry.status = remoteStatus;
+      demoRuns.delete(pid);
+      persistDemoRuns();
+
+      const remoteDuration = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+      return {
+        status: remoteStatus,
+        pid,
+        project: entry.project,
+        scenario_id: entry.scenario_id,
+        started_at: entry.started_at,
+        duration_seconds: remoteDuration,
+        stdout_tail: remoteStdoutTail || undefined,
+        stderr_tail: remoteStderrTail || undefined,
+        failure_summary: remoteExitCode !== 0 ? (remoteStderrTail.slice(-500) || 'Remote demo failed') : undefined,
+        message: remoteExitCode === 0
+          ? `Remote demo passed on Fly.io (${remoteDuration}s). Artifacts at ${destDir}`
+          : `Remote demo failed (exit code ${remoteExitCode}, ${remoteDuration}s). Check artifacts at ${destDir}`,
+        remote: true,
+        fly_machine_id: entry.fly_machine_id,
+        fly_region: remoteMachineConfig.region,
+      };
+    } catch (remoteCheckErr) {
+      return { status: 'unknown', pid, message: `Failed to check remote demo result: ${remoteCheckErr instanceof Error ? remoteCheckErr.message : String(remoteCheckErr)}` };
+    }
   }
 
   // Interrupted demos: browser is alive for user interaction
@@ -3119,7 +3469,7 @@ function checkDemoResult(args: CheckDemoResultArgs): CheckDemoResultResult {
  * Stop a running demo by PID.
  * Kills the process group and returns the final progress snapshot.
  */
-function stopDemo(args: StopDemoArgs): StopDemoResult {
+async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
   const { pid } = args;
 
   let entry = demoRuns.get(pid);
@@ -3134,6 +3484,28 @@ function stopDemo(args: StopDemoArgs): StopDemoResult {
       pid,
       message: `No demo run found for PID ${pid}.`,
     };
+  }
+
+  // ── Remote demo stop ──
+  if (entry.remote && entry.fly_machine_id) {
+    try {
+      const flyConfig = getFlyConfigFromServices();
+      if (flyConfig) {
+        const { resolved: flyResolved } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
+        const { stopRemoteMachine } = await import('./fly-runner.js');
+        await stopRemoteMachine(
+          { machineId: entry.fly_machine_id, appName: entry.fly_app_name || flyConfig.appName, region: flyConfig.region || 'iad', startedAt: new Date(entry.started_at).getTime() },
+          { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: flyConfig.machineRam || 2048, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3 },
+        );
+      }
+    } catch (e) {
+      process.stderr.write(`[fly-runner] Failed to stop remote machine: ${e instanceof Error ? e.message : String(e)}\n`);
+    }
+    const entryWithInterval = entry as DemoRunState & { _remotePollInterval?: ReturnType<typeof setInterval> };
+    if (entryWithInterval._remotePollInterval) clearInterval(entryWithInterval._remotePollInterval);
+    demoRuns.delete(pid);
+    persistDemoRuns();
+    return { success: true, pid, project: entry.project, message: `Remote Fly.io machine ${entry.fly_machine_id} stopped.` };
   }
 
   // Guard: only stop running or interrupted demos
@@ -6046,6 +6418,125 @@ const tools: AnyToolHandler[] = [
       'Returns locked state, current holder details, queue entries, and whether you are the current holder.',
     schema: GetDisplayQueueStatusArgsSchema,
     handler: getDisplayQueueStatusTool,
+  },
+  {
+    name: 'get_fly_status',
+    description: 'Get Fly.io remote execution status. Shows whether Fly.io is configured, running machines, and recent remote demo runs.',
+    schema: GetFlyStatusArgsSchema,
+    handler: async (_args: GetFlyStatusArgs) => {
+      try {
+        // Read fly config from services.json
+        const flySection = getFlyConfigFromServices();
+        if (!flySection) {
+          return JSON.stringify({
+            configured: false,
+            message: 'Fly.io not configured. Add a "fly" section to services.json via /setup-fly or update_services_config.',
+          });
+        }
+
+        if (!flySection.enabled) {
+          return JSON.stringify({
+            configured: true,
+            enabled: false,
+            appName: flySection.appName,
+            message: 'Fly.io is configured but disabled. Set fly.enabled=true in services.json to activate.',
+          });
+        }
+
+        // Resolve API token
+        let apiToken: string;
+        try {
+          const { resolved, failedKeys, failureDetails } = resolveOpReferencesStrict({ FLY_API_TOKEN: flySection.apiToken });
+          if (failedKeys.length > 0) {
+            return JSON.stringify({
+              configured: true,
+              enabled: true,
+              healthy: false,
+              message: `FLY_API_TOKEN credential resolution failed: ${failureDetails['FLY_API_TOKEN'] || 'unknown error'}`,
+            });
+          }
+          apiToken = resolved['FLY_API_TOKEN'];
+        } catch {
+          return JSON.stringify({
+            configured: true,
+            enabled: true,
+            healthy: false,
+            message: 'Failed to resolve FLY_API_TOKEN from 1Password',
+          });
+        }
+
+        // Dynamically import fly-runner to avoid hard dependency in environments where it is absent
+        let flyRunner: {
+          listActiveMachines: (config: {
+            apiToken: string;
+            appName: string;
+            region: string;
+            machineSize: string;
+            machineRam: number;
+            maxConcurrentMachines: number;
+          }) => Promise<Array<{ id: string; state: string; created_at: string }>>;
+        };
+        try {
+          flyRunner = await import('./fly-runner.js');
+        } catch {
+          return JSON.stringify({
+            configured: true,
+            enabled: true,
+            healthy: false,
+            message: 'fly-runner module not available. Remote Fly.io execution is not built into this installation.',
+          });
+        }
+
+        const flyConfig = {
+          apiToken,
+          appName: flySection.appName,
+          region: flySection.region || 'iad',
+          machineSize: flySection.machineSize || 'shared-cpu-2x',
+          machineRam: flySection.machineRam || 2048,
+          maxConcurrentMachines: flySection.maxConcurrentMachines || 3,
+        };
+
+        // listActiveMachines serves as the health check: if the Fly API responds,
+        // the configuration is healthy. On any error we surface it without throwing.
+        let healthy = false;
+        let activeMachines: Array<{ id: string; state: string; created_at: string }> = [];
+        try {
+          activeMachines = await flyRunner.listActiveMachines(flyConfig);
+          healthy = true;
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return JSON.stringify({
+            configured: true,
+            enabled: true,
+            healthy: false,
+            appName: flySection.appName,
+            region: flyConfig.region,
+            machineSize: flyConfig.machineSize,
+            machineRam: flyConfig.machineRam,
+            maxConcurrentMachines: flyConfig.maxConcurrentMachines,
+            message: `Fly API unreachable: ${message}`,
+          });
+        }
+
+        return JSON.stringify({
+          configured: true,
+          enabled: true,
+          healthy,
+          appName: flyConfig.appName,
+          region: flyConfig.region,
+          machineSize: flyConfig.machineSize,
+          machineRam: flyConfig.machineRam,
+          maxConcurrentMachines: flyConfig.maxConcurrentMachines,
+          activeMachines: activeMachines.length,
+          machines: activeMachines,
+        });
+      } catch (err) {
+        return JSON.stringify({
+          configured: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
   },
 ];
 

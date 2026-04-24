@@ -67,6 +67,25 @@ Headless demos do NOT need the display lock. Only acquire when you need:
 | `mcp__playwright__renew_display_lock` | Extend TTL every 5 minutes during long sessions |
 | `mcp__playwright__get_display_queue_status` | Check current lock holder and queue position |
 
+### Remote Execution (Fly.io)
+
+When Fly.io is configured (check via `mcp__playwright__get_fly_status`):
+
+- **Validation and repair runs**: Always use `headless: true` — headless demos auto-route to Fly.io, bypassing display lock contention entirely. Do NOT acquire the display lock for these runs.
+- **Video capture runs**: Use `headless: false` — these require local display access and ScreenCaptureKit window recording. These always run locally.
+- **Batch runs**: `run_demo_batch` with the default `headless: true` runs scenarios in parallel across multiple Fly machines — significantly faster than sequential local execution.
+- **Contention bypass**: If the display lock is held and your demo does not need video, use headless remote execution instead of waiting in the display queue.
+
+The `remote` parameter on `run_demo` controls routing explicitly:
+
+| Value | Behavior |
+|-------|----------|
+| `remote: true` | Force remote Fly.io execution (fails if demo requires local resources) |
+| `remote: false` | Force local execution regardless of Fly.io availability |
+| Omitted | Auto-route: headless demos go to Fly.io when configured, headed demos always stay local |
+
+When Fly.io is not configured, all demos execute locally. `get_fly_status` returns `configured: false` in that case — check before deciding on execution strategy for validation-heavy workflows.
+
 ### Chrome Bridge Resource
 
 When using chrome-bridge tools (real Chrome window interaction), acquire the shared resource:
