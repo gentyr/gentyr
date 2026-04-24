@@ -2136,6 +2136,55 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         }
       } catch { /* non-fatal */ }
 
+      // Pass stall config to remote machine env
+      if (args.stall_timeout_ms) {
+        remoteEnv['GENTYR_STALL_TIMEOUT_S'] = String(Math.ceil(args.stall_timeout_ms / 1000));
+      }
+      remoteEnv['GENTYR_STALL_GRACE_S'] = '60';
+
+      // Serialize prerequisites for remote execution
+      try {
+        const feedbackDbPath = getUserFeedbackDbPath();
+        if (fs.existsSync(feedbackDbPath)) {
+          const prereqDb = new Database(feedbackDbPath, { readonly: true });
+          try {
+            const tableExists = prereqDb.prepare(
+              "SELECT name FROM sqlite_master WHERE type='table' AND name='demo_prerequisites'"
+            ).get();
+
+            if (tableExists) {
+              let prereqPersonaId: string | undefined;
+              if (args.scenario_id) {
+                const scenRow = prereqDb.prepare('SELECT persona_id FROM demo_scenarios WHERE id = ?')
+                  .get(args.scenario_id) as { persona_id: string } | undefined;
+                prereqPersonaId = scenRow?.persona_id;
+              }
+
+              const conditions: string[] = ["scope = 'global'"];
+              const params: string[] = [];
+              if (prereqPersonaId) {
+                conditions.push("(scope = 'persona' AND persona_id = ?)");
+                params.push(prereqPersonaId);
+              }
+              if (args.scenario_id) {
+                conditions.push("(scope = 'scenario' AND scenario_id = ?)");
+                params.push(args.scenario_id);
+              }
+
+              const query = `SELECT id, command, description, timeout_ms, health_check, health_check_timeout_ms, scope, run_as_background, sort_order FROM demo_prerequisites WHERE enabled = 1 AND (${conditions.join(' OR ')}) ORDER BY CASE scope WHEN 'global' THEN 0 WHEN 'persona' THEN 1 WHEN 'scenario' THEN 2 END, sort_order ASC`;
+
+              const prerequisites = prereqDb.prepare(query).all(...params) as Array<Record<string, unknown>>;
+
+              if (prerequisites.length > 0) {
+                remoteEnv['GENTYR_PREREQUISITES'] = JSON.stringify(prerequisites);
+              }
+            }
+          } finally {
+            prereqDb.close();
+          }
+        }
+      } catch { /* non-fatal — prerequisites won't run remotely */ }
+
       const handle = await spawnRemoteMachine(machineConfig, {
         gitRemote,
         gitRef,
@@ -2165,6 +2214,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       demoRuns.set(syntheticPid, remoteDemoState);
       persistDemoRuns();
 
+      let lastRemoteProgressCount = 0;
+      let lastRemoteProgressAt = Date.now();
+      const REMOTE_STALL_GRACE_MS = 60_000;
+      const REMOTE_STALL_TIMEOUT_MS = args.stall_timeout_ms ?? 120_000;
+
       const pollInterval = setInterval(async () => {
         try {
           const alive = await isMachineAlive(handle, machineConfig);
@@ -2175,8 +2229,39 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               persistDemoRuns();
             }
             clearInterval(pollInterval);
+            return;
           }
         } catch { /* non-fatal */ }
+
+        // Stall detection via progress polling
+        if (REMOTE_STALL_TIMEOUT_MS > 0 && Date.now() - handle.startedAt >= REMOTE_STALL_GRACE_MS) {
+          try {
+            const { pollRemoteProgress: pollProgress } = await import('./fly-runner.js');
+            const events = await pollProgress(handle, machineConfig);
+            if (events.length > lastRemoteProgressCount) {
+              lastRemoteProgressCount = events.length;
+              lastRemoteProgressAt = Date.now();
+            }
+
+            const silenceMs = Date.now() - lastRemoteProgressAt;
+            if (silenceMs >= REMOTE_STALL_TIMEOUT_MS) {
+              process.stderr.write(`[fly-runner] Remote demo stalled: no progress for ${Math.round(silenceMs / 1000)}s\n`);
+              const stallEntry = demoRuns.get(syntheticPid);
+              if (stallEntry) {
+                stallEntry.failure_summary = `Stalled: no progress for ${Math.round(REMOTE_STALL_TIMEOUT_MS / 1000)}s after ${Math.round(REMOTE_STALL_GRACE_MS / 1000)}s grace`;
+                stallEntry.status = 'failed';
+                persistDemoRuns();
+              }
+              try {
+                const { stopRemoteMachine: stopMachine } = await import('./fly-runner.js');
+                await stopMachine(handle, machineConfig);
+              } catch {}
+              clearInterval(pollInterval);
+            }
+          } catch {
+            // API error — not a stall, skip
+          }
+        }
       }, 10_000);
 
       const remoteEntry = demoRuns.get(syntheticPid);
@@ -2786,12 +2871,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 }
 
 /**
- * Read and parse the JSONL progress file to build a DemoProgress snapshot.
+ * Parse JSONL progress content string into a DemoProgress snapshot.
+ * Extracted so the same logic can be reused for remote (raw string) and
+ * local (file-based) progress reading without duplicating the switch-case.
  */
-function readDemoProgress(progressFilePath: string): DemoProgress | null {
+function parseDemoProgressFromString(content: string): DemoProgress | null {
   try {
-    if (!fs.existsSync(progressFilePath)) return null;
-    const content = fs.readFileSync(progressFilePath, 'utf-8');
     const lines = content.trim().split('\n').filter(Boolean);
     if (lines.length === 0) return null;
 
@@ -2889,6 +2974,20 @@ function readDemoProgress(progressFilePath: string): DemoProgress | null {
 }
 
 /**
+ * Read and parse the JSONL progress file to build a DemoProgress snapshot.
+ * Delegates to parseDemoProgressFromString for the actual parsing logic.
+ */
+function readDemoProgress(progressFilePath: string): DemoProgress | null {
+  try {
+    if (!fs.existsSync(progressFilePath)) return null;
+    const content = fs.readFileSync(progressFilePath, 'utf-8');
+    return parseDemoProgressFromString(content);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Extract degraded feature descriptions from warning annotations.
  */
 function extractDegradedFeatures(progress: DemoProgress | null | undefined): string[] | undefined {
@@ -2897,6 +2996,35 @@ function extractDegradedFeatures(progress: DemoProgress | null | undefined): str
     .filter(a => a.type === 'warning')
     .map(a => `${a.test_title}: ${a.description}`);
   return degraded.length > 0 ? degraded : undefined;
+}
+
+/**
+ * Build agent analysis guidance for a completed remote demo result.
+ * Returns a REQUIRED action string for agents reviewing the result, or
+ * undefined when the demo is still running.
+ */
+function buildRemoteAnalysisGuidance(
+  status: DemoRunStatus,
+  traceSummary: string | undefined,
+  destDir: string,
+): string | undefined {
+  if (status === 'running') return undefined;
+
+  if (status === 'passed') {
+    return traceSummary
+      ? 'REQUIRED: Review trace_summary for a play-by-play of browser actions to verify the expected workflow executed. The trace file is available in the artifacts directory for detailed inspection.'
+      : `Remote demo passed. Full logs available at ${destDir}/stdout.log and ${destDir}/stderr.log for verification.`;
+  }
+
+  const parts: string[] = ['REQUIRED: This demo failed remotely.'];
+  if (traceSummary) {
+    parts.push('Review trace_summary for the play-by-play of browser actions leading to failure.');
+  }
+  parts.push(`Check failure_summary and stderr_tail for error details. Full logs at ${destDir}/stdout.log and ${destDir}/stderr.log.`);
+  if (!traceSummary) {
+    parts.push(`Trace files may be at ${destDir}/test-results/*/trace.zip for detailed inspection.`);
+  }
+  return parts.join(' ');
 }
 
 /**
@@ -2950,12 +3078,34 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         startedAt: new Date(entry.started_at).getTime(),
       };
 
-      const { isMachineAlive, pullRemoteArtifacts, stopRemoteMachine, pollRemoteProgress } = await import('./fly-runner.js');
+      const { isMachineAlive, pullRemoteArtifacts, stopRemoteMachine, pollRemoteProgressRaw } = await import('./fly-runner.js');
       const alive = await isMachineAlive(remoteHandle, remoteMachineConfig);
 
       if (alive) {
-        const progressEvents = await pollRemoteProgress(remoteHandle, remoteMachineConfig);
         const durationSeconds = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+
+        // Parse structured progress from remote JSONL
+        let remoteProgress: DemoProgress | null = null;
+        try {
+          const rawText = await pollRemoteProgressRaw(remoteHandle, remoteMachineConfig);
+          if (rawText) {
+            remoteProgress = parseDemoProgressFromString(rawText);
+          }
+        } catch { /* non-fatal */ }
+
+        // Build rich status message matching local format
+        let runningMessage = `Remote demo running on ${entry.fly_machine_id}. Elapsed: ${durationSeconds}s.`;
+        if (remoteProgress) {
+          const total = remoteProgress.total_tests !== null ? `/${remoteProgress.total_tests}` : '';
+          runningMessage = `Remote: ${remoteProgress.tests_completed}${total} tests (${remoteProgress.tests_passed} passed, ${remoteProgress.tests_failed} failed). Elapsed: ${durationSeconds}s.`;
+          if (remoteProgress.current_test) {
+            runningMessage += ` Current: ${remoteProgress.current_test}`;
+          }
+          if (remoteProgress.has_failures) {
+            runningMessage += ` FAILURES DETECTED.`;
+          }
+        }
+
         return {
           status: 'running',
           pid,
@@ -2963,7 +3113,11 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           scenario_id: entry.scenario_id,
           started_at: entry.started_at,
           duration_seconds: durationSeconds,
-          message: `Remote demo still running on Fly.io machine ${entry.fly_machine_id}. ${progressEvents.length} progress events. Elapsed: ${durationSeconds}s.`,
+          progress: remoteProgress ?? undefined,
+          degraded_features: extractDegradedFeatures(remoteProgress),
+          remote: true,
+          fly_machine_id: entry.fly_machine_id,
+          message: runningMessage,
         };
       }
 
@@ -2985,6 +3139,22 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
       try { const p = path.join(destDir, 'stdout.log'); if (fs.existsSync(p)) remoteStdoutTail = fs.readFileSync(p, 'utf-8').slice(-5000); } catch { /* */ }
       try { const p = path.join(destDir, 'stderr.log'); if (fs.existsSync(p)) remoteStderrTail = fs.readFileSync(p, 'utf-8').slice(-5000); } catch { /* */ }
 
+      // Parse structured progress from pulled progress.jsonl
+      let remoteProgress: DemoProgress | null = null;
+      try {
+        const progressJsonlPath = path.join(destDir, 'progress.jsonl');
+        remoteProgress = readDemoProgress(progressJsonlPath);
+      } catch { /* non-fatal */ }
+
+      // Parse trace from pulled artifacts
+      let remoteTraceSummary: string | undefined;
+      try {
+        const traceZip = findTraceZip(destDir);
+        if (traceZip) {
+          remoteTraceSummary = parseTraceZip(traceZip) ?? undefined;
+        }
+      } catch { /* non-fatal */ }
+
       try { await stopRemoteMachine(remoteHandle, remoteMachineConfig); } catch { /* non-fatal */ }
 
       const entryWithInterval = entry as DemoRunState & { _remotePollInterval?: ReturnType<typeof setInterval> };
@@ -2996,6 +3166,12 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
       persistDemoRuns();
 
       const remoteDuration = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+
+      // Build structured failure_summary from progress (preferred) or stderr (fallback)
+      const structuredFailureSummary = remoteProgress?.has_failures
+        ? `${remoteProgress.tests_failed} test(s) failed out of ${remoteProgress.tests_completed}`
+        : undefined;
+
       return {
         status: remoteStatus,
         pid,
@@ -3005,10 +3181,17 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         duration_seconds: remoteDuration,
         stdout_tail: remoteStdoutTail || undefined,
         stderr_tail: remoteStderrTail || undefined,
-        failure_summary: remoteExitCode !== 0 ? (remoteStderrTail.slice(-500) || 'Remote demo failed') : undefined,
+        progress: remoteProgress ?? undefined,
+        degraded_features: extractDegradedFeatures(remoteProgress),
+        trace_summary: remoteTraceSummary,
+        artifacts: [destDir],
+        failure_summary: remoteExitCode !== 0
+          ? (structuredFailureSummary || remoteStderrTail.slice(-500) || 'Remote demo failed')
+          : undefined,
+        analysis_guidance: buildRemoteAnalysisGuidance(remoteStatus, remoteTraceSummary, destDir),
         message: remoteExitCode === 0
-          ? `Remote demo passed on Fly.io (${remoteDuration}s). Artifacts at ${destDir}`
-          : `Remote demo failed (exit code ${remoteExitCode}, ${remoteDuration}s). Check artifacts at ${destDir}`,
+          ? `Remote demo passed on Fly.io (${remoteDuration}s).${remoteTraceSummary ? ' Trace available in trace_summary.' : ''} Artifacts at ${destDir}`
+          : `Remote demo failed (exit ${remoteExitCode}, ${remoteDuration}s). ${structuredFailureSummary || 'Check stderr_tail.'} Artifacts at ${destDir}`,
         remote: true,
         fly_machine_id: entry.fly_machine_id,
         fly_region: remoteMachineConfig.region,
@@ -5486,6 +5669,189 @@ function discoverScenarios(opts: {
 }
 
 /**
+ * Execute demo scenarios on remote Fly.io machines in parallel.
+ * Each scenario gets its own ephemeral machine. Concurrency limited by maxConcurrentMachines.
+ */
+async function runRemoteBatchSequence(
+  state: DemoBatchState,
+  args: RunDemoBatchArgs,
+  remoteScenarioIds: Set<string>,
+): Promise<void> {
+  const flyConfig = getFlyConfigFromServices();
+  if (!flyConfig || !flyConfig.appName || !flyConfig.apiToken) return;
+
+  const { resolved: flyResolved, failedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
+  if (failedKeys.length > 0) return;
+
+  const flyRunnerMod = await import('./fly-runner.js');
+  const machineConfig = {
+    apiToken: flyResolved['FLY_API_TOKEN'],
+    appName: flyConfig.appName,
+    region: flyConfig.region || 'iad',
+    machineSize: flyConfig.machineSize || 'shared-cpu-2x',
+    machineRam: flyConfig.machineRam || 2048,
+    maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+  };
+
+  const maxConcurrent = flyConfig.maxConcurrentMachines || 3;
+  const remoteEntries = state.scenarios.filter(s => remoteScenarioIds.has(s.scenario_id));
+
+  // Process in chunks of maxConcurrent
+  for (let i = 0; i < remoteEntries.length; i += maxConcurrent) {
+    if (state.status !== 'running') break;
+
+    const chunk = remoteEntries.slice(i, i + maxConcurrent);
+    await Promise.all(chunk.map(async (batchScenario) => {
+      if (state.status !== 'running') return;
+      if (batchScenario.status !== 'pending') return;
+
+      batchScenario.status = 'running';
+      persistDemoBatches();
+
+      try {
+        // Build env for this scenario
+        const remoteEnv: Record<string, string> = {};
+
+        // Resolve scenario env_vars from DB
+        try {
+          const feedbackDbPath = getUserFeedbackDbPath();
+          if (fs.existsSync(feedbackDbPath)) {
+            const db = new Database(feedbackDbPath, { readonly: true });
+            try {
+              const row = db.prepare('SELECT env_vars FROM demo_scenarios WHERE id = ?')
+                .get(batchScenario.scenario_id) as { env_vars: string | null } | undefined;
+              if (row?.env_vars) {
+                const envVars = JSON.parse(row.env_vars) as Record<string, string>;
+                const { resolved, failedKeys: envFailed } = resolveOpReferencesStrict(envVars);
+                if (envFailed.length === 0) Object.assign(remoteEnv, resolved);
+              }
+            } catch { /* non-fatal */ }
+            db.close();
+          }
+        } catch { /* non-fatal */ }
+
+        // Resolve secrets.local
+        try {
+          const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+          if (fs.existsSync(servicesPath)) {
+            const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+            if (services.secrets?.local) {
+              const { resolved: lr, failedKeys: lf } = resolveOpReferencesStrict(services.secrets.local as Record<string, string>);
+              if (lf.length === 0) Object.assign(remoteEnv, lr);
+            }
+            if (services.demoDevModeEnv) Object.assign(remoteEnv, services.demoDevModeEnv);
+          }
+        } catch { /* non-fatal */ }
+
+        if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
+
+        // Git info
+        let gitRemote = '', gitRef = 'main';
+        try {
+          gitRemote = execSync('git remote get-url origin', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+          gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+          if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+        } catch { /* non-fatal */ }
+
+        // Dev server config
+        let devServerCmd: string | undefined, devServerPort: number | undefined, devServerHealthCheck: string | undefined;
+        try {
+          const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+          if (fs.existsSync(servicesPath)) {
+            const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+            if (services.devServices) {
+              const first = Object.values(services.devServices)[0] as { filter?: string; command?: string; port?: number } | undefined;
+              if (first) {
+                devServerCmd = first.filter ? `pnpm --filter ${first.filter} ${first.command || 'dev'}` : `pnpm ${first.command || 'dev'}`;
+                devServerPort = first.port || 3000;
+                devServerHealthCheck = `curl -sf http://localhost:${devServerPort}`;
+              }
+            }
+          }
+        } catch { /* non-fatal */ }
+
+        // Resolve test file from scenario
+        let testFile = '';
+        try {
+          const feedbackDbPath = getUserFeedbackDbPath();
+          if (fs.existsSync(feedbackDbPath)) {
+            const db = new Database(feedbackDbPath, { readonly: true });
+            try {
+              const row = db.prepare('SELECT test_file FROM demo_scenarios WHERE id = ?')
+                .get(batchScenario.scenario_id) as { test_file: string | null } | undefined;
+              if (row?.test_file) testFile = row.test_file;
+            } catch { /* */ }
+            db.close();
+          }
+        } catch { /* non-fatal */ }
+
+        const handle = await flyRunnerMod.spawnRemoteMachine(machineConfig, {
+          gitRemote,
+          gitRef,
+          testFile,
+          env: remoteEnv,
+          timeout: args.timeout ?? 120000,
+          slowMo: args.slow_mo ?? 0,
+          devServerCmd,
+          devServerPort,
+          devServerHealthCheck,
+          scenarioId: batchScenario.scenario_id,
+        });
+
+        // Poll until machine stops
+        while (await flyRunnerMod.isMachineAlive(handle, machineConfig)) {
+          await new Promise(r => setTimeout(r, 10_000));
+          if (state.status !== 'running') {
+            await flyRunnerMod.stopRemoteMachine(handle, machineConfig).catch(() => {});
+            batchScenario.status = 'skipped';
+            persistDemoBatches();
+            return;
+          }
+        }
+
+        // Pull artifacts and parse results
+        const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-batch-${state.batch_id}-${batchScenario.scenario_id}`);
+        fs.mkdirSync(destDir, { recursive: true });
+
+        try { await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); }
+        catch { /* non-fatal */ }
+
+        let exitCode = -1;
+        try {
+          const ecPath = path.join(destDir, 'exit-code');
+          if (fs.existsSync(ecPath)) exitCode = parseInt(fs.readFileSync(ecPath, 'utf-8').trim(), 10);
+        } catch { /* non-fatal */ }
+
+        batchScenario.status = exitCode === 0 ? 'passed' : 'failed';
+
+        if (exitCode !== 0) {
+          const progress = readDemoProgress(path.join(destDir, 'progress.jsonl'));
+          batchScenario.failure_summary = progress?.has_failures
+            ? `${progress.tests_failed} test(s) failed out of ${progress.tests_completed}`
+            : `Exit code: ${exitCode}`;
+        }
+
+        await flyRunnerMod.stopRemoteMachine(handle, machineConfig).catch(() => {});
+
+      } catch (err) {
+        batchScenario.status = 'failed';
+        batchScenario.failure_summary = err instanceof Error ? err.message : String(err);
+      }
+
+      // Update aggregate counters
+      state.progress.completed++;
+      if (batchScenario.status === 'passed') state.progress.passed++;
+      else if (batchScenario.status === 'failed') state.progress.failed++;
+      persistDemoBatches();
+
+      if (args.stop_on_failure && state.progress.failed > 0) {
+        state.status = 'failed';
+      }
+    }));
+  }
+}
+
+/**
  * Run a batch of demo scenarios sequentially.
  * Each batch gets its own output directory to prevent Playwright's cleanup from destroying previous recordings.
  */
@@ -5501,7 +5867,9 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
     state.progress.current_batch = batchIdx + 1;
     const batchStart = batchIdx * batchSize;
     const batchEnd = Math.min(batchStart + batchSize, scenarios.length);
-    const batchScenarios = scenarios.slice(batchStart, batchEnd);
+    // Only process pending scenarios — skip any already claimed by runRemoteBatchSequence
+    const batchScenarios = scenarios.slice(batchStart, batchEnd).filter(s => s.status === 'pending');
+    if (batchScenarios.length === 0) continue;
 
     // Mark batch scenarios as running
     for (const s of batchScenarios) s.status = 'running';
@@ -5768,8 +6136,52 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   persistDemoBatches();
   resetBatchAutoKillTimer(batchId);
 
-  // Start background execution (non-blocking)
-  runBatchSequence(state, args, scenarioEnvMap, devServer.ready, effectiveBatchBaseUrl).catch((err) => {
+  // Determine remote-eligible scenarios
+  const remoteScenarioIds = new Set<string>();
+  const batchFlyConfig = getFlyConfigFromServices();
+  if (batchFlyConfig && batchFlyConfig.enabled !== false && batchFlyConfig.appName && args.remote !== false) {
+    try {
+      const executionTargetMod = await import('./execution-target.js');
+      for (const scenario of state.scenarios) {
+        // Look up test_file for chrome-bridge detection
+        let scenarioTestFile = '';
+        try {
+          const feedbackDbPath = getUserFeedbackDbPath();
+          if (fs.existsSync(feedbackDbPath)) {
+            const db = new Database(feedbackDbPath, { readonly: true });
+            try {
+              const row = db.prepare('SELECT test_file, headed FROM demo_scenarios WHERE id = ?')
+                .get(scenario.scenario_id) as { test_file: string | null; headed: number | null } | undefined;
+              if (row?.test_file) scenarioTestFile = row.test_file;
+              if (row?.headed === 1) { db.close(); continue; } // Headed scenarios stay local
+            } catch { /* */ }
+            db.close();
+          }
+        } catch { /* non-fatal */ }
+
+        const usesChromeBridge = executionTargetMod.detectChromeBridgeUsage(scenarioTestFile);
+        if (!usesChromeBridge && args.headless) {
+          remoteScenarioIds.add(scenario.scenario_id);
+        }
+      }
+    } catch { /* non-fatal — all local */ }
+  }
+
+  // Launch execution — local and remote paths concurrently
+  const executionPromises: Promise<void>[] = [];
+
+  if (remoteScenarioIds.size > 0) {
+    executionPromises.push(
+      runRemoteBatchSequence(state, args, remoteScenarioIds)
+    );
+  }
+
+  // Always run the local batch sequence — it will skip non-pending (remote) scenarios
+  executionPromises.push(
+    runBatchSequence(state, args, scenarioEnvMap, devServer.ready, effectiveBatchBaseUrl)
+  );
+
+  Promise.all(executionPromises).catch((err) => {
     state.status = 'failed';
     state.ended_at = new Date().toISOString();
     process.stderr.write(`[playwright] Batch ${batchId} crashed: ${err instanceof Error ? err.message : err}\n`);

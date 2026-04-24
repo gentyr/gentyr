@@ -444,6 +444,41 @@ export async function pollRemoteProgress(
 }
 
 // ============================================================================
+// Exported: pollRemoteProgressRaw
+// ============================================================================
+
+/**
+ * Read the raw JSONL text of the progress file from a running machine.
+ *
+ * Same as pollRemoteProgress but returns the raw UTF-8 string instead of
+ * parsing events, so the caller can feed it to parseDemoProgressFromString
+ * on the server side for structured DemoProgress extraction.
+ *
+ * Non-fatal — returns an empty string if the machine has stopped or the
+ * file doesn't exist yet.
+ */
+export async function pollRemoteProgressRaw(
+  handle: RemoteDemoHandle,
+  config: FlyConfig,
+): Promise<string> {
+  let progressBuffer: Buffer;
+  try {
+    progressBuffer = await execInMachine(
+      handle,
+      config,
+      ['cat', '/app/.progress.jsonl'],
+    );
+  } catch (err: unknown) {
+    // File not yet written or machine stopped — non-fatal
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[fly-runner] pollRemoteProgressRaw non-fatal error: ${message}\n`);
+    return '';
+  }
+
+  return progressBuffer.toString('utf8');
+}
+
+// ============================================================================
 // Internal: execInMachine — run a command and return decoded stdout bytes
 // ============================================================================
 
