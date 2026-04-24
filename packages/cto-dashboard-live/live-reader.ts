@@ -1198,14 +1198,18 @@ export function readCommentaryContext(): CommentaryContext {
   if (plansDb) {
     try {
       const planRows = plansDb.prepare(`
-        SELECT title, status, progress_pct, current_phase
+        SELECT id, title, status
         FROM plans
         WHERE status IN ('active', 'paused')
         ORDER BY updated_at DESC
         LIMIT 5
-      `).all() as Array<{ title: string; status: string; progress_pct: number; current_phase: string | null }>;
+      `).all() as Array<{ id: string; title: string; status: string }>;
       for (const row of planRows) {
-        plans.push({ title: row.title, status: row.status, progressPct: row.progress_pct ?? 0, currentPhase: row.current_phase ?? null });
+        const progressPct = getPlanProgressPct(plansDb, row.id);
+        const currentPhaseRow = plansDb.prepare(
+          "SELECT title FROM phases WHERE plan_id = ? AND status NOT IN ('completed','skipped') ORDER BY phase_order LIMIT 1"
+        ).get(row.id) as { title: string } | undefined;
+        plans.push({ title: row.title, status: row.status, progressPct, currentPhase: currentPhaseRow?.title ?? null });
       }
     } catch { /* */ }
     closeDb(plansDb);

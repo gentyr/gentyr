@@ -18,7 +18,7 @@ const MAX_PREVIOUS_MESSAGES = 10;
 const MAX_PREVIOUS_CHARS = 8000;
 const MAX_FEED_MESSAGES = 200;
 
-const SYSTEM_PROMPT = `You are the CTO's live AI narrator for a multi-agent software development system called GENTYR. Write 2-4 sentences of concise commentary about what is currently happening across all running agent sessions. Be specific: name agents, tools, features, PRs, plan phases. Note progress milestones, blockers, interesting patterns, or risks. Write in present tense. Do not repeat information already covered in previous commentary messages — build on them instead.`;
+const SYSTEM_PROMPT = `You are a bird's-eye narrator summarizing activity in a multi-agent software development system. Write exactly 2-3 sentences giving a high-level overview of what is happening across all running sessions. Speak in the third person about the system — never use "I", never role-play as an agent, and never quote verbatim agent output. Focus on meaningful events: what work is in progress, what just completed, what is blocked. Do not repeat information already covered in previous messages.`;
 
 function buildPrompt(ctx: CommentaryContext, previousMessages: FeedMessage[], streamingPartial: string): string {
   const sections: string[] = [];
@@ -29,7 +29,7 @@ function buildPrompt(ctx: CommentaryContext, previousMessages: FeedMessage[], st
     for (const s of ctx.sessions) {
       let line = `- [${s.agentType}] "${s.title}"`;
       if (s.lastTool) line += ` | last tool: ${s.lastTool}`;
-      if (s.lastMessage) line += ` | last msg: ${s.lastMessage.slice(0, 150)}`;
+      if (s.lastMessage) line += ` | last msg: ${s.lastMessage.slice(0, 80)}`;
       sections.push(line);
     }
   } else {
@@ -75,7 +75,7 @@ function buildPrompt(ctx: CommentaryContext, previousMessages: FeedMessage[], st
     }
   }
 
-  sections.push('\nGenerate the next commentary message (2-4 sentences).');
+  sections.push('\nGenerate the next commentary message (exactly 2-3 sentences, bird\'s-eye overview only).');
   return sections.join('\n');
 }
 
