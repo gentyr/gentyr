@@ -109,7 +109,52 @@ export interface LiveDashboardData {
 // Page Navigation
 // ============================================================================
 
-export type PageId = 1 | 2 | 3 | 4;
+export type PageId = 1 | 2 | 3 | 4 | 5;
+
+// ============================================================================
+// Page 5: Live AI Commentary Feed
+// ============================================================================
+
+export interface FeedMessage {
+  id: string;
+  text: string;
+  timestamp: string;   // ISO
+  tokensUsed: number;
+}
+
+export interface Page5Data {
+  messages: FeedMessage[];
+  streamingText: string;          // partial text currently being generated
+  isGenerating: boolean;
+  lastGeneratedAt: string | null; // ISO
+  error: string | null;
+}
+
+export interface CommentaryContextSession {
+  agentType: string;
+  title: string;
+  lastTool: string | null;
+  lastMessage: string | null;
+}
+
+export interface CommentaryContextPlan {
+  title: string;
+  status: string;
+  progressPct: number;
+  currentPhase: string | null;
+}
+
+export interface CommentaryContextSummary {
+  title: string;
+  summary: string;
+}
+
+export interface CommentaryContext {
+  sessions: CommentaryContextSession[];
+  recentSummaries: CommentaryContextSummary[];
+  projectSummary: string | null;
+  plans: CommentaryContextPlan[];
+}
 
 // ============================================================================
 // Page 2: Demos & Tests
