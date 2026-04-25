@@ -555,7 +555,20 @@ export default async function sync(args) {
       console.log(`\n${YELLOW}Building window recorder...${NC}`);
       try {
         execFileSync('swift', ['build', '-c', 'release'], { cwd: windowRecorderDir, stdio: 'pipe', timeout: 120000 });
-        console.log('  Swift binary built');
+        // Codesign with stable CFBundleIdentifier so macOS TCC grants persist across rebuilds.
+        // Without this, each swift build produces a new ad-hoc signature and the user must
+        // re-grant Screen Recording permission every time.
+        const binaryPath = path.join(windowRecorderDir, '.build', 'release', 'WindowRecorder');
+        if (fs.existsSync(binaryPath)) {
+          try {
+            execFileSync('codesign', ['--force', '--sign', '-', '--identifier', 'com.gentyr.window-recorder', binaryPath], { stdio: 'pipe', timeout: 10000 });
+            console.log('  Swift binary built + signed (com.gentyr.window-recorder)');
+          } catch {
+            console.log('  Swift binary built (codesign failed — TCC grants may not persist across rebuilds)');
+          }
+        } else {
+          console.log('  Swift binary built');
+        }
       } catch (err) {
         console.log(`  ${YELLOW}Warning: Window recorder build failed: ${err.message}${NC}`);
       }

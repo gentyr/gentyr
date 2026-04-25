@@ -203,11 +203,12 @@ func findWindow(appName: String, titleSubstring: String?, skipSnapshot: Bool) as
 
 // MARK: - Stream Output Delegate
 
-class RecorderDelegate: NSObject, SCStreamOutput {
+class RecorderDelegate: NSObject, SCStreamOutput, SCStreamDelegate {
     let assetWriter: AVAssetWriter
     let videoInput: AVAssetWriterInput
     private var started = false
     private(set) var firstFrameStatus: Int? = nil
+    private(set) var streamError: Error? = nil
 
     init(assetWriter: AVAssetWriter, videoInput: AVAssetWriterInput) {
         self.assetWriter = assetWriter
@@ -243,6 +244,12 @@ class RecorderDelegate: NSObject, SCStreamOutput {
         }
     }
 
+    // SCStreamDelegate — receive runtime errors (e.g., permission revocation mid-stream)
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        streamError = error
+        FileHandle.standardError.write(Data("Error: SCStream stopped — \(error.localizedDescription)\n".utf8))
+    }
+
     func finalizeRecording() {
         guard started else { return }
         videoInput.markAsFinished()
@@ -262,10 +269,22 @@ let _ = CGMainDisplayID()
 
 let config = parseArgs()
 
+// Bug 1 fix: Preflight check for Screen Recording permission BEFORE any window discovery.
+// CGPreflightScreenCaptureAccess() returns false when the process (or its responsible process)
+// lacks Screen Recording permission in System Settings > Privacy & Security.
+// This avoids wasting time on window enumeration when permission will be denied anyway.
+if !CGPreflightScreenCaptureAccess() {
+    FileHandle.standardError.write(Data("SCREEN_RECORDING_DENIED: Screen Recording permission is not granted for this process.\n".utf8))
+    FileHandle.standardError.write(Data("Fix: Open System Settings > Privacy & Security > Screen Recording and grant permission to the terminal app or the 'claude' binary.\n".utf8))
+    FileHandle.standardError.write(Data("For spawned agents (launchd → claude → node → WindowRecorder), the 'claude' binary at /opt/homebrew/bin/claude needs the permission, not just Terminal.app.\n".utf8))
+    exit(2)
+}
+
 // Write diagnostic file so the caller can tell if the binary even started
 let diagPath = config.output + ".diag"
 try? "started at \(Date()), app=\(config.app), pid=\(ProcessInfo.processInfo.processIdentifier)\n".write(toFile: diagPath, atomically: true, encoding: .utf8)
 appendDiag("appendDiag OK, output=\(config.output)\n")
+appendDiag("CGPreflightScreenCaptureAccess: GRANTED\n")
 
 // Shared state for signal handling — must outlive the Task closure
 var activeStream: SCStream?
@@ -340,7 +359,7 @@ Task {
     // permission is soft-revoked (TCC auth_value=2). Permission denial is detected by inspecting
     // the status of the first frame delivered by ScreenCaptureKit (status 3 = .suspended = denied).
     do {
-        let stream = SCStream(filter: filter, configuration: streamConfig, delegate: nil)
+        let stream = SCStream(filter: filter, configuration: streamConfig, delegate: delegate)
         try stream.addStreamOutput(delegate, type: .screen, sampleHandlerQueue: DispatchQueue(label: "recorder"))
 
         try await stream.startCapture()

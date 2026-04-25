@@ -2353,6 +2353,19 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         await waitForChromeWindow(30000);
         windowRecordingPath = path.join(PROJECT_DIR, '.claude', 'state', `demo-window-${progressId}.mp4`);
         windowRecorder = startWindowRecorder(windowRecordingPath, 'Chrome for Testing');
+
+        // Wait briefly to detect fast permission failures (exit code 2).
+        // With the CGPreflightScreenCaptureAccess() gate, the recorder exits within ~100ms
+        // when permission is denied. Without this wait, run_demo returns "Video recording active"
+        // and the agent doesn't discover the error until check_demo_result — often after 16+ retries.
+        if (windowRecorder) {
+          const recDiag = recorderDiagnostics.get(windowRecorder.pid);
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          if (recDiag && recDiag.exitCode !== null) {
+            // Recorder already exited — permission denied or other fast failure
+            windowRecorder = null;
+          }
+        }
       }
     }
 
@@ -2842,14 +2855,22 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
 
     let recordingStatus = '';
+    let recordingPermissionError: string | undefined;
     if (windowRecorder) {
       recordingStatus = ' Video recording active.';
     } else if (args.headless) {
       recordingStatus = ' No video recording (headless mode).';
+    } else if (args.skip_recording) {
+      recordingStatus = ' No video recording (recording skipped).';
     } else {
-      recordingStatus = args.skip_recording
-        ? ' No video recording (recording skipped).'
-        : ' No video recording (window recorder unavailable).';
+      // Check if the recorder died with a permission error (exit code 2)
+      const demoEntry = demoRuns.get(demoPid);
+      if (demoEntry?.window_recorder_permission_error) {
+        recordingPermissionError = demoEntry.window_recorder_permission_error;
+        recordingStatus = ' RECORDING FAILED: Screen Recording permission denied. Grant permission to the claude binary in System Settings > Privacy & Security > Screen Recording, then restart the terminal. Do NOT retry — fix the permission first.';
+      } else {
+        recordingStatus = ' No video recording (window recorder unavailable).';
+      }
     }
 
     return {
@@ -2859,6 +2880,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       pid: child.pid,
       slow_mo,
       test_file: effectiveTestFile,
+      ...(recordingPermissionError ? { recording_permission_error: recordingPermissionError } : {}),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
