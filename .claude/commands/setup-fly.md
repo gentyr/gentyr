@@ -212,6 +212,47 @@ mcp__secret-sync__populate_secrets_local({
 
 This stores the `op://` reference (not the value) in `services.json` `secrets.local`.
 
+## Step 6b: Private Repository Access (if applicable)
+
+If the project repository is private, Fly.io machines need a GitHub token to clone it. Check if the repo is private:
+
+```bash
+gh repo view --json isPrivate -q '.isPrivate'
+```
+
+If `true`, check if `GITHUB_TOKEN` is already in `secrets.local`:
+
+```
+mcp__secret-sync__get_services_config()
+```
+
+Look for `GITHUB_TOKEN` in the `secrets.local` section. If it's not there:
+
+1. Find or create a GitHub token in 1Password:
+```
+mcp__onepassword__op_vault_map()
+```
+
+Look for an existing GitHub personal access token or fine-grained token with `contents:read` scope.
+
+2. If no token exists, ask the user to create one at https://github.com/settings/tokens with `repo` scope, then store it:
+```
+mcp__onepassword__create_item({
+  title: "GitHub Token (Fly.io clone)",
+  category: "API Credential",
+  fields: [{ field: "credential", value: "<token>", type: "concealed" }]
+})
+```
+
+3. Add the `op://` reference to secrets.local:
+```
+mcp__secret-sync__populate_secrets_local({
+  entries: { "GITHUB_TOKEN": "<the op:// reference>" }
+})
+```
+
+This token is resolved at runtime and passed to the Fly.io machine as `GIT_AUTH_TOKEN` for authenticated git clone. The token value never enters the agent context.
+
 ## Step 7: Update services.json with Fly Configuration
 
 Read the current services.json:

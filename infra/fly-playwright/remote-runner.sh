@@ -34,8 +34,16 @@ RECORDING_FPS="${GENTYR_RECORDING_FPS:-25}"
 XVFB_PID=""
 FFMPEG_PID=""
 
-# Ensure ffmpeg gets a graceful shutdown (SIGINT → moov atom) on any exit
-cleanup_recording() {
+# Ensure exit code is always written and artifacts are retrievable on ANY exit
+cleanup() {
+  local exit_code=$?
+
+  # 1. Write exit code immediately (before anything else) so the proactive
+  #    artifact poll can detect completion while we clean up.
+  echo "$exit_code" > /app/.exit-code 2>/dev/null || true
+  log "Exit trap fired (exit code: $exit_code)"
+
+  # 2. Stop ffmpeg recording gracefully (SIGINT → moov atom)
   if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
     kill -INT "$FFMPEG_PID" 2>/dev/null || true
     local count=0
@@ -44,11 +52,30 @@ cleanup_recording() {
     done
     kill -9 "$FFMPEG_PID" 2>/dev/null || true
   fi
+
+  # 3. Stop Xvfb
   if [[ -n "$XVFB_PID" ]]; then
     kill "$XVFB_PID" 2>/dev/null || true
   fi
+
+  # 4. Copy whatever artifacts exist (even partial logs from early failures)
+  log "Copying available artifacts..."
+  for DIR in test-results playwright-report; do
+    if [[ -d "/app/project/$DIR" ]]; then
+      cp -r "/app/project/$DIR" "/app/.artifacts/$DIR" 2>/dev/null || true
+    fi
+  done
+  if [[ -f "/app/.recording.mp4" ]]; then
+    cp "/app/.recording.mp4" /app/.artifacts/recording.mp4 2>/dev/null || true
+  fi
+
+  # 5. Grace period: keep the machine alive so the MCP server can pull artifacts
+  #    via the /exec API. Without this, auto_destroy kills the machine immediately.
+  log "Sleeping 60s for artifact retrieval..."
+  sleep 60
+  log "Cleanup complete (exit: $exit_code)"
 }
-trap cleanup_recording EXIT
+trap cleanup EXIT
 
 log "Starting remote Playwright runner"
 log "  GIT_REMOTE : $GIT_REMOTE"
@@ -310,64 +337,7 @@ wait "$WATCHDOG_PID" 2>/dev/null || true
 
 log "Playwright exited with code: $PLAYWRIGHT_EXIT"
 
-# ---------------------------------------------------------------------------
-# Stop recording
-# ---------------------------------------------------------------------------
-if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
-  log "Stopping ffmpeg recording..."
-  kill -INT "$FFMPEG_PID" 2>/dev/null || true
-  # Wait up to 10s for ffmpeg to finalize (write moov atom)
-  WAIT_COUNT=0
-  while kill -0 "$FFMPEG_PID" 2>/dev/null && [[ $WAIT_COUNT -lt 20 ]]; do
-    sleep 0.5
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-  done
-  kill -9 "$FFMPEG_PID" 2>/dev/null || true
-  wait "$FFMPEG_PID" 2>/dev/null || true
-
-  if [[ -f "$RECORDING_FILE" ]]; then
-    REC_SIZE=$(stat -c%s "$RECORDING_FILE" 2>/dev/null || stat -f%z "$RECORDING_FILE" 2>/dev/null || echo 0)
-    log "Recording saved: $RECORDING_FILE (${REC_SIZE} bytes)"
-    if [[ "$REC_SIZE" -eq 0 ]]; then
-      log "WARNING: Recording file is empty — ffmpeg may have failed. Check /app/.ffmpeg.log"
-      rm -f "$RECORDING_FILE"
-    fi
-  else
-    log "WARNING: Recording file not found after ffmpeg exit"
-  fi
-fi
-
-if [[ -n "$XVFB_PID" ]]; then
-  kill "$XVFB_PID" 2>/dev/null || true
-  wait "$XVFB_PID" 2>/dev/null || true
-fi
-
-# ---------------------------------------------------------------------------
-# Copy artifacts
-# ---------------------------------------------------------------------------
-log "Copying artifacts to /app/.artifacts/ ..."
-
-for DIR in test-results playwright-report; do
-  if [[ -d "/app/project/$DIR" ]]; then
-    cp -r "/app/project/$DIR" "/app/.artifacts/$DIR"
-    log "Copied $DIR"
-  fi
-done
-
-# Recording is pulled individually by fly-runner.ts (not via the tarball) to
-# avoid doubling transfer size through base64-encoded JSON.
-
-# ---------------------------------------------------------------------------
-# Write exit code for retrieval
-# ---------------------------------------------------------------------------
-echo "$PLAYWRIGHT_EXIT" > /app/.exit-code
-log "Exit code written to /app/.exit-code"
-
-# ---------------------------------------------------------------------------
-# Grace period: allow artifact retrieval before the container exits
-# ---------------------------------------------------------------------------
-log "Sleeping 60s for artifact retrieval ..."
-sleep 60
-
-log "Remote runner complete (exit: $PLAYWRIGHT_EXIT)"
-exit $PLAYWRIGHT_EXIT
+# The EXIT trap (cleanup) handles: writing exit code, stopping ffmpeg/Xvfb,
+# copying artifacts, and the 60s grace period for artifact retrieval.
+log "Remote runner complete (exit: ${PLAYWRIGHT_EXIT:-$?})"
+exit ${PLAYWRIGHT_EXIT:-1}
