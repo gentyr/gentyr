@@ -2304,9 +2304,33 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         try {
           const alive = await isMachineAlive(handle, machineConfig);
           if (!alive) {
-            const remoteEntry = demoRuns.get(syntheticPid);
-            if (remoteEntry && remoteEntry.status === 'running') {
-              remoteEntry.status = 'unknown';
+            // Machine died — attempt last-chance artifact pull before marking unknown
+            const deadEntry = demoRuns.get(syntheticPid);
+            if (deadEntry && !deadEntry.artifacts_pulled) {
+              try {
+                const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${handle.machineId}`);
+                fs.mkdirSync(destDir, { recursive: true });
+                const { pullRemoteArtifacts: pullArtifacts } = await import('./fly-runner.js');
+                await pullArtifacts(handle, machineConfig, destDir);
+                deadEntry.artifacts_pulled = true;
+                deadEntry.artifacts_dest_dir = destDir;
+                // Try to read exit code from pulled artifacts
+                const exitCodePath = path.join(destDir, 'exit-code');
+                if (fs.existsSync(exitCodePath)) {
+                  const code = parseInt(fs.readFileSync(exitCodePath, 'utf8').trim(), 10);
+                  deadEntry.status = code === 0 ? 'passed' : 'failed';
+                } else {
+                  deadEntry.status = 'unknown';
+                }
+              } catch {
+                // Machine already destroyed — can't pull. Mark unknown.
+                if (deadEntry && deadEntry.status === 'running') {
+                  deadEntry.status = 'unknown';
+                }
+              }
+              persistDemoRuns();
+            } else if (deadEntry && deadEntry.status === 'running') {
+              deadEntry.status = 'unknown';
               persistDemoRuns();
             }
             clearInterval(pollInterval);
