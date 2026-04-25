@@ -2298,6 +2298,52 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           }
         } catch { /* non-fatal */ }
 
+        // ── Proactive artifact pull: check if demo finished (exit code written) ──
+        // The exit-code file is written by remote-runner.sh right before the 60s
+        // grace period, so its presence means all artifacts are ready to pull.
+        const currentEntry = demoRuns.get(syntheticPid);
+        if (currentEntry && !currentEntry.artifacts_pulled) {
+          try {
+            const { execInMachine: execCmd, pullRemoteArtifacts: pullArtifacts, stopRemoteMachine: stopMachine } = await import('./fly-runner.js');
+            const exitCodeBuf = await execCmd(handle, machineConfig, ['cat', '/app/.exit-code'], 5_000);
+            const exitCodeStr = exitCodeBuf.toString('utf8').trim();
+            if (exitCodeStr !== '') {
+              // Demo finished — pull artifacts now while machine is still alive
+              process.stderr.write(`[fly-runner] Exit code detected (${exitCodeStr}), pulling artifacts proactively\n`);
+
+              const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${handle.machineId}`);
+              fs.mkdirSync(destDir, { recursive: true });
+
+              try {
+                await pullArtifacts(handle, machineConfig, destDir);
+              } catch (pullErr) {
+                process.stderr.write(`[fly-runner] Proactive artifact pull error: ${pullErr instanceof Error ? pullErr.message : String(pullErr)}\n`);
+              }
+
+              // Mark artifacts as pulled on the DemoRunState
+              const demoEntry = demoRuns.get(syntheticPid);
+              if (demoEntry) {
+                demoEntry.artifacts_pulled = true;
+                demoEntry.artifacts_dest_dir = destDir;
+                // Parse exit code to determine status
+                const exitCode = parseInt(exitCodeStr, 10);
+                demoEntry.status = exitCode === 0 ? 'passed' : 'failed';
+                persistDemoRuns();
+              }
+
+              // Stop the machine — don't waste the remaining grace period
+              try {
+                await stopMachine(handle, machineConfig);
+              } catch { /* non-fatal */ }
+
+              clearInterval(pollInterval);
+              return;
+            }
+          } catch {
+            // Exit code file doesn't exist yet — demo still running, continue polling
+          }
+        }
+
         // Stall detection via progress polling
         if (REMOTE_STALL_TIMEOUT_MS > 0 && Date.now() - handle.startedAt >= REMOTE_STALL_GRACE_MS) {
           try {
@@ -3239,12 +3285,15 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         };
       }
 
-      // Machine stopped — pull artifacts
-      const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${entry.fly_machine_id}`);
-      fs.mkdirSync(destDir, { recursive: true });
+      // Machine stopped — use proactively-pulled artifacts if available, otherwise pull now
+      const destDir = entry.artifacts_dest_dir || path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${entry.fly_machine_id}`);
 
-      try { await pullRemoteArtifacts(remoteHandle, remoteMachineConfig, destDir); }
-      catch (e) { process.stderr.write(`[fly-runner] Artifact pull failed: ${e instanceof Error ? e.message : String(e)}\n`); }
+      if (!entry.artifacts_pulled) {
+        // Machine stopped before proactive pull could happen — try to pull now (may fail if machine is destroyed)
+        fs.mkdirSync(destDir, { recursive: true });
+        try { await pullRemoteArtifacts(remoteHandle, remoteMachineConfig, destDir); }
+        catch (e) { process.stderr.write(`[fly-runner] Artifact pull failed: ${e instanceof Error ? e.message : String(e)}\n`); }
+      }
 
       let remoteExitCode = -1;
       try {
@@ -5983,8 +6032,27 @@ async function runRemoteBatchSequence(
           scenarioId: batchScenario.scenario_id,
         });
 
-        // Poll until machine stops
+        // Poll until machine stops — pull artifacts proactively when exit code is written
+        const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-batch-${state.batch_id}-${batchScenario.scenario_id}`);
+        fs.mkdirSync(destDir, { recursive: true });
+        let batchArtifactsPulled = false;
+
         while (await flyRunnerMod.isMachineAlive(handle, machineConfig)) {
+          // Check if demo has completed (exit code written = all artifacts ready to pull)
+          try {
+            const exitBuf = await flyRunnerMod.execInMachine(handle, machineConfig, ['cat', '/app/.exit-code'], 5_000);
+            const exitStr = exitBuf.toString('utf8').trim();
+            if (exitStr !== '') {
+              // Demo done — pull artifacts now while machine is still alive
+              process.stderr.write(`[fly-runner] Batch: exit code ${exitStr} detected, pulling artifacts proactively\n`);
+              try { await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); batchArtifactsPulled = true; }
+              catch { /* non-fatal */ }
+              break;
+            }
+          } catch {
+            // Exit code not yet written — demo still running
+          }
+
           await new Promise(r => setTimeout(r, 10_000));
           if (state.status !== 'running') {
             await flyRunnerMod.stopRemoteMachine(handle, machineConfig).catch(() => {});
@@ -5994,12 +6062,11 @@ async function runRemoteBatchSequence(
           }
         }
 
-        // Pull artifacts and parse results
-        const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-batch-${state.batch_id}-${batchScenario.scenario_id}`);
-        fs.mkdirSync(destDir, { recursive: true });
-
-        try { await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); }
-        catch { /* non-fatal */ }
+        // Pull artifacts and parse results (fallback if proactive pull didn't happen)
+        if (!batchArtifactsPulled) {
+          try { await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); }
+          catch { /* non-fatal — machine may already be destroyed */ }
+        }
 
         let exitCode = -1;
         try {
