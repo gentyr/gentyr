@@ -1866,53 +1866,53 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const { project, slow_mo, base_url, test_file } = args;
   let effectiveTestFile = test_file;
 
-  // Pre-flight validation (fast credential check, no I/O)
-  const preflight = validatePrerequisites();
-  if (!preflight.ok) {
-    return {
-      success: false,
-      project,
-      message: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
-      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
-    };
-  }
-
-  const webPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
-  const devServerUrl = base_url || `http://localhost:${webPort}`;
-
-  // Worktree freshness gate — auto-sync or block stale demos (before prerequisites so
-  // prerequisites run against up-to-date code)
-  const freshness = checkAndSyncWorktree();
-  if (!freshness.fresh) {
-    return {
-      success: false,
-      project,
-      message: `Worktree stale: ${freshness.message}`,
-      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
-    };
-  }
-
-  // Build artifact verification — detect stale compiled code before running prerequisites
-  const distWarnings = verifyDistArtifacts();
-  if (distWarnings.length > 0) {
-    return {
-      success: false,
-      project,
-      message: `Build artifact verification failed:\n${distWarnings.map(w => `  - ${w}`).join('\n')}\nRebuild the affected artifacts before running the demo.`,
-      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
-    };
-  }
-
-  // Skip local prerequisites when explicitly routing to Fly.io — the remote machine
-  // runs its own prerequisites and dev server via remote-runner.sh.
-  const skipLocalPrereqs = args.remote === true && (() => {
+  // When remote: true + Fly configured, skip ALL local setup — the remote machine
+  // handles its own clone, install, prerequisites, dev server, and test execution.
+  const skipLocalSetup = args.remote === true && (() => {
     const flyConfig = getFlyConfigFromServices();
     return flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
   })();
 
+  const webPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
+  const devServerUrl = base_url || `http://localhost:${webPort}`;
   let devServer: { ready: boolean; message: string } = { ready: false, message: 'Skipped — remote execution' };
+  let preflight: ReturnType<typeof validatePrerequisites> = { ok: true, errors: [], warnings: [] };
 
-  if (!skipLocalPrereqs) {
+  if (!skipLocalSetup) {
+    // Pre-flight validation (fast credential check, no I/O)
+    preflight = validatePrerequisites();
+    if (!preflight.ok) {
+      return {
+        success: false,
+        project,
+        message: `Environment validation failed:\n${preflight.errors.map(e => `  - ${e}`).join('\n')}`,
+        context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
+      };
+    }
+
+    // Worktree freshness gate — auto-sync or block stale demos (before prerequisites so
+    // prerequisites run against up-to-date code)
+    const freshness = checkAndSyncWorktree();
+    if (!freshness.fresh) {
+      return {
+        success: false,
+        project,
+        message: `Worktree stale: ${freshness.message}`,
+        context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
+      };
+    }
+
+    // Build artifact verification — detect stale compiled code before running prerequisites
+    const distWarnings = verifyDistArtifacts();
+    if (distWarnings.length > 0) {
+      return {
+        success: false,
+        project,
+        message: `Build artifact verification failed:\n${distWarnings.map(w => `  - ${w}`).join('\n')}\nRebuild the affected artifacts before running the demo.`,
+        context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
+      };
+    }
+
     // Execute registered prerequisites — this starts the dev server if registered as a background prereq
     const prereqResult = await executePrerequisites({
       scenario_id: args.scenario_id,
