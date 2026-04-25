@@ -211,21 +211,36 @@ try { console.log(fs.readFileSync(p, 'utf8')); } catch { console.log('{}'); }
 "
 ```
 
-Add the `fly` section via `mcp__secret-sync__update_services_config`:
+Add the `fly` section via `mcp__secret-sync__update_services_config`. **IMPORTANT**: The `apiToken` field MUST be the `op://` reference from Step 5 (the same one registered in `secrets.local`). The server reads `apiToken` from the `fly` section directly — without it, `get_fly_status` returns `configured: false`.
 
 ```
 mcp__secret-sync__update_services_config({
   fly: {
     enabled: true,
+    apiToken: "<the op:// reference from Step 5>",
     appName: "<the app name from Step 4>",
     region: "<the region from Step 4>",
-    machineCount: 3,
-    imageRef: "ghcr.io/playwright/playwright:latest"
+    maxConcurrentMachines: 3
   }
 })
 ```
 
-If `update_services_config` is unavailable (EACCES, root-owned file), inform the user that the change will be staged and applied on the next `npx gentyr sync`.
+Field names must match the schema exactly: `apiToken` (op:// reference), `appName`, `region`, `maxConcurrentMachines` (1-10), `machineSize` (optional, default "shared-cpu-2x"), `machineRam` (optional, default 2048 MB).
+
+If `update_services_config` returns an error about EACCES or root-owned file, inform the user that the change will be staged and applied on the next `npx gentyr sync`.
+
+**If `update_services_config` rejects the `fly` field** (e.g., unknown field error), the field may not be in the schema yet. In that case, fall back to direct file editing:
+
+```bash
+node -e "
+const fs = require('fs');
+const p = require('path').join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'config', 'services.json');
+const config = JSON.parse(fs.readFileSync(p, 'utf8'));
+config.fly = { enabled: true, apiToken: '<op:// reference>', appName: '<app-name>', region: '<region>', maxConcurrentMachines: 3 };
+fs.writeFileSync(p, JSON.stringify(config, null, 2));
+console.log('fly section written to services.json');
+"
+```
 
 ## Step 8: Provision the Fly.io App
 
@@ -285,11 +300,27 @@ If `get_fly_status` returns errors or `healthy: false`:
 
 | Error | Remedy |
 |---|---|
-| `FLY_API_TOKEN not set` | Re-run `/setup-fly` — the token was not written to `secrets.local` |
-| `app not found` | Run `flyctl apps create <app-name> --machines-ready-timeout 60` |
-| `authentication failed` | Run `flyctl auth login` then re-run `/setup-fly` |
+| `configured: false` | The `fly` section in `services.json` is missing or malformed. Verify `fly.apiToken` (must be `op://` reference) and `fly.appName` are both present. Re-run Step 7. |
+| `FLY_API_TOKEN resolution failed` | The `op://` reference in `fly.apiToken` can't be resolved. Verify the 1Password item exists via `op_vault_map`. |
+| `app not found` or 404 | Run `flyctl apps create <app-name> --machines-ready-timeout 60` |
+| `authentication failed` / 401 | The API token is invalid or expired. Create a new token: `flyctl tokens create deploy -x 8760h`, store in 1Password, update the `op://` reference. |
 | `no machines available` | Fly.io auto-scales — wait 30 seconds and retry |
-| `region not available` | Choose a different region in services.json via `update_services_config` |
+| `region not available` | Choose a different region via `update_services_config({ fly: { region: "lax" } })` |
+| `could not create machine` / billing error | **Fly.io requires a paid plan to create machines.** The free Hobby plan works but requires a credit card on file. Ask the user to check their billing at https://fly.io/dashboard/personal/billing |
+
+### Paid Plan Requirement
+
+Fly.io Machines API requires the account to have a payment method on file. If machine creation fails with billing-related errors:
+
+1. **Offer to help via chrome-bridge**: If chrome-bridge MCP is available, offer to navigate the user to the Fly.io billing page:
+   ```
+   mcp__chrome-bridge__navigate({ url: "https://fly.io/dashboard/personal/billing" })
+   ```
+   Then guide them through adding a payment method using `click_by_text` and `fill_input` tools.
+
+2. **Manual path**: Direct the user to https://fly.io/dashboard/personal/billing to add a credit card. The Hobby plan ($5/mo with $5 free credit) is sufficient for ephemeral Playwright machines.
+
+After adding payment, re-run `flyctl apps create <app-name>` and continue from Step 8.
 
 ## Notes
 
