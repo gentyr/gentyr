@@ -19,7 +19,6 @@ RUN chmod +x /app/remote-runner.sh
 
 # Default env vars (overridden at machine creation)
 ENV PNPM_STORE_DIR=/cache/pnpm-store
-ENV NODE_ENV=production
 ENV CI=true
 ENV DEMO_HEADLESS=1
 ENV DEMO_SLOW_MO=0

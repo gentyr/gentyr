@@ -2171,6 +2171,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       let gitRef = 'main';
       try {
         gitRemote = execSync('git remote get-url origin', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+        // Convert SSH URLs to HTTPS for container compatibility (no SSH keys in Docker)
+        if (gitRemote.startsWith('git@github.com:')) {
+          gitRemote = gitRemote.replace('git@github.com:', 'https://github.com/');
+        }
         gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
         if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
       } catch { /* non-fatal */ }
@@ -5924,6 +5928,10 @@ async function runRemoteBatchSequence(
         let gitRemote = '', gitRef = 'main';
         try {
           gitRemote = execSync('git remote get-url origin', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+          // Convert SSH URLs to HTTPS for container compatibility (no SSH keys in Docker)
+          if (gitRemote.startsWith('git@github.com:')) {
+            gitRemote = gitRemote.replace('git@github.com:', 'https://github.com/');
+          }
           gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
           if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
         } catch { /* non-fatal */ }
@@ -7115,7 +7123,7 @@ const tools: AnyToolHandler[] = [
             `https://registry.fly.io/v2/${flyConfig.appName}/manifests/latest`,
             {
               method: 'HEAD',
-              headers: { Authorization: `Bearer ${apiToken}` },
+              headers: { Authorization: `FlyV1 ${apiToken}` },
               signal: controller.signal,
             },
           );

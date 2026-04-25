@@ -163,6 +163,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "Deploying app '$APP_NAME' (remote build) ..."
 
+cd "$SCRIPT_DIR"
 flyctl deploy \
   --app "$APP_NAME" \
   --config "$TOML_OUT" \
