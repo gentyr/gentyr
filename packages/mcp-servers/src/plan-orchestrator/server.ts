@@ -40,6 +40,7 @@ import {
   CheckVerificationAuditArgsSchema,
   VerificationAuditPassArgsSchema,
   VerificationAuditFailArgsSchema,
+  GetPlanBlockingStatusArgsSchema,
   type CreatePlanArgs,
   type GetPlanArgs,
   type ListPlansArgs,
@@ -61,6 +62,7 @@ import {
   type CheckVerificationAuditArgs,
   type VerificationAuditPassArgs,
   type VerificationAuditFailArgs,
+  type GetPlanBlockingStatusArgs,
   type PlanRecord,
   type PhaseRecord,
   type PlanTaskRecord,
@@ -1923,6 +1925,84 @@ function forceClosePlan(args: ForceClosePlanArgs): object {
 }
 
 // ============================================================================
+// Plan Blocking Status
+// ============================================================================
+
+async function getPlanBlockingStatus(args: GetPlanBlockingStatusArgs): Promise<string> {
+  const db = getDb();
+
+  // Get plan
+  const plan = db.prepare('SELECT id, title, status FROM plans WHERE id = ?').get(args.plan_id) as { id: string; title: string; status: string } | undefined;
+  if (!plan) return JSON.stringify({ error: 'Plan not found' });
+
+  // Get paused plan tasks
+  const pausedTasks = db.prepare(
+    "SELECT id, title, phase_id, persistent_task_id, metadata FROM plan_tasks WHERE plan_id = ? AND status = 'paused'"
+  ).all(args.plan_id) as Array<{ id: string; title: string; phase_id: string; persistent_task_id: string | null; metadata: string | null }>;
+
+  // Get available parallel work (in_progress or ready tasks)
+  const parallelWork = db.prepare(
+    "SELECT id, title, status, phase_id FROM plan_tasks WHERE plan_id = ? AND status IN ('in_progress', 'ready')"
+  ).all(args.plan_id) as Array<{ id: string; title: string; status: string; phase_id: string }>;
+
+  // For each paused task, find downstream blocked tasks
+  const blockedDownstream: Array<{ task_id: string; title: string; blocked_by: string }> = [];
+  for (const pt of pausedTasks) {
+    const downstream = db.prepare(
+      "SELECT pt.id, pt.title FROM dependencies d JOIN plan_tasks pt ON d.blocked_id = pt.id AND d.blocked_type = 'task' WHERE d.blocker_id = ? AND d.blocker_type = 'task'"
+    ).all(pt.id) as Array<{ id: string; title: string }>;
+    for (const d of downstream) {
+      blockedDownstream.push({ task_id: d.id, title: d.title, blocked_by: pt.id });
+    }
+  }
+
+  // Check if any paused task is in a gate phase
+  const gatePhaseIds = new Set<string>();
+  for (const pt of pausedTasks) {
+    const phase = db.prepare('SELECT gate FROM phases WHERE id = ?').get(pt.phase_id) as { gate: number } | undefined;
+    if (phase?.gate) gatePhaseIds.add(pt.phase_id);
+  }
+
+  const fullyBlocked = pausedTasks.length > 0 && parallelWork.length === 0;
+  const partiallyBlocked = pausedTasks.length > 0 && parallelWork.length > 0;
+
+  // Build recommended actions
+  const recommendedActions: string[] = [];
+  if (fullyBlocked) {
+    recommendedActions.push('Plan is fully blocked. Submit bypass request if not already done.');
+    recommendedActions.push('Wait for CTO to resolve blocking items.');
+  } else if (partiallyBlocked) {
+    recommendedActions.push(`${parallelWork.length} task(s) available for parallel work.`);
+    recommendedActions.push('Continue spawning unblocked tasks while waiting for resolution.');
+  }
+  if (gatePhaseIds.size > 0) {
+    recommendedActions.push(`${gatePhaseIds.size} gate phase(s) affected — plan cannot complete until resolved.`);
+  }
+
+  return JSON.stringify({
+    plan_id: plan.id,
+    plan_title: plan.title,
+    plan_status: plan.status,
+    fully_blocked: fullyBlocked,
+    partially_blocked: partiallyBlocked,
+    paused_tasks: pausedTasks.map(t => ({
+      id: t.id,
+      title: t.title,
+      persistent_task_id: t.persistent_task_id,
+      in_gate_phase: gatePhaseIds.has(t.phase_id),
+    })),
+    blocked_downstream: blockedDownstream,
+    available_parallel_work: parallelWork.map(t => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+    })),
+    gate_phases_affected: gatePhaseIds.size,
+    recommended_actions: recommendedActions,
+  });
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -2052,6 +2132,12 @@ const tools: AnyToolHandler[] = [
     description: 'Mark a plan task audit as FAILED. Only called by independent auditor agents. Transitions task from pending_audit back to in_progress so the plan manager can investigate and retry.',
     schema: VerificationAuditFailArgsSchema,
     handler: verificationAuditFail,
+  },
+  {
+    name: 'get_plan_blocking_status',
+    description: 'Check whether a plan is blocked by paused tasks. Returns blocking assessment including paused tasks, downstream impact, and available parallel work. Used by plan-manager agents to assess blocking state on each monitoring cycle.',
+    schema: GetPlanBlockingStatusArgsSchema,
+    handler: getPlanBlockingStatus,
   },
 ];
 

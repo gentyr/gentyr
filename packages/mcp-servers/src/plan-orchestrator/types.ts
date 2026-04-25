@@ -332,6 +332,12 @@ export const VerificationAuditFailArgsSchema = z.object({
   evidence: z.string().optional().describe('What was found during verification'),
 });
 
+// Get plan blocking status
+export const GetPlanBlockingStatusArgsSchema = z.object({
+  plan_id: z.string().describe('Plan UUID to check blocking status for'),
+});
+export type GetPlanBlockingStatusArgs = z.infer<typeof GetPlanBlockingStatusArgsSchema>;
+
 // Force-close plan
 export const ForceClosePlanArgsSchema = z.object({
   plan_id: z.string().describe('Plan ID to force-close'),
