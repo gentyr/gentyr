@@ -344,6 +344,8 @@ export interface CheckDemoResultResult {
   remote?: boolean;
   fly_machine_id?: string;
   fly_region?: string;
+  /** Warning about remote execution failure and fallback to local execution */
+  remote_routing_warning?: string;
   message: string;
 }
 
@@ -378,6 +380,8 @@ export interface DemoRunState {
   remote?: boolean;
   fly_machine_id?: string;
   fly_app_name?: string;
+  /** Set when auto-routing attempted remote execution but fell back to local. Surfaces in check_demo_result. */
+  remote_routing_warning?: string;
 }
 
 export interface StopDemoResult {

@@ -179,7 +179,9 @@ When Fly.io is configured (`fly` section in `services.json`), headless demos aut
 
 **Batch parallelization**: `run_demo_batch` with `headless: true` (default) can run multiple scenarios simultaneously across Fly.io machines, limited by `fly.maxConcurrentMachines` (default 3).
 
-**Cost control**: Machines auto-stop on completion, have a 30-minute hard kill safety net, and `maxConcurrentMachines` caps concurrent usage. `get_fly_status` tool shows current machine count and health.
+**Cost control**: Machines auto-stop on completion, have a 30-minute hard kill safety net, and `maxConcurrentMachines` caps concurrent usage. `get_fly_status` tool shows current machine count and health. `get_fly_status` also returns `imageDeployed` — if `false`, no Docker image has been deployed to the Fly app and remote execution will fail. When `remote: true` is explicit, the error surfaces directly. When auto-routed, `check_demo_result` includes `remote_routing_warning` explaining the fallback to local. Fix: run `bash node_modules/gentyr/infra/fly-playwright/provision-app.sh --app-name <appName> --region <region>` in the target project, or re-run `/setup-fly`.
+
+**Image deployment requirement**: After `/setup-fly`, the Fly.io provisioning script must run to build and push the Docker image to `registry.fly.io/<appName>:latest`. Without this, `spawnRemoteMachine` fails and demos fall back to local execution. The `run_demo` response includes `remote_routing_warning` when this fallback occurs, and `check_demo_result` surfaces it in the result.
 
 **Agent decision tree**:
 - Need video recording? → `headless: false` (local, display lock required)
