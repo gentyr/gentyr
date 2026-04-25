@@ -70,6 +70,9 @@ import {
   SubmitBypassRequestArgsSchema,
   ResolveBypassRequestArgsSchema,
   ListBypassRequestsArgsSchema,
+  ListBlockingItemsArgsSchema,
+  ResolveBlockingItemArgsSchema,
+  GetBlockingSummaryArgsSchema,
   StageMcpServerArgsSchema,
   AcquireSharedResourceArgsSchema,
   ReleaseSharedResourceArgsSchema,
@@ -122,6 +125,9 @@ import {
   type SubmitBypassRequestArgs,
   type ResolveBypassRequestArgs,
   type ListBypassRequestsArgs,
+  type ListBlockingItemsArgs,
+  type ResolveBlockingItemArgs,
+  type GetBlockingSummaryArgs,
   type StageMcpServerArgs,
   type AcquireSharedResourceArgs,
   type ReleaseSharedResourceArgs,
@@ -4851,6 +4857,26 @@ function getBypassDb(): InstanceType<typeof Database> {
     );
     CREATE INDEX IF NOT EXISTS idx_bypass_status ON bypass_requests(status);
     CREATE INDEX IF NOT EXISTS idx_bypass_task ON bypass_requests(task_type, task_id);
+    CREATE TABLE IF NOT EXISTS blocking_queue (
+      id TEXT PRIMARY KEY,
+      bypass_request_id TEXT,
+      source_task_type TEXT NOT NULL,
+      source_task_id TEXT NOT NULL,
+      persistent_task_id TEXT,
+      plan_task_id TEXT,
+      plan_id TEXT,
+      plan_title TEXT,
+      blocking_level TEXT NOT NULL DEFAULT 'task',
+      impact_assessment TEXT,
+      summary TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      resolved_at TEXT,
+      resolution_context TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (blocking_level IN ('task', 'persistent_task', 'plan')),
+      CHECK (status IN ('active', 'resolved', 'superseded'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_blocking_queue_status ON blocking_queue(status);
   `);
   // Migration: add propagation_context column if absent (non-fatal)
   try {
@@ -5311,6 +5337,155 @@ async function listBypassRequests(args: ListBypassRequestsArgs): Promise<object 
   }
 }
 
+// ============================================================================
+// Blocking Queue Tools
+// ============================================================================
+
+async function listBlockingItems(args: ListBlockingItemsArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (args.status !== 'all') {
+      conditions.push('status = ?');
+      params.push(args.status);
+    }
+
+    if (args.plan_id) {
+      conditions.push('plan_id = ?');
+      params.push(args.plan_id);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    params.push(args.limit);
+
+    const items = db.prepare(
+      `SELECT id, bypass_request_id, source_task_type, source_task_id, persistent_task_id,
+              plan_task_id, plan_id, plan_title, blocking_level, impact_assessment, summary,
+              status, resolved_at, resolution_context, created_at
+       FROM blocking_queue
+       ${whereClause}
+       ORDER BY
+         CASE blocking_level WHEN 'plan' THEN 0 WHEN 'persistent_task' THEN 1 ELSE 2 END ASC,
+         created_at ASC
+       LIMIT ?`
+    ).all(...params) as Array<{
+      id: string; bypass_request_id: string | null; source_task_type: string; source_task_id: string;
+      persistent_task_id: string | null; plan_task_id: string | null; plan_id: string | null;
+      plan_title: string | null; blocking_level: string; impact_assessment: string | null;
+      summary: string; status: string; resolved_at: string | null; resolution_context: string | null;
+      created_at: string;
+    }>;
+
+    // Parse impact_assessment JSON if present
+    const parsedItems = items.map(item => {
+      let parsedImpact: unknown = null;
+      if (item.impact_assessment) {
+        try {
+          parsedImpact = JSON.parse(item.impact_assessment);
+        } catch {
+          parsedImpact = item.impact_assessment;
+        }
+      }
+      return { ...item, impact_assessment: parsedImpact };
+    });
+
+    return { items: parsedItems, total: parsedItems.length };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function resolveBlockingItem(args: ResolveBlockingItemArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    const existing = db.prepare(
+      'SELECT id, status FROM blocking_queue WHERE id = ?'
+    ).get(args.id) as { id: string; status: string } | undefined;
+
+    if (!existing) {
+      return { error: `Blocking queue item not found: ${args.id}` };
+    }
+
+    if (existing.status !== 'active') {
+      return { error: `Blocking queue item is already in terminal state: ${existing.status}` };
+    }
+
+    db.prepare(
+      "UPDATE blocking_queue SET status = 'resolved', resolved_at = datetime('now'), resolution_context = ? WHERE id = ?"
+    ).run(args.resolution_context || null, args.id);
+
+    const updated = db.prepare(
+      `SELECT id, bypass_request_id, source_task_type, source_task_id, persistent_task_id,
+              plan_task_id, plan_id, plan_title, blocking_level, impact_assessment, summary,
+              status, resolved_at, resolution_context, created_at
+       FROM blocking_queue WHERE id = ?`
+    ).get(args.id) as {
+      id: string; bypass_request_id: string | null; source_task_type: string; source_task_id: string;
+      persistent_task_id: string | null; plan_task_id: string | null; plan_id: string | null;
+      plan_title: string | null; blocking_level: string; impact_assessment: string | null;
+      summary: string; status: string; resolved_at: string | null; resolution_context: string | null;
+      created_at: string;
+    };
+
+    let parsedImpact: unknown = null;
+    if (updated.impact_assessment) {
+      try {
+        parsedImpact = JSON.parse(updated.impact_assessment);
+      } catch {
+        parsedImpact = updated.impact_assessment;
+      }
+    }
+
+    return { item: { ...updated, impact_assessment: parsedImpact }, resolved: true };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function getBlockingSummary(_args: GetBlockingSummaryArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    const counts = db.prepare(
+      "SELECT blocking_level, COUNT(*) as cnt FROM blocking_queue WHERE status = 'active' GROUP BY blocking_level"
+    ).all() as Array<{ blocking_level: string; cnt: number }>;
+
+    const byLevel: Record<string, number> = { plan: 0, persistent_task: 0, task: 0 };
+    let total = 0;
+    for (const row of counts) {
+      byLevel[row.blocking_level] = row.cnt;
+      total += row.cnt;
+    }
+
+    let oldestAgeMinutes: number | null = null;
+    if (total > 0) {
+      const oldest = db.prepare(
+        "SELECT created_at FROM blocking_queue WHERE status = 'active' ORDER BY created_at ASC LIMIT 1"
+      ).get() as { created_at: string } | undefined;
+
+      if (oldest) {
+        const ageMs = Date.now() - new Date(oldest.created_at + 'Z').getTime();
+        oldestAgeMinutes = Math.floor(ageMs / 60000);
+      }
+    }
+
+    return {
+      total,
+      by_level: byLevel,
+      oldest_age_minutes: oldestAgeMinutes,
+    };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'list_spawned_agents',
@@ -5667,11 +5842,30 @@ const tools: AnyToolHandler[] = [
     schema: ListBypassRequestsArgsSchema,
     handler: listBypassRequests,
   },
+  // Blocking Queue tools
+  {
+    name: 'list_blocking_items',
+    description: 'List items in the blocking queue — genuinely work-blocking issues distinct from informational reports. Sorted by blocking_level (plan > persistent_task > task), then by age. Defaults to active items.',
+    schema: ListBlockingItemsArgsSchema,
+    handler: listBlockingItems,
+  },
+  {
+    name: 'resolve_blocking_item',
+    description: 'Mark a blocking queue item as resolved. Returns the updated item.',
+    schema: ResolveBlockingItemArgsSchema,
+    handler: resolveBlockingItem,
+  },
+  {
+    name: 'get_blocking_summary',
+    description: 'Get a compact summary of active blocking queue items: total count, counts by blocking_level (plan/persistent_task/task), and age of the oldest active item. Fast — suitable for notification hooks.',
+    schema: GetBlockingSummaryArgsSchema,
+    handler: getBlockingSummary,
+  },
 ];
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '9.3.0',  // Added CTO bypass request system (submit/resolve/list)
+  version: '9.4.0',  // Added blocking_queue table and list/resolve/summary tools
   tools,
 });
 
