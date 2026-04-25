@@ -288,13 +288,13 @@ export interface RunDemoResult {
 }
 
 export const CheckDemoResultArgsSchema = z.object({
-  pid: z.coerce.number().int().min(1)
-    .describe('Process ID returned by run_demo.'),
+  pid: z.coerce.number().int()
+    .describe('Process ID returned by run_demo (negative PIDs indicate remote Fly.io execution).'),
 });
 
 export const StopDemoArgsSchema = z.object({
-  pid: z.coerce.number().int().min(1)
-    .describe('Process ID of the demo to stop (from run_demo).'),
+  pid: z.coerce.number().int()
+    .describe('Process ID of the demo to stop (from run_demo). Negative PIDs indicate remote Fly.io execution.'),
 });
 
 export type CheckDemoResultArgs = z.infer<typeof CheckDemoResultArgsSchema>;

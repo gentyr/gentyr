@@ -297,6 +297,53 @@ function inferArtifactType(filePath: string): RemoteArtifact['type'] {
 }
 
 // ============================================================================
+// Internal: resolveAppImage
+// ============================================================================
+
+/**
+ * Resolve the current Docker image reference for a Fly app.
+ *
+ * Queries the OCI registry's tag list (FlyV1 auth) and picks the most recent
+ * `deployment-*` tag. Falls back to `:latest` if the registry is unreachable.
+ */
+async function resolveAppImage(config: FlyConfig): Promise<string> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(
+      `https://registry.fly.io/v2/${config.appName}/tags/list`,
+      {
+        headers: { Authorization: `FlyV1 ${config.apiToken}` },
+        signal: controller.signal,
+      },
+    );
+    clearTimeout(timer);
+
+    if (resp.ok) {
+      const data = (await resp.json()) as { tags?: string[] };
+      if (data.tags && data.tags.length > 0) {
+        // deployment- tags sort chronologically; pick the last (most recent)
+        const deployTags = data.tags
+          .filter((t: string) => t.startsWith('deployment-'))
+          .sort();
+        if (deployTags.length > 0) {
+          const tag = deployTags[deployTags.length - 1];
+          process.stderr.write(`[fly-runner] resolved image tag: ${tag}\n`);
+          return `registry.fly.io/${config.appName}:${tag}`;
+        }
+        // No deployment- tags — use first available
+        return `registry.fly.io/${config.appName}:${data.tags[0]}`;
+      }
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[fly-runner] image resolution failed, falling back to :latest: ${msg}\n`);
+  }
+
+  return `registry.fly.io/${config.appName}:latest`;
+}
+
+// ============================================================================
 // Exported: spawnRemoteMachine
 // ============================================================================
 
@@ -352,7 +399,7 @@ export async function spawnRemoteMachine(
     name: machineName,
     region: config.region,
     config: {
-      image: `registry.fly.io/${config.appName}:latest`,
+      image: await resolveAppImage(config),
       guest: {
         cpu_kind: 'shared',
         cpus: 2,

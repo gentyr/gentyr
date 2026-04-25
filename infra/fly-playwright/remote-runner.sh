@@ -60,7 +60,7 @@ log "  TEST_FILE  : $TEST_FILE"
 # ---------------------------------------------------------------------------
 if [[ -n "${GIT_AUTH_TOKEN:-}" ]]; then
   log "Configuring git credential helper (GIT_AUTH_TOKEN is set)"
-  git config --global credential.helper '!f() { echo "password=$GIT_AUTH_TOKEN"; }; f'
+  git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=$GIT_AUTH_TOKEN"; }; f'
 fi
 
 # ---------------------------------------------------------------------------
@@ -75,8 +75,9 @@ cd /app/project
 # Install dependencies
 # ---------------------------------------------------------------------------
 log "Running pnpm install (store: ${PNPM_STORE_DIR:-/cache/pnpm-store}) ..."
-PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
+NODE_ENV=development PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
   pnpm install --frozen-lockfile 2>&1 | tee -a /app/.error.log
+export NODE_ENV=production
 
 # ---------------------------------------------------------------------------
 # Execute prerequisites from GENTYR_PREREQUISITES JSON
