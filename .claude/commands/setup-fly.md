@@ -149,9 +149,11 @@ Then ask for the primary region:
 
 If "Other": ask for the region code directly.
 
-## Step 5: Discover 1Password Token Reference
+## Step 5: Discover or Create 1Password Token
 
-Look up the Fly.io API token in 1Password via the MCP tool:
+### 5a: Check for existing token
+
+Look up the Fly.io API token in 1Password:
 
 ```
 mcp__onepassword__op_vault_map()
@@ -159,44 +161,56 @@ mcp__onepassword__op_vault_map()
 
 Search the returned map for items containing "fly" (case-insensitive) in the vault name or item title. Look for fields named `token`, `api-key`, `api_key`, or `credential`.
 
-Present the matching `op://` references to the user:
+### 5b: If existing token found
 
-```
-Found potential Fly.io token references in 1Password:
-  op://Vault/Item/field
-  op://Vault/Item/field
-```
-
-If none found, inform the user:
-
-> No Fly.io token found in 1Password. You will need to:
-> 1. Create a Fly.io API token at https://fly.io/user/personal_access_tokens
-> 2. Store it in 1Password (any vault, any item, any field name)
-> 3. Re-run `/setup-fly` to pick it up automatically
-
-Ask which `op://` reference to use (or if they want to add it to 1Password first):
+Present the matching `op://` references and ask which to use:
 
 **Question:** "Which 1Password reference holds your Fly.io API token?"
 
 **Header:** "Fly.io Token"
 
-**Options:** (list the found references) + "None of these — I'll add it to 1Password first"
+**Options:** (list the found references) + "Create a new token instead"
 
-If they choose to add it to 1Password first, instruct them and stop. They can re-run `/setup-fly` after.
+### 5c: If no token found OR user chose "Create a new token"
+
+Create a deploy token via `flyctl` and store it directly in 1Password using the `create_item` MCP tool:
+
+```bash
+# Generate a deploy-scoped token with 1-year expiry
+flyctl tokens create deploy -x 8760h 2>/dev/null
+```
+
+Capture the output (the token string), then store it in 1Password:
+
+```
+mcp__onepassword__create_item({
+  title: "Fly.io Playwright (<app-name>)",
+  category: "API Credential",
+  vault: "Automation",
+  fields: [
+    { field: "credential", value: "<the token from flyctl>", type: "concealed" }
+  ],
+  notes: "Deploy token for Fly.io remote Playwright execution. App: <app-name>. Region: <region>. Created by /setup-fly."
+})
+```
+
+The response returns the `op://` reference (e.g., `op://Automation/Fly.io Playwright (<app-name>)/credential`). **The token value never enters the conversation context** — it goes directly from `flyctl` output to `create_item` via the MCP server.
+
+If the `Automation` vault doesn't exist, use whichever vault is available (e.g., `Preview`, `Production`).
 
 ## Step 6: Register the Token as a Secret
 
-Call `mcp__secret-sync__populate_secrets_local` to register the token reference:
+Using the `op://` reference from Step 5 (either found or newly created):
 
 ```
 mcp__secret-sync__populate_secrets_local({
   entries: {
-    "FLY_API_TOKEN": "<the selected op:// reference>"
+    "FLY_API_TOKEN": "<the op:// reference>"
   }
 })
 ```
 
-This stores the `op://` reference (not the value) in `services.json`. The MCP launcher resolves it at runtime.
+This stores the `op://` reference (not the value) in `services.json` `secrets.local`.
 
 ## Step 7: Update services.json with Fly Configuration
 
@@ -252,15 +266,9 @@ Run the provisioning steps:
 flyctl apps list 2>/dev/null | grep -q "<app-name>" || flyctl apps create "<app-name>" --machines-ready-timeout 60
 ```
 
-### 8b: Set the Fly.io API token as a secret on the app
+**If app creation fails with a billing error:** Fly.io requires a payment method on file to create machines. See the Troubleshooting section below for guidance on helping the user set up billing (including chrome-bridge assisted navigation).
 
-```bash
-flyctl secrets set FLY_API_TOKEN="$(flyctl tokens create deploy -x 8760h 2>/dev/null)" --app "<app-name>"
-```
-
-Note: This uses `flyctl tokens create deploy` to create a deploy-scoped token with 1-year expiry. The token is set as an app secret so Playwright machines can authenticate.
-
-### 8c: Verify the app is ready
+### 8b: Verify the app is ready
 
 ```bash
 flyctl status --app "<app-name>" 2>/dev/null
