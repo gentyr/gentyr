@@ -160,7 +160,7 @@ process.stdin.on('end', () => {
       // Secrets.local is fine but there are pending keys awaiting sync
       const message = `⚠ ${pendingKeys.length} secret(s) STAGED but not applied: ${pendingKeys.join(', ')}.
 
-These were added via populate_secrets_local but services.json is root-protected. Run 'npx gentyr sync' to apply them. Do NOT re-add — they are already staged.`;
+These were added via populate_secrets_local but services.json is root-protected. Ask the CTO to run 'npx gentyr sync' to apply them. Do NOT re-add — they are already staged.`;
       state.lastCheck = now;
       state.lastStatus = 'pending';
       writeState(state);
@@ -185,12 +185,12 @@ These were added via populate_secrets_local but services.json is root-protected.
     if (pendingKeys.length > 0) {
       // Some keys are staged but not yet applied — tell the agent sync is needed, not re-staging
       const pendingAlreadyCoversMissing = hasMissing && Object.values(missingByProfile).flat().every(k => pendingKeys.includes(k));
-      issues.push(`${pendingKeys.length} key(s) are STAGED in secrets-local-pending.json awaiting application: ${pendingKeys.join(', ')}. Run 'npx gentyr sync' to apply them.`);
+      issues.push(`${pendingKeys.length} key(s) are STAGED in secrets-local-pending.json awaiting application: ${pendingKeys.join(', ')}. Ask the CTO to run 'npx gentyr sync' to apply them.`);
       if (pendingAlreadyCoversMissing) {
         // All missing keys are already staged — just needs sync
         const message = `⚠ SECRETS STAGED BUT NOT APPLIED — run 'npx gentyr sync' to apply ${pendingKeys.length} pending key(s): ${pendingKeys.join(', ')}.
 
-These entries were already added via populate_secrets_local but services.json is root-protected. The ONLY remaining step is 'npx gentyr sync' — do NOT re-add these keys.`;
+These entries were already added via populate_secrets_local but services.json is root-protected. The ONLY remaining step is for the CTO to run 'npx gentyr sync' — do NOT re-add these keys.`;
         state.lastCheck = now;
         state.lastStatus = 'pending';
         writeState(state);

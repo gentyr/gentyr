@@ -1503,7 +1503,7 @@ async function registerSecretProfile(args: RegisterSecretProfileArgs): Promise<s
     result.warning = `These secretKeys are not yet defined in secrets.local: ${missingKeys.join(', ')}. They must be added before the profile can resolve them.`;
   }
   if (pending) {
-    result.message = 'Config staged — will be applied on next "npx gentyr sync".';
+    result.message = 'Config staged — ask the CTO to run "npx gentyr sync" to apply.';
   }
   return JSON.stringify(result, null, 2);
 }
@@ -1537,7 +1537,7 @@ async function deleteSecretProfile(args: DeleteSecretProfileArgs): Promise<strin
 
   const { applied, pending } = writeServicesConfig(config);
   const result: Record<string, unknown> = { deleted: args.name, applied, pending };
-  if (pending) result.message = 'Config staged — will be applied on next "npx gentyr sync".';
+  if (pending) result.message = 'Config staged — ask the CTO to run "npx gentyr sync" to apply.';
   return JSON.stringify(result);
 }
 
@@ -1611,7 +1611,7 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
         applied: false,
         pending: true,
         updatedKeys: Object.keys(args.updates),
-        message: 'Config staged — will be applied on next "npx gentyr sync".',
+        message: 'Config staged — ask the CTO to run "npx gentyr sync" to apply.',
       });
     }
     throw err;
@@ -1696,7 +1696,7 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
         newCount,
         updatedCount,
         stagedEntries: Object.keys(mergedPending).length,
-        message: `Entries staged in secrets-local-pending.json. Run 'npx gentyr sync' to apply (requires sudo for root-owned files).`,
+        message: `Entries staged in secrets-local-pending.json. Ask the CTO to run 'npx gentyr sync' to apply them. Do NOT re-add — they are already staged.`,
       });
     }
     throw err;

@@ -298,6 +298,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/mcp-guidance-hook.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/pending-sync-notifier.js",
+            "timeout": 5
           }
         ]
       }
