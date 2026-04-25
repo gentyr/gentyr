@@ -25,6 +25,31 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Recording configuration
+# ---------------------------------------------------------------------------
+RECORDING_FILE="/app/.recording.mp4"
+RECORDING_RESOLUTION="${GENTYR_RECORDING_RESOLUTION:-1920x1080}"
+RECORDING_FPS="${GENTYR_RECORDING_FPS:-25}"
+XVFB_PID=""
+FFMPEG_PID=""
+
+# Ensure ffmpeg gets a graceful shutdown (SIGINT → moov atom) on any exit
+cleanup_recording() {
+  if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
+    kill -INT "$FFMPEG_PID" 2>/dev/null || true
+    local count=0
+    while kill -0 "$FFMPEG_PID" 2>/dev/null && [[ $count -lt 20 ]]; do
+      sleep 0.5; count=$((count + 1))
+    done
+    kill -9 "$FFMPEG_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$XVFB_PID" ]]; then
+    kill "$XVFB_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_recording EXIT
+
 log "Starting remote Playwright runner"
 log "  GIT_REMOTE : $GIT_REMOTE"
 log "  GIT_REF    : $GIT_REF"
@@ -179,6 +204,40 @@ if [[ -n "${DEV_SERVER_CMD:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Start virtual display for window-level recording (Xvfb + ffmpeg)
+# ---------------------------------------------------------------------------
+log "Starting Xvfb virtual display (${RECORDING_RESOLUTION})..."
+Xvfb :99 -screen 0 "${RECORDING_RESOLUTION}x24" -ac -nolisten tcp &
+XVFB_PID=$!
+export DISPLAY=:99
+sleep 1
+
+if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+  error "Xvfb failed to start — falling back to headless (no recording)"
+  XVFB_PID=""
+else
+  # Run headed on virtual display for full-window recording
+  export DEMO_HEADLESS=0
+  export DEMO_MAXIMIZE=1
+
+  log "Starting ffmpeg display recording (${RECORDING_RESOLUTION} @ ${RECORDING_FPS}fps)..."
+  ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
+    -framerate "${RECORDING_FPS}" -i :99 \
+    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+    -y "$RECORDING_FILE" \
+    < /dev/null > /app/.ffmpeg.log 2>&1 &
+  FFMPEG_PID=$!
+  sleep 0.5
+
+  if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
+    error "ffmpeg failed to start — continuing without recording"
+    FFMPEG_PID=""
+  else
+    log "Recording started (PID: $FFMPEG_PID)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Set up progress JSONL file
 # ---------------------------------------------------------------------------
 PROGRESS_FILE="/app/.progress.jsonl"
@@ -246,9 +305,41 @@ wait "$PLAYWRIGHT_PID" || PLAYWRIGHT_EXIT=$?
 
 # Kill the watchdog (it may already be done)
 kill "$WATCHDOG_PID" 2>/dev/null
-wait "$WATCHDOG_PID" 2>/dev/null
+wait "$WATCHDOG_PID" 2>/dev/null || true
 
 log "Playwright exited with code: $PLAYWRIGHT_EXIT"
+
+# ---------------------------------------------------------------------------
+# Stop recording
+# ---------------------------------------------------------------------------
+if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
+  log "Stopping ffmpeg recording..."
+  kill -INT "$FFMPEG_PID" 2>/dev/null || true
+  # Wait up to 10s for ffmpeg to finalize (write moov atom)
+  WAIT_COUNT=0
+  while kill -0 "$FFMPEG_PID" 2>/dev/null && [[ $WAIT_COUNT -lt 20 ]]; do
+    sleep 0.5
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+  done
+  kill -9 "$FFMPEG_PID" 2>/dev/null || true
+  wait "$FFMPEG_PID" 2>/dev/null || true
+
+  if [[ -f "$RECORDING_FILE" ]]; then
+    REC_SIZE=$(stat -c%s "$RECORDING_FILE" 2>/dev/null || stat -f%z "$RECORDING_FILE" 2>/dev/null || echo 0)
+    log "Recording saved: $RECORDING_FILE (${REC_SIZE} bytes)"
+    if [[ "$REC_SIZE" -eq 0 ]]; then
+      log "WARNING: Recording file is empty — ffmpeg may have failed. Check /app/.ffmpeg.log"
+      rm -f "$RECORDING_FILE"
+    fi
+  else
+    log "WARNING: Recording file not found after ffmpeg exit"
+  fi
+fi
+
+if [[ -n "$XVFB_PID" ]]; then
+  kill "$XVFB_PID" 2>/dev/null || true
+  wait "$XVFB_PID" 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # Copy artifacts
@@ -261,6 +352,9 @@ for DIR in test-results playwright-report; do
     log "Copied $DIR"
   fi
 done
+
+# Recording is pulled individually by fly-runner.ts (not via the tarball) to
+# avoid doubling transfer size through base64-encoded JSON.
 
 # ---------------------------------------------------------------------------
 # Write exit code for retrieval

@@ -3226,6 +3226,42 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         ? `${remoteProgress.tests_failed} test(s) failed out of ${remoteProgress.tests_completed}`
         : undefined;
 
+      // Check for remote recording — persist to local recordings directory
+      let remoteRecordingPath: string | undefined;
+      let remoteRecordingSource: 'window' | 'none' = 'none';
+      const pulledRecording = path.join(destDir, 'recording.mp4');
+      if (fs.existsSync(pulledRecording)) {
+        const recStats = fs.statSync(pulledRecording);
+        if (recStats.size > 0) {
+          if (entry.scenario_id) {
+            try {
+              persistScenarioRecording(entry.scenario_id, pulledRecording);
+              remoteRecordingPath = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${entry.scenario_id}.mp4`);
+              remoteRecordingSource = 'window';
+            } catch (recErr) {
+              process.stderr.write(`[playwright] Failed to persist remote recording: ${recErr instanceof Error ? recErr.message : String(recErr)}\n`);
+            }
+          } else {
+            // No scenario_id — keep recording in the artifact directory
+            remoteRecordingPath = pulledRecording;
+            remoteRecordingSource = 'window';
+          }
+        }
+      }
+
+      // Extract failure frames from remote recording (same as local)
+      let remoteFailureFrames: Array<{ file_path: string; timestamp_seconds: number }> | undefined;
+      if (remoteRecordingPath && remoteRecordingSource === 'window' && remoteStatus !== 'passed' && remoteDuration > 0) {
+        try {
+          const frameResult = extractFramesFromVideo(remoteRecordingPath, remoteDuration, 3);
+          if ('frames' in frameResult) {
+            remoteFailureFrames = frameResult.frames;
+          }
+        } catch {
+          // ffprobe/ffmpeg may not be available — non-fatal
+        }
+      }
+
       return {
         status: remoteStatus,
         pid,
@@ -3242,10 +3278,15 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         failure_summary: remoteExitCode !== 0
           ? (structuredFailureSummary || remoteStderrTail.slice(-500) || 'Remote demo failed')
           : undefined,
-        analysis_guidance: buildRemoteAnalysisGuidance(remoteStatus, remoteTraceSummary, destDir),
+        recording_path: remoteRecordingPath,
+        recording_source: remoteRecordingSource,
+        failure_frames: remoteFailureFrames,
+        analysis_guidance: remoteRecordingPath
+          ? `REQUIRED: Review the video recording at ${remoteRecordingPath} to verify the demo ran correctly. Use extract_video_frames to inspect specific moments.${remoteTraceSummary ? ' Also review trace_summary for the play-by-play of browser actions.' : ''}`
+          : buildRemoteAnalysisGuidance(remoteStatus, remoteTraceSummary, destDir),
         message: remoteExitCode === 0
-          ? `Remote demo passed on Fly.io (${remoteDuration}s).${remoteTraceSummary ? ' Trace available in trace_summary.' : ''} Artifacts at ${destDir}`
-          : `Remote demo failed (exit ${remoteExitCode}, ${remoteDuration}s). ${structuredFailureSummary || 'Check stderr_tail.'} Artifacts at ${destDir}`,
+          ? `Remote demo passed on Fly.io (${remoteDuration}s).${remoteTraceSummary ? ' Trace available in trace_summary.' : ''}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`
+          : `Remote demo failed (exit ${remoteExitCode}, ${remoteDuration}s). ${structuredFailureSummary || 'Check stderr_tail.'}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`,
         remote: true,
         fly_machine_id: entry.fly_machine_id,
         fly_region: remoteMachineConfig.region,

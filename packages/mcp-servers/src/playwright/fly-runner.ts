@@ -624,6 +624,8 @@ export async function pullRemoteArtifacts(
     { remotePath: '/app/.stderr.log', localName: 'stderr.log' },
     { remotePath: '/app/.exit-code', localName: 'exit-code' },
     { remotePath: '/app/.progress.jsonl', localName: 'progress.jsonl' },
+    { remotePath: '/app/.recording.mp4', localName: 'recording.mp4' },
+    { remotePath: '/app/.ffmpeg.log', localName: 'ffmpeg.log' },
   ];
 
   for (const { remotePath, localName } of individualFiles) {

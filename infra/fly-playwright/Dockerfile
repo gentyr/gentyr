@@ -3,8 +3,8 @@ FROM mcr.microsoft.com/playwright:v1.48.0-noble
 # Install pnpm globally
 RUN npm install -g pnpm@9
 
-# Install jq for JSON processing in remote-runner.sh
-RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
+# Install jq for JSON processing in remote-runner.sh, xvfb + ffmpeg for window-level recording
+RUN apt-get update && apt-get install -y --no-install-recommends jq xvfb ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # Create working directories
 WORKDIR /app
