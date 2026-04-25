@@ -1336,6 +1336,64 @@ function extractFramesFromVideo(
   };
 }
 
+/**
+ * Extract periodic screenshots from a video recording at fixed intervals.
+ *
+ * Used by the remote demo path to produce screenshot files identical to the
+ * local macOS `screencapture` periodic capture system. Filenames follow the
+ * local convention: `screenshot-XXXX.png` where XXXX is elapsed seconds.
+ *
+ * @returns Number of screenshots extracted, or 0 on failure.
+ */
+function extractScreenshotsFromRecording(
+  recordingPath: string,
+  screenshotDir: string,
+  intervalSeconds: number = 3,
+): number {
+  if (!fs.existsSync(recordingPath)) return 0;
+
+  fs.mkdirSync(screenshotDir, { recursive: true });
+
+  // Clean stale screenshots from a prior run (avoids stale timestamps from longer recordings)
+  try {
+    for (const f of fs.readdirSync(screenshotDir).filter(f => f.startsWith('screenshot-') && f.endsWith('.png'))) {
+      fs.unlinkSync(path.join(screenshotDir, f));
+    }
+  } catch { /* non-fatal */ }
+
+  // Extract one frame per intervalSeconds
+  try {
+    execFileSync('ffmpeg', [
+      '-y',
+      '-i', recordingPath,
+      '-vf', `fps=1/${intervalSeconds}`,
+      path.join(screenshotDir, 'frame-%04d.png'),
+    ], { timeout: 120_000, stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch {
+    // ffmpeg may fail but still produce some frames
+    const produced = fs.existsSync(screenshotDir)
+      ? fs.readdirSync(screenshotDir).filter(f => f.startsWith('frame-') && f.endsWith('.png')).length
+      : 0;
+    if (produced === 0) return 0;
+  }
+
+  // Rename to match local naming: screenshot-XXXX.png (XXXX = elapsed seconds)
+  const rawFiles = fs.readdirSync(screenshotDir)
+    .filter(f => f.startsWith('frame-') && f.endsWith('.png'))
+    .sort();
+
+  for (let i = 0; i < rawFiles.length; i++) {
+    const elapsed = i * intervalSeconds;
+    const newName = `screenshot-${String(elapsed).padStart(4, '0')}.png`;
+    fs.renameSync(
+      path.join(screenshotDir, rawFiles[i]),
+      path.join(screenshotDir, newName),
+    );
+  }
+
+  return rawFiles.length;
+}
+
 // ============================================================================
 // Tool Implementations
 // ============================================================================
@@ -3262,6 +3320,24 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         }
       }
 
+      // Extract periodic screenshots from remote recording (parity with local screencapture)
+      let remoteScreenshotHint: string | undefined;
+      if (remoteRecordingPath && entry.scenario_id) {
+        try {
+          const ssDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', entry.scenario_id, 'screenshots');
+          const ssCount = extractScreenshotsFromRecording(remoteRecordingPath, ssDir, 3);
+          if (ssCount > 0) {
+            remoteScreenshotHint = `${ssCount} screenshots captured (every 3s). Demo duration: ${remoteDuration}s. ` +
+              `Use get_demo_screenshot({ scenario_id: "${entry.scenario_id}", timestamp_seconds: N }) to view any moment. ` +
+              (remoteStatus === 'passed'
+                ? 'IMPORTANT: You MUST analyze key screenshots to verify the demo visually matches user requirements.'
+                : 'IMPORTANT: Analyze screenshots near the failure point to understand what the UI looked like when the test failed.');
+          }
+        } catch {
+          // ffmpeg may not be available locally — non-fatal
+        }
+      }
+
       return {
         status: remoteStatus,
         pid,
@@ -3280,13 +3356,14 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           : undefined,
         recording_path: remoteRecordingPath,
         recording_source: remoteRecordingSource,
+        screenshot_hint: remoteScreenshotHint,
         failure_frames: remoteFailureFrames,
         analysis_guidance: remoteRecordingPath
-          ? `REQUIRED: Review the video recording at ${remoteRecordingPath} to verify the demo ran correctly. Use extract_video_frames to inspect specific moments.${remoteTraceSummary ? ' Also review trace_summary for the play-by-play of browser actions.' : ''}`
+          ? `REQUIRED: ${remoteScreenshotHint ? `Review screenshots via get_demo_screenshot and ` : ''}Review the video recording at ${remoteRecordingPath} to verify the demo ran correctly. Use extract_video_frames to inspect specific moments.${remoteTraceSummary ? ' Also review trace_summary for the play-by-play of browser actions.' : ''}`
           : buildRemoteAnalysisGuidance(remoteStatus, remoteTraceSummary, destDir),
         message: remoteExitCode === 0
-          ? `Remote demo passed on Fly.io (${remoteDuration}s).${remoteTraceSummary ? ' Trace available in trace_summary.' : ''}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`
-          : `Remote demo failed (exit ${remoteExitCode}, ${remoteDuration}s). ${structuredFailureSummary || 'Check stderr_tail.'}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`,
+          ? `Remote demo passed on Fly.io (${remoteDuration}s).${remoteScreenshotHint ? ' Screenshots available via get_demo_screenshot.' : ''}${remoteTraceSummary ? ' Trace available in trace_summary.' : ''}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`
+          : `Remote demo failed (exit ${remoteExitCode}, ${remoteDuration}s). ${structuredFailureSummary || 'Check stderr_tail.'}${remoteScreenshotHint ? ' Screenshots available via get_demo_screenshot.' : ''}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`,
         remote: true,
         fly_machine_id: entry.fly_machine_id,
         fly_region: remoteMachineConfig.region,
