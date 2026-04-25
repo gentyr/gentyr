@@ -459,6 +459,10 @@
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/demo-failure-spawner.js",
           "timeout": 15
+        }, {
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/remote-demo-hint.js",
+          "timeout": 5
         }]
       },
       {
@@ -483,6 +487,14 @@
       },
       {
         "matcher": "mcp__agent-tracker__acquire_shared_resource",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/remote-demo-hint.js",
+          "timeout": 5
+        }]
+      },
+      {
+        "matcher": "mcp__playwright__get_fly_status",
         "hooks": [{
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/remote-demo-hint.js",

@@ -2011,6 +2011,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   // ── Remote execution routing (Fly.io) ──
   // All dynamic imports use .js extension for ESM. Both modules may not exist
   // in all environments — all errors fall through to local execution.
+  let remoteRoutingWarning = '';
   remoteRoutingBlock: {
     const flyConfig = getFlyConfigFromServices();
     if (!flyConfig || flyConfig.enabled === false || !flyConfig.appName || !flyConfig.apiToken) break remoteRoutingBlock;
@@ -2282,7 +2283,32 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         fly_machine_id: handle.machineId,
       };
     } catch (remoteErr) {
-      process.stderr.write(`[fly-runner] Remote execution unavailable, falling back to local: ${remoteErr instanceof Error ? remoteErr.message : String(remoteErr)}\n`);
+      const errMsg = remoteErr instanceof Error ? remoteErr.message : String(remoteErr);
+      process.stderr.write(`[fly-runner] Remote execution failed: ${errMsg}\n`);
+
+      // Detect image-not-found errors and add actionable guidance
+      // Anchored to Fly-specific patterns to avoid false positives on unrelated "not found" errors
+      const isImageError = /registry\.fly\.io|could not resolve image|docker image|manifest.*not found|image.*not found/i.test(errMsg);
+      const imageFixHint = isImageError
+        ? `. No Docker image is deployed to the Fly app. Fix: run \`bash node_modules/gentyr/infra/fly-playwright/provision-app.sh --app-name <app> --region <region>\` or re-run /setup-fly`
+        : '';
+
+      // If the agent explicitly forced remote, surface the error — don't silently fall back
+      if (args.remote === true) {
+        return {
+          success: false,
+          project,
+          message: `Remote execution failed: ${errMsg}${imageFixHint}`,
+          test_file: effectiveTestFile,
+          remote: true,
+          execution_target: 'remote',
+          execution_target_reason: 'Explicitly requested remote execution (remote: true)',
+        } as RunDemoResult;
+      }
+
+      // Auto-routed: fall back to local but record a warning for check_demo_result to surface
+      process.stderr.write(`[fly-runner] Falling back to local execution\n`);
+      remoteRoutingWarning = `Remote execution attempted but failed (falling back to local): ${errMsg}${imageFixHint}`;
     }
   }
 
@@ -2474,6 +2500,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       demoState.screenshot_start_time = screenshotCapture.startTime;
     }
     demoRuns.set(demoPid, demoState);
+
+    // Attach remote routing warning so check_demo_result can surface it
+    if (remoteRoutingWarning) {
+      demoState.remote_routing_warning = remoteRoutingWarning;
+    }
+
     persistDemoRuns();
 
     if (displayLockAutoAcquired) {
@@ -3404,6 +3436,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           screenshot_hint: screenshotHint1,
           failure_frames: failureFrames1,
           analysis_guidance: analysisGuidance1,
+          ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
           message: entry.status === 'passed'
             ? `Demo completed successfully in ${durationSec}s (auto-killed after suite completion).${degradedSuffix}`
             : `Demo failed in ${durationSec}s — ${entry.failure_summary}. Auto-killed after suite completion.`,
@@ -3538,6 +3571,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         screenshot_hint: screenshotHint2,
         failure_frames: failureFrames2,
         analysis_guidance: analysisGuidance2,
+        ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
         message: statusMsg,
       };
     }
@@ -3666,6 +3700,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     screenshot_hint: screenshotHintFinal,
     failure_frames: failureFramesFinal,
     analysis_guidance: analysisGuidanceFinal,
+    ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
     message,
   };
 }
@@ -6952,10 +6987,36 @@ const tools: AnyToolHandler[] = [
           });
         }
 
+        // Check image deployment via Fly registry API (best-effort, 5s timeout)
+        let imageDeployed: boolean | null = null;
+        let imageMessage = '';
+        try {
+          const controller = new AbortController();
+          const registryTimer = setTimeout(() => controller.abort(), 5000);
+          const registryResp = await fetch(
+            `https://registry.fly.io/v2/${flyConfig.appName}/manifests/latest`,
+            {
+              method: 'HEAD',
+              headers: { Authorization: `Bearer ${apiToken}` },
+              signal: controller.signal,
+            },
+          );
+          clearTimeout(registryTimer);
+          imageDeployed = registryResp.ok;
+          if (!imageDeployed) {
+            imageMessage = `No Docker image is deployed to the Fly app. Remote execution will fail until the image is built and pushed. Fix: run \`bash node_modules/gentyr/infra/fly-playwright/provision-app.sh --app-name ${flyConfig.appName} --region ${flyConfig.region}\` in the target project, or re-run /setup-fly.`;
+          }
+        } catch {
+          // Registry check is best-effort — don't fail the whole status report
+          imageDeployed = null;
+          imageMessage = 'Could not verify image deployment (registry API unreachable or timed out)';
+        }
+
         return JSON.stringify({
           configured: true,
           enabled: true,
-          healthy,
+          healthy: imageDeployed === false ? false : healthy,
+          imageDeployed,
           appName: flyConfig.appName,
           region: flyConfig.region,
           machineSize: flyConfig.machineSize,
@@ -6963,6 +7024,7 @@ const tools: AnyToolHandler[] = [
           maxConcurrentMachines: flyConfig.maxConcurrentMachines,
           activeMachines: activeMachines.length,
           machines: activeMachines,
+          ...(imageMessage ? { imageMessage } : {}),
         });
       } catch (err) {
         return JSON.stringify({

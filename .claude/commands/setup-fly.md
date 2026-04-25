@@ -256,31 +256,64 @@ console.log('fly section written to services.json');
 "
 ```
 
-## Step 8: Provision the Fly.io App
+## Step 8: Provision the Fly.io App (Create + Deploy Image)
 
-Run the provisioning steps:
-
-### 8a: Create the app (if it doesn't exist)
+Run the GENTYR provisioning script which handles app creation, volume setup, AND Docker image deployment in one idempotent command:
 
 ```bash
-flyctl apps list 2>/dev/null | grep -q "<app-name>" || flyctl apps create "<app-name>" --machines-ready-timeout 60
+bash "$GENTYR_DIR/infra/fly-playwright/provision-app.sh" \
+  --app-name "<app-name>" \
+  --region "<region>"
 ```
 
-**If app creation fails with a billing error:** Fly.io requires a payment method on file to create machines. See the Troubleshooting section below for guidance on helping the user set up billing (including chrome-bridge assisted navigation).
+This script performs three steps:
+1. Creates the Fly.io app (skips if it already exists)
+2. Creates a 5GB `playwright_cache` volume for dependency caching (skips if exists)
+3. Builds and deploys the Playwright Docker image via `flyctl deploy --remote-only`
 
-### 8b: Verify the app is ready
+The Docker image (`infra/fly-playwright/Dockerfile`) includes Playwright browsers, pnpm, and the remote-runner entrypoint that handles git clone, dependency install, prerequisite execution, dev server startup, and Playwright test execution with stall detection.
+
+**CRITICAL: Without the image deployment (step 3), remote execution will silently fail.** The `spawnRemoteMachine` call references `registry.fly.io/<app-name>:latest` — if that image doesn't exist, the Fly Machines API returns an error and demos fall back to local execution.
+
+### If the provisioning script fails
+
+| Error | Fix |
+|---|---|
+| `flyctl is not installed` | Install flyctl (see Step 2) and re-run |
+| `Not authenticated with Fly.io` | Run `flyctl auth login` and re-run |
+| Billing / payment error during deploy | Fly.io requires a payment method to build and deploy. See Troubleshooting below. |
+| Build timeout or `remote build` error | Re-run — first remote builds can be slow. If persistent, try `flyctl deploy --app <app-name> --local-only` from the `$GENTYR_DIR/infra/fly-playwright/` directory. |
+| `Template not found` | `$GENTYR_DIR` is not resolving correctly. Verify `node_modules/gentyr` exists (`pnpm link ~/git/gentyr`). |
+
+### If the script is not found
+
+If `$GENTYR_DIR/infra/fly-playwright/provision-app.sh` doesn't exist, deploy manually:
 
 ```bash
-flyctl status --app "<app-name>" 2>/dev/null
+cd "$GENTYR_DIR/infra/fly-playwright"
+# Generate fly.toml from template
+sed -e "s/{{APP_NAME}}/<app-name>/g" -e "s/{{REGION}}/<region>/g" \
+    -e "s/{{MACHINE_SIZE}}/shared-cpu-2x/g" -e "s/{{MACHINE_RAM}}/2048/g" \
+    fly.toml.template > fly.toml
+flyctl deploy --app "<app-name>" --remote-only
 ```
 
-If the app does not appear in `flyctl apps list` after creation, inform the user and ask them to verify their Fly.io account permissions.
+### Verify the image is deployed
+
+After provisioning, verify the image exists:
+
+```bash
+flyctl status --app "<app-name>"
+```
+
+Look for `Image = registry.fly.io/<app-name>:deployment-...` (NOT `Image = -`). If `Image = -`, the deploy step failed — re-run the provisioning script.
 
 ## Step 9: Verify End-to-End
 
 Call `mcp__playwright__get_fly_status()` to confirm the integration is working:
 
-- If `healthy: true`: setup is complete
+- If `healthy: true` AND `imageDeployed: true`: setup is complete
+- If `imageDeployed: false`: the Docker image was not deployed. Re-run the provisioning script from Step 8. Check `imageMessage` for details.
 - If `healthy: false` or error: show the error message and proceed to Troubleshooting
 
 Display the final status:
@@ -309,6 +342,7 @@ If `get_fly_status` returns errors or `healthy: false`:
 | Error | Remedy |
 |---|---|
 | `configured: false` | The `fly` section in `services.json` is missing or malformed. Verify `fly.apiToken` (must be `op://` reference) and `fly.appName` are both present. Re-run Step 7. |
+| `imageDeployed: false` | The Fly app exists but no Docker image has been deployed. Remote execution cannot work. Re-run the provisioning script from Step 8: `bash "$GENTYR_DIR/infra/fly-playwright/provision-app.sh" --app-name <app-name> --region <region>` |
 | `FLY_API_TOKEN resolution failed` | The `op://` reference in `fly.apiToken` can't be resolved. Verify the 1Password item exists via `op_vault_map`. |
 | `app not found` or 404 | Run `flyctl apps create <app-name> --machines-ready-timeout 60` |
 | `authentication failed` / 401 | The API token is invalid or expired. Create a new token: `flyctl tokens create deploy -x 8760h`, store in 1Password, update the `op://` reference. |
