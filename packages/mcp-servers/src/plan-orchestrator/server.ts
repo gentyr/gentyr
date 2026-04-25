@@ -40,6 +40,7 @@ import {
   CheckVerificationAuditArgsSchema,
   VerificationAuditPassArgsSchema,
   VerificationAuditFailArgsSchema,
+  GetPlanBlockingStatusArgsSchema,
   type CreatePlanArgs,
   type GetPlanArgs,
   type ListPlansArgs,
@@ -61,6 +62,7 @@ import {
   type CheckVerificationAuditArgs,
   type VerificationAuditPassArgs,
   type VerificationAuditFailArgs,
+  type GetPlanBlockingStatusArgs,
   type PlanRecord,
   type PhaseRecord,
   type PlanTaskRecord,
@@ -145,7 +147,7 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
     started_at TEXT,
     completed_at TEXT,
     metadata TEXT,
-    CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','pending_audit','completed','skipped'))
+    CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','paused','pending_audit','completed','skipped'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_phase ON plan_tasks(phase_id);
@@ -394,6 +396,52 @@ function initializeDatabase(): Database.Database {
     db.pragma('foreign_keys = ON');
   }
 
+  // ── plan_tasks table: CHECK constraint migration (add 'paused') ─────────
+  // Read the current sql after any previous migration so we inspect the live schema.
+  const tasksSqlAfterAudit = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='plan_tasks'").get() as { sql: string } | undefined)?.sql ?? '';
+  if (tasksSqlAfterAudit && !tasksSqlAfterAudit.includes("'paused'")) {
+    db.pragma('foreign_keys = OFF');
+    db.pragma('legacy_alter_table = ON');
+    db.exec('DROP TABLE IF EXISTS plan_tasks_old');
+    const migrateTasksPaused = db.transaction(() => {
+      db.exec('ALTER TABLE plan_tasks RENAME TO plan_tasks_old');
+      db.exec(`CREATE TABLE plan_tasks (
+        id TEXT PRIMARY KEY,
+        phase_id TEXT NOT NULL REFERENCES phases(id) ON DELETE CASCADE,
+        plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        task_order INTEGER NOT NULL,
+        todo_task_id TEXT,
+        pr_number INTEGER,
+        pr_merged INTEGER DEFAULT 0,
+        branch_name TEXT,
+        agent_type TEXT,
+        verification_strategy TEXT,
+        persistent_task_id TEXT,
+        category_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        metadata TEXT,
+        CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','paused','pending_audit','completed','skipped'))
+      )`);
+      db.exec(`INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order,
+        todo_task_id, pr_number, pr_merged, branch_name, agent_type, verification_strategy,
+        persistent_task_id, category_id, created_at, updated_at, started_at, completed_at, metadata)
+        SELECT id, phase_id, plan_id, title, description, status, task_order,
+        todo_task_id, pr_number, pr_merged, branch_name, agent_type, verification_strategy,
+        persistent_task_id, category_id, created_at, updated_at, started_at, completed_at, metadata
+        FROM plan_tasks_old`);
+      db.exec('DROP TABLE plan_tasks_old');
+    });
+    migrateTasksPaused();
+    db.pragma('legacy_alter_table = OFF');
+    db.pragma('foreign_keys = ON');
+  }
+
   return db;
 }
 
@@ -460,6 +508,8 @@ function getPlanProgress(db: Database.Database, planId: string): number {
 }
 
 function isEntityCompleted(db: Database.Database, entityType: string, entityId: string): boolean {
+  // NOTE: 'paused' tasks are NOT completed — they block downstream dependencies.
+  // Only 'completed' and 'skipped' statuses satisfy dependencies.
   if (entityType === 'phase') {
     const phase = db.prepare('SELECT status FROM phases WHERE id = ?').get(entityId) as { status: string } | undefined;
     return phase?.status === 'completed' || phase?.status === 'skipped';
@@ -1298,8 +1348,11 @@ function planDashboard(args: PlanDashboardArgs) {
   const completedTasks = (db.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'completed'").get(args.plan_id) as { c: number }).c;
   const readyTasks = (db.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'ready'").get(args.plan_id) as { c: number }).c;
   const activeTasks = (db.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'in_progress'").get(args.plan_id) as { c: number }).c;
+  const pausedTasks = (db.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'paused'").get(args.plan_id) as { c: number }).c;
 
-  lines.push(`Tasks: ${completedTasks}/${totalTasks} complete | ${readyTasks} ready | ${activeTasks} active`);
+  const summaryParts = [`Tasks: ${completedTasks}/${totalTasks} complete | ${readyTasks} ready | ${activeTasks} active`];
+  if (pausedTasks > 0) summaryParts.push(`${pausedTasks} paused`);
+  lines.push(summaryParts.join(' | '));
 
   return { dashboard: lines.join('\n') };
 }
@@ -1923,6 +1976,84 @@ function forceClosePlan(args: ForceClosePlanArgs): object {
 }
 
 // ============================================================================
+// Plan Blocking Status
+// ============================================================================
+
+async function getPlanBlockingStatus(args: GetPlanBlockingStatusArgs): Promise<object> {
+  const db = getDb();
+
+  // Get plan
+  const plan = db.prepare('SELECT id, title, status FROM plans WHERE id = ?').get(args.plan_id) as { id: string; title: string; status: string } | undefined;
+  if (!plan) return { error: 'Plan not found' };
+
+  // Get paused plan tasks
+  const pausedTasks = db.prepare(
+    "SELECT id, title, phase_id, persistent_task_id, metadata FROM plan_tasks WHERE plan_id = ? AND status = 'paused'"
+  ).all(args.plan_id) as Array<{ id: string; title: string; phase_id: string; persistent_task_id: string | null; metadata: string | null }>;
+
+  // Get available parallel work (in_progress or ready tasks)
+  const parallelWork = db.prepare(
+    "SELECT id, title, status, phase_id FROM plan_tasks WHERE plan_id = ? AND status IN ('in_progress', 'ready')"
+  ).all(args.plan_id) as Array<{ id: string; title: string; status: string; phase_id: string }>;
+
+  // For each paused task, find downstream blocked tasks
+  const blockedDownstream: Array<{ task_id: string; title: string; blocked_by: string }> = [];
+  for (const pt of pausedTasks) {
+    const downstream = db.prepare(
+      "SELECT pt.id, pt.title FROM dependencies d JOIN plan_tasks pt ON d.blocked_id = pt.id AND d.blocked_type = 'task' WHERE d.blocker_id = ? AND d.blocker_type = 'task'"
+    ).all(pt.id) as Array<{ id: string; title: string }>;
+    for (const d of downstream) {
+      blockedDownstream.push({ task_id: d.id, title: d.title, blocked_by: pt.id });
+    }
+  }
+
+  // Check if any paused task is in a gate phase
+  const gatePhaseIds = new Set<string>();
+  for (const pt of pausedTasks) {
+    const phase = db.prepare('SELECT gate FROM phases WHERE id = ?').get(pt.phase_id) as { gate: number } | undefined;
+    if (phase?.gate) gatePhaseIds.add(pt.phase_id);
+  }
+
+  const fullyBlocked = pausedTasks.length > 0 && parallelWork.length === 0;
+  const partiallyBlocked = pausedTasks.length > 0 && parallelWork.length > 0;
+
+  // Build recommended actions
+  const recommendedActions: string[] = [];
+  if (fullyBlocked) {
+    recommendedActions.push('Plan is fully blocked. Submit bypass request if not already done.');
+    recommendedActions.push('Wait for CTO to resolve blocking items.');
+  } else if (partiallyBlocked) {
+    recommendedActions.push(`${parallelWork.length} task(s) available for parallel work.`);
+    recommendedActions.push('Continue spawning unblocked tasks while waiting for resolution.');
+  }
+  if (gatePhaseIds.size > 0) {
+    recommendedActions.push(`${gatePhaseIds.size} gate phase(s) affected — plan cannot complete until resolved.`);
+  }
+
+  return {
+    plan_id: plan.id,
+    plan_title: plan.title,
+    plan_status: plan.status,
+    fully_blocked: fullyBlocked,
+    partially_blocked: partiallyBlocked,
+    paused_tasks: pausedTasks.map(t => ({
+      id: t.id,
+      title: t.title,
+      persistent_task_id: t.persistent_task_id,
+      in_gate_phase: gatePhaseIds.has(t.phase_id),
+    })),
+    blocked_downstream: blockedDownstream,
+    available_parallel_work: parallelWork.map(t => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+    })),
+    gate_phases_affected: gatePhaseIds.size,
+    recommended_actions: recommendedActions,
+  };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1971,7 +2102,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'update_task_progress',
-    description: 'Update task status, PR info, or branch. Tasks with verification_strategy enter pending_audit instead of completed (auditor must pass them). Use force_complete: true for CTO bypass. Auto-completes on pr_merged=true. Returns newly ready tasks. Setting status to "skipped" requires skip_reason and skip_authorization fields. Tasks in gate phases cannot be skipped.',
+    description: 'Update task status, PR info, or branch. Tasks with verification_strategy enter pending_audit instead of completed (auditor must pass them). Use force_complete: true for CTO bypass. Auto-completes on pr_merged=true. Returns newly ready tasks. Setting status to "skipped" requires skip_reason and skip_authorization fields. Tasks in gate phases cannot be skipped. Setting status to "paused" is valid from in_progress when the linked persistent task is paused — paused tasks block downstream dependencies (they are not treated as completed).',
     schema: UpdateTaskProgressArgsSchema,
     handler: updateTaskProgress,
   },
@@ -2052,6 +2183,12 @@ const tools: AnyToolHandler[] = [
     description: 'Mark a plan task audit as FAILED. Only called by independent auditor agents. Transitions task from pending_audit back to in_progress so the plan manager can investigate and retry.',
     schema: VerificationAuditFailArgsSchema,
     handler: verificationAuditFail,
+  },
+  {
+    name: 'get_plan_blocking_status',
+    description: 'Check whether a plan is blocked by paused tasks. Returns blocking assessment including paused tasks, downstream impact, and available parallel work. Used by plan-manager agents to assess blocking state on each monitoring cycle.',
+    schema: GetPlanBlockingStatusArgsSchema,
+    handler: getPlanBlockingStatus,
   },
 ];
 

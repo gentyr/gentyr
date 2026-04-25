@@ -486,6 +486,28 @@ export const ListBypassRequestsArgsSchema = z.object({
 });
 export type ListBypassRequestsArgs = z.infer<typeof ListBypassRequestsArgsSchema>;
 
+// Blocking Queue Schemas
+export const ListBlockingItemsArgsSchema = z.object({
+  status: z.enum(['active', 'resolved', 'all']).optional().default('active')
+    .describe('Filter by status. Default: active'),
+  plan_id: z.string().optional()
+    .describe('Filter by plan ID'),
+  limit: z.number().optional().default(20)
+    .describe('Max items to return'),
+});
+
+export const ResolveBlockingItemArgsSchema = z.object({
+  id: z.string().describe('Blocking queue item ID'),
+  resolution_context: z.string().optional()
+    .describe('Context about the resolution'),
+});
+
+export const GetBlockingSummaryArgsSchema = z.object({});
+
+export type ListBlockingItemsArgs = z.infer<typeof ListBlockingItemsArgsSchema>;
+export type ResolveBlockingItemArgs = z.infer<typeof ResolveBlockingItemArgsSchema>;
+export type GetBlockingSummaryArgs = z.infer<typeof GetBlockingSummaryArgsSchema>;
+
 export const StageMcpServerArgsSchema = z.object({
   name: z.string().min(1).max(100).describe('Server name (e.g., "notion", "my-postgres"). Must not collide with a GENTYR template server name.'),
   config: z.object({

@@ -17,7 +17,7 @@ export type PlanStatus = (typeof PLAN_STATUS)[number];
 export const PHASE_STATUS = ['pending', 'in_progress', 'completed', 'skipped'] as const;
 export type PhaseStatus = (typeof PHASE_STATUS)[number];
 
-export const TASK_STATUS = ['pending', 'blocked', 'ready', 'in_progress', 'pending_audit', 'completed', 'skipped'] as const;
+export const TASK_STATUS = ['pending', 'blocked', 'ready', 'in_progress', 'paused', 'pending_audit', 'completed', 'skipped'] as const;
 export type TaskStatus = (typeof TASK_STATUS)[number];
 
 export const ENTITY_TYPES = ['plan', 'phase', 'task', 'substep'] as const;
@@ -331,6 +331,12 @@ export const VerificationAuditFailArgsSchema = z.object({
   failure_reason: z.string().describe('Why the verification failed'),
   evidence: z.string().optional().describe('What was found during verification'),
 });
+
+// Get plan blocking status
+export const GetPlanBlockingStatusArgsSchema = z.object({
+  plan_id: z.string().describe('Plan UUID to check blocking status for'),
+});
+export type GetPlanBlockingStatusArgs = z.infer<typeof GetPlanBlockingStatusArgsSchema>;
 
 // Force-close plan
 export const ForceClosePlanArgsSchema = z.object({

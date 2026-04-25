@@ -570,6 +570,13 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
             new Date().toISOString()
           );
         } catch (_) { /* non-fatal */ }
+        // Set do_not_auto_resume to prevent stale-pause auto-resume from fighting the circuit breaker
+        try {
+          const metaRow = ptDb2.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
+          const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
+          meta.do_not_auto_resume = true;
+          ptDb2.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
+        } catch (_) { /* non-fatal */ }
         ptDb2.close();
         log(`Auto-paused persistent task ${taskId} due to rate-limited crash loop`);
         try { auditEvent('crash_loop_circuit_breaker', { task_id: taskId, revival_count: recentHardCount }); } catch (_) { /* non-fatal */ }
@@ -619,6 +626,13 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
             JSON.stringify({ reason: 'crash_loop_circuit_breaker', source: 'session-queue' }),
             new Date().toISOString()
           );
+        } catch (_) { /* non-fatal */ }
+        // Set do_not_auto_resume to prevent stale-pause auto-resume from fighting the circuit breaker
+        try {
+          const metaRow = ptDb2.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
+          const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
+          meta.do_not_auto_resume = true;
+          ptDb2.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
         } catch (_) { /* non-fatal */ }
 
         ptDb2.close();

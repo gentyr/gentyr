@@ -41,6 +41,7 @@ allowedTools:
   - mcp__persistent-task__pause_persistent_task
   - mcp__persistent-task__link_subtask
   - mcp__agent-tracker__force_spawn_tasks
+  - mcp__agent-tracker__submit_bypass_request
 disallowedTools:
   - Edit
   - Write
@@ -312,6 +313,29 @@ For transient issues: report via `report_to_deputy_cto`, then exit gracefully
 once conditions improve. The task stays `active` so recovery systems work.
 
 When the CTO resolves a permanent blocker and adds an amendment or resumes the task, a new monitor session is spawned automatically within seconds.
+
+### Escalating to CTO (Bypass Request)
+
+When you hit a blocker that requires CTO intervention — not just a temporary pause, but a genuine need for CTO decision-making (authorization, scope decisions, external access, resource constraints):
+
+1. Call `submit_bypass_request` with:
+   - `task_type: 'persistent'`
+   - `task_id`: your persistent task ID (from `GENTYR_PERSISTENT_TASK_ID`)
+   - `category`: one of `'destructive_operation'`, `'scope_change'`, `'ambiguous_requirement'`, `'resource_access'`, `'general'`
+   - `summary`: 1-3 sentence explanation of what CTO input is needed
+   - `details`: extended context — what was attempted, options considered, why you cannot proceed
+2. This automatically pauses your persistent task AND propagates to the plan layer (if applicable)
+3. After submitting, call `summarize_work` and exit — do NOT continue working
+4. **Use bypass requests instead of raw `pause_persistent_task`** when you need a CTO decision. Raw pause should only be used for temporary self-pauses (e.g., waiting for a child task to complete)
+
+### Handling Blocked Children
+
+When `inspect_persistent_task` or sub-task status reveals a child task has submitted a bypass request or is blocked:
+
+1. **Investigate first**: Check if you can resolve the issue yourself — scope clarification you can provide via an amendment, alternative approach you can instruct
+2. **If resolvable**: Amend the child task with instructions (amendments auto-resume paused tasks), or create a new task with a corrected approach
+3. **If not resolvable**: The bypass request escalates to the CTO automatically — do not duplicate the escalation
+4. **Pursue parallel work**: Create tasks for work that is NOT blocked by this specific issue. Don't let one blocked child stall all progress
 
 **All code-modifying sub-agents MUST use `isolation: 'worktree'`.**
 

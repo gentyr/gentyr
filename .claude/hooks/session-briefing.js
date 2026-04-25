@@ -316,6 +316,30 @@ function getTaskCounts() {
 }
 
 // ---------------------------------------------------------------------------
+// Data gathering: blocking queue
+// ---------------------------------------------------------------------------
+
+function getBlockingQueue() {
+  if (!Database) return null;
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+  if (!fs.existsSync(dbPath)) return null;
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    // Check if blocking_queue table exists
+    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocking_queue'").get();
+    if (!tableExists) { db.close(); return null; }
+    const items = db.prepare(
+      "SELECT id, blocking_level, summary, plan_id, plan_title, persistent_task_id, plan_task_id, impact_assessment, created_at, bypass_request_id FROM blocking_queue WHERE status = 'active' ORDER BY CASE blocking_level WHEN 'plan' THEN 0 WHEN 'persistent_task' THEN 1 WHEN 'task' THEN 2 END, created_at ASC"
+    ).all();
+    db.close();
+    return items.length > 0 ? items : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data gathering: pending CTO bypass requests
 // ---------------------------------------------------------------------------
 
@@ -581,6 +605,36 @@ function buildInteractiveBriefing() {
       }
     }
   } catch { /* non-fatal */ }
+
+  // Blocking Queue (work-stopping items — shown above bypass requests)
+  const blockingItems = getBlockingQueue();
+  if (blockingItems) {
+    lines.push('');
+    lines.push('=== WORK BLOCKED — CTO ACTION REQUIRED ===');
+    for (let i = 0; i < blockingItems.length; i++) {
+      const item = blockingItems[i];
+      const ago = timeAgoStr(item.created_at);
+      const levelLabel = item.blocking_level === 'plan' ? 'PLAN BLOCKED' :
+                         item.blocking_level === 'persistent_task' ? 'TASK BLOCKED' : 'BLOCKED';
+      const planCtx = item.plan_title ? ` in plan "${truncate(item.plan_title, 40)}"` : '';
+      lines.push(`[${i + 1}] ${levelLabel}${planCtx} — ${ago}`);
+      lines.push(`    ${truncate(item.summary, 120)}`);
+      // Parse impact assessment if available
+      if (item.impact_assessment) {
+        try {
+          const impact = JSON.parse(item.impact_assessment);
+          const parts = [];
+          if (impact.blocked_tasks?.length > 0) parts.push(`${impact.blocked_tasks.length} downstream task(s) blocked`);
+          if (impact.is_gate) parts.push('gate phase');
+          if (!impact.parallel_paths_available) parts.push('no parallel work');
+          if (parts.length > 0) lines.push(`    Impact: ${parts.join(', ')}`);
+        } catch (_) { /* non-fatal */ }
+      }
+      if (item.bypass_request_id) {
+        lines.push(`    → mcp__agent-tracker__resolve_bypass_request({ request_id: "${item.bypass_request_id}", decision: "approved"|"rejected", context: "..." })`);
+      }
+    }
+  }
 
   // CTO Bypass Requests
   const bypassRequests = getPendingBypassRequests();
