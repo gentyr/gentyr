@@ -17,7 +17,7 @@ export type PlanStatus = (typeof PLAN_STATUS)[number];
 export const PHASE_STATUS = ['pending', 'in_progress', 'completed', 'skipped'] as const;
 export type PhaseStatus = (typeof PHASE_STATUS)[number];
 
-export const TASK_STATUS = ['pending', 'blocked', 'ready', 'in_progress', 'pending_audit', 'completed', 'skipped'] as const;
+export const TASK_STATUS = ['pending', 'blocked', 'ready', 'in_progress', 'paused', 'pending_audit', 'completed', 'skipped'] as const;
 export type TaskStatus = (typeof TASK_STATUS)[number];
 
 export const ENTITY_TYPES = ['plan', 'phase', 'task', 'substep'] as const;

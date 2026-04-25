@@ -133,6 +133,15 @@ async function main() {
       const reason = responseData.reason ?? null;
       log(`[persistent-task] Task ${taskId} paused: ${reason}`);
       auditEvent('persistent_task_paused', { taskId, reason, pausedBy: AGENT_ID });
+
+      // Propagate pause to plan layer (if persistent task is linked to a plan)
+      try {
+        const { propagatePauseToPlan } = await import('./lib/pause-propagation.js');
+        const propagation = propagatePauseToPlan(taskId, reason, null);
+        if (propagation.propagated) {
+          log(`[persistent-task] Pause propagated to plan: level=${propagation.blocking_level}, plan_auto_paused=${propagation.plan_auto_paused}`);
+        }
+      } catch (_) { /* non-fatal */ }
     }
     console.log(JSON.stringify({ }));
     process.exit(0);

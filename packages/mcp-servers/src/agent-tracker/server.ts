@@ -4852,6 +4852,13 @@ function getBypassDb(): InstanceType<typeof Database> {
     CREATE INDEX IF NOT EXISTS idx_bypass_status ON bypass_requests(status);
     CREATE INDEX IF NOT EXISTS idx_bypass_task ON bypass_requests(task_type, task_id);
   `);
+  // Migration: add propagation_context column if absent (non-fatal)
+  try {
+    const cols = db.prepare("PRAGMA table_info(bypass_requests)").all() as Array<{ name: string }>;
+    if (!cols.some(c => c.name === 'propagation_context')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN propagation_context TEXT");
+    }
+  } catch { /* best-effort migration */ }
   return db;
 }
 
@@ -4960,6 +4967,28 @@ async function submitBypassRequest(args: SubmitBypassRequestArgs): Promise<objec
       } finally {
         try { todoDb?.close(); } catch { /* best-effort */ }
       }
+    }
+
+    // Propagate pause to plan layer (if persistent task is linked to a plan)
+    if (args.task_type === 'persistent') {
+      let propagationContext: string | null = null;
+      try {
+        const pausePropagationPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
+        const { propagatePauseToPlan } = await import(pausePropagationPath) as { propagatePauseToPlan: (taskId: string, reason: string | null, bypassId: string | null) => { propagated: boolean; blocking_level?: string; plan_auto_paused?: boolean; impact?: { plan_task_id?: string; plan_id?: string; blocked_tasks?: string[]; blocks_phase?: boolean; is_gate?: boolean; parallel_paths_available?: boolean }; blocking_queue_id?: string } };
+        const result = propagatePauseToPlan(args.task_id, args.summary, requestId);
+        if (result.propagated) {
+          propagationContext = JSON.stringify({
+            plan_task_id: result.impact?.plan_task_id,
+            plan_id: result.impact?.plan_id,
+            blocking_level: result.blocking_level,
+            plan_auto_paused: result.plan_auto_paused,
+            blocking_queue_id: result.blocking_queue_id,
+          });
+          // Store propagation context on the bypass request
+          db.prepare('UPDATE bypass_requests SET propagation_context = ? WHERE id = ?')
+            .run(propagationContext, requestId);
+        }
+      } catch { /* non-fatal — bypass request already submitted */ }
     }
 
     const isPersistent = args.task_type === 'persistent';
@@ -5128,6 +5157,42 @@ async function resolveBypassRequest(args: ResolveBypassRequestArgs): Promise<obj
             process.stderr.write(`[bypass-resolve] Failed to enqueue revival: ${err instanceof Error ? err.message : String(err)}\n`);
           }
         }
+
+        // Back-propagate resume to plan layer
+        try {
+          const bypassRow = db.prepare('SELECT propagation_context FROM bypass_requests WHERE id = ?').get(args.request_id) as { propagation_context: string | null } | undefined;
+          if (bypassRow?.propagation_context) {
+            const ctx = JSON.parse(bypassRow.propagation_context) as { plan_task_id?: string; plan_id?: string; blocking_level?: string; plan_auto_paused?: boolean; blocking_queue_id?: string };
+            if (ctx.plan_task_id) {
+              const pausePropagationPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
+              const { propagateResumeToPlan } = await import(pausePropagationPath) as { propagateResumeToPlan: (taskId: string) => { propagated: boolean; plan_resumed?: boolean; blocking_items_resolved?: number } };
+              const resumeResult = propagateResumeToPlan(request.task_id);
+              // Signal plan manager if alive
+              if (resumeResult.propagated && ctx.plan_id) {
+                try {
+                  const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+                  if (fs.existsSync(plansDbPath)) {
+                    const plansDb = new Database(plansDbPath, { readonly: true });
+                    plansDb.pragma('busy_timeout = 3000');
+                    const plan = plansDb.prepare('SELECT manager_agent_id FROM plans WHERE id = ?').get(ctx.plan_id) as { manager_agent_id: string | null } | undefined;
+                    plansDb.close();
+                    if (plan?.manager_agent_id) {
+                      const signalsPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-signals.js');
+                      const { sendSignal } = await import(signalsPath) as { sendSignal: (opts: { fromAgentId: string; toAgentId: string; tier: string; message: string; projectDir: string }) => void };
+                      sendSignal({
+                        fromAgentId: process.env.CLAUDE_AGENT_ID || 'cto-session',
+                        toAgentId: plan.manager_agent_id,
+                        tier: 'instruction',
+                        message: `[BLOCKING RESOLVED] Bypass request "${args.request_id}" for plan task has been ${args.decision}. CTO context: ${args.context}. Check plan status and spawn ready tasks.`,
+                        projectDir: PROJECT_DIR,
+                      });
+                    }
+                  }
+                } catch { /* signal delivery is non-fatal */ }
+              }
+            }
+          }
+        } catch { /* back-propagation is non-fatal */ }
 
         return {
           resolved: true,

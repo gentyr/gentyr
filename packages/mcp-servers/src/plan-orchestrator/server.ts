@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS plan_tasks (
     started_at TEXT,
     completed_at TEXT,
     metadata TEXT,
-    CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','pending_audit','completed','skipped'))
+    CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','paused','pending_audit','completed','skipped'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_phase ON plan_tasks(phase_id);
@@ -394,6 +394,52 @@ function initializeDatabase(): Database.Database {
     db.pragma('foreign_keys = ON');
   }
 
+  // ── plan_tasks table: CHECK constraint migration (add 'paused') ─────────
+  // Read the current sql after any previous migration so we inspect the live schema.
+  const tasksSqlAfterAudit = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='plan_tasks'").get() as { sql: string } | undefined)?.sql ?? '';
+  if (tasksSqlAfterAudit && !tasksSqlAfterAudit.includes("'paused'")) {
+    db.pragma('foreign_keys = OFF');
+    db.pragma('legacy_alter_table = ON');
+    db.exec('DROP TABLE IF EXISTS plan_tasks_old');
+    const migrateTasksPaused = db.transaction(() => {
+      db.exec('ALTER TABLE plan_tasks RENAME TO plan_tasks_old');
+      db.exec(`CREATE TABLE plan_tasks (
+        id TEXT PRIMARY KEY,
+        phase_id TEXT NOT NULL REFERENCES phases(id) ON DELETE CASCADE,
+        plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        task_order INTEGER NOT NULL,
+        todo_task_id TEXT,
+        pr_number INTEGER,
+        pr_merged INTEGER DEFAULT 0,
+        branch_name TEXT,
+        agent_type TEXT,
+        verification_strategy TEXT,
+        persistent_task_id TEXT,
+        category_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        metadata TEXT,
+        CONSTRAINT valid_task_status CHECK (status IN ('pending','blocked','ready','in_progress','paused','pending_audit','completed','skipped'))
+      )`);
+      db.exec(`INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order,
+        todo_task_id, pr_number, pr_merged, branch_name, agent_type, verification_strategy,
+        persistent_task_id, category_id, created_at, updated_at, started_at, completed_at, metadata)
+        SELECT id, phase_id, plan_id, title, description, status, task_order,
+        todo_task_id, pr_number, pr_merged, branch_name, agent_type, verification_strategy,
+        persistent_task_id, category_id, created_at, updated_at, started_at, completed_at, metadata
+        FROM plan_tasks_old`);
+      db.exec('DROP TABLE plan_tasks_old');
+    });
+    migrateTasksPaused();
+    db.pragma('legacy_alter_table = OFF');
+    db.pragma('foreign_keys = ON');
+  }
+
   return db;
 }
 
@@ -460,6 +506,8 @@ function getPlanProgress(db: Database.Database, planId: string): number {
 }
 
 function isEntityCompleted(db: Database.Database, entityType: string, entityId: string): boolean {
+  // NOTE: 'paused' tasks are NOT completed — they block downstream dependencies.
+  // Only 'completed' and 'skipped' statuses satisfy dependencies.
   if (entityType === 'phase') {
     const phase = db.prepare('SELECT status FROM phases WHERE id = ?').get(entityId) as { status: string } | undefined;
     return phase?.status === 'completed' || phase?.status === 'skipped';
@@ -1298,8 +1346,11 @@ function planDashboard(args: PlanDashboardArgs) {
   const completedTasks = (db.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'completed'").get(args.plan_id) as { c: number }).c;
   const readyTasks = (db.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'ready'").get(args.plan_id) as { c: number }).c;
   const activeTasks = (db.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'in_progress'").get(args.plan_id) as { c: number }).c;
+  const pausedTasks = (db.prepare("SELECT COUNT(*) as c FROM plan_tasks WHERE plan_id = ? AND status = 'paused'").get(args.plan_id) as { c: number }).c;
 
-  lines.push(`Tasks: ${completedTasks}/${totalTasks} complete | ${readyTasks} ready | ${activeTasks} active`);
+  const summaryParts = [`Tasks: ${completedTasks}/${totalTasks} complete | ${readyTasks} ready | ${activeTasks} active`];
+  if (pausedTasks > 0) summaryParts.push(`${pausedTasks} paused`);
+  lines.push(summaryParts.join(' | '));
 
   return { dashboard: lines.join('\n') };
 }
@@ -1971,7 +2022,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'update_task_progress',
-    description: 'Update task status, PR info, or branch. Tasks with verification_strategy enter pending_audit instead of completed (auditor must pass them). Use force_complete: true for CTO bypass. Auto-completes on pr_merged=true. Returns newly ready tasks. Setting status to "skipped" requires skip_reason and skip_authorization fields. Tasks in gate phases cannot be skipped.',
+    description: 'Update task status, PR info, or branch. Tasks with verification_strategy enter pending_audit instead of completed (auditor must pass them). Use force_complete: true for CTO bypass. Auto-completes on pr_merged=true. Returns newly ready tasks. Setting status to "skipped" requires skip_reason and skip_authorization fields. Tasks in gate phases cannot be skipped. Setting status to "paused" is valid from in_progress when the linked persistent task is paused — paused tasks block downstream dependencies (they are not treated as completed).',
     schema: UpdateTaskProgressArgsSchema,
     handler: updateTaskProgress,
   },

@@ -3267,15 +3267,15 @@ async function main() {
             }
           } catch (_) { /* non-fatal */ }
 
-          // Self-pause circuit breaker: if the monitor has paused itself 3+ times in the last hour,
+          // Self-pause circuit breaker: if the monitor has paused itself 2+ times in the last 2 hours,
           // it's likely reading an amendment telling it to stay paused. Stop reviving it.
           try {
-            const oneHourAgo = new Date(now2 - 60 * 60 * 1000).toISOString();
+            const twoHoursAgo = new Date(now2 - 2 * 60 * 60 * 1000).toISOString();
             const recentPauses = ptDb.prepare(
               "SELECT COUNT(*) as cnt FROM events WHERE persistent_task_id = ? AND event_type = 'paused' AND created_at > ?"
-            ).get(task.id, oneHourAgo);
-            if (recentPauses && recentPauses.cnt >= 3) {
-              log(`Persistent stale pause auto-resume: "${task.title}" has self-paused ${recentPauses.cnt} times in the last hour — suppressing auto-resume (likely amendment-directed)`);
+            ).get(task.id, twoHoursAgo);
+            if (recentPauses && recentPauses.cnt >= 2) {
+              log(`Persistent stale pause auto-resume: "${task.title}" has self-paused ${recentPauses.cnt} times in the last 2 hours — suppressing auto-resume (likely amendment-directed)`);
               // Set the flag so we don't keep checking every cycle
               try {
                 const meta = task.metadata ? JSON.parse(task.metadata) : {};

@@ -463,6 +463,26 @@ function getTodoCounts() {
 }
 
 /**
+ * Get count of active blocking queue items
+ */
+function getBlockingQueueCount() {
+  try {
+    const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+    if (!fs.existsSync(dbPath)) return 0;
+    if (!Database) return 0;
+    const db = new Database(dbPath, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocking_queue'").get();
+    if (!tableExists) { db.close(); return 0; }
+    const result = db.prepare("SELECT COUNT(*) as cnt FROM blocking_queue WHERE status = 'active'").get();
+    db.close();
+    return result?.cnt || 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+/**
  * Get persistent task counts for status line
  */
 function getPersistentTaskCounts() {
@@ -749,6 +769,10 @@ async function main() {
     // Critical blocking mode - compact format
     const parts = [];
     const itemCount = deputyCto.pending + unreadReports;
+    const blockingCount = getBlockingQueueCount();
+    if (blockingCount > 0) {
+      parts.unshift(`${blockingCount} BLOCKING`);
+    }
     parts.push(`${itemCount} pending item(s)`);
     if (quotaPart) parts.push(quotaPart);
     parts.push(`${formatTokens(tokenUsage)} tokens`);
@@ -786,7 +810,13 @@ async function main() {
       lines.push(`Persistent: ${ptCounts.active} active${deadStr}`);
     }
 
-    // Line 4: Pending items (if any)
+    // Line 4: Blocking queue (work-stopping items — shown above pending)
+    const blockingCount = getBlockingQueueCount();
+    if (blockingCount > 0) {
+      lines.push(`BLOCKED: ${blockingCount} item(s) blocking work — resolve bypass requests or use /deputy-cto`);
+    }
+
+    // Line 5: Pending items (if any)
     const ctoPending = [];
     if (deputyCto.pending > 0) {
       ctoPending.push(`${deputyCto.pending} CTO decision(s)`);
