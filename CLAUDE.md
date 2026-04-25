@@ -992,7 +992,9 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 
 **`add_item_fields` tool** (on the 1Password MCP server, version 3.0.0): Adds or updates fields on an existing 1Password item. Accepts `item` (name or ID), optional `vault`, and `fields` (array of `{ field, value, type, section }`). Returns `op://` references for the added/updated fields only. Use to enrich existing items (e.g. adding a service-role-key to an existing Supabase item) without recreating the item.
 
-**`secrets-local-health.js` UserPromptSubmit hook**: Warns on every message (5-minute cooldown) if `secrets.local` is empty or missing keys referenced by secret profiles. Instructs agents to call `op_vault_map` + `populate_secrets_local` immediately. Skipped in local mode and spawned sessions.
+**`secrets-local-health.js` UserPromptSubmit hook**: Warns on every message (5-minute cooldown) if `secrets.local` is empty or missing keys referenced by secret profiles. Instructs agents to call `op_vault_map` + `populate_secrets_local` immediately, and instructs them to ask the CTO to run `npx gentyr sync` when entries are staged but not yet applied. Skipped in local mode and spawned sessions.
+
+**`pending-sync-notifier.js` UserPromptSubmit hook**: In interactive (CTO) sessions only, warns when any pending configuration files exist that require `npx gentyr sync` to apply. Checks all 4 pending file types: `secrets-local-pending.json`, `services-config-pending.json`, `mcp-servers-pending.json`, and `fly-config-pending.json`. Shows a `systemMessage` in the terminal listing each pending file and its contents — does NOT inject into model context. 10-minute cooldown. Skipped for spawned sessions.
 
 > Full details: [Secret Management](docs/CLAUDE-REFERENCE.md#secret-management)
 
@@ -1183,7 +1185,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | plan-briefing.js | Brief agent on active plan state |
 | session-briefing.js | Comprehensive context dump: queue, tasks, bypass requests, focus mode |
 
-#### UserPromptSubmit (11 hooks — process user/CTO input)
+#### UserPromptSubmit (12 hooks — process user/CTO input)
 
 | Hook | Purpose |
 |------|---------|
@@ -1198,6 +1200,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | cto-prompt-detector.js | Detect CTO-directed prompts in spawned sessions |
 | secrets-local-health.js | Warn about missing secrets.local entries |
 | mcp-guidance-hook.js | Inject MCP server guidance and pending server notifications |
+| pending-sync-notifier.js | Warn CTO when pending config files need npx gentyr sync |
 
 #### Stop (1 hook — gate session termination)
 
