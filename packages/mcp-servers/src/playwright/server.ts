@@ -1903,29 +1903,40 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
-  // Execute registered prerequisites — this starts the dev server if registered as a background prereq
-  const prereqResult = await executePrerequisites({
-    scenario_id: args.scenario_id,
-    base_url: devServerUrl,
-  });
-  if (!prereqResult.success) {
-    return {
-      success: false,
-      project,
-      message: `Demo prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.`,
-      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
-    };
-  }
+  // Skip local prerequisites when explicitly routing to Fly.io — the remote machine
+  // runs its own prerequisites and dev server via remote-runner.sh.
+  const skipLocalPrereqs = args.remote === true && (() => {
+    const flyConfig = getFlyConfigFromServices();
+    return flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
+  })();
 
-  // Verify dev server is healthy (fallback auto-start if no prerequisite handled it)
-  const devServer = await ensureDevServer(devServerUrl);
-  if (!devServer.ready) {
-    return {
-      success: false,
-      project,
-      message: `Dev server not ready after prerequisites: ${devServer.message}. Register: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:\${PORT:-3000}" }). Use \${PORT:-3000} for worktree compatibility. Do NOT manually call secret_dev_server_start — run_demo handles dev server lifecycle automatically.`,
-      context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
-    };
+  let devServer: { ready: boolean; message: string } = { ready: false, message: 'Skipped — remote execution' };
+
+  if (!skipLocalPrereqs) {
+    // Execute registered prerequisites — this starts the dev server if registered as a background prereq
+    const prereqResult = await executePrerequisites({
+      scenario_id: args.scenario_id,
+      base_url: devServerUrl,
+    });
+    if (!prereqResult.success) {
+      return {
+        success: false,
+        project,
+        message: `Demo prerequisites failed: ${prereqResult.message}. Run preflight_check to diagnose. Do NOT bypass by running Playwright directly.`,
+        context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
+      };
+    }
+
+    // Verify dev server is healthy (fallback auto-start if no prerequisite handled it)
+    devServer = await ensureDevServer(devServerUrl);
+    if (!devServer.ready) {
+      return {
+        success: false,
+        project,
+        message: `Dev server not ready after prerequisites: ${devServer.message}. Register: register_prerequisite({ command: "pnpm dev", scope: "global", run_as_background: true, health_check: "curl -sf http://localhost:\${PORT:-3000}" }). Use \${PORT:-3000} for worktree compatibility. Do NOT manually call secret_dev_server_start — run_demo handles dev server lifecycle automatically.`,
+        context: `PROJECT_DIR=${PROJECT_DIR}, EFFECTIVE_CWD=${EFFECTIVE_CWD}`,
+      };
+    }
   }
   const effectiveBaseUrl = devServerUrl;
 
@@ -2168,6 +2179,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       } catch { /* non-fatal */ }
 
       if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
+      // Also map GITHUB_TOKEN from resolved secrets.local to GIT_AUTH_TOKEN
+      // (remote-runner.sh expects GIT_AUTH_TOKEN for git credential helper)
+      if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GITHUB_TOKEN) {
+        remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GITHUB_TOKEN;
+      }
 
       let gitRemote = '';
       let gitRef = 'main';
@@ -5974,6 +5990,11 @@ async function runRemoteBatchSequence(
         } catch { /* non-fatal */ }
 
         if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
+        // Also map GITHUB_TOKEN from resolved secrets.local to GIT_AUTH_TOKEN
+        // (remote-runner.sh expects GIT_AUTH_TOKEN for git credential helper)
+        if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GITHUB_TOKEN) {
+          remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GITHUB_TOKEN;
+        }
 
         // Git info
         let gitRemote = '', gitRef = 'main';
@@ -7182,24 +7203,31 @@ const tools: AnyToolHandler[] = [
           });
         }
 
-        // Check image deployment via Fly registry API (best-effort, 5s timeout)
+        // Check image deployment via Fly registry API (best-effort, 5s timeout).
+        // flyctl deploy creates deployment-* tags, never :latest, so we list tags
+        // and check for any deployment-* tag — the same pattern used by resolveAppImage().
         let imageDeployed: boolean | null = null;
         let imageMessage = '';
         try {
           const controller = new AbortController();
           const registryTimer = setTimeout(() => controller.abort(), 5000);
           const registryResp = await fetch(
-            `https://registry.fly.io/v2/${flyConfig.appName}/manifests/latest`,
+            `https://registry.fly.io/v2/${flyConfig.appName}/tags/list`,
             {
-              method: 'HEAD',
+              method: 'GET',
               headers: { Authorization: `FlyV1 ${apiToken}` },
               signal: controller.signal,
             },
           );
           clearTimeout(registryTimer);
-          imageDeployed = registryResp.ok;
+          if (registryResp.ok) {
+            const data = (await registryResp.json()) as { tags?: string[] };
+            imageDeployed = !!(data.tags && data.tags.some((t: string) => t.startsWith('deployment-')));
+          } else {
+            imageDeployed = false;
+          }
           if (!imageDeployed) {
-            imageMessage = `No Docker image is deployed to the Fly app. Remote execution will fail until the image is built and pushed. Fix: call deploy_fly_image() to build and push the image.`;
+            imageMessage = 'No Docker image is deployed to the Fly app. Remote execution will fail until the image is built and pushed. Fix: call deploy_fly_image() to build and push the image.';
           }
         } catch {
           // Registry check is best-effort — don't fail the whole status report
