@@ -99,6 +99,21 @@ mcp__plan-orchestrator__update_plan_status({
 ```
 This should only be done with CTO authorization.
 
+### Plan Blocking Detection
+
+On each monitoring cycle, check for blocked plan tasks:
+
+1. Call `get_plan_blocking_status` (on plan-orchestrator) to assess blocking state
+2. Review any plan tasks with status `paused` — these represent persistent tasks that are paused
+3. **If fully blocked** (no parallel work available):
+   - The plan auto-pauses when a persistent task pause propagates up
+   - Do NOT repeatedly self-pause and resume — stay paused until the CTO resolves the blocker
+   - Call `submit_bypass_request` if you haven't already, explaining why the plan is fully blocked
+4. **If partially blocked** (parallel work available):
+   - Continue spawning tasks for unblocked work
+   - Note the blocker in your monitoring loop but don't escalate unless it becomes fully blocking
+5. When a blocker is resolved, the plan task and plan automatically resume — verify by calling `get_plan_blocking_status` on your next cycle
+
 ### Step 7: Heartbeat + Continue
 Write descriptive reasoning text about current plan state, then continue to next cycle.
 
