@@ -747,9 +747,9 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - `run_demo` with `headless: true` (or omitted default) auto-routes to Fly.io when configured. Pass `remote: false` to force local.
 - `run_demo_batch` runs multiple scenarios in parallel across Fly machines (limited by `fly.maxConcurrentMachines`, default 3).
 - Headed demos, chrome-bridge scenarios, and extension demos always run locally — Fly.io is headless-only.
-- `check_demo_result` returns `execution_target` (`'local'` or `'remote'`), `fly_machine_id`, and `fly_region` for remote runs.
-- `get_fly_status` reports configured/healthy state, current machine count, and region.
-- Infrastructure: `infra/fly-playwright/` contains the Dockerfile, fly.toml template, and provisioning scripts. Setup via `/setup-fly` slash command.
+- `check_demo_result` returns `execution_target` (`'local'` or `'remote'`), `fly_machine_id`, `fly_region`, and `remote_routing_warning` (non-empty when auto-routing fell back to local due to image or config issues).
+- `get_fly_status` reports configured/healthy state, current machine count, region, and `imageDeployed` — if `false`, no Docker image has been pushed and remote execution will fail silently.
+- Infrastructure: `infra/fly-playwright/` contains the Dockerfile, fly.toml template, and provisioning scripts. Setup via `/setup-fly` slash command; step 8 runs `provision-app.sh` to build and push the Docker image after app creation.
 - Config fields in `services.json` `fly` object: `apiToken` (op:// ref), `appName`, `region`, `machineSize`, `machineRam`, `maxConcurrentMachines`, `enabled`.
 - `FLY_API_TOKEN` is in the `INFRA_CRED_KEYS` set — treated as an infrastructure credential by the secret-sync server.
 
