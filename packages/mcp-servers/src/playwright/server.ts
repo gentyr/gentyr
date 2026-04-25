@@ -96,6 +96,8 @@ import {
   type AcquireDisplayLockArgs,
   GetFlyStatusArgsSchema,
   type GetFlyStatusArgs,
+  DeployFlyImageArgsSchema,
+  type DeployFlyImageArgs,
 } from './types.js';
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -2352,7 +2354,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       // Anchored to Fly-specific patterns to avoid false positives on unrelated "not found" errors
       const isImageError = /registry\.fly\.io|could not resolve image|docker image|manifest.*not found|image.*not found/i.test(errMsg);
       const imageFixHint = isImageError
-        ? `. No Docker image is deployed to the Fly app. Fix: run \`bash node_modules/gentyr/infra/fly-playwright/provision-app.sh --app-name <app> --region <region>\` or re-run /setup-fly`
+        ? '. No Docker image is deployed to the Fly app. Fix: call deploy_fly_image() to build and push the image, then retry.'
         : '';
 
       // If the agent explicitly forced remote, surface the error — don't silently fall back
@@ -7130,7 +7132,7 @@ const tools: AnyToolHandler[] = [
           clearTimeout(registryTimer);
           imageDeployed = registryResp.ok;
           if (!imageDeployed) {
-            imageMessage = `No Docker image is deployed to the Fly app. Remote execution will fail until the image is built and pushed. Fix: run \`bash node_modules/gentyr/infra/fly-playwright/provision-app.sh --app-name ${flyConfig.appName} --region ${flyConfig.region}\` in the target project, or re-run /setup-fly.`;
+            imageMessage = `No Docker image is deployed to the Fly app. Remote execution will fail until the image is built and pushed. Fix: call deploy_fly_image() to build and push the image.`;
           }
         } catch {
           // Registry check is best-effort — don't fail the whole status report
@@ -7158,6 +7160,109 @@ const tools: AnyToolHandler[] = [
           error: err instanceof Error ? err.message : String(err),
         });
       }
+    },
+  },
+  {
+    name: 'deploy_fly_image',
+    description:
+      'Build and deploy the Playwright Docker image to Fly.io. ' +
+      'Call this when get_fly_status returns imageDeployed: false, or after GENTYR updates that change the Dockerfile. ' +
+      'Runs the provisioning script in the background and returns immediately — poll get_fly_status() to check when imageDeployed becomes true.',
+    schema: DeployFlyImageArgsSchema,
+    handler: async (args: DeployFlyImageArgs) => {
+      // 1. Read fly config
+      const flySection = getFlyConfigFromServices();
+      if (!flySection || !flySection.appName) {
+        return JSON.stringify({
+          success: false,
+          message: 'Fly.io not configured. Run /setup-fly first.',
+        });
+      }
+
+      // 2. Check if image already deployed (skip unless force)
+      if (!args.force) {
+        let apiToken: string | null = null;
+        try {
+          const { resolved, failedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flySection.apiToken });
+          if (failedKeys.length === 0) apiToken = resolved['FLY_API_TOKEN'];
+        } catch { /* continue — can't check, just deploy */ }
+
+        if (apiToken) {
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 5000);
+            const resp = await fetch(
+              `https://registry.fly.io/v2/${flySection.appName}/tags/list`,
+              {
+                headers: { Authorization: `FlyV1 ${apiToken}` },
+                signal: controller.signal,
+              },
+            );
+            clearTimeout(timer);
+            if (resp.ok) {
+              const data = (await resp.json()) as { tags?: string[] };
+              if (data.tags && data.tags.some((t: string) => t.startsWith('deployment-'))) {
+                return JSON.stringify({
+                  success: true,
+                  alreadyDeployed: true,
+                  message: `Image already deployed to ${flySection.appName}. Use force: true to redeploy.`,
+                });
+              }
+            }
+          } catch { /* can't check — just deploy */ }
+        }
+      }
+
+      // 3. Find provision-app.sh
+      // Resolve GENTYR_DIR: node_modules/gentyr (npm link) or . (gentyr repo itself)
+      const candidates = [
+        path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright', 'provision-app.sh'),
+        path.join(PROJECT_DIR, 'infra', 'fly-playwright', 'provision-app.sh'),
+      ];
+      const scriptPath = candidates.find(p => fs.existsSync(p));
+      if (!scriptPath) {
+        return JSON.stringify({
+          success: false,
+          message: 'Could not find provision-app.sh. Ensure GENTYR is installed (node_modules/gentyr or working in gentyr repo).',
+        });
+      }
+
+      // 4. Check flyctl is available
+      try {
+        execSync('which flyctl', { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+      } catch {
+        return JSON.stringify({
+          success: false,
+          message: 'flyctl is not installed. Install it with: brew install flyctl',
+        });
+      }
+
+      // 5. Run provisioning script in background (takes 3-10 minutes for remote build)
+      const logFile = path.join(PROJECT_DIR, '.claude', 'state', `fly-deploy-${Date.now()}.log`);
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+
+      const logFd = fs.openSync(logFile, 'w');
+      const child = spawn('bash', [
+        scriptPath,
+        '--app-name', flySection.appName,
+        '--region', flySection.region || 'iad',
+      ], {
+        cwd: PROJECT_DIR,
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+      });
+      child.unref();
+      fs.closeSync(logFd);
+
+      return JSON.stringify({
+        success: true,
+        deploying: true,
+        pid: child.pid,
+        appName: flySection.appName,
+        region: flySection.region || 'iad',
+        logFile,
+        message: `Deploying Docker image to ${flySection.appName} in background (PID ${child.pid}). This takes 3-10 minutes for the remote Docker build. Poll get_fly_status() to check when imageDeployed becomes true. Deploy log: ${logFile}`,
+      });
     },
   },
 ];

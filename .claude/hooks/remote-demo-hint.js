@@ -90,8 +90,7 @@ rl.on('close', () => {
         if (isImageError) {
           additionalContext = [
             `WARNING: ${warning}`,
-            'To fix: run `bash node_modules/gentyr/infra/fly-playwright/provision-app.sh --app-name <app-name> --region <region>`',
-            'in the target project directory, or re-run /setup-fly.',
+            'To fix: call mcp__playwright__deploy_fly_image() to build and push the Docker image, then retry the demo.',
             'Without a deployed Docker image, all remote demo execution falls back to local.',
           ].join(' ');
         } else {
@@ -106,10 +105,8 @@ rl.on('close', () => {
         additionalContext = [
           'CRITICAL: Fly.io is configured but no Docker image has been deployed.',
           'Remote demo execution will fail until the image is built and pushed.',
-          'Fix: run `bash node_modules/gentyr/infra/fly-playwright/provision-app.sh',
-          '--app-name', responseParsed.appName || '<app-name>',
-          '--region', responseParsed.region || '<region>',
-          '` in the target project directory, or re-run /setup-fly.',
+          'Fix: call mcp__playwright__deploy_fly_image() to build and push the Docker image.',
+          'Poll mcp__playwright__get_fly_status() to check when imageDeployed becomes true.',
         ].join(' ');
       }
     }

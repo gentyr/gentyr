@@ -575,6 +575,12 @@ export interface DemoBatchState {
 export const GetFlyStatusArgsSchema = z.object({});
 export type GetFlyStatusArgs = z.infer<typeof GetFlyStatusArgsSchema>;
 
+export const DeployFlyImageArgsSchema = z.object({
+  force: z.boolean().optional().default(false)
+    .describe('Re-deploy even if image already exists. Use when the Dockerfile has changed.'),
+});
+export type DeployFlyImageArgs = z.infer<typeof DeployFlyImageArgsSchema>;
+
 export type ListExtensionTabsArgs = z.infer<typeof ListExtensionTabsArgsSchema>;
 export type ScreenshotExtensionTabArgs = z.infer<typeof ScreenshotExtensionTabArgsSchema>;
 
