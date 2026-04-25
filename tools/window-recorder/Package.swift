@@ -8,6 +8,7 @@ let package = Package(
         .executableTarget(
             name: "WindowRecorder",
             path: "Sources/WindowRecorder",
+            exclude: ["Info.plist"],
             linkerSettings: [
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("AVFoundation"),
@@ -18,3 +19,6 @@ let package = Package(
         ),
     ]
 )
+// Note: The binary is codesigned with --identifier com.gentyr.window-recorder
+// by sync.js step 7b after building. This gives macOS TCC a stable identifier
+// to persist Screen Recording grants across rebuilds.
