@@ -1979,12 +1979,12 @@ function forceClosePlan(args: ForceClosePlanArgs): object {
 // Plan Blocking Status
 // ============================================================================
 
-async function getPlanBlockingStatus(args: GetPlanBlockingStatusArgs): Promise<string> {
+async function getPlanBlockingStatus(args: GetPlanBlockingStatusArgs): Promise<object> {
   const db = getDb();
 
   // Get plan
   const plan = db.prepare('SELECT id, title, status FROM plans WHERE id = ?').get(args.plan_id) as { id: string; title: string; status: string } | undefined;
-  if (!plan) return JSON.stringify({ error: 'Plan not found' });
+  if (!plan) return { error: 'Plan not found' };
 
   // Get paused plan tasks
   const pausedTasks = db.prepare(
@@ -2030,7 +2030,7 @@ async function getPlanBlockingStatus(args: GetPlanBlockingStatusArgs): Promise<s
     recommendedActions.push(`${gatePhaseIds.size} gate phase(s) affected — plan cannot complete until resolved.`);
   }
 
-  return JSON.stringify({
+  return {
     plan_id: plan.id,
     plan_title: plan.title,
     plan_status: plan.status,
@@ -2050,7 +2050,7 @@ async function getPlanBlockingStatus(args: GetPlanBlockingStatusArgs): Promise<s
     })),
     gate_phases_affected: gatePhaseIds.size,
     recommended_actions: recommendedActions,
-  });
+  };
 }
 
 // ============================================================================

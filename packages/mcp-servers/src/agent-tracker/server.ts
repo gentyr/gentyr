@@ -5000,12 +5000,12 @@ async function submitBypassRequest(args: SubmitBypassRequestArgs): Promise<objec
       let propagationContext: string | null = null;
       try {
         const pausePropagationPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
-        const { propagatePauseToPlan } = await import(pausePropagationPath) as { propagatePauseToPlan: (taskId: string, reason: string | null, bypassId: string | null) => { propagated: boolean; blocking_level?: string; plan_auto_paused?: boolean; impact?: { plan_task_id?: string; plan_id?: string; blocked_tasks?: string[]; blocks_phase?: boolean; is_gate?: boolean; parallel_paths_available?: boolean }; blocking_queue_id?: string } };
+        const { propagatePauseToPlan } = await import(pausePropagationPath) as { propagatePauseToPlan: (taskId: string, reason: string | null, bypassId: string | null) => { propagated: boolean; blocking_level?: string; plan_auto_paused?: boolean; plan_task_id?: string; plan_id?: string; impact?: { blocked_tasks?: string[]; blocks_phase?: boolean; is_gate?: boolean; parallel_paths_available?: boolean }; blocking_queue_id?: string | null } };
         const result = propagatePauseToPlan(args.task_id, args.summary, requestId);
         if (result.propagated) {
           propagationContext = JSON.stringify({
-            plan_task_id: result.impact?.plan_task_id,
-            plan_id: result.impact?.plan_id,
+            plan_task_id: result.plan_task_id,
+            plan_id: result.plan_id,
             blocking_level: result.blocking_level,
             plan_auto_paused: result.plan_auto_paused,
             blocking_queue_id: result.blocking_queue_id,

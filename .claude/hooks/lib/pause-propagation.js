@@ -36,27 +36,27 @@ try {
  * @param {import('better-sqlite3').Database} db - An open bypass-requests DB connection
  */
 function ensureBlockingQueueTable(db) {
+  // Schema must match the canonical definition in agent-tracker/server.ts getBypassDb()
   db.exec(`
     CREATE TABLE IF NOT EXISTS blocking_queue (
       id TEXT PRIMARY KEY,
       bypass_request_id TEXT,
-      source_task_type TEXT NOT NULL DEFAULT 'persistent',
+      source_task_type TEXT NOT NULL,
       source_task_id TEXT NOT NULL,
-      persistent_task_id TEXT NOT NULL,
-      plan_task_id TEXT NOT NULL,
-      plan_id TEXT NOT NULL,
+      persistent_task_id TEXT,
+      plan_task_id TEXT,
+      plan_id TEXT,
       plan_title TEXT,
-      blocking_level TEXT NOT NULL,
+      blocking_level TEXT NOT NULL DEFAULT 'task',
       impact_assessment TEXT,
-      summary TEXT,
+      summary TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       resolved_at TEXT,
+      resolution_context TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      CONSTRAINT valid_blocking_level CHECK (blocking_level IN ('plan', 'persistent_task')),
-      CONSTRAINT valid_status CHECK (status IN ('active', 'resolved'))
+      CHECK (blocking_level IN ('task', 'persistent_task', 'plan')),
+      CHECK (status IN ('active', 'resolved', 'superseded'))
     );
-    CREATE INDEX IF NOT EXISTS idx_blocking_queue_persistent ON blocking_queue(persistent_task_id);
-    CREATE INDEX IF NOT EXISTS idx_blocking_queue_plan ON blocking_queue(plan_id);
     CREATE INDEX IF NOT EXISTS idx_blocking_queue_status ON blocking_queue(status);
   `);
 }
@@ -195,38 +195,28 @@ export function propagatePauseToPlan(persistentTaskId, pauseReason, bypassReques
     const summary = pauseReason || 'Persistent task paused';
 
     if (!fs.existsSync(BYPASS_DB_PATH)) {
-      // Create the DB if it doesn't exist — bootstrap with schema
-      bypassDb = new Database(BYPASS_DB_PATH);
-      bypassDb.pragma('journal_mode = WAL');
-      bypassDb.pragma('busy_timeout = 3000');
-      // Create minimal bypass_requests schema so ensureBlockingQueueTable can reference it
-      bypassDb.exec(`
-        CREATE TABLE IF NOT EXISTS bypass_requests (
-          id TEXT PRIMARY KEY,
-          task_type TEXT NOT NULL,
-          task_id TEXT NOT NULL,
-          task_title TEXT,
-          agent_id TEXT,
-          category TEXT NOT NULL,
-          summary TEXT NOT NULL,
-          details TEXT,
-          status TEXT NOT NULL DEFAULT 'pending',
-          resolution_context TEXT,
-          resolved_at TEXT,
-          resolved_by TEXT,
-          created_at TEXT NOT NULL DEFAULT (datetime('now')),
-          CHECK (task_type IN ('persistent', 'todo')),
-          CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
-          CHECK (category IN ('destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general'))
-        );
-        CREATE INDEX IF NOT EXISTS idx_bypass_status ON bypass_requests(status);
-        CREATE INDEX IF NOT EXISTS idx_bypass_task ON bypass_requests(task_type, task_id);
-      `);
-    } else {
-      bypassDb = new Database(BYPASS_DB_PATH);
-      bypassDb.pragma('journal_mode = WAL');
-      bypassDb.pragma('busy_timeout = 3000');
+      // bypass-requests.db is created by agent-tracker — if it doesn't exist yet,
+      // skip the blocking_queue write (non-fatal). The entry will be created
+      // when submit_bypass_request is called, which always opens the canonical DB.
+      return {
+        propagated: true,
+        blocking_level: blockingLevel,
+        plan_auto_paused: planAutoPaused,
+        plan_task_id: planTaskId,
+        plan_id: planId,
+        impact: {
+          blocked_tasks: blockedTaskIds,
+          blocks_phase: blockedTaskIds.length > 0,
+          is_gate: isGatePhase,
+          parallel_paths_available: hasParallelWork,
+        },
+        blocking_queue_id: null,
+      };
     }
+
+    bypassDb = new Database(BYPASS_DB_PATH);
+    bypassDb.pragma('journal_mode = WAL');
+    bypassDb.pragma('busy_timeout = 3000');
 
     ensureBlockingQueueTable(bypassDb);
 
@@ -253,6 +243,8 @@ export function propagatePauseToPlan(persistentTaskId, pauseReason, bypassReques
       propagated: true,
       blocking_level: blockingLevel,
       plan_auto_paused: planAutoPaused,
+      plan_task_id: planTaskId,
+      plan_id: planId,
       impact: {
         blocked_tasks: blockedTaskIds,
         blocks_phase: blockedTaskIds.length > 0,
