@@ -74,6 +74,9 @@ AUTOMATION-AND-ACCOUNT-QUOTA-LOAD-BALANCING-MONITORING.md
 # Generated secret config
 op-secrets.conf
 
+# Generated Fly.io config (project-specific, generated from fly.toml.template by /setup-fly)
+infra/fly-playwright/fly.toml
+
 # Project-specific CLAUDE.md sections (makerkit is project-specific, gentyr-section is tracked)
 CLAUDE.md.makerkit-section
 
