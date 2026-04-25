@@ -544,7 +544,7 @@ export async function pollRemoteProgressRaw(
  *   result after the command finishes.
  * @throws FlyAPIError on non-zero exit code or API failure
  */
-async function execInMachine(
+export async function execInMachine(
   handle: RemoteDemoHandle,
   config: FlyConfig,
   cmd: string[],

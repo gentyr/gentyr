@@ -382,6 +382,10 @@ export interface DemoRunState {
   fly_app_name?: string;
   /** Set when auto-routing attempted remote execution but fell back to local. Surfaces in check_demo_result. */
   remote_routing_warning?: string;
+  /** Set when artifacts have been proactively pulled while the machine was alive */
+  artifacts_pulled?: boolean;
+  /** Local directory where pulled artifacts are stored (proactive pull path) */
+  artifacts_dest_dir?: string;
 }
 
 export interface StopDemoResult {
