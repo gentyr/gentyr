@@ -3298,6 +3298,12 @@ async function main() {
             JSON.stringify({ reason: 'auto_resumed_stale_pause', pause_age_minutes: Math.round(pauseAge / 60000) })
           );
 
+          // Propagate resume to plan layer (resolves blocking_queue entries)
+          try {
+            const { propagateResumeToPlan } = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js'));
+            propagateResumeToPlan(task.id);
+          } catch (_) { /* non-fatal */ }
+
           // Enqueue the monitor
           try {
             const { prompt, extraEnv, metadata, agent } = await buildRevivalPrompt(task, 'stale_pause_resumed');
