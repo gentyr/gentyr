@@ -145,7 +145,19 @@ async function main() {
     }
 
     const resumed = [];
+    const permanentlyBlocked = [];
     for (const task of crashLoopTasks) {
+      // do_not_auto_resume check — circuit breaker sets this flag to permanently
+      // suppress auto-resume until the CTO intervenes manually. Must be checked
+      // BEFORE dedup, bypass, and the TOCTOU UPDATE.
+      try {
+        const meta = task.metadata ? JSON.parse(task.metadata) : {};
+        if (meta.do_not_auto_resume) {
+          permanentlyBlocked.push(task.title);
+          continue;
+        }
+      } catch (_) { /* non-fatal — proceed with resume if metadata is unparseable */ }
+
       // Dedup: skip if monitor already queued/running
       if (queueDb) {
         try {
@@ -219,6 +231,10 @@ async function main() {
     if (resumed.length > 0) {
       const titles = resumed.map(t => `"${t}"`).join(', ');
       parts.push(`Auto-resumed ${resumed.length} crash-loop-paused task(s): ${titles}`);
+    }
+    if (permanentlyBlocked.length > 0) {
+      const titles = permanentlyBlocked.map(t => `"${t}"`).join(', ');
+      parts.push(`Skipped ${permanentlyBlocked.length} permanently-blocked task(s) (do_not_auto_resume set — resolve manually): ${titles}`);
     }
     if (warnings.length > 0) {
       parts.push(`Warnings: ${warnings.join('; ')}`);
