@@ -55,6 +55,8 @@ const DEFAULTS = {
   plan_orphan_detection: 10,             // 10 minutes
   session_hard_kill_minutes: 60,         // 60 minutes
   screenshot_cleanup: 1440,              // daily (24h)
+  report_auto_resolve: 2,              // 2 minutes
+  report_dedup: 30,                    // 30 minutes
 };
 
 /**
