@@ -577,6 +577,12 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
           meta.do_not_auto_resume = true;
           ptDb2.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
         } catch (_) { /* non-fatal */ }
+        // Propagate pause to plan layer so blocking_queue is populated
+        try {
+          import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js'))
+            .then(({ propagatePauseToPlan }) => propagatePauseToPlan(taskId, 'crash_loop_circuit_breaker', null))
+            .catch(() => {});
+        } catch (_) { /* non-fatal */ }
         ptDb2.close();
         log(`Auto-paused persistent task ${taskId} due to rate-limited crash loop`);
         try { auditEvent('crash_loop_circuit_breaker', { task_id: taskId, revival_count: recentHardCount }); } catch (_) { /* non-fatal */ }
@@ -633,6 +639,12 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
           const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
           meta.do_not_auto_resume = true;
           ptDb2.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
+        } catch (_) { /* non-fatal */ }
+        // Propagate pause to plan layer so blocking_queue is populated
+        try {
+          import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js'))
+            .then(({ propagatePauseToPlan }) => propagatePauseToPlan(taskId, 'crash_loop_circuit_breaker', null))
+            .catch(() => {});
         } catch (_) { /* non-fatal */ }
 
         ptDb2.close();

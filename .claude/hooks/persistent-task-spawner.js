@@ -172,6 +172,17 @@ async function main() {
     process.exit(0);
   }
 
+  // Propagate resume to plan layer when task is being resumed (not first activation)
+  if (toolName === 'mcp__persistent-task__resume_persistent_task') {
+    try {
+      const { propagateResumeToPlan } = await import('./lib/pause-propagation.js');
+      const resumeResult = propagateResumeToPlan(taskId);
+      if (resumeResult.propagated) {
+        log(`[persistent-task] Resume propagated to plan: plan_resumed=${resumeResult.plan_resumed}, blocking_items_resolved=${resumeResult.blocking_items_resolved}`);
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
   // Read the persistent task for prompt building
   if (!Database || !fs.existsSync(PT_DB_PATH)) {
     console.log(JSON.stringify({ }));
