@@ -117,6 +117,34 @@ async function main() {
       return;
     }
 
+    // Plan-level dedup: if multiple crash-loop tasks serve the same plan, keep only the most recent.
+    // reviveOrphanedPlan() can accumulate many persistent tasks for one plan, each with a unique ID.
+    // Without this dedup, all of them would be mass-resumed simultaneously.
+    const planGroups = new Map(); // plan_id -> most-recent task
+    const dedupedTasks = [];
+    for (const task of crashLoopTasks) {
+      try {
+        const meta = task.metadata ? JSON.parse(task.metadata) : {};
+        if (meta.plan_id) {
+          const existing = planGroups.get(meta.plan_id);
+          if (!existing) {
+            planGroups.set(meta.plan_id, task);
+          } else {
+            // Keep the one with the later ID (UUIDs are not time-ordered, but the later
+            // entry in the query result is more recent due to rowid ordering)
+            planGroups.set(meta.plan_id, task);
+            warnings.push(`Skipped duplicate plan-manager "${existing.title?.slice(0, 30) || existing.id.slice(0, 8)}" for plan ${meta.plan_id.slice(0, 8)} — resuming only the most recent`);
+          }
+          continue;
+        }
+      } catch (_) { /* non-fatal — treat as non-plan task */ }
+      dedupedTasks.push(task);
+    }
+    // Add the single winner per plan
+    for (const task of planGroups.values()) {
+      dedupedTasks.push(task);
+    }
+
     // Dedup: check session-queue.db for already-queued monitors
     const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
     let queueDb = null;
@@ -146,7 +174,7 @@ async function main() {
 
     const resumed = [];
     const permanentlyBlocked = [];
-    for (const task of crashLoopTasks) {
+    for (const task of dedupedTasks) {
       // do_not_auto_resume check — circuit breaker sets this flag to permanently
       // suppress auto-resume until the CTO intervenes manually. Must be checked
       // BEFORE dedup, bypass, and the TOCTOU UPDATE.
