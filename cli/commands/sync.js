@@ -235,6 +235,308 @@ function cleanupRotationProxy(projectDir) {
   }
 }
 
+/**
+ * Recycle all running automated sessions so they pick up new MCP servers/configs.
+ * Reuses the kill/re-enqueue pattern from the agent-tracker restart_session MCP tool.
+ * Non-fatal — sync succeeds even if recycling fails.
+ * @param {string} projectDir
+ */
+async function recycleAutomatedSessions(projectDir) {
+  const queueDbPath = path.join(projectDir, '.claude', 'state', 'session-queue.db');
+  if (!fs.existsSync(queueDbPath)) return; // No queue — nothing to recycle
+
+  let Database;
+  try {
+    Database = (await import('better-sqlite3')).default;
+  } catch {
+    console.log(`  ${YELLOW}Warning: better-sqlite3 not available, skipping session recycling${NC}`);
+    return;
+  }
+
+  // ── Phase 1: Enumerate running sessions ───────────────────────────────────
+  let items;
+  try {
+    const db = new Database(queueDbPath, { readonly: true });
+    db.pragma('busy_timeout = 3000');
+    items = db.prepare(
+      "SELECT * FROM queue_items WHERE status IN ('running', 'spawning') AND lane NOT IN ('gate', 'audit')"
+    ).all();
+    db.close();
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: Could not read session queue: ${err.message}${NC}`);
+    return;
+  }
+
+  if (items.length === 0) {
+    console.log('  No active automated sessions to recycle');
+    return;
+  }
+
+  console.log(`\n${YELLOW}Recycling ${items.length} automated session(s)...${NC}`);
+
+  // ── Phase 2: Kill all sessions (free capacity first) ──────────────────────
+  // Single write connection for all status updates
+  let queueDb;
+  try {
+    queueDb = new Database(queueDbPath);
+    queueDb.pragma('busy_timeout = 3000');
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: Could not open session queue for writing: ${err.message}${NC}`);
+    return;
+  }
+
+  // Pre-load resource-lock and audit modules once
+  let resourceModule, auditModule;
+  try {
+    const resourceLockPath = path.join(projectDir, '.claude', 'hooks', 'lib', 'resource-lock.js');
+    if (fs.existsSync(resourceLockPath)) resourceModule = await import(resourceLockPath);
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: Could not load resource-lock.js: ${err.message}${NC}`);
+  }
+  try {
+    const auditPath = path.join(projectDir, '.claude', 'hooks', 'lib', 'session-audit.js');
+    if (fs.existsSync(auditPath)) auditModule = await import(auditPath);
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: Could not load session-audit.js: ${err.message}${NC}`);
+  }
+
+  const killFailed = new Set(); // Track items where mark-failed failed — skip re-enqueue
+
+  for (const item of items) {
+    const title = item.title || item.id;
+    console.log(`  Killing: ${title} (pid=${item.pid})`);
+
+    // Kill process — same SIGTERM->SIGKILL pattern as restartSession
+    if (item.pid) {
+      try {
+        process.kill(item.pid, 'SIGTERM');
+        let dead = false;
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          try { process.kill(item.pid, 0); } catch { dead = true; break; }
+        }
+        if (!dead) {
+          try { process.kill(item.pid, 'SIGKILL'); } catch { /* ESRCH = already dead */ }
+        }
+      } catch { /* ESRCH = already dead */ }
+    }
+
+    // Mark old item failed — CRITICAL: if this fails, dedup guard will block re-enqueue
+    try {
+      queueDb.prepare(
+        "UPDATE queue_items SET status = 'failed', error = 'recycled_by_sync', completed_at = datetime('now') WHERE id = ?"
+      ).run(item.id);
+    } catch (err) {
+      console.log(`  ${RED}Error marking ${title} as failed: ${err.message} — skipping re-enqueue${NC}`);
+      killFailed.add(item.id);
+      continue;
+    }
+
+    // Reset linked TODO task to pending
+    try {
+      const metadata = item.metadata ? JSON.parse(item.metadata) : {};
+      if (metadata.taskId) {
+        for (const rel of ['.claude/todo.db', '.claude/state/todo.db']) {
+          const todoPath = path.join(projectDir, rel);
+          if (fs.existsSync(todoPath)) {
+            const todoDb = new Database(todoPath);
+            todoDb.pragma('busy_timeout = 3000');
+            todoDb.prepare("UPDATE tasks SET status = 'pending' WHERE id = ? AND status = 'in_progress'").run(metadata.taskId);
+            todoDb.close();
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.log(`  ${YELLOW}Warning: Could not reset TODO task for ${title}: ${err.message}${NC}`);
+    }
+
+    // Release shared resources
+    try {
+      if (typeof resourceModule?.releaseAllResources === 'function') {
+        resourceModule.releaseAllResources(item.agent_id || item.id);
+      }
+      if (typeof resourceModule?.removeFromAllQueues === 'function') {
+        resourceModule.removeFromAllQueues(item.agent_id || item.id);
+      }
+    } catch (err) {
+      console.log(`  ${YELLOW}Warning: Could not release resources for ${title}: ${err.message}${NC}`);
+    }
+
+    // Audit
+    try {
+      if (typeof auditModule?.auditEvent === 'function') {
+        auditModule.auditEvent('session_sync_recycled', {
+          queue_id: item.id, agent_id: item.agent_id, pid: item.pid, title,
+        });
+      }
+    } catch (err) {
+      console.log(`  ${YELLOW}Warning: Audit event failed for ${title}: ${err.message}${NC}`);
+    }
+
+    console.log(`  Killed: ${title}`);
+  }
+
+  try { queueDb.close(); } catch { /* best-effort */ }
+
+  // ── Phase 3: Re-enqueue all with resume ───────────────────────────────────
+  // Ensure PROJECT_DIR resolves correctly when session-queue.js is loaded
+  process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+  let enqueueSession, drainQueue;
+  try {
+    const queueModulePath = path.join(projectDir, '.claude', 'hooks', 'lib', 'session-queue.js');
+    const queueModule = await import(queueModulePath);
+    enqueueSession = queueModule.enqueueSession;
+    drainQueue = queueModule.drainQueue;
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: Could not load session-queue.js: ${err.message}${NC}`);
+    return;
+  }
+
+  // Resolve session directories for --resume support (main + worktree directories)
+  const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+  const projectPathEncoded = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
+  let sessionDirs = [];
+  try {
+    const allDirs = fs.readdirSync(claudeProjectsDir);
+    // Match main project dir and any worktree dirs (which encode the worktree path)
+    const prefix = projectPathEncoded.replace(/^-/, '');
+    for (const dir of allDirs) {
+      if (dir === projectPathEncoded || dir === prefix || dir.startsWith(prefix)) {
+        const full = path.join(claudeProjectsDir, dir);
+        try { if (fs.statSync(full).isDirectory()) sessionDirs.push(full); } catch { /* skip */ }
+      }
+    }
+  } catch { /* no session dirs found */ }
+
+  const revived = []; // { title, oldQueueId, newQueueId }
+
+  for (const item of items) {
+    if (killFailed.has(item.id)) continue; // mark-failed failed — skip re-enqueue
+
+    const title = item.title || item.id;
+
+    // Resolve session ID for --resume (scan JSONL files for [AGENT:id] marker)
+    let spawnType = 'fresh';
+    let resumeSessionId = null;
+    if (sessionDirs.length > 0 && item.agent_id) {
+      const marker = `[AGENT:${item.agent_id}]`;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+      outer: for (const sDir of sessionDirs) {
+        try {
+          const files = fs.readdirSync(sDir).filter(f => f.endsWith('.jsonl'));
+          for (const file of files) {
+            let fd;
+            try {
+              fd = fs.openSync(path.join(sDir, file), 'r');
+              const buf = Buffer.alloc(2000);
+              const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
+              if (buf.toString('utf8', 0, bytesRead).includes(marker)) {
+                const basename = path.basename(file, '.jsonl');
+                if (uuidRegex.test(basename)) {
+                  spawnType = 'resume';
+                  resumeSessionId = basename;
+                }
+                break outer;
+              }
+            } finally {
+              if (fd !== undefined) fs.closeSync(fd);
+            }
+          }
+        } catch { /* skip this dir */ }
+      }
+    }
+
+    try {
+      const result = enqueueSession({
+        title: item.title || 'Recycled session',
+        agentType: item.agent_type,
+        hookType: item.hook_type,
+        tagContext: item.tag_context || undefined,
+        source: 'sync-recycle',
+        priority: 'urgent',
+        lane: item.lane || 'standard',
+        prompt: item.prompt,
+        model: item.model || undefined,
+        projectDir: item.project_dir || projectDir,
+        extraEnv: item.extra_env ? JSON.parse(item.extra_env) : undefined,
+        metadata: item.metadata ? JSON.parse(item.metadata) : undefined,
+        worktreePath: item.worktree_path || undefined,
+        agent: item.agent || undefined,
+        spawnType,
+        resumeSessionId,
+      });
+
+      const newQueueId = result?.queueId;
+      revived.push({ title, oldQueueId: item.id, newQueueId });
+
+      if (auditModule?.auditEvent) {
+        auditModule.auditEvent('session_sync_revived', {
+          old_queue_id: item.id, new_queue_id: newQueueId, title, spawn_type: spawnType,
+        });
+      }
+
+      console.log(`  Revived: ${title} -> ${newQueueId || '(queued)'}${spawnType === 'resume' ? ' (resumed)' : ' (fresh)'}`);
+    } catch (err) {
+      console.log(`  ${RED}Error re-enqueuing ${title}: ${err.message}${NC}`);
+    }
+  }
+
+  // ── Phase 4: Final drain ──────────────────────────────────────────────────
+  try {
+    drainQueue();
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: drainQueue failed: ${err.message}${NC}`);
+  }
+
+  // ── Phase 5: Verify revival ───────────────────────────────────────────────
+  if (revived.length === 0) return;
+
+  console.log('  Verifying revival...');
+  await new Promise(r => setTimeout(r, 5000)); // Initial startup delay
+
+  const maxPollMs = 30000;
+  const pollInterval = 2000;
+  const deadline = Date.now() + maxPollMs;
+  const verified = new Set();
+
+  while (Date.now() < deadline && verified.size < revived.length) {
+    let db;
+    try {
+      db = new Database(queueDbPath, { readonly: true });
+      db.pragma('busy_timeout = 3000');
+      for (const entry of revived) {
+        if (verified.has(entry.newQueueId)) continue;
+        if (!entry.newQueueId) continue;
+        const row = db.prepare('SELECT status, pid FROM queue_items WHERE id = ?').get(entry.newQueueId);
+        if (row && row.status === 'running' && row.pid) {
+          try {
+            process.kill(row.pid, 0); // Signal 0 = existence check
+            verified.add(entry.newQueueId);
+          } catch { /* not alive yet */ }
+        }
+      }
+      db.close();
+    } catch {
+      try { db?.close(); } catch { /* best-effort */ }
+    }
+
+    if (verified.size < revived.length) {
+      await new Promise(r => setTimeout(r, pollInterval));
+    }
+  }
+
+  // Log verification results
+  for (const entry of revived) {
+    if (verified.has(entry.newQueueId)) {
+      console.log(`  ${GREEN}Verified: ${entry.title} (active)${NC}`);
+    } else {
+      console.log(`  ${YELLOW}Unverified: ${entry.title} (still starting?)${NC}`);
+    }
+  }
+}
+
 export default async function sync(args) {
   const projectDir = process.cwd();
 
@@ -643,6 +945,9 @@ export default async function sync(args) {
   // 9. Write state
   const state = buildState(frameworkDir, model);
   writeState(projectDir, state);
+
+  // 10. Recycle running automated sessions (pick up new MCP servers/configs)
+  await recycleAutomatedSessions(projectDir);
 
   console.log('');
   console.log(`${GREEN}Sync complete (v${state.version})${NC}`);
