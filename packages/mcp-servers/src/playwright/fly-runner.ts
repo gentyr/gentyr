@@ -67,6 +67,8 @@ export interface RemoteDemoRequest {
   /** From worktreeBuildCommand */
   buildCmd?: string;
   buildHealthCheck?: string;
+  /** Whether to run headless (default true). When false, Xvfb + ffmpeg record the display. */
+  headless?: boolean;
   /** For tracking */
   scenarioId?: string;
 }
@@ -367,7 +369,7 @@ export async function spawnRemoteMachine(
     GIT_REMOTE: request.gitRemote,
     GIT_REF: request.gitRef,
     TEST_FILE: request.testFile,
-    DEMO_HEADLESS: '1',
+    DEMO_HEADLESS: request.headless === false ? '0' : '1',
     DEMO_SLOW_MO: String(request.slowMo),
   };
 

@@ -125,12 +125,14 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
     return { target: 'local', reason: 'Scenario requires headed browser (headed=true in DB)' };
   }
 
-  // headless=false at the call site also implies local display access.
+  // headless=false at the call site implies local display access — UNLESS
+  // the caller explicitly requested remote. Remote machines handle headed mode
+  // via Xvfb + ffmpeg (no physical display needed).
   if (!headless) {
     if (explicitRemote === true) {
       return {
-        target: 'local',
-        reason: 'Headed mode requested (headless=false) — cannot run remotely without display',
+        target: 'remote',
+        reason: 'Headed mode explicitly requested on remote — Xvfb + ffmpeg will handle display and recording',
       };
     }
     return { target: 'local', reason: 'Running in headed mode (requires local display)' };
