@@ -1900,6 +1900,16 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const { project, slow_mo, base_url, test_file } = args;
   let effectiveTestFile = test_file;
 
+  // Derive headless and skip_recording from the high-level "recorded" flag.
+  // Agents set recorded (default true) and remote (default true) — GENTYR handles the rest.
+  // Low-level overrides (headless, skip_recording) take precedence when explicitly set.
+  if (args.headless === undefined) {
+    args.headless = args.recorded === false; // recorded=true → headed, recorded=false → headless
+  }
+  if (args.skip_recording === undefined) {
+    args.skip_recording = args.recorded === false; // recorded=true → record, recorded=false → skip
+  }
+
   // When remote: true + Fly configured, skip ALL local setup — the remote machine
   // handles its own clone, install, prerequisites, dev server, and test execution.
   const skipLocalSetup = args.remote === true && (() => {
@@ -6998,16 +7008,16 @@ const tools: AnyToolHandler[] = [
   {
     name: 'run_demo',
     description:
-      'Launch Playwright tests in a visible headed browser that runs automatically at human-watchable speed. ' +
-      'No clicking required — tests play through on their own with configurable pace. ' +
-      'VIDEO RECORDING: Headed mode always records video automatically (macOS, no extra args). ' +
-      'Headless mode never records video. Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`. ' +
-      'Best for presentations and demos. Supports headless mode (headless: true) for CI or screenshot capture. ' +
-      'Cursor dot is always visible in headed mode. The target project\'s playwright.config.ts must read ' +
-      'parseInt(process.env.DEMO_SLOW_MO || "0") in use.launchOptions.slowMo for pace control to work. ' +
-      'Video uses ScreenCaptureKit window recorder — do NOT set DEMO_RECORD_VIDEO. ' +
-      'Prerequisites (including dev server start) execute automatically if registered via register_prerequisite. ' +
-      'If this tool fails on prerequisites, run preflight_check to diagnose — do NOT bypass by running Playwright directly via Bash or secret_run_command.',
+      'Run a demo scenario. Two main flags: "recorded" (default true — captures video) and "remote" (default true — runs on Fly.io). ' +
+      'That\'s it — GENTYR handles headed/headless mode, display setup, and recording automatically. ' +
+      'RECORDING: When recorded=true (default), runs headed with video recording. Locally uses ScreenCaptureKit; ' +
+      'remotely uses Xvfb + ffmpeg. Screenshots extracted at 3s intervals in both cases. ' +
+      'When recorded=false, runs headless without video. ' +
+      'REMOTE: When remote=true (default), runs on Fly.io with auto-push of worktree branches. ' +
+      'When remote=false, runs locally with prerequisites and dev server auto-started. ' +
+      'Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`. ' +
+      'Prerequisites execute automatically if registered via register_prerequisite. ' +
+      'If this tool fails on prerequisites, run preflight_check to diagnose.',
     schema: RunDemoArgsSchema,
     handler: runDemo,
   },
