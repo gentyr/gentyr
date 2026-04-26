@@ -34,6 +34,11 @@ RECORDING_FPS="${GENTYR_RECORDING_FPS:-25}"
 XVFB_PID=""
 FFMPEG_PID=""
 
+# Create progress file early so setup phases can write to it
+PROGRESS_FILE="/app/.progress.jsonl"
+touch "$PROGRESS_FILE"
+export DEMO_PROGRESS_FILE="$PROGRESS_FILE"
+
 # Ensure exit code is always written and artifacts are retrievable on ANY exit
 cleanup() {
   local exit_code=$?
@@ -94,16 +99,20 @@ fi
 # Clone repository
 # ---------------------------------------------------------------------------
 log "Cloning $GIT_REMOTE at ref $GIT_REF ..."
+echo '{"type":"setup","phase":"clone_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 git clone --depth=1 --branch "$GIT_REF" "$GIT_REMOTE" /app/project 2>&1 | tee -a /app/.error.log
 
 cd /app/project
+echo '{"type":"setup","phase":"clone_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Install dependencies
 # ---------------------------------------------------------------------------
 log "Running pnpm install (store: ${PNPM_STORE_DIR:-/cache/pnpm-store}) ..."
+echo '{"type":"setup","phase":"install_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 NODE_ENV=development PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
   pnpm install --frozen-lockfile 2>&1 | tee -a /app/.error.log
+echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 export NODE_ENV=production
 
 # ---------------------------------------------------------------------------
@@ -111,6 +120,7 @@ export NODE_ENV=production
 # ---------------------------------------------------------------------------
 if [[ -n "${GENTYR_PREREQUISITES:-}" ]]; then
   log "Executing prerequisites..."
+  echo '{"type":"setup","phase":"prerequisites_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 
   # Count prerequisites
   PREREQ_COUNT=$(echo "$GENTYR_PREREQUISITES" | jq 'length')
@@ -173,6 +183,7 @@ if [[ -n "${GENTYR_PREREQUISITES:-}" ]]; then
   done
 
   log "Prerequisites complete"
+  echo '{"type":"setup","phase":"prerequisites_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
@@ -203,6 +214,7 @@ fi
 DEV_SERVER_PID=""
 
 if [[ -n "${DEV_SERVER_CMD:-}" ]]; then
+  echo '{"type":"setup","phase":"devserver_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
   log "Starting dev server in background: $DEV_SERVER_CMD"
   eval "$DEV_SERVER_CMD" >/app/.devserver.log 2>&1 &
   DEV_SERVER_PID=$!
@@ -227,56 +239,54 @@ if [[ -n "${DEV_SERVER_CMD:-}" ]]; then
   done
 
   log "Dev server is healthy after ${ELAPSED}s"
+  echo '{"type":"setup","phase":"devserver_ready","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
   export PLAYWRIGHT_BASE_URL="http://localhost:${DEV_SERVER_PORT:-3000}"
   log "Set PLAYWRIGHT_BASE_URL=$PLAYWRIGHT_BASE_URL"
 fi
 
 # ---------------------------------------------------------------------------
-# Start virtual display for window-level recording (Xvfb + ffmpeg)
+# Start virtual display for window-level recording (only when headed)
 # ---------------------------------------------------------------------------
-log "Starting Xvfb virtual display (${RECORDING_RESOLUTION})..."
-Xvfb :99 -screen 0 "${RECORDING_RESOLUTION}x24" -ac -nolisten tcp &
-XVFB_PID=$!
-export DISPLAY=:99
-sleep 1
+if [[ "${DEMO_HEADLESS:-1}" != "1" ]]; then
+  log "Starting Xvfb virtual display (${RECORDING_RESOLUTION})..."
+  Xvfb :99 -screen 0 "${RECORDING_RESOLUTION}x24" -ac -nolisten tcp &
+  XVFB_PID=$!
+  export DISPLAY=:99
+  sleep 1
 
-if ! kill -0 "$XVFB_PID" 2>/dev/null; then
-  error "Xvfb failed to start — falling back to headless (no recording)"
-  XVFB_PID=""
-else
-  # Run headed on virtual display for full-window recording
-  export DEMO_HEADLESS=0
-  export DEMO_MAXIMIZE=1
-
-  log "Starting ffmpeg display recording (${RECORDING_RESOLUTION} @ ${RECORDING_FPS}fps)..."
-  ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
-    -framerate "${RECORDING_FPS}" -i :99 \
-    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
-    -y "$RECORDING_FILE" \
-    < /dev/null > /app/.ffmpeg.log 2>&1 &
-  FFMPEG_PID=$!
-  sleep 0.5
-
-  if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
-    error "ffmpeg failed to start — continuing without recording"
-    FFMPEG_PID=""
+  if ! kill -0 "$XVFB_PID" 2>/dev/null; then
+    error "Xvfb failed to start — falling back to headless (no recording)"
+    XVFB_PID=""
   else
-    log "Recording started (PID: $FFMPEG_PID)"
+    export DEMO_MAXIMIZE=1
+
+    log "Starting ffmpeg display recording (${RECORDING_RESOLUTION} @ ${RECORDING_FPS}fps)..."
+    ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
+      -framerate "${RECORDING_FPS}" -i :99 \
+      -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+      -y "$RECORDING_FILE" \
+      < /dev/null > /app/.ffmpeg.log 2>&1 &
+    FFMPEG_PID=$!
+    sleep 0.5
+
+    if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
+      error "ffmpeg failed to start — continuing without recording"
+      FFMPEG_PID=""
+    else
+      log "Recording started (PID: $FFMPEG_PID)"
+    fi
   fi
+else
+  log "Running headless — skipping Xvfb and recording"
 fi
 
-# ---------------------------------------------------------------------------
-# Set up progress JSONL file
-# ---------------------------------------------------------------------------
-PROGRESS_FILE="/app/.progress.jsonl"
-touch "$PROGRESS_FILE"
-export DEMO_PROGRESS_FILE="$PROGRESS_FILE"
 log "Progress file: $PROGRESS_FILE"
 
 # ---------------------------------------------------------------------------
 # Run Playwright tests (with stall-detection watchdog)
 # ---------------------------------------------------------------------------
 log "Running Playwright tests: $TEST_FILE"
+echo '{"type":"setup","phase":"test_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 
 PLAYWRIGHT_EXIT=0
 STALL_TIMEOUT=${GENTYR_STALL_TIMEOUT_S:-120}
