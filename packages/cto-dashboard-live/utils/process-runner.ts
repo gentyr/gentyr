@@ -9,10 +9,12 @@
 
 import * as fs from 'fs';
 import * as http from 'http';
+import * as https from 'https';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { spawn, execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
-import type { DemoScenarioItem, TestFileItem, RunningProcess } from '../types.js';
+import type { DemoScenarioItem, TestFileItem, RunningProcess, DemoExecutionMode } from '../types.js';
 import { isProcessAlive } from '../live-reader.js';
 import { preemptForCtoDashboardDemo, releaseCtoDashboardDemo } from './display-lock-manager.js';
 
@@ -570,6 +572,8 @@ export async function launchDemo(scenario: DemoScenarioItem, environmentBaseUrl?
     startedAt: new Date().toISOString(),
     outputFile,
     exitCode: null,
+    executionMode: 'local' as const,
+    scenarioId: scenario.id,
   };
 }
 
@@ -613,6 +617,26 @@ export function launchTest(testFile: TestFileItem): RunningProcess {
 
 export function checkProcess(proc: RunningProcess): RunningProcess {
   if (proc.status !== 'running') return proc;
+
+  // Remote demos: check output file for completion markers
+  if (proc.executionMode === 'remote') {
+    try {
+      const output = fs.readFileSync(proc.outputFile, 'utf8');
+      if (output.includes('[remote] DONE: passed')) {
+        const result = { ...proc, status: 'passed' as const, exitCode: 0 };
+        recordDemoResult(proc.scenarioId, 'passed', 'remote', proc.startedAt, proc.flyMachineId ?? null);
+        return result;
+      }
+      if (output.includes('[remote] DONE: failed') || output.includes('[remote] ERROR:')) {
+        const result = { ...proc, status: 'failed' as const, exitCode: 1 };
+        recordDemoResult(proc.scenarioId, 'failed', 'remote', proc.startedAt, proc.flyMachineId ?? null);
+        return result;
+      }
+    } catch { /* */ }
+    return proc;
+  }
+
+  // Local: check PID liveness
   if (isProcessAlive(proc.pid)) return proc;
 
   // Process is dead — determine result from output
@@ -623,11 +647,12 @@ export function checkProcess(proc: RunningProcess): RunningProcess {
     else if (output.includes('failed')) exitCode = 1;
   } catch { /* */ }
 
-  return {
-    ...proc,
-    status: exitCode === 0 ? 'passed' : 'failed',
-    exitCode,
-  };
+  const status = exitCode === 0 ? 'passed' : 'failed';
+  if (proc.type === 'demo' && proc.scenarioId) {
+    recordDemoResult(proc.scenarioId, status, 'local', proc.startedAt, null);
+  }
+
+  return { ...proc, status, exitCode };
 }
 
 /**
@@ -671,4 +696,338 @@ export function killProcess(proc: RunningProcess): void {
       try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
     }
   }, 2000);
+}
+
+// ============================================================================
+// Demo Result Recording
+// ============================================================================
+
+/**
+ * Record a demo run result to user-feedback.db demo_results table.
+ * Short-lived writable connection — opens, writes, closes immediately.
+ */
+function recordDemoResult(
+  scenarioId: string | undefined,
+  status: 'passed' | 'failed',
+  executionMode: DemoExecutionMode,
+  startedAt: string,
+  flyMachineId: string | null,
+): void {
+  if (!scenarioId) return;
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
+  if (!fs.existsSync(dbPath)) return;
+  let db: InstanceType<typeof Database> | null = null;
+  try {
+    db = new Database(dbPath);
+    // Ensure table exists (auto-migration for dashboard-only usage)
+    try { db.prepare('SELECT id FROM demo_results LIMIT 0').run(); } catch {
+      db.exec(`CREATE TABLE IF NOT EXISTS demo_results (
+        id TEXT PRIMARY KEY, scenario_id TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'local',
+        status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL, fly_machine_id TEXT, output_file TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE
+      )`);
+    }
+    const now = new Date();
+    const durationMs = now.getTime() - new Date(startedAt).getTime();
+    db.prepare(
+      'INSERT INTO demo_results (id, scenario_id, execution_mode, status, started_at, completed_at, duration_ms, fly_machine_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(crypto.randomUUID(), scenarioId, executionMode, status, startedAt, now.toISOString(), durationMs, flyMachineId);
+  } catch { /* non-fatal */ }
+  finally { try { db?.close(); } catch { /* */ } }
+}
+
+// ============================================================================
+// Fly.io Remote Demo Execution
+// ============================================================================
+
+const FLY_API_BASE = 'https://api.machines.dev/v1';
+
+interface FlyMachineConfig {
+  apiToken: string;
+  appName: string;
+  region: string;
+  machineRam: number;
+}
+
+/** Load and resolve Fly.io config from services.json. Returns null if not configured. */
+function loadFlyConfig(): FlyMachineConfig | null {
+  const config = loadServicesConfig();
+  if (!config) return null;
+  const fly = config.fly as Record<string, unknown> | undefined;
+  if (!fly || fly.enabled === false || typeof fly.appName !== 'string' || typeof fly.apiToken !== 'string') return null;
+
+  let resolvedToken: string;
+  const tokenRef = fly.apiToken as string;
+  if (tokenRef.startsWith('op://')) {
+    // Resolve from 1Password — check secrets.local first (already resolved), else direct op read
+    const creds = resolveServicesSecrets();
+    if (creds['FLY_API_TOKEN']) {
+      resolvedToken = creds['FLY_API_TOKEN'];
+    } else {
+      const opToken = getOpToken();
+      if (!opToken) return null;
+      try {
+        resolvedToken = execFileSync('op', ['read', tokenRef], {
+          encoding: 'utf-8', timeout: 15000,
+          env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: opToken },
+        }).trim();
+      } catch { return null; }
+    }
+  } else {
+    resolvedToken = tokenRef;
+  }
+
+  return {
+    apiToken: resolvedToken,
+    appName: fly.appName as string,
+    region: (fly.region as string) || 'iad',
+    machineRam: (fly.machineRam as number) || 4096,
+  };
+}
+
+/** Make a Fly Machines API request. */
+function flyFetch(config: FlyMachineConfig, urlPath: string, method: string, body?: unknown): Promise<{ status: number; data: unknown }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(`${FLY_API_BASE}${urlPath}`);
+    const payload = body ? JSON.stringify(body) : undefined;
+    const req = https.request({
+      hostname: url.hostname, path: url.pathname, method,
+      headers: {
+        'Authorization': `Bearer ${config.apiToken}`,
+        'Content-Type': 'application/json',
+        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+      },
+      timeout: 30000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode ?? 0, data: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode ?? 0, data }); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Fly API timeout')); });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+/** Resolve the latest Docker image for the Fly app. */
+async function resolveFlyImage(config: FlyMachineConfig): Promise<string> {
+  return `registry.fly.io/${config.appName}:latest`;
+}
+
+/**
+ * Launch a demo on a Fly.io machine.
+ * Spawns the machine and starts a background progress poller that writes to the output file.
+ */
+export async function launchRemoteDemo(scenario: DemoScenarioItem): Promise<RunningProcess> {
+  await preemptForCtoDashboardDemo(scenario.title);
+
+  const outputFile = makeOutputFile('demo-remote', scenario.id);
+  const fd = fs.openSync(outputFile, 'a');
+
+  logPreflight(fd, 'Loading Fly.io configuration...');
+  const flyConfig = loadFlyConfig();
+  if (!flyConfig) {
+    logPreflight(fd, 'ABORT: Fly.io not configured or token resolution failed');
+    logPreflight(fd, '[remote] ERROR: Fly.io not configured');
+    try { fs.closeSync(fd); } catch { /* */ }
+    return {
+      pid: 0, label: scenario.title, type: 'demo', status: 'failed',
+      startedAt: new Date().toISOString(), outputFile, exitCode: 1,
+      executionMode: 'remote', scenarioId: scenario.id,
+    };
+  }
+
+  // Resolve credentials and env
+  let resolvedSecrets: Record<string, string>;
+  try {
+    resolvedSecrets = resolveServicesSecrets();
+    logPreflight(fd, `Credentials resolved (${Object.keys(resolvedSecrets).length} keys)`);
+  } catch (err) {
+    logPreflight(fd, `ABORT: ${err instanceof Error ? err.message : String(err)}`);
+    logPreflight(fd, '[remote] ERROR: credential resolution failed');
+    try { fs.closeSync(fd); } catch { /* */ }
+    return {
+      pid: 0, label: scenario.title, type: 'demo', status: 'failed',
+      startedAt: new Date().toISOString(), outputFile, exitCode: 1,
+      executionMode: 'remote', scenarioId: scenario.id,
+    };
+  }
+
+  // Get git info
+  let gitRemote: string, gitRef: string;
+  try {
+    gitRemote = execFileSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8', cwd: PROJECT_DIR, timeout: 5000 }).trim();
+    gitRef = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', cwd: PROJECT_DIR, timeout: 5000 }).trim();
+    // Convert SSH to HTTPS for Fly machine cloning
+    if (gitRemote.startsWith('git@')) {
+      gitRemote = gitRemote.replace(/^git@([^:]+):/, 'https://$1/');
+    }
+  } catch {
+    logPreflight(fd, 'ABORT: Could not determine git remote/ref');
+    logPreflight(fd, '[remote] ERROR: git info unavailable');
+    try { fs.closeSync(fd); } catch { /* */ }
+    return {
+      pid: 0, label: scenario.title, type: 'demo', status: 'failed',
+      startedAt: new Date().toISOString(), outputFile, exitCode: 1,
+      executionMode: 'remote', scenarioId: scenario.id,
+    };
+  }
+
+  // Build machine env
+  const machineEnv: Record<string, string> = {
+    GIT_REMOTE: gitRemote,
+    GIT_REF: gitRef,
+    TEST_FILE: scenario.testFile,
+    DEMO_HEADLESS: '0',
+    DEMO_SLOW_MO: '800',
+    DEMO_MAXIMIZE: '1',
+    DEMO_SHOW_CURSOR: '1',
+  };
+  // Merge resolved secrets (stripped of infra creds)
+  for (const [k, v] of Object.entries(resolvedSecrets)) {
+    if (!INFRA_CRED_KEYS.has(k)) machineEnv[k] = v;
+  }
+  // Merge demoDevModeEnv
+  Object.assign(machineEnv, getDemoDevModeEnv());
+  // Scenario env vars
+  if (scenario.envVars) {
+    Object.assign(machineEnv, resolveOpEnvVars(scenario.envVars));
+  }
+  // NEXT_PUBLIC convenience
+  if (machineEnv['SUPABASE_URL'] && !machineEnv['NEXT_PUBLIC_SUPABASE_URL']) machineEnv['NEXT_PUBLIC_SUPABASE_URL'] = machineEnv['SUPABASE_URL'];
+  if (machineEnv['SUPABASE_ANON_KEY'] && !machineEnv['NEXT_PUBLIC_SUPABASE_ANON_KEY']) machineEnv['NEXT_PUBLIC_SUPABASE_ANON_KEY'] = machineEnv['SUPABASE_ANON_KEY'];
+  // Git auth for private repos
+  if (resolvedSecrets['GITHUB_TOKEN']) machineEnv['GIT_AUTH_TOKEN'] = resolvedSecrets['GITHUB_TOKEN'];
+
+  // Spawn machine
+  logPreflight(fd, `Spawning Fly machine in ${flyConfig.region}...`);
+  const image = await resolveFlyImage(flyConfig);
+
+  let machineId: string;
+  try {
+    const resp = await flyFetch(flyConfig, `/apps/${flyConfig.appName}/machines`, 'POST', {
+      name: `dashboard-demo-${Date.now()}`,
+      region: flyConfig.region,
+      config: {
+        image,
+        guest: { cpu_kind: 'shared', cpus: 2, memory_mb: flyConfig.machineRam },
+        env: machineEnv,
+        auto_destroy: true,
+        restart: { policy: 'no' },
+        stop_config: { timeout: '75s' },
+      },
+    });
+    const respData = resp.data as { id?: string; error?: string };
+    if (!respData?.id) throw new Error(respData?.error || `HTTP ${resp.status}`);
+    machineId = respData.id;
+    logPreflight(fd, `Machine ${machineId} created`);
+  } catch (err) {
+    logPreflight(fd, `ABORT: Failed to spawn machine: ${err instanceof Error ? err.message : String(err)}`);
+    logPreflight(fd, '[remote] ERROR: machine spawn failed');
+    try { fs.closeSync(fd); } catch { /* */ }
+    return {
+      pid: 0, label: scenario.title, type: 'demo', status: 'failed',
+      startedAt: new Date().toISOString(), outputFile, exitCode: 1,
+      executionMode: 'remote', scenarioId: scenario.id,
+    };
+  }
+
+  try { fs.closeSync(fd); } catch { /* */ }
+
+  // Start background poller that writes progress to the output file
+  startRemoteProgressPoller(flyConfig, machineId, outputFile);
+
+  return {
+    pid: -1, // synthetic — no local PID
+    label: scenario.title,
+    type: 'demo',
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    outputFile,
+    exitCode: null,
+    executionMode: 'remote',
+    flyMachineId: machineId,
+    scenarioId: scenario.id,
+  };
+}
+
+/** Background poller that checks machine state and writes progress to the output file. */
+function startRemoteProgressPoller(config: FlyMachineConfig, machineId: string, outputFile: string): void {
+  const interval = setInterval(async () => {
+    try {
+      const resp = await flyFetch(config, `/apps/${config.appName}/machines/${machineId}`, 'GET');
+      const machine = resp.data as { state?: string };
+      const state = machine?.state;
+
+      if (state === 'stopped' || state === 'destroying' || state === 'destroyed') {
+        // Try to read exit code from the machine
+        let exitCode = 1;
+        try {
+          const execResp = await flyFetch(config, `/apps/${config.appName}/machines/${machineId}/exec`, 'POST', {
+            cmd: ['cat', '/app/.exit-code'], timeout: 10,
+          });
+          const execData = execResp.data as { stdout?: string };
+          if (execData?.stdout) {
+            const decoded = Buffer.from(execData.stdout, 'base64').toString().trim();
+            exitCode = parseInt(decoded, 10);
+            if (isNaN(exitCode)) exitCode = 1;
+          }
+        } catch { /* machine may already be gone */ }
+
+        const status = exitCode === 0 ? 'passed' : 'failed';
+        fs.appendFileSync(outputFile, `[remote] DONE: ${status}\n`);
+
+        // Cleanup: destroy machine
+        try { await flyFetch(config, `/apps/${config.appName}/machines/${machineId}`, 'DELETE'); } catch { /* */ }
+        clearInterval(interval);
+        return;
+      }
+
+      // Try to read progress JSONL
+      try {
+        const execResp = await flyFetch(config, `/apps/${config.appName}/machines/${machineId}/exec`, 'POST', {
+          cmd: ['tail', '-20', '/app/.progress.jsonl'], timeout: 10,
+        });
+        const execData = execResp.data as { stdout?: string; exit_code?: number };
+        if (execData?.stdout && execData.exit_code === 0) {
+          const raw = Buffer.from(execData.stdout, 'base64').toString();
+          for (const line of raw.split('\n').filter(Boolean)) {
+            try {
+              const evt = JSON.parse(line) as { type?: string; data?: { title?: string; message?: string } };
+              if (evt.type === 'test_pass') fs.appendFileSync(outputFile, `[remote] PASS: ${evt.data?.title || '?'}\n`);
+              else if (evt.type === 'test_fail') fs.appendFileSync(outputFile, `[remote] FAIL: ${evt.data?.title || '?'}\n`);
+              else if (evt.type === 'step') fs.appendFileSync(outputFile, `[remote] step: ${evt.data?.message || evt.data?.title || ''}\n`);
+              else if (evt.type === 'setup') fs.appendFileSync(outputFile, `[remote] setup: ${evt.data?.message || ''}\n`);
+            } catch { /* skip malformed line */ }
+          }
+        }
+      } catch { /* exec may fail before test starts — that's ok */ }
+
+    } catch { /* network error — retry on next tick */ }
+  }, 5000);
+
+  // Safety net: stop polling after 10 minutes
+  setTimeout(() => {
+    clearInterval(interval);
+    try { fs.appendFileSync(outputFile, '[remote] ERROR: polling timeout (10 min)\n'); } catch { /* */ }
+  }, 600_000);
+}
+
+/** Stop a remote Fly machine for a running remote demo. */
+export async function killRemoteProcess(proc: RunningProcess): Promise<void> {
+  if (!proc.flyMachineId) return;
+  const flyConfig = loadFlyConfig();
+  if (!flyConfig) return;
+  try {
+    await flyFetch(flyConfig, `/apps/${flyConfig.appName}/machines/${proc.flyMachineId}/stop`, 'POST', { signal: 'SIGTERM' });
+  } catch { /* machine may already be stopped */ }
+  try {
+    await flyFetch(flyConfig, `/apps/${flyConfig.appName}/machines/${proc.flyMachineId}`, 'DELETE');
+  } catch { /* */ }
 }

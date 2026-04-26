@@ -432,6 +432,31 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       `);
     }
 
+    // Auto-migration: create demo_results table if missing (tracks per-scenario pass/fail history)
+    try {
+      db.prepare("SELECT id FROM demo_results LIMIT 0").run();
+    } catch {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS demo_results (
+            id TEXT PRIMARY KEY,
+            scenario_id TEXT NOT NULL,
+            execution_mode TEXT NOT NULL DEFAULT 'local',
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            fly_machine_id TEXT,
+            output_file TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CONSTRAINT valid_mode CHECK (execution_mode IN ('local', 'remote')),
+            CONSTRAINT valid_status CHECK (status IN ('passed', 'failed')),
+            FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_demo_results_scenario ON demo_results(scenario_id);
+        CREATE INDEX IF NOT EXISTS idx_demo_results_completed ON demo_results(completed_at);
+      `);
+    }
+
     // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
     db.exec(`UPDATE personas SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);
     db.exec(`UPDATE features SET created_timestamp = datetime(created_timestamp, 'unixepoch') || 'Z' WHERE typeof(created_timestamp) = 'integer'`);

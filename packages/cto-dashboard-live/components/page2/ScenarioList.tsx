@@ -30,7 +30,11 @@ function agoLabel(isoStr: string | null): string {
 }
 
 function ScenarioRow({ scenario, isSelected, width, isActive }: { scenario: DemoScenarioItem; isSelected: boolean; width: number; isActive: boolean }): React.ReactElement {
-  const dotColor = scenario.enabled ? 'green' : 'gray';
+  // Dot color reflects last result: green=passed, red=failed, yellow=no results, gray=disabled
+  const dotColor = !scenario.enabled ? 'gray'
+    : scenario.lastResult?.status === 'passed' ? 'green'
+    : scenario.lastResult?.status === 'failed' ? 'red'
+    : 'yellow';
   const titleWidth = Math.max(4, width - 4);
   const titleText = truncate(scenario.title, titleWidth);
 
@@ -39,7 +43,14 @@ function ScenarioRow({ scenario, isSelected, width, isActive }: { scenario: Demo
   if (scenario.category) meta.push(scenario.category);
   if (scenario.headed) meta.push('headed');
   if (scenario.recordingPath) meta.push('\u25B6 video');
-  meta.push(agoLabel(scenario.lastRecordedAt));
+  // Show last result with pass/fail icon and local/remote badge
+  if (scenario.lastResult) {
+    const icon = scenario.lastResult.status === 'passed' ? '\u2713' : '\u2717';
+    const mode = scenario.lastResult.executionMode === 'remote' ? 'R' : 'L';
+    meta.push(`${icon}${mode} ${agoLabel(scenario.lastResult.completedAt)}`);
+  } else {
+    meta.push(agoLabel(scenario.lastRecordedAt));
+  }
   const metaStr = truncate(meta.join(' \u00B7 '), Math.max(4, width - 4));
 
   const highlight = isSelected && isActive;

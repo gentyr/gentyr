@@ -22,8 +22,8 @@ import { ScenarioList } from './page2/ScenarioList.js';
 import { TestFileList, selectableCount } from './page2/TestFileList.js';
 import { OutputPanel } from './page2/OutputPanel.js';
 import { useProcessOutput } from '../hooks/useProcessOutput.js';
-import { launchDemo, launchTest, checkProcess, killProcess, releaseDemo } from '../utils/process-runner.js';
-import type { Page2Data, RunningProcess, DemoEnvironment } from '../types.js';
+import { launchDemo, launchRemoteDemo, launchTest, checkProcess, killProcess, killRemoteProcess, releaseDemo } from '../utils/process-runner.js';
+import type { Page2Data, RunningProcess, DemoEnvironment, DemoExecutionMode } from '../types.js';
 
 interface DemosTestsViewProps {
   data: Page2Data;
@@ -49,6 +49,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedEnvId, setSelectedEnvId] = useState<string>('local');
+  const [executionMode, setExecutionMode] = useState<DemoExecutionMode>('local');
 
   // Resolve the active environment object
   const environments = data.environments.length > 0 ? data.environments : [{ id: 'local', label: 'Local', baseUrl: null } as DemoEnvironment];
@@ -106,7 +107,9 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (activePanel === 'demos') {
         const scenario = data.scenarios.find(s => s.id === selectedScenarioId);
         if (!scenario) return;
-        const proc = await launchDemo(scenario, selectedEnv.baseUrl);
+        const proc = executionMode === 'remote'
+          ? await launchRemoteDemo(scenario)
+          : await launchDemo(scenario, selectedEnv.baseUrl);
         setRunningProcess(proc);
         setStatusMessage(null);
       } else {
@@ -121,11 +124,15 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
       statusTimerRef.current = setTimeout(() => setStatusMessage(null), 5000);
     }
-  }, [activePanel, selectedScenarioId, selectedTestIndex, data, runningProcess, selectedEnv]);
+  }, [activePanel, selectedScenarioId, selectedTestIndex, data, runningProcess, selectedEnv, executionMode]);
 
   const handleStop = useCallback(() => {
     if (runningProcess?.status === 'running') {
-      killProcess(runningProcess);
+      if (runningProcess.executionMode === 'remote') {
+        killRemoteProcess(runningProcess).catch(() => { /* non-fatal */ });
+      } else {
+        killProcess(runningProcess);
+      }
       setRunningProcess({ ...runningProcess, status: 'failed', exitCode: -1 });
       // Release display/chrome-bridge locks when demo is manually stopped
       if (runningProcess.type === 'demo') {
@@ -193,6 +200,20 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       statusTimerRef.current = setTimeout(() => setStatusMessage(null), 3000);
       return;
     }
+    if (input === 'r') {
+      if (!data.flyStatus.configured) {
+        setStatusMessage(`Remote unavailable: ${data.flyStatus.reason || 'Fly.io not configured — run /setup-fly'}`);
+        if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = setTimeout(() => setStatusMessage(null), 5000);
+        return;
+      }
+      const next: DemoExecutionMode = executionMode === 'local' ? 'remote' : 'local';
+      setExecutionMode(next);
+      setStatusMessage(`Execution: ${next === 'remote' ? `REMOTE (${data.flyStatus.appName}.fly.dev)` : 'LOCAL'}`);
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = setTimeout(() => setStatusMessage(null), 3000);
+      return;
+    }
     if (input === 'v' || input === 'w') { handleWatch(); return; }
     if (input === 's' || input === 'x') { handleStop(); return; }
     if (key.escape) { handleClear(); return; }
@@ -202,34 +223,52 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const leftWidth = Math.floor(bodyWidth * LEFT_WIDTH_FRACTION);
   const rightWidth = bodyWidth - leftWidth - 1;
 
-  const envBarHeight = environments.length > 1 ? 1 : 0;
+  const showEnvBar = environments.length > 1;
+  const showModeBar = data.flyStatus.configured;
+  const controlBarHeight = (showEnvBar || showModeBar) ? 1 : 0;
   const hasOutput = runningProcess != null;
   const outputHeight = hasOutput ? Math.max(4, Math.floor(bodyHeight * OUTPUT_HEIGHT_FRACTION)) : 0;
-  const listsHeight = bodyHeight - outputHeight - envBarHeight;
+  const listsHeight = bodyHeight - outputHeight - controlBarHeight;
 
   const leftInnerHeight = Math.max(2, listsHeight - HEADER_OVERHEAD);
   const rightInnerHeight = Math.max(2, listsHeight - HEADER_OVERHEAD);
 
   return (
     <Box flexDirection="column" height={bodyHeight}>
-      {/* Environment selector bar — only shown when multiple environments are configured */}
-      {environments.length > 1 && (
+      {/* Control bar — environment selector + execution mode */}
+      {(showEnvBar || showModeBar) && (
         <Box height={1} flexDirection="row">
-          <Text dimColor> ENV </Text>
-          {environments.map((env) => {
-            const isSelected = env.id === selectedEnv.id;
-            return (
-              <Box key={env.id} marginRight={1}>
-                {isSelected ? (
-                  <Text bold inverse color="white">{` ${env.label} `}</Text>
-                ) : (
-                  <Text dimColor>{` ${env.label} `}</Text>
-                )}
+          {showEnvBar && (
+            <>
+              <Text dimColor> ENV </Text>
+              {environments.map((env) => (
+                <Box key={env.id} marginRight={1}>
+                  {env.id === selectedEnv.id
+                    ? <Text bold inverse color="white">{` ${env.label} `}</Text>
+                    : <Text dimColor>{` ${env.label} `}</Text>}
+                </Box>
+              ))}
+              <Text dimColor>(e)</Text>
+              {selectedEnv.baseUrl && <Text color="cyan"> {'\u2192'} {selectedEnv.baseUrl}</Text>}
+            </>
+          )}
+          {showModeBar && (
+            <>
+              <Text dimColor>{showEnvBar ? '  \u2502 ' : ' '}</Text>
+              <Text dimColor>RUN </Text>
+              <Box marginRight={1}>
+                {executionMode === 'local'
+                  ? <Text bold inverse color="white">{' LOCAL '}</Text>
+                  : <Text dimColor>{' LOCAL '}</Text>}
               </Box>
-            );
-          })}
-          <Text dimColor> (e to cycle)</Text>
-          {selectedEnv.baseUrl && <Text color="cyan"> {'\u2192'} {selectedEnv.baseUrl}</Text>}
+              <Box marginRight={1}>
+                {executionMode === 'remote'
+                  ? <Text bold inverse color="cyan">{' REMOTE '}</Text>
+                  : <Text dimColor>{' REMOTE '}</Text>}
+              </Box>
+              <Text dimColor>(r)</Text>
+            </>
+          )}
         </Box>
       )}
 
