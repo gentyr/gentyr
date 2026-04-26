@@ -17,7 +17,6 @@ primary_region = '{{REGION}}'
 # Machines are ephemeral — auto-stop when process exits
 # No services/ports exposed — this is a batch runner, not a web server
 
-[processes]
-  [processes.app]
-    # Allow 75s for the EXIT trap to write artifacts and sleep 60s for retrieval
-    kill_timeout = "75s"
+# Allow 75s for the EXIT trap to write artifacts and sleep 60s for retrieval
+# (Fly's default is 5s which kills the trap before artifacts can be pulled)
+kill_timeout = "75s"
