@@ -587,6 +587,17 @@ export const DeployFlyImageArgsSchema = z.object({
 });
 export type DeployFlyImageArgs = z.infer<typeof DeployFlyImageArgsSchema>;
 
+export const SetFlyMachineRamArgsSchema = z.object({
+  machineRamHeadless: z.number().int().min(512).max(16384).optional()
+    .describe('RAM in MB for headless remote demos (default: 2048). Headless skips Xvfb/ffmpeg, uses ~900MB.'),
+  machineRamHeaded: z.number().int().min(512).max(16384).optional()
+    .describe('RAM in MB for headed remote demos with video recording (default: 4096). Headed needs Xvfb + ffmpeg + headed Chromium.'),
+});
+export type SetFlyMachineRamArgs = z.infer<typeof SetFlyMachineRamArgsSchema>;
+
+export const GetFlyMachineRamArgsSchema = z.object({});
+export type GetFlyMachineRamArgs = z.infer<typeof GetFlyMachineRamArgsSchema>;
+
 export type ListExtensionTabsArgs = z.infer<typeof ListExtensionTabsArgsSchema>;
 export type ScreenshotExtensionTabArgs = z.infer<typeof ScreenshotExtensionTabArgsSchema>;
 
