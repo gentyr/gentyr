@@ -2197,6 +2197,27 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
       } catch { /* non-fatal */ }
 
+      // Ensure the branch exists on the remote — worktree branches are local-only until pushed
+      if (gitRef && gitRef !== 'HEAD' && gitRef !== 'main' && gitRef !== 'preview') {
+        try {
+          const lsRemote = execSync(`git ls-remote --heads origin ${gitRef}`, { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 10000 }).trim();
+          if (!lsRemote) {
+            // Branch doesn't exist on remote — push it
+            process.stderr.write(`[fly-runner] Branch '${gitRef}' not on remote — pushing before remote execution\n`);
+            execSync(`git push -u origin HEAD:${gitRef}`, { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 30000, stdio: 'pipe' });
+          }
+        } catch (pushErr) {
+          process.stderr.write(`[fly-runner] Branch push failed: ${pushErr instanceof Error ? pushErr.message : String(pushErr)}\n`);
+          // Fall back to base branch if push fails
+          try {
+            const baseBranch = execSync('git ls-remote --heads origin preview', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim()
+              ? 'preview' : 'main';
+            process.stderr.write(`[fly-runner] Falling back to base branch: ${baseBranch}\n`);
+            gitRef = baseBranch;
+          } catch { /* keep original gitRef */ }
+        }
+      }
+
       let devServerCmd: string | undefined;
       let devServerPort: number | undefined;
       let devServerHealthCheck: string | undefined;
@@ -6031,6 +6052,27 @@ async function runRemoteBatchSequence(
           gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
           if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
         } catch { /* non-fatal */ }
+
+        // Ensure the branch exists on the remote — worktree branches are local-only until pushed
+        if (gitRef && gitRef !== 'HEAD' && gitRef !== 'main' && gitRef !== 'preview') {
+          try {
+            const lsRemote = execSync(`git ls-remote --heads origin ${gitRef}`, { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 10000 }).trim();
+            if (!lsRemote) {
+              // Branch doesn't exist on remote — push it
+              process.stderr.write(`[fly-runner] Batch: Branch '${gitRef}' not on remote — pushing before remote execution\n`);
+              execSync(`git push -u origin HEAD:${gitRef}`, { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 30000, stdio: 'pipe' });
+            }
+          } catch (pushErr) {
+            process.stderr.write(`[fly-runner] Batch: Branch push failed: ${pushErr instanceof Error ? pushErr.message : String(pushErr)}\n`);
+            // Fall back to base branch if push fails
+            try {
+              const baseBranch = execSync('git ls-remote --heads origin preview', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim()
+                ? 'preview' : 'main';
+              process.stderr.write(`[fly-runner] Batch: Falling back to base branch: ${baseBranch}\n`);
+              gitRef = baseBranch;
+            } catch { /* keep original gitRef */ }
+          }
+        }
 
         // Dev server config
         let devServerCmd: string | undefined, devServerPort: number | undefined, devServerHealthCheck: string | undefined;

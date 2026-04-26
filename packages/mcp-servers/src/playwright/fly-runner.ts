@@ -409,6 +409,7 @@ export async function spawnRemoteMachine(
       auto_destroy: true,
       restart: { policy: 'no' },
       mounts,
+      stop_config: { timeout: '75s' },
     },
   };
 
