@@ -38,6 +38,7 @@ import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
 import { resolveCategory, buildPromptFromCategory } from './lib/task-category.js';
+import { runReportAutoResolve, runReportDedup } from './lib/report-auto-resolver.js';
 import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
 
@@ -695,6 +696,9 @@ function getState() {
     if (state.lastTaskGateCleanupRun === undefined) state.lastTaskGateCleanupRun = 0;
     if (state.lastUserFeedbackRun === undefined) state.lastUserFeedbackRun = 0;
     if (state.lastDailyFeedbackCheck === undefined) state.lastDailyFeedbackCheck = 0;
+    if (state.lastReportAutoResolveRun === undefined) state.lastReportAutoResolveRun = 0;
+    if (state.lastReportDedupRun === undefined) state.lastReportDedupRun = 0;
+    if (state.lastMergedPRTimestamp === undefined) state.lastMergedPRTimestamp = 0;
     return state;
   } catch (err) {
     log(`FATAL: State file corrupted: ${err.message}`);
@@ -3729,6 +3733,46 @@ async function main() {
         log('PR sweep: no open PRs.');
       } else {
         log(`PR sweep: ${openPRs.length} open PR(s), none older than 30 minutes.`);
+      }
+    },
+  });
+
+  // =========================================================================
+  // REPORT AUTO-RESOLVE (2min cooldown, gate-exempt)
+  // Auto-resolves pending reports when PRs merge, plus opportunistic dedup
+  // =========================================================================
+  await runIfDue('report_auto_resolve', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastReportAutoResolveRun',
+    label: 'Report auto-resolve',
+    fn: async () => {
+      const result = await runReportAutoResolve(log, state.lastMergedPRTimestamp || 0);
+      if (result && result.latestMergedAt) {
+        state.lastMergedPRTimestamp = result.latestMergedAt;
+        saveState(state);
+      }
+      if (result) {
+        log(`Report auto-resolve: ${result.processedPRs} PRs, ${result.resolved} resolved, ${result.deduped} deduped.`);
+      } else {
+        log('Report auto-resolve: no pending reports or no new PRs.');
+      }
+    },
+  });
+
+  // =========================================================================
+  // REPORT DEDUP (30min cooldown, gate-exempt)
+  // Standalone dedup pass when no merges but reports accumulate
+  // =========================================================================
+  await runIfDue('report_dedup', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastReportDedupRun',
+    label: 'Report dedup',
+    fn: async () => {
+      const result = await runReportDedup(log);
+      if (result) {
+        log(`Report dedup: ${result.deduped} duplicates dismissed.`);
+      } else {
+        log('Report dedup: skipped (too few pending reports).');
       }
     },
   });
