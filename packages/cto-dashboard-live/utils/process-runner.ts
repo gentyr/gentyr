@@ -726,12 +726,12 @@ function recordDemoResult(
         status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT NOT NULL,
         duration_ms INTEGER NOT NULL, fly_machine_id TEXT, output_file TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE,
-        CHECK (execution_mode IN ('local', 'remote')),
-        CHECK (status IN ('passed', 'failed'))
+        CONSTRAINT valid_mode CHECK (execution_mode IN ('local', 'remote')),
+        CONSTRAINT valid_status CHECK (status IN ('passed', 'failed')),
+        FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE
       );
-      CREATE INDEX IF NOT EXISTS idx_demo_results_scenario_id ON demo_results (scenario_id);
-      CREATE INDEX IF NOT EXISTS idx_demo_results_completed_at ON demo_results (completed_at DESC);`);
+      CREATE INDEX IF NOT EXISTS idx_demo_results_scenario ON demo_results(scenario_id);
+      CREATE INDEX IF NOT EXISTS idx_demo_results_completed ON demo_results(completed_at);`);
     }
     const now = new Date();
     const durationMs = now.getTime() - new Date(startedAt).getTime();
@@ -961,88 +961,87 @@ export async function launchRemoteDemo(scenario: DemoScenarioItem): Promise<Runn
   };
 }
 
-/** Module-level map of active remote progress pollers keyed by machineId. */
-const _remotePollers = new Map<string, ReturnType<typeof setInterval>>();
+/** Track active remote poller intervals by machineId for cleanup. */
+const _remotePollerIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
-/** Background poller that checks machine state and writes progress to the output file. */
+/**
+ * Background poller that checks machine state and writes progress to the output file.
+ * Tracks test pass/fail from progress JSONL events (not exec on stopped machines).
+ * Returns the interval ID for cleanup.
+ */
 function startRemoteProgressPoller(config: FlyMachineConfig, machineId: string, outputFile: string): void {
-  // Track pass/fail counts from progress JSONL events while the machine is running,
-  // so we can determine the result when the machine stops without exec-ing on a dead machine.
-  let testPassCount = 0;
-  let testFailCount = 0;
+  let testsFailed = 0;
+  let testsPassed = 0;
+  let seenLines = new Set<string>();  // dedup progress lines across polls
+  let doneEventSeen = false;          // 'done' event from progress JSONL
 
   const interval = setInterval(async () => {
     try {
       const resp = await flyFetch(config, `/apps/${config.appName}/machines/${machineId}`, 'GET');
-      const machine = resp.data as { state?: string };
+      const machine = resp.data as { state?: string; events?: Array<{ type: string; exit_code?: number }> };
       const state = machine?.state;
 
+      // Try to read progress JSONL while machine is still running
+      if (state === 'started') {
+        try {
+          const execResp = await flyFetch(config, `/apps/${config.appName}/machines/${machineId}/exec`, 'POST', {
+            cmd: ['tail', '-30', '/app/.progress.jsonl'], timeout: 10,
+          });
+          const execData = execResp.data as { stdout?: string; exit_code?: number };
+          if (execData?.stdout && execData.exit_code === 0) {
+            const raw = Buffer.from(execData.stdout, 'base64').toString();
+            for (const line of raw.split('\n').filter(Boolean)) {
+              if (seenLines.has(line)) continue;
+              seenLines.add(line);
+              try {
+                const evt = JSON.parse(line) as { type?: string; data?: { title?: string; message?: string; exit_code?: number } };
+                if (evt.type === 'test_pass') { testsPassed++; fs.appendFileSync(outputFile, `[remote] PASS: ${evt.data?.title || '?'}\n`); }
+                else if (evt.type === 'test_fail') { testsFailed++; fs.appendFileSync(outputFile, `[remote] FAIL: ${evt.data?.title || '?'}\n`); }
+                else if (evt.type === 'step') fs.appendFileSync(outputFile, `[remote] step: ${evt.data?.message || evt.data?.title || ''}\n`);
+                else if (evt.type === 'setup') fs.appendFileSync(outputFile, `[remote] setup: ${evt.data?.message || ''}\n`);
+                else if (evt.type === 'done') doneEventSeen = true;
+              } catch { /* skip malformed line */ }
+            }
+          }
+        } catch { /* exec may fail before test starts */ }
+      }
+
+      // Machine stopped — determine result from tracked test events
       if (state === 'stopped' || state === 'destroying' || state === 'destroyed') {
-        // Use accumulated test_pass/test_fail event counts to determine pass/fail.
-        // Exec on a stopped/destroyed machine always fails, so we rely on events
-        // observed while the machine was running rather than reading the exit-code file.
-        const status = testFailCount === 0 && testPassCount > 0 ? 'passed' : 'failed';
-        fs.appendFileSync(outputFile, `[remote] DONE: ${status}\n`);
+        // Determine pass/fail from observed test events (not exec on dead machine)
+        const status = (testsFailed === 0 && (testsPassed > 0 || doneEventSeen)) ? 'passed' : 'failed';
+        fs.appendFileSync(outputFile, `[remote] DONE: ${status} (${testsPassed} passed, ${testsFailed} failed)\n`);
 
         // Cleanup: destroy machine and remove poller entry
         try { await flyFetch(config, `/apps/${config.appName}/machines/${machineId}`, 'DELETE'); } catch { /* */ }
         clearInterval(interval);
-        _remotePollers.delete(machineId);
+        _remotePollerIntervals.delete(machineId);
         return;
       }
-
-      // Try to read progress JSONL while machine is running
-      try {
-        const execResp = await flyFetch(config, `/apps/${config.appName}/machines/${machineId}/exec`, 'POST', {
-          cmd: ['tail', '-20', '/app/.progress.jsonl'], timeout: 10,
-        });
-        const execData = execResp.data as { stdout?: string; exit_code?: number };
-        if (execData?.stdout && execData.exit_code === 0) {
-          const raw = Buffer.from(execData.stdout, 'base64').toString();
-          for (const line of raw.split('\n').filter(Boolean)) {
-            try {
-              const evt = JSON.parse(line) as { type?: string; data?: { title?: string; message?: string } };
-              if (evt.type === 'test_pass') {
-                testPassCount++;
-                fs.appendFileSync(outputFile, `[remote] PASS: ${evt.data?.title || '?'}\n`);
-              } else if (evt.type === 'test_fail') {
-                testFailCount++;
-                fs.appendFileSync(outputFile, `[remote] FAIL: ${evt.data?.title || '?'}\n`);
-              } else if (evt.type === 'step') {
-                fs.appendFileSync(outputFile, `[remote] step: ${evt.data?.message || evt.data?.title || ''}\n`);
-              } else if (evt.type === 'setup') {
-                fs.appendFileSync(outputFile, `[remote] setup: ${evt.data?.message || ''}\n`);
-              }
-            } catch { /* skip malformed line */ }
-          }
-        }
-      } catch { /* exec may fail before test starts — that's ok */ }
-
     } catch { /* network error — retry on next tick */ }
   }, 5000);
 
-  // Register in module-level map so killRemoteProcess can clear it
-  _remotePollers.set(machineId, interval);
+  _remotePollerIntervals.set(machineId, interval);
 
-  // Safety net: stop polling after 10 minutes and clean up map entry
+  // Safety net: stop polling after 10 minutes
   setTimeout(() => {
-    clearInterval(interval);
-    _remotePollers.delete(machineId);
-    try { fs.appendFileSync(outputFile, '[remote] ERROR: polling timeout (10 min)\n'); } catch { /* */ }
+    if (_remotePollerIntervals.has(machineId)) {
+      clearInterval(interval);
+      _remotePollerIntervals.delete(machineId);
+      try { fs.appendFileSync(outputFile, '[remote] ERROR: polling timeout (10 min)\n'); } catch { /* */ }
+    }
   }, 600_000);
 }
 
-/** Stop a remote Fly machine for a running remote demo. */
+/** Stop a remote Fly machine for a running remote demo. Cleans up the poller interval. */
 export async function killRemoteProcess(proc: RunningProcess): Promise<void> {
   if (!proc.flyMachineId) return;
-
-  // Clear the progress poller immediately so it stops writing to the output file
-  const poller = _remotePollers.get(proc.flyMachineId);
-  if (poller) {
-    clearInterval(poller);
-    _remotePollers.delete(proc.flyMachineId);
+  // Clean up the progress poller
+  const pollerId = _remotePollerIntervals.get(proc.flyMachineId);
+  if (pollerId) {
+    clearInterval(pollerId);
+    _remotePollerIntervals.delete(proc.flyMachineId);
   }
-
   const flyConfig = loadFlyConfig();
   if (!flyConfig) return;
   try {
