@@ -578,9 +578,10 @@ export function readDemoScenarios(): DemoScenarioItem[] {
       if (hasEnvVars && r.env_vars) {
         try { envVars = JSON.parse(r.env_vars) as Record<string, string>; } catch { /* invalid JSON — treat as null */ }
       }
+      const resultMode = r.result_mode === 'remote' ? 'remote' : 'local';
       const lastResult: DemoResultSummary | null = r.result_status && r.result_completed ? {
         status: r.result_status as 'passed' | 'failed',
-        executionMode: (r.result_mode || 'local') as 'local' | 'remote',
+        executionMode: resultMode,
         completedAt: r.result_completed,
       } : null;
       return {
