@@ -1238,24 +1238,24 @@ Key modules consumed by hooks:
 
 | Agent | Model | Purpose | Key Constraints |
 |-------|-------|---------|----------------|
-| code-writer | sonnet | Write code | Must run in worktree, does NOT commit |
+| code-writer | opus | Write code | Must run in worktree, does NOT commit |
 | code-reviewer | opus | Review code | Read-only, does NOT commit |
 | test-writer | sonnet | Write/update tests | Must run in worktree, does NOT commit |
 | project-manager | sonnet | Git operations | ONLY agent that commits, pushes, creates PRs, self-merges |
 | investigator | opus | Research/diagnose | Read-only, no worktree needed |
-| user-alignment | opus | Verify user intent | Read-only auditor, no file edits |
+| user-alignment | sonnet | Verify user intent | Read-only auditor, no file edits |
 | deputy-cto | opus | Triage/escalation | Review promotion PRs, manage task queue |
 | persistent-monitor | opus | Long-running orchestrator | Never edits files, spawns sub-agents via create_task |
 | plan-manager | opus | Plan execution | Spawns persistent tasks for plan steps |
 | plan-updater | haiku | Sync plan substeps | Lightweight, completes in <30s |
-| plan-auditor | haiku | Verify plan task completion | Independent, 5-min TTL, audit lane |
+| plan-auditor | sonnet | Verify plan task completion | Independent, 5-min TTL, audit lane |
 | demo-manager | sonnet | Demo lifecycle | Only agent that creates/modifies .demo.ts files |
 | feedback-agent | sonnet | User persona testing | No source code access |
 | product-manager | opus | PMF analysis | External research only |
-| antipattern-hunter | opus | Anti-pattern detection | Read-only |
+| antipattern-hunter | sonnet | Anti-pattern detection | Read-only |
 | icon-finder | opus | Icon sourcing | SVG processing pipeline |
 | secret-manager | sonnet | Credential lifecycle | 1Password-based operations |
-| repo-hygiene-expert | opus | Repo structure analysis | Read-only |
+| repo-hygiene-expert | sonnet | Repo structure analysis | Read-only |
 | workstream-manager | haiku | Queue dependency analysis | Read-only |
 
 ### MCP Servers (~38 servers)
