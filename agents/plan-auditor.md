@@ -1,5 +1,5 @@
 ---
-model: haiku
+model: sonnet
 allowedTools:
   - Read
   - Glob
