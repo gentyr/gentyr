@@ -301,6 +301,7 @@ export const ServicesConfigSchema = z.object({
   environments: z.record(z.string(), z.object({
     baseUrl: z.string().url().describe('Base URL for this environment (e.g., "https://staging.example.com")'),
     label: z.string().optional().describe('Human-readable label shown in the dashboard (defaults to the key name)'),
+    branch: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/).optional().describe('Git branch to auto-pull before running demos locally (e.g., "staging", "main"). When set, the dashboard auto-pulls this branch into the main tree before starting the dev server.'),
   })).optional()
     .describe('Named environments for demo targeting. Keys are environment names (e.g., "staging", "production"). The CTO Dashboard uses these to run demos against deployed URLs instead of localhost.'),
   secretProfiles: z.record(z.string(), SecretProfileSchema).optional(),

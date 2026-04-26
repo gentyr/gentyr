@@ -459,13 +459,112 @@ function buildDemoEnv(opts?: { extra?: Record<string, string> }): Record<string,
 // ============================================================================
 
 /**
+ * Auto-pull a git branch into the main tree before running demos.
+ * Stashes any local changes, pulls, then pops the stash.
+ * On failure, restores the original branch and stash to leave the tree clean.
+ * Non-fatal: returns an error message on failure, null on success.
+ */
+function autoPullBranch(branch: string, fd?: number): string | null {
+  let originalBranch: string | null = null;
+  let didStash = false;
+  let didCheckout = false;
+
+  try {
+    // Record current branch for recovery
+    originalBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf8', cwd: PROJECT_DIR, timeout: 5000,
+    }).trim();
+
+    // Fetch latest refs
+    if (fd) logPreflight(fd, `Fetching origin/${branch}...`);
+    try {
+      execFileSync('git', ['fetch', 'origin', branch], {
+        encoding: 'utf8', cwd: PROJECT_DIR, timeout: 30000, stdio: 'pipe',
+      });
+    } catch {
+      // Non-fatal — may be offline, proceed with local state
+      if (fd) logPreflight(fd, `  fetch failed (offline?) — using local state`);
+    }
+
+    // Check if there are local changes that need stashing
+    const status = execFileSync('git', ['status', '--porcelain'], {
+      encoding: 'utf8', cwd: PROJECT_DIR, timeout: 5000,
+    }).trim();
+    const needsStash = status.length > 0;
+
+    if (needsStash) {
+      if (fd) logPreflight(fd, `Stashing local changes...`);
+      execFileSync('git', ['stash', 'push', '-m', 'gentyr-dashboard-auto-pull'], {
+        encoding: 'utf8', cwd: PROJECT_DIR, timeout: 10000, stdio: 'pipe',
+      });
+      didStash = true;
+    }
+
+    // If we're on a different branch, checkout the target
+    if (originalBranch !== branch) {
+      if (fd) logPreflight(fd, `Checking out ${branch}...`);
+      execFileSync('git', ['checkout', branch], {
+        encoding: 'utf8', cwd: PROJECT_DIR, timeout: 10000, stdio: 'pipe',
+      });
+      didCheckout = true;
+    }
+
+    // Pull latest
+    if (fd) logPreflight(fd, `Pulling origin/${branch}...`);
+    execFileSync('git', ['pull', 'origin', branch, '--ff-only'], {
+      encoding: 'utf8', cwd: PROJECT_DIR, timeout: 30000, stdio: 'pipe',
+    });
+
+    // Pop stash if we stashed
+    if (didStash) {
+      if (fd) logPreflight(fd, `Restoring local changes...`);
+      try {
+        execFileSync('git', ['stash', 'pop'], {
+          encoding: 'utf8', cwd: PROJECT_DIR, timeout: 10000, stdio: 'pipe',
+        });
+      } catch {
+        // Stash pop conflict — abort the merge conflicts and drop the stash cleanly
+        if (fd) logPreflight(fd, `  Stash conflict — resetting and dropping stash`);
+        try { execFileSync('git', ['checkout', '--', '.'], { cwd: PROJECT_DIR, timeout: 5000, stdio: 'pipe' }); } catch { /* */ }
+        try { execFileSync('git', ['stash', 'drop'], { cwd: PROJECT_DIR, timeout: 5000, stdio: 'pipe' }); } catch { /* */ }
+      }
+      didStash = false; // Stash has been consumed (popped or dropped)
+    }
+
+    if (fd) logPreflight(fd, `Main tree updated to latest origin/${branch}`);
+    return null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (fd) logPreflight(fd, `WARNING: auto-pull failed: ${msg}`);
+
+    // Recovery: restore original branch and pop stash
+    if (didCheckout && originalBranch) {
+      try {
+        if (fd) logPreflight(fd, `  Restoring original branch: ${originalBranch}`);
+        execFileSync('git', ['checkout', originalBranch], { cwd: PROJECT_DIR, timeout: 10000, stdio: 'pipe' });
+      } catch { /* best-effort */ }
+    }
+    if (didStash) {
+      try {
+        if (fd) logPreflight(fd, `  Restoring stashed changes`);
+        execFileSync('git', ['stash', 'pop'], { cwd: PROJECT_DIR, timeout: 10000, stdio: 'pipe' });
+      } catch { /* best-effort */ }
+    }
+
+    return msg;
+  }
+}
+
+/**
  * Launch a demo scenario.
  * @param scenario - The demo scenario to launch
  * @param environmentBaseUrl - When set (non-local environment), PLAYWRIGHT_BASE_URL
  *   is set to this URL and dev server startup/health checks are skipped entirely.
  *   The Playwright test files still come from the current working tree.
+ * @param branch - Git branch to auto-pull before launching. When set, the main tree
+ *   is updated to the latest code from this branch before starting the dev server.
  */
-export async function launchDemo(scenario: DemoScenarioItem, environmentBaseUrl?: string | null): Promise<RunningProcess> {
+export async function launchDemo(scenario: DemoScenarioItem, environmentBaseUrl?: string | null, branch?: string | null): Promise<RunningProcess> {
   // Preempt display/chrome-bridge locks — displaced agents are re-enqueued and signaled
   await preemptForCtoDashboardDemo(scenario.title);
 
@@ -475,6 +574,17 @@ export async function launchDemo(scenario: DemoScenarioItem, environmentBaseUrl?
   const isRemoteEnv = !!environmentBaseUrl;
   const webPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
   const baseUrl = isRemoteEnv ? environmentBaseUrl! : `http://localhost:${webPort}`;
+
+  // Step 0: Auto-pull target branch into main tree (local demos only)
+  if (!isRemoteEnv && branch) {
+    logPreflight(fd, `Auto-pulling branch: ${branch}`);
+    const pullError = autoPullBranch(branch, fd);
+    if (pullError) {
+      logPreflight(fd, `Auto-pull failed but continuing with current code`);
+    }
+    // Invalidate cached credentials — code may have changed services.json
+    _resolvedCredentials = null;
+  }
 
   // Step 1: Resolve credentials from services.json secrets.local (fail-closed)
   logPreflight(fd, `Resolving credentials from services.json...`);

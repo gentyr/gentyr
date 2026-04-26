@@ -52,7 +52,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const [executionMode, setExecutionMode] = useState<DemoExecutionMode>('local');
 
   // Resolve the active environment object
-  const environments = data.environments.length > 0 ? data.environments : [{ id: 'local', label: 'Local', baseUrl: null } as DemoEnvironment];
+  const environments = data.environments.length > 0 ? data.environments : [{ id: 'local', label: 'Local', baseUrl: null, branch: null } as DemoEnvironment];
   const selectedEnv = environments.find(e => e.id === selectedEnvId) || environments[0];
 
   // Auto-select first scenario when data loads and nothing is selected
@@ -109,7 +109,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
         if (!scenario) return;
         const proc = executionMode === 'remote'
           ? await launchRemoteDemo(scenario)
-          : await launchDemo(scenario, selectedEnv.baseUrl);
+          : await launchDemo(scenario, selectedEnv.baseUrl, selectedEnv.branch);
         setRunningProcess(proc);
         setStatusMessage(null);
       } else {
@@ -195,7 +195,8 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       const idx = environments.findIndex(e => e.id === selectedEnvId);
       const next = environments[(idx + 1) % environments.length];
       setSelectedEnvId(next.id);
-      setStatusMessage(`Environment: ${next.label}${next.baseUrl ? ` (${next.baseUrl})` : ''}`);
+      const envDetail = next.baseUrl ? ` (${next.baseUrl})` : next.branch ? ` (branch: ${next.branch})` : '';
+      setStatusMessage(`Environment: ${next.label}${envDetail}`);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
       statusTimerRef.current = setTimeout(() => setStatusMessage(null), 3000);
       return;
@@ -250,6 +251,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
               ))}
               <Text dimColor>(e)</Text>
               {selectedEnv.baseUrl && <Text color="cyan"> {'\u2192'} {selectedEnv.baseUrl}</Text>}
+              {selectedEnv.branch && !selectedEnv.baseUrl && <Text color="green"> {'\u2192'} {selectedEnv.branch}</Text>}
             </>
           )}
           {showModeBar && (

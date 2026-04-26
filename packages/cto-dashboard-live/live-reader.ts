@@ -783,14 +783,30 @@ function discoverUnitTests(): TestFileItem[] {
  * Always includes 'local' as the first option.
  * Additional environments come from the `environments` field in services.json.
  */
+/** Cached default local branch — detected once per dashboard session */
+let _cachedDefaultLocalBranch: string | null = null;
+
+function getDefaultLocalBranch(): string {
+  if (_cachedDefaultLocalBranch) return _cachedDefaultLocalBranch;
+  try {
+    execFileSync('git', ['rev-parse', '--verify', 'origin/preview'], { cwd: PROJECT_DIR, timeout: 5000, stdio: 'pipe' });
+    _cachedDefaultLocalBranch = 'preview';
+  } catch {
+    _cachedDefaultLocalBranch = 'main';
+  }
+  return _cachedDefaultLocalBranch;
+}
+
 export function readEnvironments(): DemoEnvironment[] {
+  const defaultLocalBranch = getDefaultLocalBranch();
+
   const envs: DemoEnvironment[] = [
-    { id: 'local', label: 'Local', baseUrl: null },
+    { id: 'local', label: 'Local', baseUrl: null, branch: defaultLocalBranch },
   ];
   try {
     const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    const environments = config?.environments as Record<string, { baseUrl?: string; label?: string }> | undefined;
+    const environments = config?.environments as Record<string, { baseUrl?: string; label?: string; branch?: string }> | undefined;
     if (environments && typeof environments === 'object') {
       for (const [key, val] of Object.entries(environments)) {
         if (val && typeof val.baseUrl === 'string') {
@@ -798,6 +814,7 @@ export function readEnvironments(): DemoEnvironment[] {
             id: key,
             label: typeof val.label === 'string' ? val.label : key.charAt(0).toUpperCase() + key.slice(1),
             baseUrl: val.baseUrl,
+            branch: typeof val.branch === 'string' ? val.branch : null,
           });
         }
       }

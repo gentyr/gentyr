@@ -223,6 +223,7 @@ export interface DemoEnvironment {
   id: DemoEnvironmentId;
   label: string;
   baseUrl: string | null;  // null for 'local' — uses localhost:{port}
+  branch: string | null;   // git branch to auto-pull before demo launch (null = use current)
 }
 
 export interface Page2Data {
