@@ -599,10 +599,11 @@ export async function pullRemoteArtifacts(
   handle: RemoteDemoHandle,
   config: FlyConfig,
   destDir: string,
-): Promise<RemoteArtifact[]> {
+): Promise<{ artifacts: RemoteArtifact[]; errors: string[] }> {
   await fsPromises.mkdir(destDir, { recursive: true });
 
   const artifacts: RemoteArtifact[] = [];
+  const errors: string[] = [];
 
   // --- Step 1: Extract /app/.artifacts tarball ---
   let tarBuffer: Buffer | null = null;
@@ -616,6 +617,7 @@ export async function pullRemoteArtifacts(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[fly-runner] artifact tar exec non-fatal error: ${message}\n`);
+    errors.push(`tar exec failed: ${message}`);
   }
 
   if (tarBuffer && tarBuffer.length > 0) {
@@ -657,6 +659,7 @@ export async function pullRemoteArtifacts(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[fly-runner] artifact tar extraction non-fatal error: ${message}\n`);
+      errors.push(`tar extraction failed: ${message}`);
     } finally {
       try {
         await fsPromises.unlink(tempTar);
@@ -684,6 +687,7 @@ export async function pullRemoteArtifacts(
       // File absent or command failed — non-fatal, skip this file
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[fly-runner] skipping ${remotePath}: ${message}\n`);
+      errors.push(`${localName}: ${message}`);
       continue;
     }
 
@@ -704,8 +708,8 @@ export async function pullRemoteArtifacts(
     }
   }
 
-  process.stderr.write(`[fly-runner] pulled ${artifacts.length} artifacts to ${destDir}\n`);
-  return artifacts;
+  process.stderr.write(`[fly-runner] pulled ${artifacts.length} artifacts to ${destDir} (${errors.length} error(s))\n`);
+  return { artifacts, errors };
 }
 
 // ============================================================================

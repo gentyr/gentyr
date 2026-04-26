@@ -346,6 +346,8 @@ export interface CheckDemoResultResult {
   fly_region?: string;
   /** Warning about remote execution failure and fallback to local execution */
   remote_routing_warning?: string;
+  /** Errors from artifact retrieval — explains WHY artifacts may be missing */
+  artifact_errors?: string[];
   message: string;
 }
 

@@ -2332,7 +2332,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
                 const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${handle.machineId}`);
                 fs.mkdirSync(destDir, { recursive: true });
                 const { pullRemoteArtifacts: pullArtifacts } = await import('./fly-runner.js');
-                await pullArtifacts(handle, machineConfig, destDir);
+                const pullResult = await pullArtifacts(handle, machineConfig, destDir);
+                if (pullResult.errors.length > 0) {
+                  process.stderr.write(`[fly-runner] Dead-machine pull errors: ${pullResult.errors.join('; ')}\n`);
+                }
                 deadEntry.artifacts_pulled = true;
                 deadEntry.artifacts_dest_dir = destDir;
                 // Try to read exit code from pulled artifacts
@@ -2375,10 +2378,16 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${handle.machineId}`);
               fs.mkdirSync(destDir, { recursive: true });
 
+              let proactivePullErrors: string[] = [];
               try {
-                await pullArtifacts(handle, machineConfig, destDir);
+                const pullResult = await pullArtifacts(handle, machineConfig, destDir);
+                proactivePullErrors = pullResult.errors;
+                if (proactivePullErrors.length > 0) {
+                  process.stderr.write(`[fly-runner] Proactive pull errors: ${proactivePullErrors.join('; ')}\n`);
+                }
               } catch (pullErr) {
                 process.stderr.write(`[fly-runner] Proactive artifact pull error: ${pullErr instanceof Error ? pullErr.message : String(pullErr)}\n`);
+                proactivePullErrors.push(pullErr instanceof Error ? pullErr.message : String(pullErr));
               }
 
               // Mark artifacts as pulled on the DemoRunState
@@ -3349,11 +3358,18 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
       // Machine stopped — use proactively-pulled artifacts if available, otherwise pull now
       const destDir = entry.artifacts_dest_dir || path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${entry.fly_machine_id}`);
 
+      let artifactErrors: string[] = [];
       if (!entry.artifacts_pulled) {
         // Machine stopped before proactive pull could happen — try to pull now (may fail if machine is destroyed)
         fs.mkdirSync(destDir, { recursive: true });
-        try { await pullRemoteArtifacts(remoteHandle, remoteMachineConfig, destDir); }
-        catch (e) { process.stderr.write(`[fly-runner] Artifact pull failed: ${e instanceof Error ? e.message : String(e)}\n`); }
+        try {
+          const pullResult = await pullRemoteArtifacts(remoteHandle, remoteMachineConfig, destDir);
+          artifactErrors = pullResult.errors;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          process.stderr.write(`[fly-runner] Artifact pull failed: ${msg}\n`);
+          artifactErrors.push(msg);
+        }
       }
 
       let remoteExitCode = -1;
@@ -3483,6 +3499,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         remote: true,
         fly_machine_id: entry.fly_machine_id,
         fly_region: remoteMachineConfig.region,
+        ...(artifactErrors.length > 0 ? { artifact_errors: artifactErrors } : {}),
       };
     } catch (remoteCheckErr) {
       return { status: 'unknown', pid, message: `Failed to check remote demo result: ${remoteCheckErr instanceof Error ? remoteCheckErr.message : String(remoteCheckErr)}` };
@@ -6132,7 +6149,7 @@ async function runRemoteBatchSequence(
             if (exitStr !== '') {
               // Demo done — pull artifacts now while machine is still alive
               process.stderr.write(`[fly-runner] Batch: exit code ${exitStr} detected, pulling artifacts proactively\n`);
-              try { await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); batchArtifactsPulled = true; }
+              try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); batchArtifactsPulled = true; if (r.errors.length) process.stderr.write(`[fly-runner] Batch proactive pull errors: ${r.errors.join('; ')}\n`); }
               catch { /* non-fatal */ }
               break;
             }
@@ -6151,7 +6168,7 @@ async function runRemoteBatchSequence(
 
         // Pull artifacts and parse results (fallback if proactive pull didn't happen)
         if (!batchArtifactsPulled) {
-          try { await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); }
+          try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); if (r.errors.length) process.stderr.write(`[fly-runner] Batch fallback pull errors: ${r.errors.join('; ')}\n`); }
           catch { /* non-fatal — machine may already be destroyed */ }
         }
 
