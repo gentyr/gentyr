@@ -70,7 +70,15 @@ const mockTestFiles: TestFileItem[] = [
 ];
 
 export function getMockPage2Data(): Page2Data {
-  return { scenarios: mockScenarios, testFiles: mockTestFiles };
+  return {
+    scenarios: mockScenarios,
+    testFiles: mockTestFiles,
+    environments: [
+      { id: 'local', label: 'Local', baseUrl: null },
+      { id: 'staging', label: 'Staging', baseUrl: 'https://staging.example.com' },
+      { id: 'production', label: 'Production', baseUrl: 'https://app.example.com' },
+    ],
+  };
 }
 
 // ============================================================================

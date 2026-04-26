@@ -298,6 +298,11 @@ export const ServicesConfigSchema = z.object({
     enabled: z.boolean().default(true)
       .describe('Enable/disable remote Playwright execution'),
   }).optional().describe('Fly.io remote Playwright execution configuration. When configured, headless demos auto-route to ephemeral Fly machines.'),
+  environments: z.record(z.string(), z.object({
+    baseUrl: z.string().url().describe('Base URL for this environment (e.g., "https://staging.example.com")'),
+    label: z.string().optional().describe('Human-readable label shown in the dashboard (defaults to the key name)'),
+  })).optional()
+    .describe('Named environments for demo targeting. Keys are environment names (e.g., "staging", "production"). The CTO Dashboard uses these to run demos against deployed URLs instead of localhost.'),
   secretProfiles: z.record(z.string(), SecretProfileSchema).optional(),
   secrets: z.object({
     renderProduction: z.record(z.string(), z.string()).optional(),

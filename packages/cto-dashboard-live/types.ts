@@ -199,9 +199,18 @@ export interface RunningProcess {
   exitCode: number | null;
 }
 
+export type DemoEnvironmentId = 'local' | string;
+
+export interface DemoEnvironment {
+  id: DemoEnvironmentId;
+  label: string;
+  baseUrl: string | null;  // null for 'local' — uses localhost:{port}
+}
+
 export interface Page2Data {
   scenarios: DemoScenarioItem[];
   testFiles: TestFileItem[];
+  environments: DemoEnvironment[];
 }
 
 // ============================================================================

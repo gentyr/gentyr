@@ -456,15 +456,23 @@ function buildDemoEnv(opts?: { extra?: Record<string, string> }): Record<string,
 // Demo Launch — full run_demo pipeline parity
 // ============================================================================
 
-export async function launchDemo(scenario: DemoScenarioItem): Promise<RunningProcess> {
+/**
+ * Launch a demo scenario.
+ * @param scenario - The demo scenario to launch
+ * @param environmentBaseUrl - When set (non-local environment), PLAYWRIGHT_BASE_URL
+ *   is set to this URL and dev server startup/health checks are skipped entirely.
+ *   The Playwright test files still come from the current working tree.
+ */
+export async function launchDemo(scenario: DemoScenarioItem, environmentBaseUrl?: string | null): Promise<RunningProcess> {
   // Preempt display/chrome-bridge locks — displaced agents are re-enqueued and signaled
   await preemptForCtoDashboardDemo(scenario.title);
 
   const outputFile = makeOutputFile('demo', scenario.id);
   const fd = fs.openSync(outputFile, 'a');
 
+  const isRemoteEnv = !!environmentBaseUrl;
   const webPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
-  const baseUrl = `http://localhost:${webPort}`;
+  const baseUrl = isRemoteEnv ? environmentBaseUrl! : `http://localhost:${webPort}`;
 
   // Step 1: Resolve credentials from services.json secrets.local (fail-closed)
   logPreflight(fd, `Resolving credentials from services.json...`);
@@ -487,31 +495,37 @@ export async function launchDemo(scenario: DemoScenarioItem): Promise<RunningPro
     };
   }
 
-  // Step 2: Execute registered prerequisites (may start dev server)
-  const prereqResult = await executeDashboardPrerequisites(scenario.id, baseUrl, resolvedSecrets, fd);
-  if (!prereqResult.success) {
-    logPreflight(fd, `ABORT: ${prereqResult.message}`);
-    try { fs.closeSync(fd); } catch { /* */ }
-    return {
-      pid: 0,
-      label: scenario.title,
-      type: 'demo',
-      status: 'failed',
-      startedAt: new Date().toISOString(),
-      outputFile,
-      exitCode: 1,
-    };
+  // Step 2: Execute registered prerequisites (may start dev server) — skip for remote environments
+  if (!isRemoteEnv) {
+    const prereqResult = await executeDashboardPrerequisites(scenario.id, baseUrl, resolvedSecrets, fd);
+    if (!prereqResult.success) {
+      logPreflight(fd, `ABORT: ${prereqResult.message}`);
+      try { fs.closeSync(fd); } catch { /* */ }
+      return {
+        pid: 0,
+        label: scenario.title,
+        type: 'demo',
+        status: 'failed',
+        startedAt: new Date().toISOString(),
+        outputFile,
+        exitCode: 1,
+      };
+    }
+  } else {
+    logPreflight(fd, `Remote environment — skipping prerequisites and dev server startup`);
   }
 
-  // Step 3: Ensure dev server is healthy (fallback auto-start if no prerequisite handled it)
-  const devServerHealthy = await ensureDashboardDevServer(baseUrl, resolvedSecrets, fd);
-  if (!devServerHealthy) {
-    logPreflight(fd, `WARNING: Dev server not responding at ${baseUrl} — demo may fail at webServer startup`);
+  // Step 3: Ensure dev server is healthy (fallback auto-start) — skip for remote environments
+  if (!isRemoteEnv) {
+    const devServerHealthy = await ensureDashboardDevServer(baseUrl, resolvedSecrets, fd);
+    if (!devServerHealthy) {
+      logPreflight(fd, `WARNING: Dev server not responding at ${baseUrl} — demo may fail at webServer startup`);
+    }
   }
 
   // Step 4: Launch Playwright with PLAYWRIGHT_BASE_URL set (skips webServer block)
   logPreflight(fd, `Launching demo: ${scenario.title}`);
-  logPreflight(fd, `PLAYWRIGHT_BASE_URL=${baseUrl}`);
+  logPreflight(fd, `Target: ${isRemoteEnv ? 'REMOTE' : 'LOCAL'} — PLAYWRIGHT_BASE_URL=${baseUrl}`);
 
   const cmdArgs = ['playwright', 'test', scenario.testFile, '--project', scenario.playwrightProject, '--headed', '--reporter', 'list'];
 
