@@ -98,6 +98,10 @@ import {
   type GetFlyStatusArgs,
   DeployFlyImageArgsSchema,
   type DeployFlyImageArgs,
+  SetFlyMachineRamArgsSchema,
+  type SetFlyMachineRamArgs,
+  GetFlyMachineRamArgsSchema,
+  type GetFlyMachineRamArgs,
 } from './types.js';
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -172,6 +176,36 @@ function getFlyConfigFromServices(): FlyConfig | null {
   } catch {
     return null;
   }
+}
+
+// ============================================================================
+// Per-Mode Fly.io Machine RAM Configuration
+// ============================================================================
+
+interface FlyMachineRamConfig {
+  machineRamHeadless: number; // MB, default 2048
+  machineRamHeaded: number;   // MB, default 4096
+}
+
+const FLY_MACHINE_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'fly-machine-config.json');
+const FLY_RAM_DEFAULTS: FlyMachineRamConfig = { machineRamHeadless: 2048, machineRamHeaded: 4096 };
+
+function readFlyMachineConfig(): FlyMachineRamConfig {
+  try {
+    if (fs.existsSync(FLY_MACHINE_CONFIG_PATH)) {
+      const data = JSON.parse(fs.readFileSync(FLY_MACHINE_CONFIG_PATH, 'utf-8'));
+      return {
+        machineRamHeadless: typeof data.machineRamHeadless === 'number' ? data.machineRamHeadless : FLY_RAM_DEFAULTS.machineRamHeadless,
+        machineRamHeaded: typeof data.machineRamHeaded === 'number' ? data.machineRamHeaded : FLY_RAM_DEFAULTS.machineRamHeaded,
+      };
+    }
+  } catch { /* non-fatal */ }
+  return { ...FLY_RAM_DEFAULTS };
+}
+
+function writeFlyMachineConfig(config: FlyMachineRamConfig): void {
+  fs.mkdirSync(path.dirname(FLY_MACHINE_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(FLY_MACHINE_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
 }
 
 /**
@@ -2132,12 +2166,16 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       const { resolveExecutionTarget } = executionTargetMod;
       const { listActiveMachines, spawnRemoteMachine, isMachineAlive } = flyRunnerMod;
 
+      // Read per-mode RAM config (state file, always writable, no sync needed)
+      const ramConfig = readFlyMachineConfig();
+      const effectiveRam = args.headless ? ramConfig.machineRamHeadless : ramConfig.machineRamHeaded;
+
       const machineConfig = {
         apiToken: resolvedFlyToken,
         appName: flyConfig.appName,
         region: flyConfig.region || 'iad',
         machineSize: flyConfig.machineSize || 'shared-cpu-2x',
-        machineRam: flyConfig.machineRam || 2048,
+        machineRam: effectiveRam,
         maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
       };
 
@@ -3297,12 +3335,14 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
       if (flyFailedKeys.length > 0) {
         return { status: 'unknown', pid, message: 'Failed to resolve FLY_API_TOKEN for remote demo result check.' };
       }
+      // RAM value here is for API compatibility — the machine was already spawned with its RAM at run_demo time
+      const checkRamConfig = readFlyMachineConfig();
       const remoteMachineConfig = {
         apiToken: flyResolved['FLY_API_TOKEN'],
         appName: flyConfig.appName,
         region: flyConfig.region || 'iad',
         machineSize: flyConfig.machineSize || 'shared-cpu-2x',
-        machineRam: flyConfig.machineRam || 2048,
+        machineRam: checkRamConfig.machineRamHeadless,
         maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
       };
       const remoteHandle = {
@@ -3986,7 +4026,7 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
         const { stopRemoteMachine } = await import('./fly-runner.js');
         await stopRemoteMachine(
           { machineId: entry.fly_machine_id, appName: entry.fly_app_name || flyConfig.appName, region: flyConfig.region || 'iad', startedAt: new Date(entry.started_at).getTime() },
-          { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: flyConfig.machineRam || 2048, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3 },
+          { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: readFlyMachineConfig().machineRamHeadless, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3 },
         );
       }
     } catch (e) {
@@ -5992,12 +6032,15 @@ async function runRemoteBatchSequence(
   if (failedKeys.length > 0) return;
 
   const flyRunnerMod = await import('./fly-runner.js');
+  // Read per-mode RAM config (state file, always writable, no sync needed)
+  const batchRamConfig = readFlyMachineConfig();
+  const batchEffectiveRam = args.headless ? batchRamConfig.machineRamHeadless : batchRamConfig.machineRamHeaded;
   const machineConfig = {
     apiToken: flyResolved['FLY_API_TOKEN'],
     appName: flyConfig.appName,
     region: flyConfig.region || 'iad',
     machineSize: flyConfig.machineSize || 'shared-cpu-2x',
-    machineRam: flyConfig.machineRam || 2048,
+    machineRam: batchEffectiveRam,
     maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
   };
 
@@ -7281,6 +7324,8 @@ const tools: AnyToolHandler[] = [
             region: flyConfig.region,
             machineSize: flyConfig.machineSize,
             machineRam: flyConfig.machineRam,
+            machineRamHeadless: readFlyMachineConfig().machineRamHeadless,
+            machineRamHeaded: readFlyMachineConfig().machineRamHeaded,
             maxConcurrentMachines: flyConfig.maxConcurrentMachines,
             message: `Fly API unreachable: ${message}`,
           });
@@ -7327,6 +7372,8 @@ const tools: AnyToolHandler[] = [
           region: flyConfig.region,
           machineSize: flyConfig.machineSize,
           machineRam: flyConfig.machineRam,
+          machineRamHeadless: readFlyMachineConfig().machineRamHeadless,
+          machineRamHeaded: readFlyMachineConfig().machineRamHeaded,
           maxConcurrentMachines: flyConfig.maxConcurrentMachines,
           activeMachines: activeMachines.length,
           machines: activeMachines,
@@ -7441,6 +7488,34 @@ const tools: AnyToolHandler[] = [
         logFile,
         message: `Deploying Docker image to ${flySection.appName} in background (PID ${child.pid}). This takes 3-10 minutes for the remote Docker build. Poll get_fly_status() to check when imageDeployed becomes true. Deploy log: ${logFile}`,
       });
+    },
+  },
+  {
+    name: 'set_fly_machine_ram',
+    description:
+      'Set RAM allocation for Fly.io remote demo machines. Two independent settings: headless (default 2048MB, ~900MB needed) ' +
+      'and headed with video recording (default 4096MB, ~2GB needed). Takes effect immediately on the next run_demo — no sync or restart required.',
+    schema: SetFlyMachineRamArgsSchema,
+    handler: async (args: SetFlyMachineRamArgs) => {
+      const current = readFlyMachineConfig();
+      if (args.machineRamHeadless !== undefined) current.machineRamHeadless = args.machineRamHeadless;
+      if (args.machineRamHeaded !== undefined) current.machineRamHeaded = args.machineRamHeaded;
+      writeFlyMachineConfig(current);
+      return JSON.stringify({
+        success: true,
+        machineRamHeadless: current.machineRamHeadless,
+        machineRamHeaded: current.machineRamHeaded,
+        message: `Fly.io machine RAM updated. Headless: ${current.machineRamHeadless}MB, Headed: ${current.machineRamHeaded}MB. Takes effect on next run_demo.`,
+      });
+    },
+  },
+  {
+    name: 'get_fly_machine_ram',
+    description: 'Get current RAM allocation settings for Fly.io remote demo machines.',
+    schema: GetFlyMachineRamArgsSchema,
+    handler: async (_args: GetFlyMachineRamArgs) => {
+      const config = readFlyMachineConfig();
+      return JSON.stringify(config);
     },
   },
 ];
