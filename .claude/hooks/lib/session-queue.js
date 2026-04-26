@@ -461,6 +461,7 @@ export function enqueueSession(spec) {
       spec.source === 'persistent-task-spawner' ||
       spec.source === 'stop-continue-hook' ||
       spec.source === 'session-queue-reaper' ||
+      spec.source === 'sync-recycle' ||
       (spec.metadata && spec.metadata.persistentTaskId);
 
     if (!allowed) {
