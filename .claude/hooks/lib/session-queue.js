@@ -425,6 +425,19 @@ export function enqueueSession(spec) {
     }
   }
 
+  // Plan-level dedup: if this item serves a plan, block if ANY monitor for the same plan
+  // is already queued/running (regardless of persistentTaskId). Prevents mass-spawning
+  // when multiple persistent tasks exist for the same plan (e.g., from prior reviveOrphanedPlan proliferation).
+  if (spec.metadata?.planId && spec.lane === 'persistent') {
+    const planExisting = db.prepare(
+      "SELECT id FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.planId') = ?"
+    ).get(spec.metadata.planId);
+    if (planExisting) {
+      log(`Dedup: planId ${spec.metadata.planId} already has queue item ${planExisting.id} — skipping`);
+      return { queueId: planExisting.id, position: 0, drained: { spawned: 0, atCapacity: false } };
+    }
+  }
+
   // Bypass request gate: block spawns for tasks with pending CTO bypass requests
   // Source 'bypass-request-resolve' is exempt — it's the CTO approving the request
   if (spec.source !== 'bypass-request-resolve') {
@@ -603,6 +616,31 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     return;
   }
 
+  // Plan-level dedup: if this task serves a plan, check if ANY monitor for the same plan
+  // is already queued/running (regardless of persistentTaskId). Prevents duplicate monitors
+  // when reviveOrphanedPlan() created multiple persistent tasks for the same plan.
+  try {
+    const ptDbPath2 = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (fs.existsSync(ptDbPath2)) {
+      const ptDbRo = new Database(ptDbPath2, { readonly: true });
+      ptDbRo.pragma('busy_timeout = 3000');
+      const taskRow = ptDbRo.prepare("SELECT metadata FROM persistent_tasks WHERE id = ?").get(taskId);
+      ptDbRo.close();
+      if (taskRow?.metadata) {
+        const taskMeta = JSON.parse(taskRow.metadata);
+        if (taskMeta.plan_id) {
+          const planExisting = db.prepare(
+            "SELECT id, status FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.planId') = ? LIMIT 1"
+          ).get(taskMeta.plan_id);
+          if (planExisting) {
+            log(`[persistent-revival] Skipped revival for ${taskId}: another monitor for plan ${taskMeta.plan_id} already ${planExisting.status} in queue (${planExisting.id})`);
+            return;
+          }
+        }
+      }
+    }
+  } catch (_) { /* non-fatal — fall through to persistentTaskId-based dedup */ }
+
   // Crash-loop circuit breaker: cap at 3 hard revivals per task in the last 10 minutes
   // Heartbeat-stale revivals are excluded from this count — they're routine recovery, not crashes.
   // NOTE: Use datetime('now', '-10 minutes') in SQL — NOT JS toISOString(). SQLite's datetime()
@@ -752,7 +790,15 @@ Persistent Task ID: ${taskId}`;
       return env;
     })()),
     PROJECT_DIR,
-    JSON.stringify({ persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' }),
+    JSON.stringify((() => {
+      const meta = { persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' };
+      // Include planId so plan-level dedup can detect duplicate monitors for the same plan
+      try {
+        const taskMeta3 = task.metadata ? JSON.parse(task.metadata) : {};
+        if (taskMeta3.plan_id) meta.planId = taskMeta3.plan_id;
+      } catch (_) { /* non-fatal */ }
+      return meta;
+    })()),
     'session-queue-reaper',
     agentDef,
   );

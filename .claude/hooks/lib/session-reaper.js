@@ -325,8 +325,10 @@ export function reapSyncPass(db) {
     if (!item.pid) continue;
 
     if (!isPidAlive(item.pid)) {
-      // Dead PID — mark completed
-      db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(item.id);
+      // Dead PID — mark completed (TOCTOU-safe: only transition from 'running' to prevent
+      // concurrent reap processes from adding the same item to their reaped lists)
+      const reapResult = db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ? AND status = 'running'").run(item.id);
+      if (reapResult.changes === 0) continue; // Another process already reaped this item
 
       let metadata = {};
       try { metadata = item.metadata ? JSON.parse(item.metadata) : {}; } catch (err) {

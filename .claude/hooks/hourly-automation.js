@@ -2873,6 +2873,26 @@ async function main() {
 
     const metadata = JSON.stringify({ plan_id: plan.id, plan_title: plan.title });
 
+    // Cancel all existing non-terminal persistent tasks for this plan to prevent orphan accumulation.
+    // Without this, each revival creates a new task while leaving old ones active/paused, and
+    // crash-loop-resume or stale-pause auto-resume can mass-resume all of them simultaneously.
+    try {
+      const oldTasks = ptDb.prepare(
+        "SELECT id FROM persistent_tasks WHERE status IN ('active', 'paused') AND id != ? AND json_extract(metadata, '$.plan_id') = ?"
+      ).all(plan.persistent_task_id || '', plan.id);
+      for (const old of oldTasks) {
+        ptDb.prepare("UPDATE persistent_tasks SET status = 'cancelled' WHERE id = ? AND status IN ('active', 'paused')").run(old.id);
+        ptDb.prepare(
+          "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'cancelled', ?, ?)"
+        ).run(randomUUID(), old.id, JSON.stringify({ reason: 'superseded_by_plan_revival', plan_id: plan.id, new_pt_id: ptId }), nowTs);
+      }
+      if (oldTasks.length > 0) {
+        log(`Plan orphan detection: cancelled ${oldTasks.length} superseded persistent task(s) for plan "${plan.title}"`);
+      }
+    } catch (cancelErr) {
+      log(`Plan orphan detection: failed to cancel old tasks for plan "${plan.title}": ${cancelErr.message}`);
+    }
+
     ptDb.prepare(
       `INSERT INTO persistent_tasks (id, title, prompt, outcome_criteria, status, metadata, created_at, activated_at)
        VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`

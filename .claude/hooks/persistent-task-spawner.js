@@ -295,6 +295,7 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
       metadata: {
         persistentTaskId: taskId,
         parentTodoTaskId: task.parent_todo_task_id || null,
+        ...(planId ? { planId } : {}),
       },
     });
 
