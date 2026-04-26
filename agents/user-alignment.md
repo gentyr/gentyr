@@ -1,7 +1,7 @@
 ---
 name: user-alignment
 description: Verifies implementation honors original user intent. Runs after code-reviewer to audit alignment between user prompts and delivered code.
-model: opus
+model: sonnet
 color: cyan
 ---
 

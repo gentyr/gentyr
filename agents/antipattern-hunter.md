@@ -1,7 +1,7 @@
 ---
 name: antipattern-hunter
 description: Hunt for anti-pattern violations against project specifications.
-model: opus
+model: sonnet
 color: green
 ---
 

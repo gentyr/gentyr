@@ -1,7 +1,7 @@
 ---
 name: code-writer
 description: When writing code.
-model: sonnet
+model: opus
 color: purple
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: repo-hygiene-expert
 description: Analyzes repository structure, enforces monorepo best practices, identifies dead code, and ensures architectural compliance.
-model: opus
+model: sonnet
 color: yellow
 allowedTools:
   - Read
