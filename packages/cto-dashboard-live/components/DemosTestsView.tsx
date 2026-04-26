@@ -23,7 +23,7 @@ import { TestFileList, selectableCount } from './page2/TestFileList.js';
 import { OutputPanel } from './page2/OutputPanel.js';
 import { useProcessOutput } from '../hooks/useProcessOutput.js';
 import { launchDemo, launchTest, checkProcess, killProcess, releaseDemo } from '../utils/process-runner.js';
-import type { Page2Data, RunningProcess } from '../types.js';
+import type { Page2Data, RunningProcess, DemoEnvironment } from '../types.js';
 
 interface DemosTestsViewProps {
   data: Page2Data;
@@ -48,6 +48,11 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const [runningProcess, setRunningProcess] = useState<RunningProcess | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [selectedEnvId, setSelectedEnvId] = useState<string>('local');
+
+  // Resolve the active environment object
+  const environments = data.environments.length > 0 ? data.environments : [{ id: 'local', label: 'Local', baseUrl: null } as DemoEnvironment];
+  const selectedEnv = environments.find(e => e.id === selectedEnvId) || environments[0];
 
   // Auto-select first scenario when data loads and nothing is selected
   useEffect(() => {
@@ -55,6 +60,13 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       setSelectedScenarioId(data.scenarios[0].id);
     }
   }, [data.scenarios]);
+
+  // Reset environment selection when the selected env is removed from config
+  useEffect(() => {
+    if (environments.length > 0 && !environments.some(e => e.id === selectedEnvId)) {
+      setSelectedEnvId(environments[0].id);
+    }
+  }, [environments]);
 
   // Clear status timer on unmount
   useEffect(() => () => {
@@ -94,7 +106,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (activePanel === 'demos') {
         const scenario = data.scenarios.find(s => s.id === selectedScenarioId);
         if (!scenario) return;
-        const proc = await launchDemo(scenario);
+        const proc = await launchDemo(scenario, selectedEnv.baseUrl);
         setRunningProcess(proc);
         setStatusMessage(null);
       } else {
@@ -109,7 +121,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
       statusTimerRef.current = setTimeout(() => setStatusMessage(null), 5000);
     }
-  }, [activePanel, selectedScenarioId, selectedTestIndex, data, runningProcess]);
+  }, [activePanel, selectedScenarioId, selectedTestIndex, data, runningProcess, selectedEnv]);
 
   const handleStop = useCallback(() => {
     if (runningProcess?.status === 'running') {
@@ -172,6 +184,15 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
     }
 
     if (key.return) { handleRun(); return; }
+    if (input === 'e') {
+      const idx = environments.findIndex(e => e.id === selectedEnvId);
+      const next = environments[(idx + 1) % environments.length];
+      setSelectedEnvId(next.id);
+      setStatusMessage(`Environment: ${next.label}${next.baseUrl ? ` (${next.baseUrl})` : ''}`);
+      if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = setTimeout(() => setStatusMessage(null), 3000);
+      return;
+    }
     if (input === 'v' || input === 'w') { handleWatch(); return; }
     if (input === 's' || input === 'x') { handleStop(); return; }
     if (key.escape) { handleClear(); return; }
@@ -192,7 +213,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
     <Box flexDirection="column" height={bodyHeight}>
       {/* Top: two-column lists */}
       <Box flexDirection="row" height={listsHeight}>
-        <Section title="Demo Scenarios" width={leftWidth} tip={activePanel === 'demos' ? '\u25C0 active' : undefined}>
+        <Section title={`Demo Scenarios [${selectedEnv.label}]`} width={leftWidth} tip={activePanel === 'demos' ? 'e=env \u25C0 active' : 'e=env'}>
           <ScenarioList
             scenarios={data.scenarios}
             selectedId={selectedScenarioId}

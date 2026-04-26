@@ -15,7 +15,7 @@ import Database from 'better-sqlite3';
 import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
   WorklogEntry, SessionStatus, SessionPriority, ActivityEntry,
-  DemoScenarioItem, TestFileItem, Page2Data,
+  DemoScenarioItem, TestFileItem, DemoEnvironment, Page2Data,
   Page3Data, PlanItem, PlanPhaseItem, PlanTaskItem, PlanSubstepItem, PlanStateChange,
   Page4Data, SpecCategoryItem, SpecItem, SuiteItem,
   CommentaryContext, CommentaryContextSession, CommentaryContextPlan, CommentaryContextSummary,
@@ -757,10 +757,39 @@ function discoverUnitTests(): TestFileItem[] {
   return results;
 }
 
+/**
+ * Read demo environments from services.json.
+ * Always includes 'local' as the first option.
+ * Additional environments come from the `environments` field in services.json.
+ */
+export function readEnvironments(): DemoEnvironment[] {
+  const envs: DemoEnvironment[] = [
+    { id: 'local', label: 'Local', baseUrl: null },
+  ];
+  try {
+    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const environments = config?.environments as Record<string, { baseUrl?: string; label?: string }> | undefined;
+    if (environments && typeof environments === 'object') {
+      for (const [key, val] of Object.entries(environments)) {
+        if (val && typeof val.baseUrl === 'string') {
+          envs.push({
+            id: key,
+            label: typeof val.label === 'string' ? val.label : key.charAt(0).toUpperCase() + key.slice(1),
+            baseUrl: val.baseUrl,
+          });
+        }
+      }
+    }
+  } catch { /* services.json missing or invalid — local only */ }
+  return envs;
+}
+
 export function readPage2Data(): Page2Data {
   return {
     scenarios: readDemoScenarios(),
     testFiles: [...discoverTestFiles(), ...discoverUnitTests()],
+    environments: readEnvironments(),
   };
 }
 
