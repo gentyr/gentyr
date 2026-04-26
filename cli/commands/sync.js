@@ -5,6 +5,7 @@
  */
 
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -236,6 +237,120 @@ function cleanupRotationProxy(projectDir) {
 }
 
 /**
+ * Check MCP shared daemon health via HTTP GET /health.
+ * Returns true if the daemon responds with HTTP 2xx within the given timeout.
+ * @param {number} port
+ * @param {number} [timeoutMs=3000]
+ * @returns {Promise<boolean>}
+ */
+function checkDaemonHealth(port, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: timeoutMs }, (res) => {
+      resolve(res.statusCode >= 200 && res.statusCode < 300);
+      res.resume(); // Consume response to free socket
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+/**
+ * Ensure the MCP shared daemon is healthy, restarting it if needed.
+ * Called as Phase 2b — after sessions are killed but before they are re-enqueued,
+ * so revived sessions inherit fresh Tier-1 MCP connections.
+ * Non-fatal — always resolves (never throws).
+ * @param {string} projectDir
+ */
+async function ensureMcpDaemonHealthy(projectDir) {
+  const stateFile = path.join(projectDir, '.claude', 'state', 'shared-mcp-daemon.json');
+
+  // If no state file exists the daemon was never installed — skip silently
+  if (!fs.existsSync(stateFile)) return;
+
+  let daemonState;
+  try {
+    daemonState = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  } catch {
+    return; // Unreadable state file — daemon may be mid-restart
+  }
+
+  const port = daemonState.port || 18090;
+  const statePid = daemonState.pid;
+
+  // ── Check current health ───────────────────────────────────────────────────
+  const healthy = await checkDaemonHealth(port);
+  if (healthy) {
+    console.log(`  ${GREEN}MCP daemon healthy (port ${port})${NC}`);
+    return;
+  }
+
+  console.log(`  ${YELLOW}MCP daemon unhealthy — attempting restart...${NC}`);
+
+  // ── Kill zombie process ────────────────────────────────────────────────────
+  // Kill by state-file PID
+  if (statePid) {
+    try {
+      process.kill(statePid, 'SIGTERM');
+    } catch { /* ESRCH = already dead */ }
+  }
+
+  // Kill any process still holding the port
+  try {
+    const pids = execFileSync('lsof', ['-ti', `:${port}`], { stdio: 'pipe', timeout: 5000, encoding: 'utf8' }).trim();
+    for (const pid of pids.split('\n').filter(Boolean)) {
+      try { process.kill(Number(pid), 'SIGKILL'); } catch { /* ESRCH */ }
+    }
+  } catch { /* lsof exits non-zero when nothing is found */ }
+
+  // ── Restart via service manager ───────────────────────────────────────────
+  let restarted = false;
+
+  if (process.platform === 'darwin') {
+    const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.local.gentyr-mcp-daemon.plist');
+    if (fs.existsSync(plistPath)) {
+      try {
+        execFileSync('launchctl', ['bootout', `gui/${process.getuid()}`, plistPath], { stdio: 'pipe', timeout: 10000 });
+      } catch { /* may already be unloaded */ }
+      try {
+        execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, plistPath], { stdio: 'pipe', timeout: 10000 });
+        restarted = true;
+      } catch (err) {
+        console.log(`  ${YELLOW}Warning: launchctl bootstrap failed: ${err.message}${NC}`);
+      }
+    }
+  } else if (process.platform === 'linux') {
+    try {
+      execFileSync('systemctl', ['--user', 'restart', 'gentyr-mcp-daemon.service'], { stdio: 'pipe', timeout: 15000 });
+      restarted = true;
+    } catch (err) {
+      console.log(`  ${YELLOW}Warning: systemctl restart failed: ${err.message}${NC}`);
+    }
+  }
+
+  if (!restarted) {
+    console.log(`  ${YELLOW}MCP daemon restart skipped (no service manager available)${NC}`);
+    return;
+  }
+
+  // ── Poll for health (up to 15 seconds) ────────────────────────────────────
+  const deadline = Date.now() + 15000;
+  const pollInterval = 1000;
+  let nowHealthy = false;
+
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, pollInterval));
+    nowHealthy = await checkDaemonHealth(port);
+    if (nowHealthy) break;
+  }
+
+  if (nowHealthy) {
+    console.log(`  ${GREEN}MCP daemon restarted successfully (port ${port})${NC}`);
+  } else {
+    console.log(`  ${RED}MCP daemon did not recover within 15 seconds — sessions may lack Tier-1 tools${NC}`);
+  }
+}
+
+/**
  * Recycle all running automated sessions so they pick up new MCP servers/configs.
  * Reuses the kill/re-enqueue pattern from the agent-tracker restart_session MCP tool.
  * Non-fatal — sync succeeds even if recycling fails.
@@ -378,6 +493,17 @@ async function recycleAutomatedSessions(projectDir) {
   }
 
   try { queueDb.close(); } catch { /* best-effort */ }
+
+  // ── Phase 2b: Ensure MCP daemon is healthy before reviving sessions ────────
+  // Killed sessions will reconnect to Tier-1 MCP servers on spawn.  If the
+  // daemon is in a zombie state (process alive but port not listening) they
+  // would silently lose access to all Tier-1 tools.  Restart it now while the
+  // session slots are free so every revived session gets a fresh connection.
+  try {
+    await ensureMcpDaemonHealthy(projectDir);
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: MCP daemon health check threw: ${err.message}${NC}`);
+  }
 
   // ── Phase 3: Re-enqueue all with resume ───────────────────────────────────
   // Ensure PROJECT_DIR resolves correctly when session-queue.js is loaded
