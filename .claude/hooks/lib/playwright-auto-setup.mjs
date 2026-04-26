@@ -180,6 +180,30 @@ try {
     const originalLaunch = proto.launchPersistentContext;
 
     proto.launchPersistentContext = async function (userDataDir, options) {
+      // Inject Chromium flags for headed demos (GPU acceleration + maximize)
+      if (process.env.DEMO_HEADLESS !== '1') {
+        options = { ...options };
+        const existingArgs = options.args || [];
+
+        // Remove --disable-gpu if target project accidentally included it
+        const filteredArgs = existingArgs.filter(a => a !== '--disable-gpu');
+
+        // Enable GPU acceleration for smooth headed rendering & recordings
+        const gpuArgs = [
+          '--enable-gpu-rasterization',
+          '--ignore-gpu-blocklist',
+          '--enable-zero-copy',
+        ];
+
+        // Maximize browser window for clean recordings
+        const maximizeArgs = process.env.DEMO_MAXIMIZE === '1' ? ['--start-maximized'] : [];
+
+        // Merge without duplicates
+        const allNewArgs = [...gpuArgs, ...maximizeArgs];
+        const argsToAdd = allNewArgs.filter(a => !filteredArgs.includes(a));
+        options.args = [...filteredArgs, ...argsToAdd];
+      }
+
       const context = await originalLaunch.call(this, userDataDir, options);
 
       // 1. Auto-wire Escape key interrupt for headed demos
