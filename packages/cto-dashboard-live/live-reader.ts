@@ -579,8 +579,9 @@ export function readDemoScenarios(): DemoScenarioItem[] {
         try { envVars = JSON.parse(r.env_vars) as Record<string, string>; } catch { /* invalid JSON — treat as null */ }
       }
       const resultMode = r.result_mode === 'remote' ? 'remote' : 'local';
-      const lastResult: DemoResultSummary | null = r.result_status && r.result_completed ? {
-        status: r.result_status as 'passed' | 'failed',
+      const resultStatus = r.result_status === 'passed' ? 'passed' : r.result_status === 'failed' ? 'failed' : null;
+      const lastResult: DemoResultSummary | null = resultStatus && r.result_completed ? {
+        status: resultStatus,
         executionMode: resultMode,
         completedAt: r.result_completed,
       } : null;
