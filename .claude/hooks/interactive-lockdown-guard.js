@@ -113,6 +113,11 @@ const ALLOWED_MCP_PREFIXES = [
 const ALLOWED_MCP_INDIVIDUAL = new Set([
   'mcp__secret-sync__get_services_config',       // Read config (no secrets)
   'mcp__secret-sync__update_services_config',     // Update config (secrets key blocked by handler)
+  'mcp__onepassword__check_auth',                 // Auth status — no secret access
+  'mcp__onepassword__list_items',                 // Item names only — no secret values
+  'mcp__onepassword__op_vault_map',               // Returns op:// references — no secret values
+  'mcp__onepassword__create_item',                // Create items — values go direct to op CLI
+  'mcp__onepassword__add_item_fields',            // Add fields — values go direct to op CLI
 ]);
 
 /**

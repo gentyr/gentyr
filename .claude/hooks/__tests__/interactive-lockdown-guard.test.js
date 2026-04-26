@@ -427,6 +427,80 @@ describe('interactive-lockdown-guard.js', () => {
     });
   });
 
+  describe('interactive sessions → ALLOWED_MCP_INDIVIDUAL tools (individually whitelisted from blocked servers)', () => {
+    it('allows mcp__secret-sync__get_services_config', async () => {
+      const result = await runHook({ tool_name: 'mcp__secret-sync__get_services_config', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+    });
+
+    it('allows mcp__secret-sync__update_services_config', async () => {
+      const result = await runHook({ tool_name: 'mcp__secret-sync__update_services_config', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+    });
+
+    it('allows mcp__onepassword__check_auth', async () => {
+      const result = await runHook({ tool_name: 'mcp__onepassword__check_auth', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+    });
+
+    it('allows mcp__onepassword__list_items', async () => {
+      const result = await runHook({ tool_name: 'mcp__onepassword__list_items', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+    });
+
+    it('allows mcp__onepassword__op_vault_map', async () => {
+      const result = await runHook({ tool_name: 'mcp__onepassword__op_vault_map', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+    });
+
+    it('allows mcp__onepassword__create_item', async () => {
+      const result = await runHook({ tool_name: 'mcp__onepassword__create_item', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+    });
+
+    it('allows mcp__onepassword__add_item_fields', async () => {
+      const result = await runHook({ tool_name: 'mcp__onepassword__add_item_fields', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+    });
+
+    it('blocks mcp__onepassword__read_secret (secret values must never reach interactive sessions)', async () => {
+      const result = await runHook({ tool_name: 'mcp__onepassword__read_secret', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'mcp__onepassword__read_secret must be blocked — it exposes secret values'
+      );
+    });
+
+    it('blocks arbitrary mcp__onepassword__ tools not in the individual allowlist', async () => {
+      const result = await runHook({ tool_name: 'mcp__onepassword__get_item', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'Unlisted mcp__onepassword__ tools must be blocked — prefix is not in ALLOWED_MCP_PREFIXES'
+      );
+    });
+
+    it('blocks arbitrary mcp__secret-sync__ tools not in the individual allowlist', async () => {
+      const result = await runHook({ tool_name: 'mcp__secret-sync__push_secrets', tool_input: {} });
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'Unlisted mcp__secret-sync__ tools must be blocked — only specific config tools are whitelisted'
+      );
+    });
+  });
+
   describe('plan mode tools → allowed in interactive lockdown', () => {
     it('allows EnterPlanMode', async () => {
       const result = await runHook({ tool_name: 'EnterPlanMode', tool_input: {} });
