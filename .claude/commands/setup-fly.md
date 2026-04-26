@@ -332,6 +332,27 @@ Poll `get_fly_status()` until `imageDeployed: true`. If it stays `false` after 1
 
 ## Step 9: Verify End-to-End
 
+### 9a: Verify Fly config persisted to services.json
+
+Call `mcp__playwright__get_fly_status()`. If it returns `configured: false`:
+
+1. Check if a pending config exists:
+```bash
+node -e "
+const fs = require('fs');
+const p = require('path').join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'state', 'services-config-pending.json');
+try { console.log(fs.readFileSync(p, 'utf8')); } catch { console.log('NO_PENDING'); }
+"
+```
+
+2. If a pending file exists with a `fly` key: the file is root-owned and the config was staged. Tell the user:
+   > **Config staged but not yet applied.** Run `npx gentyr sync` then re-run `/setup-fly` to continue.
+   Stop here.
+
+3. If no pending file: the fly config was lost. Re-run Step 7 to write it again.
+
+### 9b: Verify full status
+
 Call `mcp__playwright__get_fly_status()` to confirm the integration is working:
 
 - If `healthy: true` AND `imageDeployed: true`: setup is complete
@@ -363,7 +384,7 @@ If `get_fly_status` returns errors or `healthy: false`:
 
 | Error | Remedy |
 |---|---|
-| `configured: false` | The `fly` section in `services.json` is missing or malformed. Verify `fly.apiToken` (must be `op://` reference) and `fly.appName` are both present. Re-run Step 7. |
+| `configured: false` | The `fly` section in `services.json` is missing or malformed. If `services.json` is root-owned, the config may have been staged to `.claude/state/services-config-pending.json` — run `npx gentyr sync` to apply it. Verify `fly.apiToken` (must be `op://` reference) and `fly.appName` are both present. Re-run Step 7. |
 | `imageDeployed: false` | The Fly app exists but no Docker image has been deployed. Remote execution cannot work. Call `deploy_fly_image()` to build and push the image. If it fails, check the deploy log for errors. |
 | `FLY_API_TOKEN resolution failed` | The `op://` reference in `fly.apiToken` can't be resolved. Verify the 1Password item exists via `op_vault_map`. |
 | `app not found` or 404 | Run `flyctl apps create <app-name> --machines-ready-timeout 60` |
