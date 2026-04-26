@@ -496,13 +496,18 @@ LAUNCHD_UID=$(id -u)
 LAUNCHD_DOMAIN="gui/$LAUNCHD_UID"
 
 # Modern launchctl: bootstrap/bootout (macOS 10.10+), fallback to load/unload
+# Returns 0 on success, 1 on failure
 launchd_load() {
   local plist="$1"
   local label="$2"
   launchctl bootout "$LAUNCHD_DOMAIN/$label" 2>/dev/null || true
-  if ! launchctl bootstrap "$LAUNCHD_DOMAIN" "$plist" 2>/dev/null; then
-    launchctl load "$plist" 2>/dev/null || true
+  if launchctl bootstrap "$LAUNCHD_DOMAIN" "$plist" 2>/dev/null; then
+    return 0
   fi
+  if launchctl load "$plist" 2>/dev/null; then
+    return 0
+  fi
+  return 1
 }
 
 launchd_unload() {
@@ -607,8 +612,11 @@ setup_macos() {
 </plist>
 EOF
 
-    launchd_load "$REVIVAL_PLIST_FILE" "com.local.gentyr-revival-daemon"
-    log_info "Revival daemon service loaded (KeepAlive, RunAtLoad)."
+    if launchd_load "$REVIVAL_PLIST_FILE" "com.local.gentyr-revival-daemon"; then
+      log_info "Revival daemon service loaded (KeepAlive, RunAtLoad)."
+    else
+      log_warn "Revival daemon service FAILED to load — check: launchctl list | grep gentyr-revival-daemon"
+    fi
   else
     log_warn "Revival daemon script not found — skipping revival daemon service."
   fi
@@ -659,8 +667,11 @@ EOF
 </plist>
 EOF
 
-    launchd_load "$MCP_DAEMON_PLIST_FILE" "com.local.gentyr-mcp-daemon"
-    log_info "Shared MCP daemon service loaded (KeepAlive, RunAtLoad, port 18090)."
+    if launchd_load "$MCP_DAEMON_PLIST_FILE" "com.local.gentyr-mcp-daemon"; then
+      log_info "Shared MCP daemon service loaded (KeepAlive, RunAtLoad, port 18090)."
+    else
+      log_warn "Shared MCP daemon service FAILED to load — check: launchctl list | grep gentyr-mcp-daemon"
+    fi
   else
     log_warn "MCP server daemon script not found — skipping MCP daemon service."
   fi
@@ -709,8 +720,11 @@ EOF
 </plist>
 EOF
 
-    launchd_load "$PREVIEW_WATCHER_PLIST_FILE" "com.local.gentyr-preview-watcher"
-    log_info "Preview watcher daemon service loaded (KeepAlive, RunAtLoad)."
+    if launchd_load "$PREVIEW_WATCHER_PLIST_FILE" "com.local.gentyr-preview-watcher"; then
+      log_info "Preview watcher daemon service loaded (KeepAlive, RunAtLoad)."
+    else
+      log_warn "Preview watcher daemon FAILED to load — check: launchctl list | grep gentyr-preview-watcher"
+    fi
   else
     log_warn "Preview watcher script not found — skipping preview watcher service."
   fi
@@ -759,8 +773,11 @@ EOF
 </plist>
 EOF
 
-    launchd_load "$SESSION_ACTIVITY_PLIST_FILE" "com.local.gentyr-session-activity-broadcaster"
-    log_info "Session activity broadcaster loaded (KeepAlive, RunAtLoad)."
+    if launchd_load "$SESSION_ACTIVITY_PLIST_FILE" "com.local.gentyr-session-activity-broadcaster"; then
+      log_info "Session activity broadcaster loaded (KeepAlive, RunAtLoad)."
+    else
+      log_warn "Session activity broadcaster FAILED to load — check: launchctl list | grep gentyr-session-activity"
+    fi
   else
     log_warn "Session activity broadcaster script not found — skipping."
   fi
@@ -809,8 +826,11 @@ EOF
 </plist>
 EOF
 
-    launchd_load "$LIVE_FEED_PLIST_FILE" "com.local.gentyr-live-feed-daemon"
-    log_info "Live feed daemon loaded (KeepAlive, RunAtLoad)."
+    if launchd_load "$LIVE_FEED_PLIST_FILE" "com.local.gentyr-live-feed-daemon"; then
+      log_info "Live feed daemon loaded (KeepAlive, RunAtLoad)."
+    else
+      log_warn "Live feed daemon FAILED to load — check: launchctl list | grep gentyr-live-feed"
+    fi
   else
     log_warn "Live feed daemon script not found — skipping."
   fi
@@ -868,8 +888,11 @@ EOF
   log_info "Created $PLIST_FILE"
 
   # Load the agent
-  launchd_load "$PLIST_FILE" "com.local.${SERVICE_NAME}"
-  log_info "Agent loaded."
+  if launchd_load "$PLIST_FILE" "com.local.${SERVICE_NAME}"; then
+    log_info "Agent loaded."
+  else
+    log_warn "Agent FAILED to load — check: launchctl list | grep ${SERVICE_NAME}"
+  fi
 
   # Start the agent immediately so the first run happens while the user is watching.
   # If TCC hasn't been granted yet, the prompt appears now rather than randomly later.
