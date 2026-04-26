@@ -35,6 +35,12 @@ if (!PROJECT_DIR) {
   process.exit(1);
 }
 
+// Enforce CWD — launchd WorkingDirectory is unreliable
+try { process.chdir(PROJECT_DIR); } catch (err) {
+  process.stderr.write(`[mcp-daemon] FATAL: Cannot chdir to ${PROJECT_DIR}: ${err.message}\n`);
+  process.exit(1);
+}
+
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'mcp-daemon.log');
 
 function log(msg) {

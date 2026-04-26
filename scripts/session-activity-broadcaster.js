@@ -34,6 +34,8 @@ const __filename = fileURLToPath(import.meta.url);
 // ============================================================================
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+// Enforce CWD — launchd WorkingDirectory is unreliable (macOS launchctl load/unload bug)
+try { process.chdir(PROJECT_DIR); } catch { /* non-fatal */ }
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-activity-broadcaster.log');
 const QUEUE_DB_PATH = path.join(STATE_DIR, 'session-queue.db');
@@ -255,6 +257,7 @@ async function callLLM(prompt, systemPrompt) {
 
   try {
     const { stdout } = await execFileAsync('claude', args, {
+      cwd: PROJECT_DIR,
       encoding: 'utf8',
       timeout: LLM_TIMEOUT_MS,
       // Fix 1: mark as spawned session so interactive-lockdown-guard allows all tools
@@ -282,6 +285,7 @@ async function callLLMStructured(prompt, systemPrompt, jsonSchema) {
 
   try {
     const { stdout } = await execFileAsync('claude', args, {
+      cwd: PROJECT_DIR,
       encoding: 'utf8',
       timeout: LLM_TIMEOUT_MS,
       // Fix 1: mark as spawned session (same reason as callLLM above)

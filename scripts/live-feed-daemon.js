@@ -28,6 +28,8 @@ import Database from 'better-sqlite3';
 // ============================================================================
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+// Enforce CWD — launchd WorkingDirectory is unreliable (macOS launchctl load/unload bug)
+try { process.chdir(PROJECT_DIR); } catch { /* non-fatal */ }
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'live-feed-daemon.log');
 const FEED_DB_PATH = path.join(STATE_DIR, 'live-feed.db');
@@ -388,6 +390,7 @@ function generateEntry(prompt, feedDb) {
       '--include-partial-messages',
       '--model', LLM_MODEL,
     ], {
+      cwd: PROJECT_DIR,
       env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

@@ -24,6 +24,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+// Enforce CWD — launchd WorkingDirectory is unreliable (macOS launchctl load/unload bug)
+try { process.chdir(PROJECT_DIR); } catch { /* non-fatal */ }
 const STATE_DIR = path.join(PROJECT_DIR, '.claude', 'state');
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'preview-watcher.log');
 const STATE_FILE = path.join(STATE_DIR, 'preview-head.json');
