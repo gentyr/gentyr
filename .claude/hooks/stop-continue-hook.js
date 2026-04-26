@@ -177,7 +177,7 @@ async function main() {
               gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: 'plan_manager_incomplete', isTask: true, isPersistent: true });
               console.log(JSON.stringify({
                 decision: 'block',
-                reason: `[PLAN MANAGER] Plan has ${incompleteTasks.count} incomplete task(s). Continue executing the plan by spawning persistent tasks for each ready plan task. If blocked by an external dependency, pause your persistent task via mcp__persistent-task__pause_persistent_task first, then you may stop. Do NOT skip tasks to escape this gate.`,
+                reason: `[PLAN MANAGER] Plan has ${incompleteTasks.count} incomplete task(s). Continue executing the plan by spawning persistent tasks for each ready plan task. If blocked by an external dependency that requires CTO intervention, submit a bypass request via mcp__agent-tracker__submit_bypass_request (this auto-pauses your task, propagates to the plan, and notifies the CTO), then call summarize_work and stop. Do NOT skip tasks to escape this gate.`,
               }));
               process.exit(0);
             }

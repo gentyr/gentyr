@@ -3298,6 +3298,12 @@ async function main() {
             JSON.stringify({ reason: 'auto_resumed_stale_pause', pause_age_minutes: Math.round(pauseAge / 60000) })
           );
 
+          // Propagate resume to plan layer (resolves blocking_queue entries)
+          try {
+            const { propagateResumeToPlan } = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js'));
+            propagateResumeToPlan(task.id);
+          } catch (_) { /* non-fatal */ }
+
           // Enqueue the monitor
           try {
             const { prompt, extraEnv, metadata, agent } = await buildRevivalPrompt(task, 'stale_pause_resumed');
@@ -3416,12 +3422,22 @@ async function main() {
                 if (ptFull?.metadata) {
                   const meta = JSON.parse(ptFull.metadata);
                   if (meta.do_not_auto_resume) {
-                    log(`Plan orphan detection: plan "${plan.title}" linked to paused persistent task ${plan.persistent_task_id} with do_not_auto_resume — re-creating plan-manager`);
-                    await reviveOrphanedPlan(plan, ptDbPath, plansDbPath);
-                    revived++;
+                    // DO NOT create a new plan manager — this would cause a proliferation loop:
+                    // new task → crash → CB pause with do_not_auto_resume → orphan creates another → repeat.
+                    // Instead, pause the plan and let the CTO resolve the blocked persistent task manually.
+                    log(`Plan orphan detection: plan "${plan.title}" linked to permanently-paused task ${plan.persistent_task_id} (do_not_auto_resume) — skipping revival, pausing plan`);
+                    try {
+                      const plansDbRw = new Database(plansDbPath);
+                      plansDbRw.pragma('busy_timeout = 3000');
+                      plansDbRw.prepare("UPDATE plans SET status = 'paused', updated_at = ? WHERE id = ? AND status = 'active'")
+                        .run(new Date().toISOString(), plan.id);
+                      plansDbRw.close();
+                    } catch (_) { /* non-fatal — pausing the plan is best-effort */ }
+                    continue;
                   }
                 }
-              } catch (_) { /* non-fatal — if paused without the flag, stale-pause auto-resume handles it */ }
+                // Paused without do_not_auto_resume — stale-pause auto-resume handles it
+              } catch (_) { /* non-fatal — if we can't read metadata, stale-pause auto-resume handles it */ }
             }
             // If ptTask.status is 'active', the existing persistent task revival mechanisms handle it
             // If ptTask.status is 'paused' without do_not_auto_resume, stale-pause auto-resume handles it

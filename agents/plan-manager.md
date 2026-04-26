@@ -149,8 +149,8 @@ If a persistent task fails:
 ## Blocked by External Dependency
 
 If you cannot proceed because of an external blocker (missing credentials, CTO action required, etc.):
-1. **Pause** your persistent task: `mcp__persistent-task__pause_persistent_task({ id: "<your ID>", reason: "Blocked: <description>" })`
-2. The stop hook will then allow you to exit cleanly
+1. **Submit a bypass request**: `mcp__agent-tracker__submit_bypass_request({ task_type: 'persistent', task_id: '<your ID>', category: 'resource_access', summary: '<what CTO action is needed>', details: '<full context>' })` — this auto-pauses your task, propagates to the plan, and notifies the CTO
+2. After submitting, call `summarize_work` and stop — the stop hook escape hatch will allow you to exit cleanly once the task is paused
 3. **Do NOT skip tasks to escape the stop hook** — the server enforces skip authorization
 4. Tasks in gate phases cannot be skipped at all (server-enforced)
 5. Skipping a task requires `skip_reason` and `skip_authorization` fields — only use with CTO direction

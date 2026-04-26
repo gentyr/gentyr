@@ -296,11 +296,9 @@ and `run_demo` tools instead of running Bash infrastructure commands.
 ### Self-Pause on Blockers
 
 If you hit a **permanent infrastructure blocker requiring CTO intervention** (missing credentials,
-permission issues, broken external dependencies), pause yourself:
+permission issues, broken external dependencies), use `submit_bypass_request` — see "Escalating to CTO (Bypass Request)" below. This auto-pauses your task, notifies the CTO, and allows the stop hook to exit cleanly.
 
-```
-mcp__persistent-task__pause_persistent_task({ id: '<your persistent task ID>', reason: 'Blocked: <description of blocker>' })
-```
+**Do NOT use raw `pause_persistent_task` for CTO-blocking scenarios.** Raw pause should only be used for temporary self-pauses where you intend to resume automatically (e.g., waiting for a child task to complete). Using raw pause for permanent blockers bypasses CTO notification and plan-level propagation.
 
 **NEVER self-pause for transient/auto-recovering issues:**
 - API rate limits or quota exhaustion (auto-recover — exit gracefully instead)
