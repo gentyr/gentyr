@@ -160,6 +160,14 @@ export interface CommentaryContext {
 // Page 2: Demos & Tests
 // ============================================================================
 
+export type DemoExecutionMode = 'local' | 'remote';
+
+export interface DemoResultSummary {
+  status: 'passed' | 'failed';
+  executionMode: DemoExecutionMode;
+  completedAt: string;
+}
+
 export interface DemoScenarioItem {
   id: string;
   personaId: string;
@@ -175,6 +183,13 @@ export interface DemoScenarioItem {
   lastRecordedAt: string | null;
   recordingPath: string | null;
   envVars: Record<string, string> | null;
+  lastResult: DemoResultSummary | null;
+}
+
+export interface FlyConfigStatus {
+  configured: boolean;
+  appName: string | null;
+  reason: string | null;
 }
 
 export type TestRunner = 'playwright' | 'vitest' | 'jest';
@@ -197,6 +212,9 @@ export interface RunningProcess {
   startedAt: string;
   outputFile: string;
   exitCode: number | null;
+  executionMode?: DemoExecutionMode;
+  flyMachineId?: string | null;
+  scenarioId?: string;
 }
 
 export type DemoEnvironmentId = 'local' | string;
@@ -211,6 +229,7 @@ export interface Page2Data {
   scenarios: DemoScenarioItem[];
   testFiles: TestFileItem[];
   environments: DemoEnvironment[];
+  flyStatus: FlyConfigStatus;
 }
 
 // ============================================================================

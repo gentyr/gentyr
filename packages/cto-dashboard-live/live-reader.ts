@@ -15,7 +15,7 @@ import Database from 'better-sqlite3';
 import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
   WorklogEntry, SessionStatus, SessionPriority, ActivityEntry,
-  DemoScenarioItem, TestFileItem, DemoEnvironment, Page2Data,
+  DemoScenarioItem, TestFileItem, DemoEnvironment, DemoResultSummary, FlyConfigStatus, Page2Data,
   Page3Data, PlanItem, PlanPhaseItem, PlanTaskItem, PlanSubstepItem, PlanStateChange,
   Page4Data, SpecCategoryItem, SpecItem, SuiteItem,
   CommentaryContext, CommentaryContextSession, CommentaryContextPlan, CommentaryContextSummary,
@@ -539,24 +539,37 @@ interface ScenarioRow {
   sort_order: number; enabled: number; headed: number;
   last_recorded_at: string | null; recording_path: string | null; persona_name: string;
   env_vars: string | null;
+  result_status: string | null; result_mode: string | null; result_completed: string | null;
 }
 
 export function readDemoScenarios(): DemoScenarioItem[] {
   const db = openDb(path.join(PROJECT_DIR, '.claude', 'user-feedback.db'));
   if (!db) return [];
   try {
-    // Check whether env_vars column exists (it may not be present in older DBs)
+    // Check whether optional columns exist (may not be present in older DBs)
     let hasEnvVars = false;
     try { db.prepare('SELECT env_vars FROM demo_scenarios LIMIT 0').run(); hasEnvVars = true; } catch { /* column not yet migrated */ }
+    let hasResults = false;
+    try { db.prepare('SELECT id FROM demo_results LIMIT 0').run(); hasResults = true; } catch { /* table not yet migrated */ }
+
+    const resultJoin = hasResults ? `
+      LEFT JOIN (
+        SELECT scenario_id, status AS result_status, execution_mode AS result_mode,
+               completed_at AS result_completed,
+               ROW_NUMBER() OVER (PARTITION BY scenario_id ORDER BY completed_at DESC) AS rn
+        FROM demo_results
+      ) dr ON dr.scenario_id = ds.id AND dr.rn = 1` : '';
 
     const query = `
       SELECT ds.id, ds.persona_id, ds.title, ds.description, ds.category,
              ds.playwright_project, ds.test_file, ds.sort_order, ds.enabled,
              ds.headed, ds.last_recorded_at, ds.recording_path,
              ${hasEnvVars ? 'ds.env_vars,' : ''}
+             ${hasResults ? 'dr.result_status, dr.result_mode, dr.result_completed,' : ''}
              p.name AS persona_name
       FROM demo_scenarios ds
       JOIN personas p ON p.id = ds.persona_id
+      ${resultJoin}
       ORDER BY ds.sort_order ASC, ds.title ASC
     `;
     const rows = db.prepare(query).all() as ScenarioRow[];
@@ -565,6 +578,11 @@ export function readDemoScenarios(): DemoScenarioItem[] {
       if (hasEnvVars && r.env_vars) {
         try { envVars = JSON.parse(r.env_vars) as Record<string, string>; } catch { /* invalid JSON — treat as null */ }
       }
+      const lastResult: DemoResultSummary | null = r.result_status && r.result_completed ? {
+        status: r.result_status as 'passed' | 'failed',
+        executionMode: (r.result_mode || 'local') as 'local' | 'remote',
+        completedAt: r.result_completed,
+      } : null;
       return {
         id: r.id,
         personaId: r.persona_id,
@@ -580,6 +598,7 @@ export function readDemoScenarios(): DemoScenarioItem[] {
         lastRecordedAt: r.last_recorded_at,
         recordingPath: r.recording_path && fs.existsSync(r.recording_path) ? r.recording_path : null,
         envVars,
+        lastResult,
       };
     });
   } catch { return []; }
@@ -785,11 +804,33 @@ export function readEnvironments(): DemoEnvironment[] {
   return envs;
 }
 
+/**
+ * Detect Fly.io remote execution availability from services.json.
+ */
+export function readFlyStatus(): FlyConfigStatus {
+  try {
+    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (!fs.existsSync(configPath)) {
+      return { configured: false, appName: null, reason: 'services.json not found' };
+    }
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const fly = config?.fly as Record<string, unknown> | undefined;
+    if (!fly) return { configured: false, appName: null, reason: 'fly section missing from services.json — run /setup-fly' };
+    if (fly.enabled === false) return { configured: false, appName: null, reason: 'fly.enabled is false' };
+    if (typeof fly.appName !== 'string') return { configured: false, appName: null, reason: 'fly.appName not configured' };
+    if (typeof fly.apiToken !== 'string') return { configured: false, appName: null, reason: 'fly.apiToken not configured' };
+    return { configured: true, appName: fly.appName as string, reason: null };
+  } catch {
+    return { configured: false, appName: null, reason: 'Failed to read services.json' };
+  }
+}
+
 export function readPage2Data(): Page2Data {
   return {
     scenarios: readDemoScenarios(),
     testFiles: [...discoverTestFiles(), ...discoverUnitTests()],
     environments: readEnvironments(),
+    flyStatus: readFlyStatus(),
   };
 }
 

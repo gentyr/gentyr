@@ -8,7 +8,7 @@ import type { Page2Data } from '../types.js';
 import { getMockPage2Data } from '../mock-data.js';
 import { readPage2Data } from '../live-reader.js';
 
-const EMPTY: Page2Data = { scenarios: [], testFiles: [], environments: [] };
+const EMPTY: Page2Data = { scenarios: [], testFiles: [], environments: [], flyStatus: { configured: false, appName: null, reason: null } };
 
 export function usePage2Data(intervalMs: number, mock: boolean, active: boolean): Page2Data {
   const [data, setData] = useState<Page2Data>(() => {
