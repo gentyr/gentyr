@@ -74,9 +74,9 @@ export function getMockPage2Data(): Page2Data {
     scenarios: mockScenarios,
     testFiles: mockTestFiles,
     environments: [
-      { id: 'local', label: 'Local', baseUrl: null },
-      { id: 'staging', label: 'Staging', baseUrl: 'https://staging.example.com' },
-      { id: 'production', label: 'Production', baseUrl: 'https://app.example.com' },
+      { id: 'local', label: 'Local', baseUrl: null, branch: 'preview' },
+      { id: 'staging', label: 'Staging', baseUrl: 'https://staging.example.com', branch: 'staging' },
+      { id: 'production', label: 'Production', baseUrl: 'https://app.example.com', branch: 'main' },
     ],
     flyStatus: { configured: true, appName: 'my-app-playwright', reason: null },
   };
