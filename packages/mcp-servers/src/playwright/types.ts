@@ -247,14 +247,16 @@ export const RunDemoArgsSchema = z.object({
     .describe('Relative path to a specific test file (e.g., e2e/demo/onboarding.demo.ts). When provided, only this file runs.'),
   timeout: z.coerce.number().int().min(30000).max(600000).optional().default(120000)
     .describe('Per-test timeout in milliseconds (30s-600s, default 120s)'),
-  headless: z.coerce.boolean().optional().default(false)
-    .describe('Run demos in headless mode. Sets DEMO_HEADLESS=1 env var. Extension demos will auto-skip.'),
+  recorded: z.coerce.boolean().optional().default(true)
+    .describe('Capture video recording of the demo (default: true). When true, runs headed with window recording (ScreenCaptureKit locally, Xvfb+ffmpeg remotely). When false, runs headless without recording. This is the primary flag — use this instead of headless/skip_recording.'),
+  headless: z.coerce.boolean().optional()
+    .describe('Low-level override. Prefer using "recorded" instead. When set, takes precedence over "recorded" for headless mode.'),
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording (--trace on). Default: false.'),
   scenario_id: z.string()
     .describe('Demo scenario ID from user-feedback DB. Required — used for video recording persistence, prerequisite resolution, and env_vars lookup.'),
-  skip_recording: z.coerce.boolean().optional().default(false)
-    .describe('Skip window recording even in headed mode. Useful for automated validation runs.'),
+  skip_recording: z.coerce.boolean().optional()
+    .describe('Low-level override. Prefer using "recorded" instead. When set, takes precedence over "recorded" for the recording flag.'),
   success_pause_ms: z.coerce.number().int().min(0).max(30000).optional().default(0)
     .describe('Milliseconds to keep the browser open after a successful demo before teardown (0-30000, default 0). Only applies in headed mode when all tests pass. The technical flush buffer (5s) is always added on top.'),
   stall_timeout_ms: z.coerce.number().int().min(0).max(300000).optional()
@@ -267,8 +269,8 @@ export const RunDemoArgsSchema = z.object({
       'Use for replay data (REPLAY_SESSION_ID, REPLAY_AUDIT_DATA) or custom flags. ' +
       'Max 25 keys, max 512KB total size. Values are not persisted to demo-runs.json.'
     ),
-  remote: z.coerce.boolean().optional()
-    .describe('Run on remote Fly.io machine. Auto-routes when Fly.io is configured and demo is headless-eligible. Pass false to force local execution.'),
+  remote: z.coerce.boolean().optional().default(true)
+    .describe('Run on remote Fly.io machine (default: true). Auto-routes to Fly.io when configured. Pass false to force local execution.'),
 });
 
 export type RunDemoArgs = z.infer<typeof RunDemoArgsSchema>;
