@@ -1985,10 +1985,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const effectiveBaseUrl = devServerUrl;
 
   // Display lock guard for headed demos — serialize to prevent window capture conflicts.
-  // When headless=false, require the caller to hold the display lock.
-  // If they don't hold it, attempt to auto-acquire; if another agent holds it, reject.
+  // When headless=false AND running locally, require the caller to hold the display lock.
+  // Skip when remote=true — Fly.io uses Xvfb, not the local display.
   let displayLockAutoAcquired = false;
-  if (!args.headless) {
+  if (!args.headless && args.remote !== true) {
     try {
       const displayLockMod = await loadDisplayLock();
       if (displayLockMod) {
