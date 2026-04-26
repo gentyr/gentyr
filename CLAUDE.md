@@ -748,7 +748,7 @@ The **Interactive Session Lockdown Guard** (`.claude/hooks/interactive-lockdown-
 
 ## Playwright MCP Server
 
-The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`, `get_demo_screenshot`, `extract_video_frames`, `get_fly_status`.
+The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`, `get_demo_screenshot`, `extract_video_frames`, `get_fly_status`, `set_fly_machine_ram`, `get_fly_machine_ram`.
 
 **Remote Playwright Execution (Fly.io)**: When the `fly` section is configured in `services.json`, headless demos automatically route to ephemeral Fly.io machines. Key behaviors:
 - `run_demo` with `headless: true` (or omitted default) auto-routes to Fly.io when configured. Pass `remote: false` to force local.
@@ -757,9 +757,10 @@ The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tool
 - **Worktree branch auto-push**: Before spawning a Fly machine, `server.ts` checks if the current `gitRef` exists on the remote (`git ls-remote --heads origin <ref>`). If not (worktree branches are local-only), it pushes the branch automatically (`git push -u origin HEAD:<ref>`) so the Fly machine can clone it. Falls back to `preview` or `main` if the push fails.
 - **Machine kill timeout**: Fly machines are configured with `stop_config.timeout: '75s'` (API) and `kill_timeout = "75s"` in `fly.toml.template` to allow the EXIT trap's 60-second artifact-retrieval window to complete before Fly force-kills the machine.
 - `check_demo_result` returns `execution_target` (`'local'` or `'remote'`), `fly_machine_id`, `fly_region`, `remote_routing_warning` (non-empty when auto-routing fell back to local), and — when a recording was captured — `recording_path`, `recording_source` (`'window'`), `failure_frames`, and `screenshot_hint` (identical fields to local). Screenshots are extracted from the Fly recording via `extractScreenshotsFromRecording()` at 3-second intervals and placed in `.claude/recordings/demos/{scenarioId}/screenshots/` using the same `screenshot-XXXX.png` naming convention as local macOS captures, so `get_demo_screenshot` works identically for both local and remote runs.
-- `get_fly_status` reports configured/healthy state, current machine count, region, and `imageDeployed` — if `false`, no Docker image has been pushed and remote execution will fail silently.
+- `get_fly_status` reports configured/healthy state, current machine count, region, `imageDeployed` (if `false`, no Docker image has been pushed and remote execution will fail silently), `machineRamHeadless`, and `machineRamHeaded` (current per-mode RAM settings from the state file).
+- **Per-mode RAM configuration**: `set_fly_machine_ram` and `get_fly_machine_ram` MCP tools configure RAM independently for headless vs headed Fly machines. State persisted at `.claude/state/fly-machine-config.json` (always writable, no root protection, no `npx gentyr sync` needed). Defaults: headless 2048MB (~900MB actually needed), headed 4096MB (~2GB for Xvfb + ffmpeg + headed Chromium). Changes take effect immediately on the next `run_demo` — no restart required. The `machineRam` field in `services.json` is now superseded by the per-mode values from the state file.
 - Infrastructure: `infra/fly-playwright/` contains the Dockerfile, fly.toml template, and provisioning scripts. Setup via `/setup-fly` slash command; step 8 calls `deploy_fly_image()` MCP tool to build and push the Docker image after app creation. Step 6b of `/setup-fly` covers adding `GITHUB_TOKEN` to `secrets.local` for private repositories — the token is resolved at runtime and passed as `GIT_AUTH_TOKEN` to the Fly.io machine for authenticated git clone; the value never enters agent context.
-- Config fields in `services.json` `fly` object: `apiToken` (op:// ref), `appName`, `region`, `machineSize`, `machineRam`, `maxConcurrentMachines`, `enabled`.
+- Config fields in `services.json` `fly` object: `apiToken` (op:// ref), `appName`, `region`, `machineSize`, `machineRam` (legacy flat value, now superseded by per-mode state file), `maxConcurrentMachines`, `enabled`.
 - `FLY_API_TOKEN` is in the `INFRA_CRED_KEYS` set — treated as an infrastructure credential by the secret-sync server.
 
 > Full details: [Playwright MCP Server](docs/CLAUDE-REFERENCE.md#playwright-mcp-server)
@@ -1291,7 +1292,7 @@ Key modules consumed by hooks:
 
 | Server | Tool Count | Purpose |
 |--------|-----------|---------|
-| playwright | ~36 | Demo execution, test running, screenshots, video, prerequisites |
+| playwright | ~38 | Demo execution, test running, screenshots, video, prerequisites |
 | chrome-bridge | 35 | 17 socket-based + 2 AppleScript + 4 convenience + 4 React automation + diagnostics |
 
 #### Content/Display Servers
