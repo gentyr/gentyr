@@ -492,6 +492,26 @@ MCP_DAEMON_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-mcp-daemon.plist"
 PREVIEW_WATCHER_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-preview-watcher.plist"
 SESSION_ACTIVITY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-session-activity-broadcaster.plist"
 LIVE_FEED_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-live-feed-daemon.plist"
+LAUNCHD_UID=$(id -u)
+LAUNCHD_DOMAIN="gui/$LAUNCHD_UID"
+
+# Modern launchctl: bootstrap/bootout (macOS 10.10+), fallback to load/unload
+launchd_load() {
+  local plist="$1"
+  local label="$2"
+  launchctl bootout "$LAUNCHD_DOMAIN/$label" 2>/dev/null || true
+  if ! launchctl bootstrap "$LAUNCHD_DOMAIN" "$plist" 2>/dev/null; then
+    launchctl load "$plist" 2>/dev/null || true
+  fi
+}
+
+launchd_unload() {
+  local plist="$1"
+  local label="$2"
+  if ! launchctl bootout "$LAUNCHD_DOMAIN/$label" 2>/dev/null; then
+    launchctl unload "$plist" 2>/dev/null || true
+  fi
+}
 
 setup_macos() {
   log_info "Setting up launchd agent..."
@@ -587,8 +607,7 @@ setup_macos() {
 </plist>
 EOF
 
-    launchctl unload "$REVIVAL_PLIST_FILE" 2>/dev/null || true
-    launchctl load "$REVIVAL_PLIST_FILE"
+    launchd_load "$REVIVAL_PLIST_FILE" "com.local.gentyr-revival-daemon"
     log_info "Revival daemon service loaded (KeepAlive, RunAtLoad)."
   else
     log_warn "Revival daemon script not found — skipping revival daemon service."
@@ -640,8 +659,7 @@ EOF
 </plist>
 EOF
 
-    launchctl unload "$MCP_DAEMON_PLIST_FILE" 2>/dev/null || true
-    launchctl load "$MCP_DAEMON_PLIST_FILE"
+    launchd_load "$MCP_DAEMON_PLIST_FILE" "com.local.gentyr-mcp-daemon"
     log_info "Shared MCP daemon service loaded (KeepAlive, RunAtLoad, port 18090)."
   else
     log_warn "MCP server daemon script not found — skipping MCP daemon service."
@@ -691,8 +709,7 @@ EOF
 </plist>
 EOF
 
-    launchctl unload "$PREVIEW_WATCHER_PLIST_FILE" 2>/dev/null || true
-    launchctl load "$PREVIEW_WATCHER_PLIST_FILE"
+    launchd_load "$PREVIEW_WATCHER_PLIST_FILE" "com.local.gentyr-preview-watcher"
     log_info "Preview watcher daemon service loaded (KeepAlive, RunAtLoad)."
   else
     log_warn "Preview watcher script not found — skipping preview watcher service."
@@ -742,8 +759,7 @@ EOF
 </plist>
 EOF
 
-    launchctl unload "$SESSION_ACTIVITY_PLIST_FILE" 2>/dev/null || true
-    launchctl load "$SESSION_ACTIVITY_PLIST_FILE"
+    launchd_load "$SESSION_ACTIVITY_PLIST_FILE" "com.local.gentyr-session-activity-broadcaster"
     log_info "Session activity broadcaster loaded (KeepAlive, RunAtLoad)."
   else
     log_warn "Session activity broadcaster script not found — skipping."
@@ -793,8 +809,7 @@ EOF
 </plist>
 EOF
 
-    launchctl unload "$LIVE_FEED_PLIST_FILE" 2>/dev/null || true
-    launchctl load "$LIVE_FEED_PLIST_FILE"
+    launchd_load "$LIVE_FEED_PLIST_FILE" "com.local.gentyr-live-feed-daemon"
     log_info "Live feed daemon loaded (KeepAlive, RunAtLoad)."
   else
     log_warn "Live feed daemon script not found — skipping."
@@ -853,8 +868,7 @@ EOF
   log_info "Created $PLIST_FILE"
 
   # Load the agent
-  launchctl unload "$PLIST_FILE" 2>/dev/null || true
-  launchctl load "$PLIST_FILE"
+  launchd_load "$PLIST_FILE" "com.local.${SERVICE_NAME}"
   log_info "Agent loaded."
 
   # Start the agent immediately so the first run happens while the user is watching.
@@ -868,27 +882,32 @@ remove_macos() {
   log_info "Removing launchd agents..."
 
   # Unload and remove shared MCP daemon
-  launchctl unload "$MCP_DAEMON_PLIST_FILE" 2>/dev/null || true
+  launchd_unload "$MCP_DAEMON_PLIST_FILE" "com.local.gentyr-mcp-daemon"
   rm -f "$MCP_DAEMON_PLIST_FILE"
   log_info "Shared MCP daemon service removed."
 
   # Unload and remove revival daemon
-  launchctl unload "$REVIVAL_PLIST_FILE" 2>/dev/null || true
+  launchd_unload "$REVIVAL_PLIST_FILE" "com.local.gentyr-revival-daemon"
   rm -f "$REVIVAL_PLIST_FILE"
   log_info "Revival daemon service removed."
 
   # Unload and remove preview watcher daemon
-  launchctl unload "$PREVIEW_WATCHER_PLIST_FILE" 2>/dev/null || true
+  launchd_unload "$PREVIEW_WATCHER_PLIST_FILE" "com.local.gentyr-preview-watcher"
   rm -f "$PREVIEW_WATCHER_PLIST_FILE"
   log_info "Preview watcher daemon service removed."
 
+  # Unload and remove session activity broadcaster
+  launchd_unload "$SESSION_ACTIVITY_PLIST_FILE" "com.local.gentyr-session-activity-broadcaster"
+  rm -f "$SESSION_ACTIVITY_PLIST_FILE"
+  log_info "Session activity broadcaster service removed."
+
   # Unload and remove live feed daemon
-  launchctl unload "$LIVE_FEED_PLIST_FILE" 2>/dev/null || true
+  launchd_unload "$LIVE_FEED_PLIST_FILE" "com.local.gentyr-live-feed-daemon"
   rm -f "$LIVE_FEED_PLIST_FILE"
   log_info "Live feed daemon service removed."
 
   # Unload and remove automation agent
-  launchctl unload "$PLIST_FILE" 2>/dev/null || true
+  launchd_unload "$PLIST_FILE" "com.local.${SERVICE_NAME}"
   rm -f "$PLIST_FILE"
   log_info "Automation agent removed."
 }
