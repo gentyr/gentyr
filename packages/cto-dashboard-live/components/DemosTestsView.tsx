@@ -202,18 +202,40 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const leftWidth = Math.floor(bodyWidth * LEFT_WIDTH_FRACTION);
   const rightWidth = bodyWidth - leftWidth - 1;
 
+  const envBarHeight = environments.length > 1 ? 1 : 0;
   const hasOutput = runningProcess != null;
   const outputHeight = hasOutput ? Math.max(4, Math.floor(bodyHeight * OUTPUT_HEIGHT_FRACTION)) : 0;
-  const listsHeight = bodyHeight - outputHeight;
+  const listsHeight = bodyHeight - outputHeight - envBarHeight;
 
   const leftInnerHeight = Math.max(2, listsHeight - HEADER_OVERHEAD);
   const rightInnerHeight = Math.max(2, listsHeight - HEADER_OVERHEAD);
 
   return (
     <Box flexDirection="column" height={bodyHeight}>
+      {/* Environment selector bar — only shown when multiple environments are configured */}
+      {environments.length > 1 && (
+        <Box height={1} flexDirection="row">
+          <Text dimColor> ENV </Text>
+          {environments.map((env) => {
+            const isSelected = env.id === selectedEnv.id;
+            return (
+              <Box key={env.id} marginRight={1}>
+                {isSelected ? (
+                  <Text bold inverse color="white">{` ${env.label} `}</Text>
+                ) : (
+                  <Text dimColor>{` ${env.label} `}</Text>
+                )}
+              </Box>
+            );
+          })}
+          <Text dimColor> (e to cycle)</Text>
+          {selectedEnv.baseUrl && <Text color="cyan"> {'\u2192'} {selectedEnv.baseUrl}</Text>}
+        </Box>
+      )}
+
       {/* Top: two-column lists */}
       <Box flexDirection="row" height={listsHeight}>
-        <Section title={`Demo Scenarios [${selectedEnv.label}]`} width={leftWidth} tip={activePanel === 'demos' ? 'e=env \u25C0 active' : 'e=env'}>
+        <Section title="Demo Scenarios" width={leftWidth} tip={activePanel === 'demos' ? '\u25C0 active' : undefined}>
           <ScenarioList
             scenarios={data.scenarios}
             selectedId={selectedScenarioId}
