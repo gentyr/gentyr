@@ -213,15 +213,32 @@ Triggered by the CTO or a release-plan-manager agent when preview has accumulate
 3. CI runs
 4. Merge on deputy-CTO approval
 
-### Staging -> Production (manual / CTO-gated)
+### Staging -> Production (`/promote-to-prod`)
 
-Triggered by the CTO or a release-plan-manager agent. Staging must not be locked (`isStagingLocked()`) before proceeding.
+The ONLY path to production. Run `/promote-to-prod` in a CTO interactive session to initiate an 8-phase release plan orchestrated by the plan-manager. Staging must be unlocked before starting a new release.
 
-**Pipeline:**
-1. Create PR: `gh pr create --base main --head staging`
-2. CTO approves via `/deputy-cto`
-3. CI runs (includes security scan)
-4. Merge on CTO approval
+**8 Phases:**
+
+| Phase | Name | Gate | Description |
+|-------|------|------|-------------|
+| 1 | Per-PR Quality Review | Yes | Persistent task per PR: antipattern, code-review, user-alignment, spec-enforcement |
+| 2 | Initial Triage | No | Deputy-CTO triages Phase 1 findings |
+| 3 | Meta-Review | Yes | Cross-PR consistency check across all changes |
+| 4 | Test & Demo Execution | Yes | All unit/integration/playwright tests + all demo scenarios via Fly.io |
+| 5 | Demo Coverage Audit | Yes | Verify every new feature has demo coverage with screenshot proof |
+| 6 | Final Triage | No | Pre-release readiness check |
+| 7 | CTO Sign-off | Yes | CTO reviews and explicitly approves the release via `sign_off_release` |
+| 8 | Release Report | No | 8-section structured report generated (.md + .pdf) |
+
+**Flow:** `/promote-to-prod` → enumerate PRs → lock staging (GitHub API + `staging-lock-guard.js`) → create release plan → plan-manager drives phases → CTO approves Phase 7 → staging merges to main → report generated → staging unlocked.
+
+**Monitoring:** `/plan-progress`, `/monitor`, `/persistent-tasks`
+
+**Staging Lock:** During a release, all merges to staging are blocked (`staging-lock-guard.js` PreToolUse hook + GitHub branch protection). `GENTYR_PROMOTION_PIPELINE=true` agents are exempt.
+
+**Release Artifacts:** `.claude/releases/{release-id}/` — JSONL transcripts, session summaries, screenshots, test/demo results, triage actions, CTO decisions.
+
+**Release Ledger:** `release-ledger` MCP server tracks PRs, sessions, reports, and tasks per release for post-mortem traceability.
 
 ## Stale Work Detection
 
