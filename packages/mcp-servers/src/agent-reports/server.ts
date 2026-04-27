@@ -69,6 +69,10 @@ import {
 const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cwd());
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 
+// Two-tier reporting: preview tier cannot escalate to CTO
+// Valid values: 'preview', 'staging', or null (default/legacy behavior)
+const REPORT_TIER: string | null = process.env['GENTYR_REPORT_TIER'] || null;
+
 // Cleanup thresholds
 const MAX_REPORTS = 50;
 const MAX_AGE_DAYS = 7;
@@ -169,6 +173,11 @@ function initializeDatabase(): Database.Database {
   // G011 idempotency column
   if (!columnNames.includes('idempotency_key')) {
     db.exec('ALTER TABLE reports ADD COLUMN idempotency_key TEXT');
+  }
+
+  // Two-tier reporting column
+  if (!columnNames.includes('tier')) {
+    db.exec('ALTER TABLE reports ADD COLUMN tier TEXT');
   }
 
   // Create new indexes if needed (use try/catch since partial indexes may not be idempotent on all SQLite builds)
@@ -276,8 +285,8 @@ function reportToCto(args: ReportToCtoArgs): ReportToCtoResult {
 
   try {
     db.prepare(`
-      INSERT INTO reports (id, reporting_agent, title, summary, category, priority, created_at, created_timestamp, idempotency_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO reports (id, reporting_agent, title, summary, category, priority, created_at, created_timestamp, idempotency_key, tier)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       args.reporting_agent,
@@ -288,6 +297,7 @@ function reportToCto(args: ReportToCtoArgs): ReportToCtoResult {
       created_at,
       created_timestamp,
       args.idempotency_key ?? null,
+      REPORT_TIER,
     );
   } catch (err: unknown) {
     if (
@@ -327,7 +337,7 @@ function listReports(args: ListReportsArgs): ListReportsResult {
   // Run cleanup first
   runCleanup();
 
-  let sql = 'SELECT id, reporting_agent, title, category, priority, created_at, read_at, acknowledged_at, triage_status, triage_outcome, triaged_at, triage_action FROM reports';
+  let sql = 'SELECT id, reporting_agent, title, category, priority, created_at, read_at, acknowledged_at, tier, triage_status, triage_outcome, triaged_at, triage_action FROM reports';
   const conditions: string[] = [];
   const params: unknown[] = [];
 
@@ -338,6 +348,11 @@ function listReports(args: ListReportsArgs): ListReportsResult {
   if (args.untriaged_only) {
     // Use new triage_status field - pending means not triaged
     conditions.push("triage_status = 'pending'");
+  }
+
+  if (args.tier) {
+    conditions.push('tier = ?');
+    params.push(args.tier);
   }
 
   if (conditions.length > 0) {
@@ -363,6 +378,7 @@ function listReports(args: ListReportsArgs): ListReportsResult {
     created_at: r.created_at,
     is_read: r.read_at !== null,
     is_acknowledged: r.acknowledged_at !== null,
+    tier: r.tier ?? null,
     triage_status: (r.triage_status || 'pending') as TriageStatus,
     triage_outcome: r.triage_outcome,
     // Legacy fields
@@ -558,6 +574,11 @@ function completeTriage(args: CompleteTriageArgs): CompleteTriageResult | ErrorR
     return { error: `Report already completed with status: ${report.triage_status}` };
   }
 
+  // Preview tier cannot escalate reports to CTO — fail-closed
+  if (REPORT_TIER === 'preview' && args.status === 'escalated') {
+    return { error: 'Preview tier cannot escalate reports to CTO. Use self_handled or dismissed, or create a task/persistent-task/plan to address the issue.' };
+  }
+
   const now = new Date().toISOString();
   db.prepare(`
     UPDATE reports
@@ -655,7 +676,7 @@ function getReportsForTriage(args: GetReportsForTriageArgs): GetReportsForTriage
   // 1. Status = pending
   // 2. Either never attempted, or last attempt was > 1 hour ago
   const reports = db.prepare(`
-    SELECT id, reporting_agent, title, summary, category, priority, created_at
+    SELECT id, reporting_agent, title, summary, category, priority, tier, created_at
     FROM reports
     WHERE triage_status = 'pending'
       AND (triage_attempted_at IS NULL OR triage_attempted_at < ?)
@@ -675,6 +696,7 @@ function getReportsForTriage(args: GetReportsForTriageArgs): GetReportsForTriage
     summary: string;
     category: string;
     priority: string;
+    tier: string | null;
     created_at: string;
   }[];
 
@@ -696,6 +718,7 @@ function getReportsForTriage(args: GetReportsForTriageArgs): GetReportsForTriage
       summary: r.summary,
       category: r.category as import('./types.js').ReportCategory,
       priority: r.priority,
+      tier: r.tier ?? null,
       created_at: r.created_at,
     })),
     total: totalReady,
@@ -716,7 +739,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'list_reports',
-    description: 'List CTO reports (titles and timestamps only to preserve tokens). Use unread_only=true for unread, untriaged_only=true for reports needing deputy-cto triage.',
+    description: 'List CTO reports (titles and timestamps only to preserve tokens). Use unread_only=true for unread, untriaged_only=true for reports needing deputy-cto triage. Use tier to filter by report tier (e.g., "preview", "staging").',
     schema: ListReportsArgsSchema,
     handler: listReports,
   },
