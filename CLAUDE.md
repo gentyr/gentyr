@@ -155,7 +155,7 @@ The original non-scoped path (full suite failures always block) is preserved ver
 - `lib/test-scope.js` — shared ES module: `getActiveTestScope()`, `getTestScopeConfig()`, `buildScopedCommand()`, `formatPushSummary()`. Shell metacharacter sanitization in `buildScopedCommand()` prevents injection via `unitTestPattern` values in `services.json`.
 - `lib/test-scope-classifier.js` — Node CLI called from `pre-push` on failures. Resolves scope config, re-runs scoped tests, prints a formatted summary, exits 0 or 1. Fail-closed when scope config is absent or malformed.
 
-**Promotion pipeline awareness**: `hourly-automation.js` injects scope context into preview, staging, and hotfix promotion agent prompts via `getTestScopePromptContext()`. When a scope is active, promotion agents are instructed that only scoped test failures are blocking; non-scoped failures are informational.
+**Promotion pipeline awareness**: `hourly-automation.js` injects scope context into hotfix promotion agent prompts via `getTestScopePromptContext()`. When a scope is active, promotion agents are instructed that only scoped test failures are blocking; non-scoped failures are informational.
 
 **Session briefing**: Both interactive (deputy-CTO) and spawned-agent briefings in `session-briefing.js` display the active scope name and description when `activeTestScope` is set.
 

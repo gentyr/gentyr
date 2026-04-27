@@ -199,39 +199,29 @@ When production is broken and a fix has already landed on staging, the CTO can t
 
 See `.claude/commands/hotfix.md` for usage details.
 
-## Automated Promotion Pipelines
+## Promotion Pipelines
 
-### Preview -> Staging (6-hour cycle)
+Promotions (preview→staging and staging→main) are **not automated by the hourly automation**. They are driven by the release pipeline agents (`staging-reactive-reviewer`, `release-reviewer`, `release-plan-manager`) and CTO-directed processes. The hourly automation no longer spawns preview or staging promotion agents, and there is no midnight window or staging freeze logic.
 
-The hourly automation checks every 6 hours for new commits on `preview` not yet in `staging`.
+### Preview -> Staging (manual / reactive)
 
-**Conditions:**
-1. New commits exist on `preview` not in `staging`
-2. >= 24 hours since last staging merge (unless bug-fix commits detected)
-3. Bug-fix fast-track: Commits with keywords `fix`, `bug`, `hotfix`, `patch`, `critical` bypass the 24h wait
+Triggered by the CTO or a release-plan-manager agent when preview has accumulated sufficient changes.
 
 **Pipeline:**
-1. Spawn code-reviewer agent to review commits
-2. Spawn test-writer agent to assess test quality
-3. If both pass, deputy-CTO makes the merge decision
-4. Deputy-CTO creates PR: `gh pr create --base staging --head preview`
-5. Wait for CI to pass, then merge
+1. Create PR: `gh pr create --base staging --head preview`
+2. Deputy-CTO reviews via `/deputy-cto`
+3. CI runs
+4. Merge on deputy-CTO approval
 
-### Staging -> Production (midnight cycle)
+### Staging -> Production (manual / CTO-gated)
 
-Checked once nightly during the midnight window (00:00-00:30).
-
-**Conditions:**
-1. New commits exist on `staging` not in `main`
-2. Staging has been stable >= 24 hours (no bypass)
-3. Midnight time window
+Triggered by the CTO or a release-plan-manager agent. Staging must not be locked (`isStagingLocked()`) before proceeding.
 
 **Pipeline:**
-1. Same review pipeline (code-reviewer + test-writer)
-2. Deputy-CTO creates PR: `gh pr create --base main --head staging`
-3. Deputy-CTO creates CTO decision task via `add_question`
-4. CTO approves via `/deputy-cto` slash command
-5. Merge executed after CTO approval
+1. Create PR: `gh pr create --base main --head staging`
+2. CTO approves via `/deputy-cto`
+3. CI runs (includes security scan)
+4. Merge on CTO approval
 
 ## Stale Work Detection
 
@@ -317,7 +307,7 @@ This file is created during `/setup-gentyr` Phase 4.
 
 ### Stage 3: Staging
 
-1. Automated pipeline creates PR: `preview` -> `staging` (every 6h)
+1. CTO or release-plan-manager triggers PR: `preview` -> `staging`
 2. Code review + test assessment
 3. Deputy-CTO approves
 4. CI runs
@@ -327,14 +317,13 @@ This file is created during `/setup-gentyr` Phase 4.
 
 ### Stage 4: Production
 
-1. Automated pipeline creates PR: `staging` -> `main` (nightly)
+1. CTO or release-plan-manager triggers PR: `staging` -> `main`
 2. Code review + test assessment
-3. Deputy-CTO creates CTO decision task
-4. **CTO approves** via `/deputy-cto`
-5. CI runs (includes security scan)
-6. Merge
-7. Vercel deploys production
-8. Render deploys production
+3. **CTO approves** via `/deputy-cto`
+4. CI runs (includes security scan)
+5. Merge
+6. Vercel deploys production
+7. Render deploys production
 
 ## CI Pipeline
 
