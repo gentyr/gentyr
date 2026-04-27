@@ -558,8 +558,8 @@ export async function execInMachine(
     `/apps/${handle.appName}/machines/${handle.machineId}/exec`,
     {
       method: 'POST',
-      // Pass timeout to the Fly API so it kills the command server-side too
-      body: JSON.stringify({ cmd, timeout: Math.ceil(timeoutMs / 1000) }),
+      // Use 'command' (string[]) — the preferred Fly API field ('cmd' string is deprecated)
+      body: JSON.stringify({ command: cmd, timeout: Math.ceil(timeoutMs / 1000) }),
       timeout: timeoutMs + 5_000,
     },
   );
