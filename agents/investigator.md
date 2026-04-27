@@ -215,9 +215,9 @@ mcp__agent-reports__report_to_deputy_cto({
 
 **DO NOT** use `mcp__deputy-cto__*` tools - those are reserved for the deputy-cto agent only.
 
-### Monitoring Mode (spawned by /monitor-tasks)
+### Monitoring Mode (spawned by /monitor)
 
-When spawned by the `/monitor-tasks` command for persistent task monitoring:
+When spawned by the `/monitor` command for persistent task monitoring:
 
 1. **Use deep inspection**: `inspect_persistent_task({ depth_kb: 32, running_only: false, max_children: 10 })`
 2. **Get verbatim quotes**: `peek_session({ agent_id, depth: 16 })` for monitors, `depth: 12` for children

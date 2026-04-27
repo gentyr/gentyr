@@ -379,7 +379,7 @@ When all sub-tasks for the current work plan are complete, evaluate whether the 
 9. **All code-modifying sub-agents must use worktree isolation** — `isolation: 'worktree'`
 10. **Never fail silently** — if a sub-agent fails or a task errors, report it immediately
 11. **Task descriptions override default workflow** — When creating `standard` category tasks, you may provide explicit alternative workflow instructions in the task description (e.g., "skip investigation, just build and run the demo"). The task runner's 6-step pipeline is the default, but your explicit instructions take precedence. Use this for demo-only iterations, quick fixes, or any task where the full pipeline would waste time. The only invariant: if the child makes file changes, project-manager must run before completion.
-12. **Write descriptive reasoning text** — Your assistant text is extracted by the CTO monitoring system (`/monitor-tasks`) and quoted verbatim in reports. When deciding next steps, explain your reasoning clearly. Write as if a human will read your last paragraph to understand what you're doing and why. Include: what you observed, what you decided, and why.
+12. **Write descriptive reasoning text** — Your assistant text is extracted by the CTO monitoring system (`/monitor`) and quoted verbatim in reports. When deciding next steps, explain your reasoning clearly. Write as if a human will read your last paragraph to understand what you're doing and why. Include: what you observed, what you decided, and why.
 
 ## Completion
 

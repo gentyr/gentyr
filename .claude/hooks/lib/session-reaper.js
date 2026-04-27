@@ -44,7 +44,7 @@ try {
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
 // Session file constants
-const HEAD_BYTES = 2000;
+const HEAD_BYTES = 16000;
 
 /**
  * Parse a SQLite datetime string as UTC.

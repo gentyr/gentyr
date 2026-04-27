@@ -137,7 +137,7 @@ function getSessionDir(projectDir: string): string | null {
 
 /**
  * Scan session files in a directory for one containing [AGENT:agentId] in its
- * first 2KB.
+ * first 16KB.
  */
 function findSessionFileByAgentId(sessionDir: string, agentId: string): string | null {
   const marker = `[AGENT:${agentId}]`;
@@ -153,8 +153,8 @@ function findSessionFileByAgentId(sessionDir: string, agentId: string): string |
     let fd: number | undefined;
     try {
       fd = fs.openSync(filePath, 'r');
-      const buf = Buffer.alloc(2000);
-      const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
+      const buf = Buffer.alloc(16000);
+      const bytesRead = fs.readSync(fd, buf, 0, 16000, 0);
       const head = buf.toString('utf8', 0, bytesRead);
       if (head.includes(marker)) return filePath;
     } catch {
