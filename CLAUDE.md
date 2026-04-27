@@ -1202,7 +1202,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | 1. Hooks | 78 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 20 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
-| 4. Slash Commands | 43 commands | User-initiated | Workflows, dashboards, configuration |
+| 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
 | 6. Session Briefing | 1 hook + content | Session start | One-time context dump: queue status, active tasks, bypass requests |
 | 7. Prompt Templates | ~10 builders | Agent spawn | Task-specific instructions injected into spawn prompts |
@@ -1419,7 +1419,7 @@ feedback-reporter, playwright-feedback, programmatic-feedback
 **Plans**: plan, plan-progress, plan-timeline, plan-audit, plan-sessions
 **Config**: concurrent-sessions, configure-personas, focus-mode, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
 **Operations**: cto-dashboard, deputy-cto, promote-to-prod, session-queue, show, workstream
-**Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr
+**Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr, setup-fly
 **Analysis**: persona-feedback, product-manager, replay, run-feedback
 
 ### Prompt Injection Points (7 major sources)
