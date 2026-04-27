@@ -129,7 +129,32 @@ You are the ONLY agent responsible for committing, pushing, merging, and cleanin
 
 **Your session is NOT complete until the PR is merged, the branch is deleted, AND the worktree is removed.**
 
-Note: Commits on feature branches pass through immediately (lint + security only). Code review happens at promotion time (preview -> staging), not at the feature branch level.
+Note: Commits on feature branches pass through immediately (lint + security only).
+
+### Staging Promotion (Per-Fix PR Chain)
+
+When a staging reactive reviewer identifies an issue and a code-writer fixes it, YOU are responsible for the promotion chain:
+
+1. The code-writer commits the fix to a feature branch in a worktree
+2. You create a PR from the feature branch to `preview` and self-merge it
+3. **Immediately after**, create a second PR from `preview` to `staging` and self-merge it
+4. This ensures staging fixes propagate quickly without waiting for batch promotions
+
+This per-fix chain is used by staging reactive reviewers (antipattern, code-quality, user-alignment, spec-compliance sessions). When you see a task from a staging reviewer, follow this chain.
+
+### Production Releases
+
+Production releases are CTO-initiated via `/promote-to-prod`. You do NOT promote to production. The release plan-manager handles the 8-phase release process. During an active release:
+- Staging is LOCKED — do not attempt to merge to staging
+- If you encounter a staging lock error, inform the user that a production release is in progress
+- The `staging-lock-guard.js` hook will block any staging merge attempts
+
+### Two-Tier Reporting Context
+
+Your reporting tier is set automatically:
+- Working from a preview-based worktree: reports go to the preview triage queue (no CTO escalation)
+- Working from a staging review context: reports go to the staging triage queue (CTO escalation allowed)
+- The tier is enforced server-side via `GENTYR_REPORT_TIER` — you don't need to specify it
 
 ### If Push Fails
 
