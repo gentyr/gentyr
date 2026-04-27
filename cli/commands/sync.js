@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { resolveFrameworkDir, resolveFrameworkRelative, detectInstallModel } from '../lib/resolve-framework.js';
 import { generateMcpJson, mergeSettings, updateClaudeMd, updateGitignore } from '../lib/config-gen.js';
@@ -990,28 +991,62 @@ export default async function sync(args) {
   }
 
   // 7b. Build window recorder (macOS only)
+  // Skip rebuild when source is unchanged to preserve the binary's CDHash —
+  // macOS TCC ties Screen Recording permission to the CDHash, so rebuilding
+  // (even with a stable codesign identifier) invalidates the grant.
   if (process.platform === 'darwin') {
     const windowRecorderDir = path.join(frameworkDir, 'tools', 'window-recorder');
     if (fs.existsSync(path.join(windowRecorderDir, 'Package.swift'))) {
-      console.log(`\n${YELLOW}Building window recorder...${NC}`);
+      const binaryPath = path.join(windowRecorderDir, '.build', 'release', 'WindowRecorder');
+      const hashFilePath = path.join(windowRecorderDir, '.build', '.source-hash');
+
+      // Hash all Swift source files to detect changes.
+      // Fail-open: if hashing fails (missing dir, corrupt files), fall through to rebuild.
+      let currentHash = null;
       try {
-        execFileSync('swift', ['build', '-c', 'release'], { cwd: windowRecorderDir, stdio: 'pipe', timeout: 120000 });
-        // Codesign with stable CFBundleIdentifier so macOS TCC grants persist across rebuilds.
-        // Without this, each swift build produces a new ad-hoc signature and the user must
-        // re-grant Screen Recording permission every time.
-        const binaryPath = path.join(windowRecorderDir, '.build', 'release', 'WindowRecorder');
-        if (fs.existsSync(binaryPath)) {
-          try {
-            execFileSync('codesign', ['--force', '--sign', '-', '--identifier', 'com.gentyr.window-recorder', binaryPath], { stdio: 'pipe', timeout: 10000 });
-            console.log('  Swift binary built + signed (com.gentyr.window-recorder)');
-          } catch {
-            console.log('  Swift binary built (codesign failed — TCC grants may not persist across rebuilds)');
-          }
-        } else {
-          console.log('  Swift binary built');
+        const sourceFiles = [
+          path.join(windowRecorderDir, 'Package.swift'),
+          ...fs.readdirSync(path.join(windowRecorderDir, 'Sources', 'WindowRecorder'), { recursive: true })
+            .filter(f => f.endsWith('.swift'))
+            .map(f => path.join(windowRecorderDir, 'Sources', 'WindowRecorder', f))
+        ].sort();
+        const hash = createHash('sha256');
+        for (const file of sourceFiles) {
+          hash.update(fs.readFileSync(file));
         }
-      } catch (err) {
-        console.log(`  ${YELLOW}Warning: Window recorder build failed: ${err.message}${NC}`);
+        currentHash = hash.digest('hex');
+      } catch {}
+
+      let existingHash = '';
+      try { existingHash = fs.readFileSync(hashFilePath, 'utf8').trim(); } catch {}
+
+      if (currentHash && fs.existsSync(binaryPath) && currentHash === existingHash) {
+        console.log(`\n${YELLOW}Window recorder up to date (source unchanged, skipping rebuild)${NC}`);
+      } else {
+        console.log(`\n${YELLOW}Building window recorder...${NC}`);
+        try {
+          execFileSync('swift', ['build', '-c', 'release'], { cwd: windowRecorderDir, stdio: 'pipe', timeout: 120000 });
+          // Codesign with stable CFBundleIdentifier so macOS TCC grants persist across rebuilds.
+          if (fs.existsSync(binaryPath)) {
+            try {
+              execFileSync('codesign', ['--force', '--sign', '-', '--identifier', 'com.gentyr.window-recorder', binaryPath], { stdio: 'pipe', timeout: 10000 });
+              console.log('  Swift binary built + signed (com.gentyr.window-recorder)');
+            } catch {
+              console.log('  Swift binary built (codesign failed — TCC grants may not persist across rebuilds)');
+            }
+          } else {
+            console.log('  Swift binary built');
+          }
+          // Persist source hash so subsequent syncs skip the rebuild
+          try {
+            if (currentHash) {
+              fs.mkdirSync(path.dirname(hashFilePath), { recursive: true });
+              fs.writeFileSync(hashFilePath, currentHash);
+            }
+          } catch {}
+        } catch (err) {
+          console.log(`  ${YELLOW}Warning: Window recorder build failed: ${err.message}${NC}`);
+        }
       }
     }
   }
