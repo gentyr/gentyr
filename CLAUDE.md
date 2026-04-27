@@ -1239,7 +1239,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 78 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 79 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 20 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
@@ -1263,7 +1263,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 ### Hooks by Lifecycle Phase
 
-#### PreToolUse (13 hooks — BLOCK dangerous actions)
+#### PreToolUse (14 hooks — BLOCK dangerous actions)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1280,6 +1280,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
 | protected-action-gate.js | `mcp__*` | Block protected MCP actions; store as deferred action for spawned agents |
 | staging-lock-guard.js | `Bash` | Block staging merges (gh pr merge, git push, git merge) when staging is locked for a production release |
+| worktree-sync-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block `gentyr sync` when CWD is inside a worktree (sync destroys the worktree directory) |
 
 #### PostToolUse (29 hooks — REACT to actions, inject context, spawn agents)
 
@@ -1484,7 +1485,7 @@ User/CTO Message
     v
 Agent Reasoning (informed by CLAUDE.md + session briefing + plan briefing)
     |
-    +-- PreToolUse hooks (12) --> BLOCK dangerous actions
+    +-- PreToolUse hooks (14) --> BLOCK dangerous actions
     |
     v
 Tool Execution (MCP tools, Bash, Read, Write, Edit, Agent)
