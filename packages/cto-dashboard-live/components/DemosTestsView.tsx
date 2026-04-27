@@ -1,10 +1,11 @@
 /**
  * DemosTestsView — Page 2 of the live CTO dashboard.
  *
- * Layout (two-column + optional bottom output):
- *   Left  : ScenarioList (demo scenarios from user-feedback.db)
- *   Right : TestFileList (test files from playwright.config.ts)
- *   Bottom: OutputPanel (live output of running demo/test)
+ * Layout (three-column + optional bottom output):
+ *   Left   : ScenarioList (demo scenarios from user-feedback.db)
+ *   Middle : ScenarioDetailPanel (description, history, recording path)
+ *   Right  : TestFileList (test files from playwright.config.ts)
+ *   Bottom : OutputPanel (live output of running demo/test)
  *
  * Keyboard map:
  *   left/right   switch active panel
@@ -19,11 +20,13 @@ import { execFile } from 'child_process';
 import { Box, Text, useInput } from 'ink';
 import { Section } from './Section.js';
 import { ScenarioList } from './page2/ScenarioList.js';
+import { ScenarioDetailPanel } from './page2/ScenarioDetailPanel.js';
 import { TestFileList, selectableCount } from './page2/TestFileList.js';
 import { OutputPanel } from './page2/OutputPanel.js';
 import { useProcessOutput } from '../hooks/useProcessOutput.js';
-import { launchDemo, launchRemoteDemo, launchTest, checkProcess, killProcess, killRemoteProcess, releaseDemo } from '../utils/process-runner.js';
-import type { Page2Data, RunningProcess, DemoEnvironment, DemoExecutionMode } from '../types.js';
+import { readScenarioDetail } from '../live-reader.js';
+import { launchDemo, launchRemoteDemo, launchTest, checkProcess, killProcess, killRemoteProcess, releaseDemo, recordDemoStop } from '../utils/process-runner.js';
+import type { Page2Data, RunningProcess, DemoEnvironment, DemoExecutionMode, ScenarioDetailData } from '../types.js';
 
 interface DemosTestsViewProps {
   data: Page2Data;
@@ -34,7 +37,8 @@ interface DemosTestsViewProps {
 
 type ActivePanel = 'demos' | 'tests';
 
-const LEFT_WIDTH_FRACTION = 0.4;
+const LEFT_WIDTH_FRACTION = 0.30;
+const MIDDLE_WIDTH_FRACTION = 0.35;
 const OUTPUT_HEIGHT_FRACTION = 0.35;
 const HEADER_OVERHEAD = 2;
 const DIVIDER_HEIGHT = 1;
@@ -50,6 +54,8 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedEnvId, setSelectedEnvId] = useState<string>('preview');
   const [executionMode, setExecutionMode] = useState<DemoExecutionMode>('local');
+
+  const [scenarioDetail, setScenarioDetail] = useState<ScenarioDetailData | null>(null);
 
   // Resolve the active environment object
   const environments = data.environments.length > 0 ? data.environments : [{ id: 'local', label: 'Local', baseUrl: null, branch: null } as DemoEnvironment];
@@ -68,6 +74,17 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       setSelectedEnvId(environments[0].id);
     }
   }, [environments]);
+
+  // Poll scenario detail when selection or branch changes
+  useEffect(() => {
+    if (!selectedScenarioId) { setScenarioDetail(null); return; }
+    const branch = selectedEnv.branch ?? null;
+    try { setScenarioDetail(readScenarioDetail(selectedScenarioId, branch)); } catch { /* */ }
+    const id = setInterval(() => {
+      try { setScenarioDetail(readScenarioDetail(selectedScenarioId, branch)); } catch { /* */ }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [selectedScenarioId, selectedEnv]);
 
   // Clear status timer on unmount
   useEffect(() => () => {
@@ -114,7 +131,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
           return;
         }
         const proc = executionMode === 'remote'
-          ? await launchRemoteDemo(scenario)
+          ? await launchRemoteDemo(scenario, selectedEnv.branch)
           : await launchDemo(scenario, selectedEnv.baseUrl, selectedEnv.branch);
         setRunningProcess(proc);
         setStatusMessage(null);
@@ -138,6 +155,10 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
         killRemoteProcess(runningProcess).catch(() => { /* non-fatal */ });
       } else {
         killProcess(runningProcess);
+      }
+      // Record the manual stop in demo history
+      if (runningProcess.type === 'demo') {
+        recordDemoStop(runningProcess);
       }
       setRunningProcess({ ...runningProcess, status: 'failed', exitCode: -1 });
       // Release display/chrome-bridge locks when demo is manually stopped
@@ -226,9 +247,10 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
     if (key.escape) { handleClear(); return; }
   }, { isActive });
 
-  // Layout
+  // Layout — 3-column: scenarios | detail | tests
   const leftWidth = Math.floor(bodyWidth * LEFT_WIDTH_FRACTION);
-  const rightWidth = bodyWidth - leftWidth - 1;
+  const middleWidth = Math.floor(bodyWidth * MIDDLE_WIDTH_FRACTION);
+  const rightWidth = bodyWidth - leftWidth - middleWidth - 2; // 2 for divider gaps
 
   const showEnvBar = true;  // Always show branch selector
   const showModeBar = data.flyStatus.configured;
@@ -238,6 +260,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const listsHeight = bodyHeight - outputHeight - controlBarHeight;
 
   const leftInnerHeight = Math.max(2, listsHeight - HEADER_OVERHEAD);
+  const middleInnerHeight = Math.max(2, listsHeight - HEADER_OVERHEAD);
   const rightInnerHeight = Math.max(2, listsHeight - HEADER_OVERHEAD);
 
   return (
@@ -278,7 +301,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
           )}
       </Box>
 
-      {/* Top: two-column lists */}
+      {/* Top: three-column layout */}
       <Box flexDirection="row" height={listsHeight}>
         <Section title="Demo Scenarios" width={leftWidth} tip={activePanel === 'demos' ? '\u25C0 active' : undefined}>
           <ScenarioList
@@ -287,6 +310,16 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
             height={leftInnerHeight}
             width={leftWidth - 4}
             isActive={activePanel === 'demos'}
+          />
+        </Section>
+
+        <Box width={1} />
+
+        <Section title="Scenario Detail" width={middleWidth}>
+          <ScenarioDetailPanel
+            detail={scenarioDetail}
+            height={middleInnerHeight}
+            width={middleWidth - 4}
           />
         </Section>
 

@@ -14,7 +14,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { spawn, execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
-import type { DemoScenarioItem, TestFileItem, RunningProcess, DemoExecutionMode } from '../types.js';
+import type { DemoScenarioItem, TestFileItem, RunningProcess, DemoExecutionMode, DemoFailureReason } from '../types.js';
 import { isProcessAlive } from '../live-reader.js';
 import { preemptForCtoDashboardDemo, releaseCtoDashboardDemo } from './display-lock-manager.js';
 
@@ -684,6 +684,7 @@ export async function launchDemo(scenario: DemoScenarioItem, environmentBaseUrl?
     exitCode: null,
     executionMode: 'local' as const,
     scenarioId: scenario.id,
+    branch: branch ?? null,
   };
 }
 
@@ -734,12 +735,13 @@ export function checkProcess(proc: RunningProcess): RunningProcess {
       const output = fs.readFileSync(proc.outputFile, 'utf8');
       if (output.includes('[remote] DONE: passed')) {
         const result = { ...proc, status: 'passed' as const, exitCode: 0 };
-        recordDemoResult(proc.scenarioId, 'passed', 'remote', proc.startedAt, proc.flyMachineId ?? null);
+        recordDemoResult(proc.scenarioId, 'passed', 'remote', proc.startedAt, proc.flyMachineId ?? null, proc.branch);
         return result;
       }
       if (output.includes('[remote] DONE: failed') || output.includes('[remote] ERROR:')) {
         const result = { ...proc, status: 'failed' as const, exitCode: 1 };
-        recordDemoResult(proc.scenarioId, 'failed', 'remote', proc.startedAt, proc.flyMachineId ?? null);
+        const reason = detectFailureReason(proc.outputFile, 1);
+        recordDemoResult(proc.scenarioId, 'failed', 'remote', proc.startedAt, proc.flyMachineId ?? null, proc.branch, reason);
         return result;
       }
     } catch { /* */ }
@@ -759,7 +761,8 @@ export function checkProcess(proc: RunningProcess): RunningProcess {
 
   const status = exitCode === 0 ? 'passed' : 'failed';
   if (proc.type === 'demo' && proc.scenarioId) {
-    recordDemoResult(proc.scenarioId, status, 'local', proc.startedAt, null);
+    const reason = status === 'failed' ? detectFailureReason(proc.outputFile, exitCode) : null;
+    recordDemoResult(proc.scenarioId, status, 'local', proc.startedAt, null, proc.branch, reason);
   }
 
   return { ...proc, status, exitCode };
@@ -808,6 +811,15 @@ export function killProcess(proc: RunningProcess): void {
   }, 2000);
 }
 
+/**
+ * Record a demo manual stop as a 'failed' result with reason='stopped'.
+ * Called from DemosTestsView when user presses 's' to stop.
+ */
+export function recordDemoStop(proc: RunningProcess): void {
+  if (proc.type !== 'demo' || !proc.scenarioId) return;
+  recordDemoResult(proc.scenarioId, 'failed', proc.executionMode ?? 'local', proc.startedAt, proc.flyMachineId ?? null, proc.branch, 'stopped');
+}
+
 // ============================================================================
 // Demo Result Recording
 // ============================================================================
@@ -822,6 +834,8 @@ function recordDemoResult(
   executionMode: DemoExecutionMode,
   startedAt: string,
   flyMachineId: string | null,
+  branch?: string | null,
+  failureReason?: DemoFailureReason,
 ): void {
   if (!scenarioId) return;
   const dbPath = path.join(PROJECT_DIR, '.claude', 'user-feedback.db');
@@ -835,6 +849,7 @@ function recordDemoResult(
         id TEXT PRIMARY KEY, scenario_id TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'local',
         status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT NOT NULL,
         duration_ms INTEGER NOT NULL, fly_machine_id TEXT, output_file TEXT,
+        branch TEXT, failure_reason TEXT, recording_path TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         CONSTRAINT valid_mode CHECK (execution_mode IN ('local', 'remote')),
         CONSTRAINT valid_status CHECK (status IN ('passed', 'failed')),
@@ -843,13 +858,43 @@ function recordDemoResult(
       CREATE INDEX IF NOT EXISTS idx_demo_results_scenario ON demo_results(scenario_id);
       CREATE INDEX IF NOT EXISTS idx_demo_results_completed ON demo_results(completed_at);`);
     }
+    // Auto-migrate: add branch, failure_reason, recording_path columns if missing
+    try { db.prepare('SELECT branch FROM demo_results LIMIT 0').run(); } catch {
+      db.exec('ALTER TABLE demo_results ADD COLUMN branch TEXT');
+    }
+    try { db.prepare('SELECT failure_reason FROM demo_results LIMIT 0').run(); } catch {
+      db.exec('ALTER TABLE demo_results ADD COLUMN failure_reason TEXT');
+    }
+    try { db.prepare('SELECT recording_path FROM demo_results LIMIT 0').run(); } catch {
+      db.exec('ALTER TABLE demo_results ADD COLUMN recording_path TEXT');
+    }
     const now = new Date();
     const durationMs = now.getTime() - new Date(startedAt).getTime();
+    // Look up recording path for passed results
+    let recordingPath: string | null = null;
+    if (status === 'passed') {
+      try {
+        const row = db.prepare('SELECT recording_path FROM demo_scenarios WHERE id = ?').get(scenarioId) as { recording_path: string | null } | undefined;
+        if (row?.recording_path && fs.existsSync(row.recording_path)) recordingPath = row.recording_path;
+      } catch { /* */ }
+    }
     db.prepare(
-      'INSERT INTO demo_results (id, scenario_id, execution_mode, status, started_at, completed_at, duration_ms, fly_machine_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(crypto.randomUUID(), scenarioId, executionMode, status, startedAt, now.toISOString(), durationMs, flyMachineId);
+      'INSERT INTO demo_results (id, scenario_id, execution_mode, status, started_at, completed_at, duration_ms, fly_machine_id, branch, failure_reason, recording_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(crypto.randomUUID(), scenarioId, executionMode, status, startedAt, now.toISOString(), durationMs, flyMachineId, branch ?? null, failureReason ?? null, recordingPath);
   } catch { /* non-fatal */ }
   finally { try { db?.close(); } catch { /* */ } }
+}
+
+/**
+ * Detect failure reason from output content and exit code.
+ */
+function detectFailureReason(outputFile: string, exitCode: number | null): DemoFailureReason {
+  try {
+    const output = fs.readFileSync(outputFile, 'utf8');
+    if (output.includes('interrupted') || output.includes('Demo Interrupted')) return 'interrupted';
+  } catch { /* */ }
+  if (exitCode === -1) return 'killed';
+  return 'test_failure';
 }
 
 // ============================================================================
@@ -938,7 +983,7 @@ async function resolveFlyImage(config: FlyMachineConfig): Promise<string> {
  * Launch a demo on a Fly.io machine.
  * Spawns the machine and starts a background progress poller that writes to the output file.
  */
-export async function launchRemoteDemo(scenario: DemoScenarioItem): Promise<RunningProcess> {
+export async function launchRemoteDemo(scenario: DemoScenarioItem, branch?: string | null): Promise<RunningProcess> {
   await preemptForCtoDashboardDemo(scenario.title);
 
   const outputFile = makeOutputFile('demo-remote', scenario.id);
@@ -1068,6 +1113,7 @@ export async function launchRemoteDemo(scenario: DemoScenarioItem): Promise<Runn
     executionMode: 'remote',
     flyMachineId: machineId,
     scenarioId: scenario.id,
+    branch: branch ?? null,
   };
 }
 

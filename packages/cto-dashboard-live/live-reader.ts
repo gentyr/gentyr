@@ -16,6 +16,7 @@ import type {
   LiveDashboardData, SessionItem, PersistentTaskItem, SubTaskItem,
   WorklogEntry, SessionStatus, SessionPriority, ActivityEntry,
   DemoScenarioItem, TestFileItem, DemoEnvironment, DemoResultSummary, FlyConfigStatus, Page2Data,
+  DemoResultHistoryItem, ScenarioDetailData, DemoFailureReason,
   Page3Data, PlanItem, PlanPhaseItem, PlanTaskItem, PlanSubstepItem, PlanStateChange,
   Page4Data, SpecCategoryItem, SpecItem, SuiteItem,
   CommentaryContext, CommentaryContextSession, CommentaryContextPlan, CommentaryContextSummary,
@@ -664,6 +665,75 @@ export function readDemoScenarios(): DemoScenarioItem[] {
     });
   } catch { return []; }
   finally { closeDb(db); }
+}
+
+// ============================================================================
+// Scenario History
+// ============================================================================
+
+interface HistoryRow {
+  id: string; status: string; execution_mode: string; branch: string | null;
+  failure_reason: string | null; duration_ms: number; completed_at: string;
+  recording_path: string | null;
+}
+
+/**
+ * Read last N demo results for a scenario, optionally filtered by branch.
+ */
+export function readScenarioHistory(scenarioId: string, branch?: string | null, limit = 20): DemoResultHistoryItem[] {
+  const db = openDb(path.join(PROJECT_DIR, '.claude', 'user-feedback.db'));
+  if (!db) return [];
+  try {
+    // Check if branch/failure_reason columns exist
+    let hasBranch = false;
+    try { db.prepare('SELECT branch FROM demo_results LIMIT 0').run(); hasBranch = true; } catch { /* */ }
+    let hasFailureReason = false;
+    try { db.prepare('SELECT failure_reason FROM demo_results LIMIT 0').run(); hasFailureReason = true; } catch { /* */ }
+    let hasRecordingPath = false;
+    try { db.prepare('SELECT recording_path FROM demo_results LIMIT 0').run(); hasRecordingPath = true; } catch { /* */ }
+
+    let query = `SELECT id, status, execution_mode, ${hasBranch ? 'branch,' : ''} ${hasFailureReason ? 'failure_reason,' : ''} duration_ms, completed_at${hasRecordingPath ? ', recording_path' : ''} FROM demo_results WHERE scenario_id = ?`;
+    const params: unknown[] = [scenarioId];
+
+    if (branch && hasBranch) {
+      query += ' AND branch = ?';
+      params.push(branch);
+    }
+    query += ' ORDER BY completed_at DESC LIMIT ?';
+    params.push(limit);
+
+    const rows = db.prepare(query).all(...params) as HistoryRow[];
+    return rows.map(r => ({
+      id: r.id,
+      status: r.status === 'passed' ? 'passed' as const : 'failed' as const,
+      executionMode: r.execution_mode === 'remote' ? 'remote' as const : 'local' as const,
+      branch: r.branch ?? null,
+      failureReason: (r.failure_reason as DemoFailureReason) ?? null,
+      durationMs: r.duration_ms,
+      completedAt: r.completed_at,
+      recordingPath: r.recording_path && fs.existsSync(r.recording_path) ? r.recording_path : null,
+    }));
+  } catch { return []; }
+  finally { closeDb(db); }
+}
+
+/**
+ * Read full scenario detail including history for the detail panel.
+ */
+export function readScenarioDetail(scenarioId: string, branch?: string | null): ScenarioDetailData | null {
+  const scenarios = readDemoScenarios();
+  const scenario = scenarios.find(s => s.id === scenarioId);
+  if (!scenario) return null;
+
+  const history = readScenarioHistory(scenarioId, branch);
+  const lastPassed = history.find(h => h.status === 'passed');
+
+  return {
+    scenario,
+    history,
+    lastPassedAt: lastPassed?.completedAt ?? null,
+    lastSuccessRecordingPath: lastPassed?.recordingPath ?? scenario.recordingPath,
+  };
 }
 
 const INFRA_PROJECTS = new Set(['seed', 'auth-setup', 'cleanup', 'setup']);

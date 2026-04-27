@@ -178,10 +178,23 @@ export interface ReleaseStatus {
 
 export type DemoExecutionMode = 'local' | 'remote';
 
+export type DemoFailureReason = 'stopped' | 'killed' | 'interrupted' | 'test_failure' | null;
+
 export interface DemoResultSummary {
   status: 'passed' | 'failed';
   executionMode: DemoExecutionMode;
   completedAt: string;
+}
+
+export interface DemoResultHistoryItem {
+  id: string;
+  status: 'passed' | 'failed';
+  executionMode: DemoExecutionMode;
+  branch: string | null;
+  failureReason: DemoFailureReason;
+  durationMs: number;
+  completedAt: string;
+  recordingPath: string | null;
 }
 
 export interface DemoScenarioItem {
@@ -232,6 +245,7 @@ export interface RunningProcess {
   executionMode?: DemoExecutionMode;
   flyMachineId?: string | null;
   scenarioId?: string;
+  branch?: string | null;
 }
 
 export type DemoEnvironmentId = 'local' | string;
@@ -241,6 +255,13 @@ export interface DemoEnvironment {
   label: string;
   baseUrl: string | null;  // null for 'local' — uses localhost:{port}
   branch: string | null;   // git branch to auto-pull before demo launch (null = use current)
+}
+
+export interface ScenarioDetailData {
+  scenario: DemoScenarioItem;
+  history: DemoResultHistoryItem[];
+  lastPassedAt: string | null;
+  lastSuccessRecordingPath: string | null;
 }
 
 export interface Page2Data {
