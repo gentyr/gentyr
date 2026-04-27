@@ -361,12 +361,12 @@ gh auth login
 gh auth status
 ```
 
-### Automated Promotion
+### Promotion
 
-Once branch protection is configured, GENTYR's hourly automation handles promotion:
+Promotions are driven by the CTO or release-plan-manager agents — the hourly automation does not automatically promote preview→staging or staging→main:
 
-- **Preview -> Staging**: Every 6 hours, reviews new commits and promotes if stable (24h or bug-fix)
-- **Staging -> Main**: Nightly at midnight, promotes if staging is 24h+ stable (requires CTO approval)
+- **Preview -> Staging**: CTO or release-plan-manager creates PR, deputy-CTO approves
+- **Staging -> Main**: CTO creates PR and approves via `/deputy-cto`
 
 ### Health Monitoring
 

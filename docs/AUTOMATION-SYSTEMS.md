@@ -81,7 +81,7 @@ All read via `getCooldown(key, fallback)` from config-reader.js:
 | Triage | triage_check, triage_per_item |
 | Code quality | lint_checker, antipattern_hunter, standalone_antipattern_hunter |
 | Compliance | standalone_compliance_checker, compliance_checker_file, compliance_checker_spec |
-| Deployment | preview_promotion, staging_promotion |
+| Deployment | staging_reactive_review |
 | Monitoring | staging_health_monitor, production_health_monitor |
 | Other | user_feedback, test_failure_reporter, pre_commit_review |
 
@@ -254,9 +254,7 @@ pre-commit-review.js
   |       |-- Is branch main / staging / preview?
   |       |-- GENTYR_PROMOTION_PIPELINE=true? -> allow
   |       |-- Otherwise -> BLOCK
-  |-- [5] G020 pending CTO items check (main branch only: BLOCK; staging: warn)
-  |       |-- Pending questions in deputy-cto.db?
-  |       |-- Pending triage items in cto-reports.db?
+  |-- [5] G020 pending CTO items (informational only — shown in session briefing, does NOT block commits)
   |-- All checks pass -> commit allowed
   |
   v (post-commit, for feature branches)
@@ -279,18 +277,17 @@ After committing and pushing a feature branch, the agent:
 
 A CTO-authorized emergency bypass writes a `commit_decisions` row with `rationale LIKE 'EMERGENCY BYPASS%'` and `question_id IS NOT NULL`. The hook detects this within a 5-minute window and allows the commit without requiring a deputy-CTO review cycle. The `question_id IS NOT NULL` constraint ensures only bypass decisions created via the `execute_bypass` MCP tool (which always links to the originating bypass-request question) are honored — bare `approve_commit` calls with "EMERGENCY BYPASS" prefix are blocked by the server-side guard.
 
-### G020 Compliance Check
+### G020 Status (Informational Only)
 
-The hook queries:
+The `hasPendingCtoItems()` function queries:
 - `deputy-cto.db` questions table: `WHERE status = 'pending'`
 - `cto-reports.db` reports table: `WHERE triage_status = 'pending'` (or `triaged_at IS NULL` as fallback)
 
-Branch behavior: `main` → hard block (exit 1); `staging` → warn only; feature branches → no check (fast path exits immediately after lint).
+This is exposed in the session briefing for CTO visibility but does **not** block commits on any branch. The branch-aware blocking (main: hard block; staging: warn) was removed in Phase 2 of the production promotion overhaul.
 
 ### Fail-Closed Behavior
 
-- `better-sqlite3` unavailable: skip CTO item check (permissive)
-- DB read error on triage count: assume 1 pending item (blocks commit on main)
+- `better-sqlite3` unavailable: skip G020 check (permissive)
 - Hook path tampered (`core.hooksPath` changed): BLOCK with alert
 
 ---
