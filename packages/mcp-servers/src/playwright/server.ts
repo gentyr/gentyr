@@ -2067,6 +2067,20 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const { project, slow_mo, base_url, test_file } = args;
   let effectiveTestFile = test_file;
 
+  // Dedup: block duplicate simultaneous runs for the same scenario
+  if (args.scenario_id) {
+    for (const [existingPid, entry] of demoRuns) {
+      if (entry.scenario_id === args.scenario_id && entry.status === 'running') {
+        return {
+          success: false,
+          project,
+          message: `Demo scenario "${args.scenario_id}" is already running (pid: ${existingPid}). Use check_demo_result to poll it, or stop_demo to cancel.`,
+          pid: existingPid,
+        };
+      }
+    }
+  }
+
   // Derive headless and skip_recording from the high-level "recorded" flag.
   // Agents set recorded (default true) and remote (default true) — GENTYR handles the rest.
   // Low-level overrides (headless, skip_recording) take precedence when explicitly set.
