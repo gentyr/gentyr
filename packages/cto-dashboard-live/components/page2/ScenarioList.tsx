@@ -42,6 +42,7 @@ function ScenarioRow({ scenario, isSelected, width, isActive }: { scenario: Demo
   meta.push(scenario.personaName);
   if (scenario.category) meta.push(scenario.category);
   if (scenario.headed) meta.push('headed');
+  if (!scenario.remoteEligible) meta.push('local-only');
   if (scenario.recordingPath) meta.push('\u25B6 video');
   // Show last result with pass/fail icon and local/remote badge
   if (scenario.lastResult) {

@@ -180,6 +180,7 @@ export interface DemoScenarioItem {
   sortOrder: number;
   enabled: boolean;
   headed: boolean;
+  remoteEligible: boolean;
   lastRecordedAt: string | null;
   recordingPath: string | null;
   envVars: Record<string, string> | null;

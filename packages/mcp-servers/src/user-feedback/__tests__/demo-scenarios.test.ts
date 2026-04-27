@@ -37,6 +37,8 @@ interface ScenarioRow {
   test_file: string;
   sort_order: number;
   enabled: number;
+  headed: number;
+  remote_eligible: number;
   created_at: string;
   created_timestamp: string;
   updated_at: string;
@@ -55,6 +57,8 @@ interface ScenarioResult {
   test_file: string;
   sort_order: number;
   enabled: boolean;
+  headed: boolean;
+  remote_eligible: boolean;
   created_at: string;
   updated_at: string;
   persona_name?: string;
@@ -179,6 +183,8 @@ function scenarioToResult(row: ScenarioRow & { persona_name?: string }): Scenari
     test_file: row.test_file,
     sort_order: row.sort_order,
     enabled: row.enabled === 1,
+    headed: row.headed === 1,
+    remote_eligible: row.remote_eligible === 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
     last_recorded_at: row.last_recorded_at ?? null,
@@ -196,6 +202,8 @@ function createScenario(db: Database.Database, args: {
   playwright_project: string;
   test_file: string;
   sort_order?: number;
+  headed?: boolean;
+  remote_eligible?: boolean;
   env_vars?: Record<string, string>;
 }, projectDir?: string): ScenarioResult | ErrorResult {
   // Validate persona exists and includes 'gui' or 'adk' in consumption_modes
@@ -237,12 +245,15 @@ function createScenario(db: Database.Database, args: {
 
   try {
     db.prepare(`
-      INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, created_at, created_timestamp, updated_at, env_vars)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+      INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, created_at, created_timestamp, updated_at, env_vars)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
     `).run(
       id, args.persona_id, args.title, args.description,
       args.category ?? null, args.playwright_project, args.test_file,
-      args.sort_order ?? 0, created_at, created_timestamp, created_at,
+      args.sort_order ?? 0,
+      args.headed ? 1 : 0,
+      args.remote_eligible === false ? 0 : 1,
+      created_at, created_timestamp, created_at,
       args.env_vars ? JSON.stringify(args.env_vars) : null,
     );
   } catch (err) {
@@ -272,6 +283,8 @@ function updateScenario(db: Database.Database, args: {
   test_file?: string;
   sort_order?: number;
   enabled?: boolean;
+  headed?: boolean;
+  remote_eligible?: boolean;
   env_vars?: Record<string, string> | null;
 }, projectDir?: string): ScenarioResult | ErrorResult {
   const existing = db.prepare('SELECT id FROM demo_scenarios WHERE id = ?').get(args.id);
@@ -303,6 +316,8 @@ function updateScenario(db: Database.Database, args: {
   if (args.test_file !== undefined) { updates.push('test_file = ?'); values.push(args.test_file); }
   if (args.sort_order !== undefined) { updates.push('sort_order = ?'); values.push(args.sort_order); }
   if (args.enabled !== undefined) { updates.push('enabled = ?'); values.push(args.enabled ? 1 : 0); }
+  if (args.headed !== undefined) { updates.push('headed = ?'); values.push(args.headed ? 1 : 0); }
+  if (args.remote_eligible !== undefined) { updates.push('remote_eligible = ?'); values.push(args.remote_eligible ? 1 : 0); }
   if (args.env_vars !== undefined) {
     if (args.env_vars === null) {
       updates.push('env_vars = ?'); values.push(null);
@@ -432,6 +447,58 @@ describe('Demo Scenario CRUD', () => {
         expect(result.enabled).toBe(true);
         expect(result.sort_order).toBe(0);
         expect(result.persona_name).toBe('test-gui-user');
+      }
+    });
+
+    it('should default headed to false and remote_eligible to true', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Default Flags Flow',
+        description: 'Verifies default values for headed and remote_eligible',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/default-flags.demo.ts',
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.headed).toBe(false);
+        expect(result.remote_eligible).toBe(true);
+      }
+    });
+
+    it('should create a headed scenario with remote_eligible=false', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Headed Only Flow',
+        description: 'Requires window recording',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/headed-only.demo.ts',
+        headed: true,
+        remote_eligible: false,
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.headed).toBe(true);
+        expect(result.remote_eligible).toBe(false);
+      }
+    });
+
+    it('should create a non-headed scenario explicitly marked remote_eligible=false', () => {
+      const result = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Chrome Bridge Flow',
+        description: 'Uses chrome-bridge extension socket',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/ext-chrome-bridge.demo.ts',
+        headed: false,
+        remote_eligible: false,
+      });
+
+      expect(isErrorResult(result)).toBe(false);
+      if (!isErrorResult(result)) {
+        expect(result.headed).toBe(false);
+        expect(result.remote_eligible).toBe(false);
       }
     });
 
@@ -1039,6 +1106,87 @@ describe('Demo Scenario CRUD', () => {
       }
     });
 
+    it('should update headed and remote_eligible flags independently', () => {
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Flag Update Test',
+        description: 'Verifies headed and remote_eligible updates',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/flag-update.demo.ts',
+      });
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+      expect((created as ScenarioResult).headed).toBe(false);
+      expect((created as ScenarioResult).remote_eligible).toBe(true);
+
+      const updated = updateScenario(db, {
+        id: created.id,
+        headed: true,
+        remote_eligible: false,
+      });
+
+      expect(isErrorResult(updated)).toBe(false);
+      if (!isErrorResult(updated)) {
+        expect(updated.headed).toBe(true);
+        expect(updated.remote_eligible).toBe(false);
+        // Other fields must be preserved
+        expect(updated.title).toBe('Flag Update Test');
+        expect(updated.enabled).toBe(true);
+      }
+    });
+
+    it('should allow clearing headed=false and re-enabling remote_eligible=true', () => {
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Flag Clear Test',
+        description: 'Verifies clearing headed/remote_eligible back to defaults',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/flag-clear.demo.ts',
+        headed: true,
+        remote_eligible: false,
+      });
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+
+      const restored = updateScenario(db, {
+        id: created.id,
+        headed: false,
+        remote_eligible: true,
+      });
+
+      expect(isErrorResult(restored)).toBe(false);
+      if (!isErrorResult(restored)) {
+        expect(restored.headed).toBe(false);
+        expect(restored.remote_eligible).toBe(true);
+      }
+    });
+
+    it('should preserve headed and remote_eligible when updating other fields', () => {
+      const created = createScenario(db, {
+        persona_id: guiPersona.id,
+        title: 'Preserve Flags Test',
+        description: 'Verifies flags are not reset on unrelated updates',
+        playwright_project: 'vendor-owner',
+        test_file: 'e2e/demo/preserve-flags.demo.ts',
+        headed: true,
+        remote_eligible: false,
+      });
+      expect(isErrorResult(created)).toBe(false);
+      if (isErrorResult(created)) return;
+
+      const updated = updateScenario(db, {
+        id: created.id,
+        title: 'Preserve Flags Test — Updated Title',
+      });
+
+      expect(isErrorResult(updated)).toBe(false);
+      if (!isErrorResult(updated)) {
+        expect(updated.title).toBe('Preserve Flags Test — Updated Title');
+        expect(updated.headed).toBe(true);
+        expect(updated.remote_eligible).toBe(false);
+      }
+    });
+
     it('should reject invalid playwright_project on update when config exists', () => {
       // Locate the host project root via CLAUDE_PROJECT_DIR or by walking up from cwd.
       // When running outside a host project context, this test is a no-op.
@@ -1279,6 +1427,10 @@ describe('Demo Scenario CRUD', () => {
         expect(result.title).toBe('Get Me');
         expect(result.persona_name).toBe('test-gui-user');
         expect(result.enabled).toBe(true);
+        expect(typeof result.headed).toBe('boolean');
+        expect(typeof result.remote_eligible).toBe('boolean');
+        expect(result.headed).toBe(false);
+        expect(result.remote_eligible).toBe(true);
       }
     });
 

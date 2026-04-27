@@ -378,6 +378,8 @@ export const CreateScenarioArgsSchema = z.object({
     .describe('Environment variables to inject when running this scenario (e.g., {"AZURE_DEMO": "1"}). Max 25 keys.'),
   headed: z.coerce.boolean().optional().default(false)
     .describe('Whether this scenario requires exclusive display access (headed Playwright, real Chrome, etc.). Headed scenarios are serialized through the display queue to prevent window capture conflicts and corrupted recordings.'),
+  remote_eligible: z.coerce.boolean().optional().default(true)
+    .describe('Whether this scenario can run on remote Fly.io machines. Set false for scenarios requiring local Chrome, extension sockets, or headed display access. Defaults to true.'),
 });
 
 export const UpdateScenarioArgsSchema = z.object({
@@ -396,6 +398,8 @@ export const UpdateScenarioArgsSchema = z.object({
     .describe('Environment variables for this scenario. Set to null to clear. Max 25 keys.'),
   headed: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
     .describe('Whether this scenario requires exclusive display access. Headed scenarios are serialized through the display queue.'),
+  remote_eligible: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
+    .describe('Whether this scenario can run on remote Fly.io machines.'),
 });
 
 export const DeleteScenarioArgsSchema = z.object({
@@ -406,6 +410,7 @@ export const ListScenariosArgsSchema = z.object({
   persona_id: z.string().optional().describe('Filter by persona UUID'),
   enabled_only: z.coerce.boolean().optional().default(true),
   category: z.string().optional(),
+  remote_eligible: z.coerce.boolean().optional().describe('Filter by remote eligibility'),
   limit: z.coerce.number().int().min(1).max(100).optional().default(50),
 });
 
@@ -430,6 +435,7 @@ export interface ScenarioRecord {
   sort_order: number;
   enabled: number;
   headed: number; // SQLite boolean (0/1)
+  remote_eligible: number; // SQLite boolean (0/1)
   created_at: string;
   created_timestamp: string;
   updated_at: string;
@@ -449,6 +455,7 @@ export interface ScenarioResult {
   sort_order: number;
   enabled: boolean;
   headed: boolean;
+  remote_eligible: boolean;
   created_at: string;
   updated_at: string;
   persona_name?: string;

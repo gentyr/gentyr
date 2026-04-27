@@ -107,6 +107,12 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (activePanel === 'demos') {
         const scenario = data.scenarios.find(s => s.id === selectedScenarioId);
         if (!scenario) return;
+        if (executionMode === 'remote' && !scenario.remoteEligible) {
+          setStatusMessage(`Cannot run "${scenario.title}" remotely \u2014 scenario is local-only`);
+          if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+          statusTimerRef.current = setTimeout(() => setStatusMessage(null), 5000);
+          return;
+        }
         const proc = executionMode === 'remote'
           ? await launchRemoteDemo(scenario)
           : await launchDemo(scenario, selectedEnv.baseUrl, selectedEnv.branch);
