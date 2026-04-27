@@ -277,7 +277,7 @@ The `tools/window-recorder/` directory contains a Swift CLI (`WindowRecorder`) t
 cd tools/window-recorder && swift build -c release
 ```
 
-`npx gentyr sync` automatically builds the window recorder on macOS (step 7b). The binary is discovered at runtime by the Playwright MCP server's `getWindowRecorderBinary()` function, which walks up from `dist/playwright/` to find `tools/window-recorder/.build/release/WindowRecorder`. Not available on non-macOS platforms; falls back silently.
+`npx gentyr sync` automatically builds the window recorder on macOS (step 7b). **Source-hash skip**: step 7b hashes all Swift source files (including `Package.swift`) and compares against `.build/.source-hash`. When the binary already exists and the hash is unchanged, the rebuild is skipped entirely — this preserves the binary's CDHash, which macOS TCC ties Screen Recording permission to. The hash file is written after a successful build so subsequent syncs see the new hash. The binary is discovered at runtime by the Playwright MCP server's `getWindowRecorderBinary()` function, which walks up from `dist/playwright/` to find `tools/window-recorder/.build/release/WindowRecorder`. Not available on non-macOS platforms; falls back silently.
 
 ### Slash Command Path Resolution
 
