@@ -11,6 +11,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import { execFileSync } from 'child_process';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -590,13 +592,291 @@ export async function generateStructuredReport(releaseId, projectDir = PROJECT_D
 /**
  * Convert a markdown report to PDF.
  *
- * Placeholder for future implementation. PDF conversion requires additional
- * dependencies (e.g., puppeteer, markdown-pdf, or pandoc).
+ * Converts markdown to simple HTML, finds Playwright's Chromium browser,
+ * and uses it in headless mode to generate a PDF. Falls back gracefully
+ * if Chromium is not available.
  *
  * @param {string} mdPath - Path to the source markdown file
  * @param {string} pdfPath - Desired output PDF path
- * @returns {{ error: string }}
+ * @returns {Promise<{ pdfPath: string|null, mdPath: string, fallback?: boolean }>}
  */
-export function convertToPdf(mdPath, pdfPath) {
-  return { error: 'PDF conversion not yet implemented' };
+export async function convertToPdf(mdPath, pdfPath) {
+  if (!fs.existsSync(mdPath)) {
+    throw new Error(`[release-report-generator] convertToPdf: source file not found at ${mdPath}`);
+  }
+
+  const mdContent = fs.readFileSync(mdPath, 'utf8');
+
+  // Convert markdown to simple HTML (inline implementation — no external deps)
+  const htmlContent = markdownToHtml(mdContent);
+
+  const fullHtml = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #333; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: 10px; }
+  h2 { border-bottom: 1px solid #ccc; padding-bottom: 6px; margin-top: 30px; }
+  h3 { margin-top: 20px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+  th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  th { background-color: #f5f5f5; font-weight: 600; }
+  code { background-color: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  pre { background-color: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; }
+  a { color: #0366d6; }
+  em { color: #666; }
+</style>
+</head>
+<body>
+${htmlContent}
+</body>
+</html>`;
+
+  // Write temp HTML file
+  const htmlPath = pdfPath.replace(/\.pdf$/, '.html');
+  fs.writeFileSync(htmlPath, fullHtml, 'utf8');
+
+  // Try to find Playwright's Chromium executable
+  const chromiumPath = findPlaywrightChromium();
+  if (!chromiumPath) {
+    log('Warning: Playwright Chromium not found — PDF conversion unavailable');
+    // Clean up temp HTML
+    try { fs.unlinkSync(htmlPath); } catch (_) { /* non-fatal */ }
+    return { pdfPath: null, mdPath, fallback: true };
+  }
+
+  // Use Chromium headless to print to PDF
+  try {
+    execFileSync(chromiumPath, [
+      '--headless',
+      '--disable-gpu',
+      '--no-sandbox',
+      `--print-to-pdf=${pdfPath}`,
+      `file://${htmlPath}`,
+    ], {
+      timeout: 30000,
+      stdio: 'pipe',
+    });
+
+    // Clean up temp HTML
+    try { fs.unlinkSync(htmlPath); } catch (_) { /* non-fatal */ }
+
+    if (fs.existsSync(pdfPath)) {
+      log(`Generated PDF at ${pdfPath}`);
+      return { pdfPath, mdPath };
+    }
+
+    log('Warning: Chromium did not produce a PDF file');
+    return { pdfPath: null, mdPath, fallback: true };
+  } catch (err) {
+    log(`Warning: PDF generation failed: ${err.message}`);
+    // Clean up temp HTML
+    try { fs.unlinkSync(htmlPath); } catch (_) { /* non-fatal */ }
+    return { pdfPath: null, mdPath, fallback: true };
+  }
+}
+
+/**
+ * Find Playwright's Chromium executable.
+ *
+ * Searches common Playwright browser cache locations.
+ *
+ * @returns {string|null} Path to Chromium executable, or null.
+ */
+function findPlaywrightChromium() {
+  const homeDir = os.homedir();
+
+  // Playwright stores browsers in ~/Library/Caches/ms-playwright/ on macOS
+  // and ~/.cache/ms-playwright/ on Linux
+  const cacheDirs = [
+    path.join(homeDir, 'Library', 'Caches', 'ms-playwright'),
+    path.join(homeDir, '.cache', 'ms-playwright'),
+  ];
+
+  for (const cacheDir of cacheDirs) {
+    if (!fs.existsSync(cacheDir)) continue;
+
+    try {
+      const entries = fs.readdirSync(cacheDir).filter(e => e.startsWith('chromium'));
+      // Sort descending to get the latest version
+      entries.sort().reverse();
+
+      for (const entry of entries) {
+        // macOS: chromium-XXXX/chrome-mac/Chromium.app/Contents/MacOS/Chromium
+        const macPath = path.join(cacheDir, entry, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium');
+        if (fs.existsSync(macPath)) return macPath;
+
+        // Linux: chromium-XXXX/chrome-linux/chrome
+        const linuxPath = path.join(cacheDir, entry, 'chrome-linux', 'chrome');
+        if (fs.existsSync(linuxPath)) return linuxPath;
+      }
+    } catch (_) {
+      // Non-fatal
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Convert markdown to simple HTML.
+ *
+ * Handles: headings, paragraphs, bold/italic/code, links, lists,
+ * tables, horizontal rules, and code blocks. Not a full markdown parser —
+ * just enough for the release report template.
+ *
+ * @param {string} md - Markdown string
+ * @returns {string} HTML string
+ */
+function markdownToHtml(md) {
+  const lines = md.split('\n');
+  const html = [];
+  let inTable = false;
+  let inCodeBlock = false;
+  let inList = false;
+  let listType = null; // 'ul' or 'ol'
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Code blocks
+    if (line.trim().startsWith('```')) {
+      if (inCodeBlock) {
+        html.push('</code></pre>');
+        inCodeBlock = false;
+      } else {
+        inCodeBlock = true;
+        html.push('<pre><code>');
+      }
+      continue;
+    }
+    if (inCodeBlock) {
+      html.push(escapeHtml(line));
+      continue;
+    }
+
+    // Close list if we hit a non-list line
+    if (inList && !line.match(/^\s*[-*+]\s/) && !line.match(/^\s*\d+\.\s/) && line.trim() !== '') {
+      html.push(listType === 'ol' ? '</ol>' : '</ul>');
+      inList = false;
+      listType = null;
+    }
+
+    // Horizontal rule
+    if (line.match(/^---+\s*$/) || line.match(/^\*\*\*+\s*$/) || line.match(/^___+\s*$/)) {
+      html.push('<hr>');
+      continue;
+    }
+
+    // Headings
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      html.push(`<h${level}>${inlineFormat(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+
+    // Table rows
+    if (line.includes('|') && line.trim().startsWith('|')) {
+      // Check if this is a separator row
+      if (line.match(/^\|[\s-:|]+\|$/)) {
+        continue; // Skip separator
+      }
+
+      if (!inTable) {
+        html.push('<table>');
+        inTable = true;
+        // First table row is the header
+        const cells = line.split('|').filter(c => c.trim() !== '');
+        html.push('<thead><tr>' + cells.map(c => `<th>${inlineFormat(c.trim())}</th>`).join('') + '</tr></thead><tbody>');
+        continue;
+      }
+
+      const cells = line.split('|').filter(c => c.trim() !== '');
+      html.push('<tr>' + cells.map(c => `<td>${inlineFormat(c.trim())}</td>`).join('') + '</tr>');
+      continue;
+    }
+
+    // Close table if we leave table context
+    if (inTable && !line.includes('|')) {
+      html.push('</tbody></table>');
+      inTable = false;
+    }
+
+    // Unordered list items
+    const ulMatch = line.match(/^\s*[-*+]\s+(.+)/);
+    if (ulMatch) {
+      if (!inList || listType !== 'ul') {
+        if (inList) html.push(listType === 'ol' ? '</ol>' : '</ul>');
+        html.push('<ul>');
+        inList = true;
+        listType = 'ul';
+      }
+      html.push(`<li>${inlineFormat(ulMatch[1])}</li>`);
+      continue;
+    }
+
+    // Ordered list items
+    const olMatch = line.match(/^\s*\d+\.\s+(.+)/);
+    if (olMatch) {
+      if (!inList || listType !== 'ol') {
+        if (inList) html.push(listType === 'ol' ? '</ol>' : '</ul>');
+        html.push('<ol>');
+        inList = true;
+        listType = 'ol';
+      }
+      html.push(`<li>${inlineFormat(olMatch[1])}</li>`);
+      continue;
+    }
+
+    // Empty lines
+    if (line.trim() === '') {
+      continue;
+    }
+
+    // Paragraph
+    html.push(`<p>${inlineFormat(line)}</p>`);
+  }
+
+  // Close any open elements
+  if (inTable) html.push('</tbody></table>');
+  if (inList) html.push(listType === 'ol' ? '</ol>' : '</ul>');
+  if (inCodeBlock) html.push('</code></pre>');
+
+  return html.join('\n');
+}
+
+/**
+ * Apply inline markdown formatting.
+ */
+function inlineFormat(text) {
+  let result = escapeHtml(text);
+
+  // Bold: **text** or __text__
+  result = result.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  result = result.replace(/__(.+?)__/g, '<strong>$1</strong>');
+
+  // Italic: *text* or _text_
+  result = result.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  result = result.replace(/_(.+?)_/g, '<em>$1</em>');
+
+  // Inline code: `text`
+  result = result.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Links: [text](url)
+  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  return result;
+}
+
+/**
+ * Escape HTML special characters.
+ */
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

@@ -221,11 +221,12 @@ async function main() {
     ? `\n\n## Outcome Criteria\n${task.outcome_criteria}`
     : '';
 
-  // Check if demo/strict-infra/plan-manager is involved via task metadata
+  // Check if demo/strict-infra/plan-manager/release is involved via task metadata
   let demoInstructions = '';
   let strictInfraInstructions = '';
   let planId = null;
   let planSection = '';
+  let releaseId = null;
   try {
     const meta = task.metadata ? JSON.parse(task.metadata) : {};
     if (meta.demo_involved) {
@@ -238,6 +239,9 @@ async function main() {
       planId = meta.plan_id;
       planSection = `\nYou are a PLAN MANAGER for plan "${meta.plan_title || planId}" (ID: ${planId}).
 Follow the plan-manager agent instructions. Poll get_spawn_ready_tasks, create persistent tasks for ready plan steps, monitor them, and advance the plan until all phases complete.\n`;
+    }
+    if (meta.releaseId) {
+      releaseId = meta.releaseId;
     }
   } catch (_) { /* non-fatal */ }
 
@@ -291,11 +295,13 @@ Parent TODO Task ID: ${task.parent_todo_task_id || 'none'}`;
         GENTYR_PERSISTENT_TASK_ID: taskId,
         GENTYR_PERSISTENT_MONITOR: 'true',
         ...(planId ? { GENTYR_PLAN_MANAGER: 'true', GENTYR_PLAN_ID: planId } : {}),
+        ...(releaseId ? { GENTYR_RELEASE_ID: releaseId } : {}),
       },
       metadata: {
         persistentTaskId: taskId,
         parentTodoTaskId: task.parent_todo_task_id || null,
         ...(planId ? { planId } : {}),
+        ...(releaseId ? { releaseId } : {}),
       },
     });
 
