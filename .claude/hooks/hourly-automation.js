@@ -39,6 +39,7 @@ import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
 import { resolveCategory, buildPromptFromCategory } from './lib/task-category.js';
 import { runReportAutoResolve, runReportDedup } from './lib/report-auto-resolver.js';
+import { isStagingLocked } from './lib/staging-lock.js';
 import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
 
@@ -653,13 +654,9 @@ function getState() {
   if (!fs.existsSync(STATE_FILE)) {
     return {
       lastRun: 0, lastClaudeMdRefactor: 0, lastTriageCheck: 0, lastTaskRunnerCheck: 0,
-      lastPreviewPromotionCheck: 0, lastStagingPromotionCheck: 0,
       lastStagingHealthCheck: 0, lastProductionHealthCheck: 0,
       lastStandaloneAntipatternHunt: 0, lastStandaloneComplianceCheck: 0,
       lastFeedbackCheck: 0, lastFeedbackSha: null,
-      lastPreviewToStagingMergeAt: 0,
-      stagingFreezeActive: false,
-      stagingFreezeActivatedAt: 0,
       lastSessionReviverCheck: 0,
       lastSessionReaperRun: 0,
       lastVersionWatchRun: 0,
@@ -682,10 +679,12 @@ function getState() {
     }
     // Remove legacy triageAttempts if present (now handled by MCP server)
     delete state.triageAttempts;
-    // Migration for staging freeze fields
-    if (state.lastPreviewToStagingMergeAt === undefined) state.lastPreviewToStagingMergeAt = 0;
-    if (state.stagingFreezeActive === undefined) state.stagingFreezeActive = false;
-    if (state.stagingFreezeActivatedAt === undefined) state.stagingFreezeActivatedAt = 0;
+    // Clean up legacy promotion pipeline state fields
+    delete state.lastPreviewPromotionCheck;
+    delete state.lastStagingPromotionCheck;
+    delete state.lastPreviewToStagingMergeAt;
+    delete state.stagingFreezeActive;
+    delete state.stagingFreezeActivatedAt;
     if (state.lastSessionReviverCheck === undefined) state.lastSessionReviverCheck = 0;
     if (state.lastSessionReaperRun === undefined) state.lastSessionReaperRun = 0;
     if (state.lastVersionWatchRun === undefined) state.lastVersionWatchRun = 0;
@@ -2049,202 +2048,9 @@ function getPromotionWorktree(promotionType) {
   }
 }
 
-/**
- * Spawn Preview -> Staging promotion orchestrator (fire-and-forget via queue).
- */
-function spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix) {
-  const commitList = newCommits.join('\n');
-  const wt = getPromotionWorktree('preview-promotion');
-
-  ensureCredentials();
-  return enqueueSession({
-    title: 'Preview -> Staging promotion pipeline',
-    agentType: AGENT_TYPES.PREVIEW_PROMOTION,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    tagContext: 'preview-promotion',
-    source: 'hourly-automation',
-    priority: 'low',
-    buildPrompt: (agentId) => `[Automation][preview-promotion][AGENT:${agentId}] You are the PREVIEW -> STAGING Promotion Pipeline orchestrator.
-
-## Mission
-
-Evaluate whether commits on the \`preview\` branch are ready to be promoted to \`staging\`.
-
-## Context
-
-**New commits on preview (not in staging):**
-\`\`\`
-${commitList}
-\`\`\`
-
-**Hours since last staging merge:** ${hoursSinceLastStagingMerge}
-**Bug-fix commits detected:** ${hasBugFix ? 'YES (24h waiting period bypassed)' : 'No'}
-${getTestScopePromptContext()}
-## Process
-
-### Step 1: Code Review
-
-Spawn a code-reviewer sub-agent (Task tool, subagent_type: code-reviewer) to review the commits:
-- Check for security issues, code quality, spec violations
-- Look for disabled tests, placeholder code, hardcoded credentials
-- Verify no spec violations (G001-G019)
-
-### Step 2: Test Assessment
-
-Spawn a test-writer sub-agent (Task tool, subagent_type: test-writer) to assess test quality:
-- Check if new code has adequate test coverage
-- Verify no tests were disabled or weakened${getTestScopePromptContext() ? `\n- NOTE: Active test scope is in effect. Only scoped test failures are blocking. Report non-scoped failures as warnings.` : ''}
-
-### Step 3: Evaluate Results
-
-If EITHER agent reports issues:
-- Report findings via mcp__cto-reports__report_to_cto with category "decision", priority "normal"
-- Create TODO tasks for fixes
-- Do NOT proceed with promotion
-- Output: "Promotion blocked: [reasons]"
-
-### Step 4: Deputy-CTO Decision
-
-If both agents pass, spawn a deputy-cto sub-agent (Task tool, subagent_type: deputy-cto) with:
-- The review results from both agents
-- The commit list
-- Request: Evaluate stability and decide whether to promote
-
-The deputy-cto should:
-- **If approving**: Report approval via \`mcp__cto-reports__report_to_cto\` with category "decision", summary "Preview promotion approved"
-- **If rejecting**: Report issues via \`mcp__cto-reports__report_to_cto\`, create TODO tasks for fixes
-
-### Step 5: Execute Promotion (after deputy-cto approves)
-
-If the deputy-cto approved, execute the promotion yourself:
-1. Run: \`gh pr create --base staging --head preview --title "Promote preview to staging" --body "Automated promotion. Commits: ${newCommits.length} new commits. Reviewed by code-reviewer and test-writer agents."\`
-2. Wait for CI: \`gh pr checks <number> --watch\`
-3. If CI passes: \`gh pr merge <number> --merge\`
-4. If CI fails: Report failure via \`mcp__cto-reports__report_to_cto\`
-
-## Timeout
-
-Complete within 25 minutes. If blocked, report and exit.
-
-## Output
-
-Summarize the promotion decision and actions taken.`,
-    extraEnv: {
-      ...resolvedCredentials,
-      CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      GENTYR_PROMOTION_PIPELINE: 'true',
-    },
-    metadata: { commitCount: newCommits.length, hoursSinceLastStagingMerge, hasBugFix },
-    cwd: wt.cwd,
-    mcpConfig: wt.mcpConfig,
-    projectDir: PROJECT_DIR,
-  });
-}
-
-/**
- * Spawn Staging -> Production promotion orchestrator (fire-and-forget via queue).
- */
-function spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit) {
-  const commitList = newCommits.join('\n');
-  const wt = getPromotionWorktree('staging-promotion');
-
-  ensureCredentials();
-  return enqueueSession({
-    title: 'Staging -> Production promotion pipeline',
-    agentType: AGENT_TYPES.STAGING_PROMOTION,
-    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-    tagContext: 'staging-promotion',
-    source: 'hourly-automation',
-    priority: 'low',
-    buildPrompt: (agentId) => `[Automation][staging-promotion][AGENT:${agentId}] You are the STAGING -> PRODUCTION Promotion Pipeline orchestrator.
-
-## Mission
-
-Evaluate whether commits on the \`staging\` branch are ready to be promoted to \`main\` (production).
-
-## Context
-
-**New commits on staging (not in main):**
-\`\`\`
-${commitList}
-\`\`\`
-
-**Hours since last staging commit:** ${hoursSinceLastStagingCommit} (must be >= 24 for stability)
-${getTestScopePromptContext()}
-## Process
-
-### Step 1: Code Review
-
-Spawn a code-reviewer sub-agent (Task tool, subagent_type: code-reviewer) to review all staging commits:
-- Full security audit
-- Spec compliance check (G001-G019)
-- No placeholder code, disabled tests, or hardcoded credentials
-
-### Step 2: Test Assessment
-
-Spawn a test-writer sub-agent (Task tool, subagent_type: test-writer) to assess:
-- Test coverage meets thresholds (80% global, 100% critical paths)
-- No tests disabled or weakened${getTestScopePromptContext() ? `\n- NOTE: Active test scope is in effect. Only scoped test failures are blocking. Report non-scoped failures as warnings.` : ''}
-
-### Step 3: Evaluate Results
-
-If EITHER agent reports issues:
-- Report via mcp__cto-reports__report_to_cto with priority "high"
-- Create TODO tasks for fixes
-- Do NOT proceed with promotion
-- Output: "Production promotion blocked: [reasons]"
-
-### Step 4: Deputy-CTO Decision
-
-If both agents pass, spawn a deputy-cto sub-agent (Task tool, subagent_type: deputy-cto) with:
-- The review results from both agents
-- The commit list
-- Request: Create the production release PR and CTO decision task
-
-The deputy-cto should:
-1. Call \`mcp__deputy-cto__add_question\` with:
-   - type: "approval"
-   - title: "Production Release: Merge staging -> main (${newCommits.length} commits)"
-   - description: Include review results, commit list, stability assessment
-   - suggested_options: ["Approve merge to production", "Reject - needs more work"]
-
-2. Report via mcp__cto-reports__report_to_cto
-
-### Step 5: Create Production PR (after deputy-cto approves)
-
-If the deputy-cto approved, create the PR yourself:
-1. Run: \`gh pr create --base main --head staging --title "Production Release: ${newCommits.length} commits" --body "Automated production promotion. Staging stable for ${hoursSinceLastStagingCommit}h. Reviewed by code-reviewer and test-writer."\`
-   Do NOT merge — CTO approval required via /deputy-cto.
-
-**CTO approval**: When CTO approves via /deputy-cto, an urgent merge task is created:
-\`\`\`
-mcp__todo-db__create_task({
-  category_id: "standard",
-  title: "Merge production release PR #<number>",
-  description: "CTO approved. Run: gh pr merge <number> --merge",
-  assigned_by: "deputy-cto",
-  priority: "urgent"
-})
-\`\`\`
-
-## Timeout
-
-Complete within 25 minutes. If blocked, report and exit.
-
-## Output
-
-Summarize the promotion decision and actions taken.`,
-    extraEnv: {
-      ...resolvedCredentials,
-      CLAUDE_PROJECT_DIR: PROJECT_DIR,
-      GENTYR_PROMOTION_PIPELINE: 'true',
-    },
-    metadata: { commitCount: newCommits.length, hoursSinceLastStagingCommit },
-    cwd: wt.cwd,
-    mcpConfig: wt.mcpConfig,
-    projectDir: PROJECT_DIR,
-  });
-}
+// spawnPreviewPromotion() and spawnStagingPromotion() removed in Phase 2 of
+// production promotion overhaul. Automated preview->staging and staging->main
+// promotion is replaced by CTO-initiated /promote-to-prod flow.
 
 /**
  * Spawn Emergency Hotfix Promotion (staging -> main, bypasses 24h + midnight).
@@ -2257,6 +2063,12 @@ Summarize the promotion decision and actions taken.`,
  * @returns {{ queueId: string, position: number, drained: object }}
  */
 export function spawnHotfixPromotion(commits) {
+  // Block hotfix if staging is locked for a production release
+  if (isStagingLocked(PROJECT_DIR)) {
+    log('Hotfix blocked: staging is locked for production release');
+    return { queueId: null, blocked: 'staging_locked' };
+  }
+
   const commitList = commits.join('\n');
   const wt = getPromotionWorktree('staging-promotion');
 
@@ -3887,171 +3699,10 @@ async function main() {
     },
   });
 
-  // =========================================================================
-  // STAGING -> PRODUCTION PROMOTION (midnight window, 20h cooldown)
-  // Checks nightly for stable staging to promote to production
-  // NOTE: Runs BEFORE preview→staging to prevent clock-reset starvation
-  // =========================================================================
-  {
-    const currentHour = new Date().getHours();
-    const currentMinute = new Date().getMinutes();
-    const isMidnightWindow = currentHour === 0 && currentMinute <= 30;
-
-    if (isMidnightWindow) {
-      await runIfDue('staging_promotion', {
-        state, now, intervals: config.intervals,
-        stateKey: 'lastStagingPromotionCheck',
-        configToggle: 'stagingPromotionEnabled',
-        config,
-        localModeSkip: localMode,
-        label: 'Staging promotion',
-        fn: async () => {
-          log('Staging promotion: midnight window - checking for promotable commits...');
-
-          try {
-            execSync('git fetch origin staging main --quiet 2>/dev/null || true', {
-              cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
-            });
-          } catch (err) {
-            console.error('[hourly-automation] Warning:', err.message);
-            log('Staging promotion: git fetch failed, skipping.');
-          }
-
-          if (remoteBranchExists('staging') && remoteBranchExists('main')) {
-            const newCommits = getNewCommits('staging', 'main');
-
-            if (newCommits.length === 0) {
-              log('Staging promotion: no new commits on staging.');
-            } else {
-              const lastStagingTimestamp = getLastCommitTimestamp('staging');
-              const hoursSinceLastStagingCommit = lastStagingTimestamp > 0
-                ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 0;
-
-              if (hoursSinceLastStagingCommit >= 24) {
-                // GAP 6: Block promotion if production is in error state
-                const alertData = readPersistentAlerts();
-                const prodAlert = alertData.alerts['production_error'];
-                if (prodAlert && !prodAlert.resolved) {
-                  const ageHours = Math.round((Date.now() - new Date(prodAlert.first_detected_at).getTime()) / 3600000);
-                  log(`Staging promotion: BLOCKED — production in error state for ${ageHours}h. Fix production before promoting.`);
-                } else {
-                  log(`Staging promotion: ${newCommits.length} commits ready. Staging stable for ${hoursSinceLastStagingCommit}h.`);
-
-                  spawnStagingPromotion(newCommits, hoursSinceLastStagingCommit);
-                  log('Staging promotion pipeline enqueued.');
-                }
-              } else {
-                log(`Staging promotion: staging only ${hoursSinceLastStagingCommit}h old (need 24h stability).`);
-              }
-            }
-          } else {
-            log('Staging promotion: staging or main branch does not exist on remote.');
-          }
-        },
-      });
-    } else {
-      // Only log at debug level since it runs every 5 minutes outside midnight window
-    }
-  }
-
-  // =========================================================================
-  // STAGING FREEZE: Pause preview→staging when staging approaches 24h stability
-  // Prevents preview→staging from resetting the staging clock and starving
-  // the staging→main midnight promotion window.
-  // Fetch staging ref so freeze decisions use fresh data even outside midnight.
-  // =========================================================================
-  try {
-    execSync('git fetch origin staging --quiet 2>/dev/null || true', {
-      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
-    });
-  } catch (err) {
-    console.error('[hourly-automation] Warning:', err.message);
-    /* non-fatal */
-  }
-
-  const lastStagingTs = getLastCommitTimestamp('staging');
-  const stagingAgeHours = lastStagingTs > 0 ? (Date.now() / 1000 - lastStagingTs) / 3600 : 0;
-
-  if (stagingAgeHours >= 18 && !state.stagingFreezeActive) {
-    state.stagingFreezeActive = true;
-    state.stagingFreezeActivatedAt = now;
-    saveState(state);
-    log(`Staging freeze ACTIVATED: staging is ${Math.floor(stagingAgeHours)}h old, pausing preview→staging until staging→main resolves.`);
-  }
-
-  // Clear freeze conditions:
-  // 1. Staging age dropped below 18h (staging→main promoted, new merge is fresh)
-  // 2. 48h safety valve (prevents permanent lockout)
-  if (state.stagingFreezeActive) {
-    const freezeAge = (now - state.stagingFreezeActivatedAt) / (1000 * 3600);
-    if (stagingAgeHours < 18) {
-      state.stagingFreezeActive = false;
-      saveState(state);
-      log('Staging freeze CLEARED: staging age dropped below 18h (promotion completed).');
-    } else if (freezeAge >= 48) {
-      state.stagingFreezeActive = false;
-      saveState(state);
-      log('Staging freeze CLEARED: 48h safety valve triggered.');
-    }
-  }
-
-  // =========================================================================
-  // PREVIEW -> STAGING PROMOTION (6h cooldown)
-  // Checks for new commits on preview, spawns review + promotion pipeline
-  // NOTE: Gated by staging freeze to prevent staging→main starvation
-  // =========================================================================
-  if (state.stagingFreezeActive) {
-    log(`Preview promotion: PAUSED by staging freeze (staging ${Math.floor(stagingAgeHours)}h old, waiting for staging→main).`);
-    // Do NOT update lastPreviewPromotionCheck — so it fires immediately when freeze lifts
-  } else {
-    await runIfDue('preview_promotion', {
-      state, now, intervals: config.intervals,
-      stateKey: 'lastPreviewPromotionCheck',
-      configToggle: 'previewPromotionEnabled',
-      config,
-      localModeSkip: localMode,
-      label: 'Preview promotion',
-      fn: async () => {
-        log('Preview promotion: checking for promotable commits...');
-
-        try {
-          // Fetch latest remote state
-          execSync('git fetch origin preview staging --quiet 2>/dev/null || true', {
-            cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
-          });
-        } catch (err) {
-          console.error('[hourly-automation] Warning:', err.message);
-          log('Preview promotion: git fetch failed, skipping.');
-        }
-
-        if (remoteBranchExists('preview') && remoteBranchExists('staging')) {
-          const newCommits = getNewCommits('preview', 'staging');
-
-          if (newCommits.length === 0) {
-            log('Preview promotion: no new commits on preview.');
-          } else {
-            const lastStagingTimestamp = getLastCommitTimestamp('staging');
-            const hoursSinceLastStagingMerge = lastStagingTimestamp > 0
-              ? Math.floor((Date.now() / 1000 - lastStagingTimestamp) / 3600) : 999;
-            const hasBugFix = hasBugFixCommits(newCommits);
-
-            if (hoursSinceLastStagingMerge >= 24 || hasBugFix) {
-              log(`Preview promotion: ${newCommits.length} commits ready. Staging age: ${hoursSinceLastStagingMerge}h. Bug fix: ${hasBugFix}.`);
-
-              spawnPreviewPromotion(newCommits, hoursSinceLastStagingMerge, hasBugFix);
-              log('Preview promotion pipeline enqueued.');
-              state.lastPreviewToStagingMergeAt = now;
-              saveState(state);
-            } else {
-              log(`Preview promotion: ${newCommits.length} commits pending but staging only ${hoursSinceLastStagingMerge}h old (need 24h or bug fix).`);
-            }
-          }
-        } else {
-          log('Preview promotion: preview or staging branch does not exist on remote.');
-        }
-      },
-    });
-  }
+  // Automated promotion pipeline (staging->main, preview->staging, staging freeze)
+  // removed in Phase 2 of production promotion overhaul. Production releases are
+  // now CTO-initiated via /promote-to-prod. Hotfix promotion (spawnHotfixPromotion)
+  // is retained for emergency use.
 
   // =========================================================================
   // TASK GATE STALE CLEANUP

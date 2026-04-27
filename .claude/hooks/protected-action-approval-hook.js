@@ -375,7 +375,14 @@ async function main() {
     }
   }
 
-  // Validate and approve the request
+  // ── Check deferred actions DB first (spawned agent fire-and-forget path) ──
+  const deferredResult = await checkAndExecuteDeferred(code, phrase);
+  if (deferredResult) {
+    // Handled as deferred action — output shown by checkAndExecuteDeferred
+    process.exit(0);
+  }
+
+  // ── Standard file-based approval (interactive agent retry path) ───────────
   const result = validateAndApprove(phrase, code);
 
   if (!result.valid) {
@@ -398,6 +405,180 @@ async function main() {
   console.error('');
 
   process.exit(0);
+}
+
+// ============================================================================
+// Deferred Action Handling
+// ============================================================================
+
+/**
+ * Check if the approval code matches a deferred action and execute it.
+ * Returns true if handled (whether success or failure), false if not a deferred action.
+ */
+async function checkAndExecuteDeferred(code, phrase) {
+  try {
+    const { openDb, getDeferredActionByCode, markApproved } = await import('./lib/deferred-action-db.js');
+    const { computeApprovedHmac, verifyActionHmac, executeAction, isTier1Server } = await import('./lib/deferred-action-executor.js');
+
+    const db = openDb();
+    if (!db) return false;
+
+    try {
+      const action = getDeferredActionByCode(db, code);
+      if (!action) return false; // Not a deferred action — let standard path handle it
+
+      if (action.status !== 'pending') {
+        console.error(`[protected-action-approval] Deferred action ${code} is already ${action.status}.`);
+        return true; // Handled — don't fall through to standard path
+      }
+
+      // Verify the phrase matches
+      const storedPhrase = action.phrase.toUpperCase();
+      const expectedPhrase = storedPhrase.replace(/^APPROVE\s+/i, '');
+      const normalizedPhrase = phrase.toUpperCase();
+      if (normalizedPhrase !== expectedPhrase && normalizedPhrase !== storedPhrase) {
+        console.error(`[protected-action-approval] Wrong phrase for deferred action. Expected: APPROVE ${expectedPhrase}`);
+        return true;
+      }
+
+      // Verify pending HMAC before approving (G001: must verify creation integrity)
+      const key = loadProtectionKey();
+      if (!key) {
+        console.error('[protected-action-approval] G001 FAIL-CLOSED: Protection key missing for deferred action.');
+        return true;
+      }
+
+      // Verify the pending_hmac was created by the gate hook (not forged)
+      const { computePendingHmac } = await import('./lib/deferred-action-executor.js');
+      const expectedPendingHmac = computePendingHmac(action.code, action.server, action.tool, action.args_hash);
+      if (!expectedPendingHmac || action.pending_hmac !== expectedPendingHmac) {
+        console.error(`[protected-action-approval] FORGERY DETECTED: Invalid pending_hmac for deferred action ${code}. Rejecting.`);
+        // Mark failed rather than leaving in pending state
+        const { markFailed } = await import('./lib/deferred-action-db.js');
+        markFailed(db, action.id, 'Pending HMAC verification failed — possible forgery');
+        return true;
+      }
+
+      // Compute and store the approved HMAC
+      const approvedHmac = computeApprovedHmac(action.code, action.server, action.tool, action.args_hash);
+      if (!approvedHmac) {
+        console.error('[protected-action-approval] Could not compute approved HMAC.');
+        return true;
+      }
+
+      markApproved(db, action.id, approvedHmac);
+
+      // Re-read the action with approved_hmac populated
+      const approvedAction = getDeferredActionByCode(db, code);
+
+      // Check if this is a Tier 1 server
+      if (!isTier1Server(action.server)) {
+        console.error('');
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('  DEFERRED ACTION APPROVED (manual execution required)');
+        console.error('');
+        console.error(`  Server: ${action.server}`);
+        console.error(`  Tool:   ${action.tool}`);
+        console.error(`  Code:   ${action.code}`);
+        console.error('');
+        console.error(`  Server "${action.server}" is a Tier 2 server (per-session stdio).`);
+        console.error('  Automatic execution is only supported for Tier 1 servers.');
+        console.error('  Please execute this action manually:');
+        console.error(`    mcp__${action.server}__${action.tool}(${JSON.stringify(typeof action.args === 'string' ? JSON.parse(action.args) : action.args)})`);
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('');
+        return true;
+      }
+
+      // Execute the action via MCP daemon
+      console.error('');
+      console.error('══════════════════════════════════════════════════════════════════════');
+      console.error('  DEFERRED ACTION APPROVED — Executing...');
+      console.error('');
+      console.error(`  Server: ${action.server}`);
+      console.error(`  Tool:   ${action.tool}`);
+      console.error(`  Code:   ${action.code}`);
+      console.error('══════════════════════════════════════════════════════════════════════');
+      console.error('');
+
+      const execResult = await executeAction(db, approvedAction);
+
+      if (execResult.success) {
+        // Summarize the result for the CTO
+        let resultSummary = '';
+        try {
+          const content = execResult.result?.content;
+          if (Array.isArray(content)) {
+            resultSummary = content.map(c => c.text || c.type).join('\n');
+          } else if (typeof execResult.result === 'string') {
+            resultSummary = execResult.result;
+          } else {
+            resultSummary = JSON.stringify(execResult.result, null, 2);
+          }
+          if (resultSummary.length > 1000) {
+            resultSummary = resultSummary.slice(0, 997) + '...';
+          }
+        } catch { resultSummary = '(result available in DB)'; }
+
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('  DEFERRED ACTION EXECUTED SUCCESSFULLY');
+        console.error('');
+        console.error(`  Server: ${action.server}`);
+        console.error(`  Tool:   ${action.tool}`);
+        console.error('');
+        if (resultSummary) {
+          console.error('  Result:');
+          resultSummary.split('\n').forEach(line => console.error(`    ${line}`));
+        }
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('');
+
+        // Signal the original agent if alive
+        await signalRequester(action, execResult);
+      } else {
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('  DEFERRED ACTION FAILED');
+        console.error('');
+        console.error(`  Server: ${action.server}`);
+        console.error(`  Tool:   ${action.tool}`);
+        console.error(`  Error:  ${execResult.error}`);
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('');
+      }
+
+      return true;
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    console.error(`[protected-action-approval] Deferred action check error: ${err.message}`);
+    return false; // Fall through to standard path on error
+  }
+}
+
+/**
+ * Notify the original requesting agent that its deferred action completed.
+ * Non-fatal — best-effort signal delivery.
+ */
+async function signalRequester(action, execResult) {
+  if (!action.requester_agent_id) return;
+  try {
+    const { sendSignal } = await import('./lib/session-signals.js');
+    const status = execResult.success ? 'completed' : 'failed';
+    const message = execResult.success
+      ? `[DEFERRED ACTION COMPLETED] ${action.server}:${action.tool} executed successfully. Code: ${action.code}`
+      : `[DEFERRED ACTION FAILED] ${action.server}:${action.tool} failed: ${execResult.error}. Code: ${action.code}`;
+
+    sendSignal(action.requester_agent_id, 'deferred_action_result', message, {
+      action_id: action.id,
+      code: action.code,
+      server: action.server,
+      tool: action.tool,
+      status,
+    });
+  } catch {
+    // Non-fatal — agent may already be dead
+  }
 }
 
 main().catch((err) => {

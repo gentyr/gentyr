@@ -27,8 +27,7 @@ const DEFAULTS = {
   todo_maintenance: 60,                // 1h
   task_runner: 240,                    // 4h
   triage_per_item: 180,                // 3h per-item
-  preview_promotion: 720,              // 12h
-  staging_promotion: 1440,             // 24h
+  staging_reactive_review: 60,          // 1h
   staging_health_monitor: 480,         // 8h
   production_health_monitor: 240,      // 4h
   standalone_antipattern_hunter: 1440, // daily

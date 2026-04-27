@@ -126,7 +126,6 @@ import {
   type ListPreapprovedBypassesResult,
   type ReviewBlockingItemsResult,
   type BlockingItemSummary,
-  type CreatePromotionBypassResult,
   type ClearedQuestionItem,
   type AutonomousModeConfig,
   type ErrorResult,
@@ -2533,43 +2532,10 @@ async function reviewBlockingItems(args: ReviewBlockingItemsArgs): Promise<strin
   return JSON.stringify(result, null, 2);
 }
 
-function createPromotionBypass(args: CreatePromotionBypassArgs): string {
-  // CTO-only gate: block spawned (agent) sessions
-  const isSpawned = process.env['CLAUDE_SPAWNED_SESSION'] === 'true';
-  if (isSpawned) {
-    return JSON.stringify({
-      success: false,
-      message: 'Promotion bypass can only be created in interactive (CTO) sessions.',
-    });
-  }
-
-  const db = getDb();
-  const id = randomUUID();
-  const now = new Date();
-  const nowTimestamp = now.toISOString();
-  const durationMinutes = args.duration_minutes ?? 30;
-  const expiresAt = new Date(now.getTime() + durationMinutes * 60 * 1000).toISOString();
-  const createdAt = now.toISOString();
-
-  db.prepare(`
-    INSERT INTO commit_decisions (id, question_id, decision, rationale, created_timestamp, created_at)
-    VALUES (?, NULL, 'approved', ?, ?, ?)
-  `).run(
-    id,
-    `PROMOTION BYPASS (${durationMinutes}min) - ${args.rationale}`,
-    nowTimestamp,
-    createdAt
-  );
-
-  const result: CreatePromotionBypassResult = {
-    success: true,
-    bypass_id: id,
-    expires_at: expiresAt,
-    duration_minutes: durationMinutes,
-    message: `Promotion bypass created. Commits to main unblocked for ${durationMinutes} minutes (until ${expiresAt}).`,
-  };
-
-  return JSON.stringify(result, null, 2);
+function createPromotionBypass(_args: CreatePromotionBypassArgs): string {
+  return JSON.stringify({
+    error: 'Deprecated. Use /promote-to-prod for production releases. The automated promotion pipeline has been replaced with CTO-initiated production releases.',
+  });
 }
 
 // ============================================================================
@@ -2857,7 +2823,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'get_merge_chain_status',
-    description: 'Get the current merge chain status: branch positions, active/stale feature branches, uncommitted changes. Used for CTO briefing.',
+    description: 'Get the current merge chain status: branch positions, active/stale feature branches, uncommitted changes. Used for CTO briefing. Production releases are now CTO-initiated via /promote-to-prod (automated promotion pipeline removed).',
     schema: GetMergeChainStatusArgsSchema,
     handler: getMergeChainStatus,
   },
