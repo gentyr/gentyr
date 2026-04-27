@@ -165,16 +165,17 @@ The original non-scoped path (full suite failures always block) is preserved ver
 
 Read and write `testScopes` and `activeTestScope` via the `get_services_config` / `update_services_config` tools on the `secret-sync` MCP server.
 
-### Deputy-CTO Promotion Review
+### Deputy-CTO Triage (Two-Tier)
 
-The deputy-CTO reviews promotion PRs (preview -> staging, staging -> main), NOT individual feature PRs. Feature PRs are self-merged by the project-manager immediately after creation.
+The deputy-CTO triages agent reports through two separate queues:
 
-When reviewing a promotion PR, the deputy-CTO has `Bash` access to `gh` commands:
-- `gh pr diff <number>` — review accumulated changes
-- `gh pr review <number> --approve --body "..."` — approve
-- `gh pr review <number> --request-changes --body "..."` — reject with feedback
-- `gh pr merge <number> --merge --delete-branch` — merge and trigger worktree cleanup
-- `gh pr edit <number> --add-label "deputy-cto-reviewed"` — always applied
+**Preview tier** (`GENTYR_REPORT_TIER=preview`): Reports from agents on preview-based worktrees. The deputy-CTO CANNOT escalate to the CTO — must either dismiss, create a task, persistent task, or plan. No merge chain gating.
+
+**Staging tier** (`GENTYR_REPORT_TIER=staging`): Reports from staging reactive reviewers and release review sessions. The deputy-CTO CAN escalate to the CTO. Reports do NOT block production promotion.
+
+Tier enforcement is server-side in the `agent-reports` MCP server — `completeTriage()` and `markTriaged()` reject `escalated` when `GENTYR_REPORT_TIER=preview`. The `get_reports_for_triage` tool accepts a `tier` parameter for server-side filtering.
+
+**Triage automation**: The `triage_check` block in `hourly-automation.js` queries each tier separately and spawns `spawnPreviewTriage()`, `spawnStagingTriage()`, or `spawnReportTriage()` (legacy null-tier) accordingly.
 
 **`pr-reviewer` and `system-followup` are approved `assigned_by` values** for the `Triage & Delegation` category's `creator_restrictions` (stored in `task_categories` in `todo.db`). `system-followup` is used by investigation follow-up tasks that call back into the deputy-cto triage pipeline after investigation completes. The legacy `SECTION_CREATOR_RESTRICTIONS` constant in `packages/mcp-servers/src/shared/constants.ts` is deprecated — creator restrictions are now defined per-category in `task_categories`.
 
