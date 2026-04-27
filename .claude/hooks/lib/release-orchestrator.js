@@ -208,6 +208,128 @@ export function getArtifactDir(releaseId, projectDir = PROJECT_DIR) {
 }
 
 // ============================================================================
+// Session Summary Generation
+// ============================================================================
+
+/**
+ * Generate a deterministic markdown summary from a session JSONL file.
+ *
+ * Reads the last 4KB of the JSONL, extracts tool calls and their results,
+ * and produces a structured markdown document. This is a pragmatic approach
+ * that avoids LLM dependencies — an LLM summary can be layered on later.
+ *
+ * @param {string} jsonlPath - Absolute path to the session JSONL file
+ * @param {string} sessionId - Session UUID
+ * @param {string} agentId - Agent ID
+ * @param {string} phase - Release phase identifier
+ * @returns {string} Markdown summary content
+ */
+function generateSessionSummary(jsonlPath, sessionId, agentId, phase) {
+  const stat = fs.statSync(jsonlPath);
+  const readSize = Math.min(4096, stat.size);
+  const buffer = Buffer.alloc(readSize);
+  const fd = fs.openSync(jsonlPath, 'r');
+
+  try {
+    fs.readSync(fd, buffer, 0, readSize, Math.max(0, stat.size - readSize));
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  const tail = buffer.toString('utf8');
+
+  // Parse JSONL lines from the tail (first line may be partial — skip it)
+  const lines = tail.split('\n').filter(l => l.trim());
+  const entries = [];
+  for (let i = 0; i < lines.length; i++) {
+    try {
+      entries.push(JSON.parse(lines[i]));
+    } catch (_) {
+      // Partial line at the start — expected
+    }
+  }
+
+  // Extract tool calls from the entries
+  const toolCalls = [];
+  let firstTimestamp = null;
+  let lastTimestamp = null;
+
+  for (const entry of entries) {
+    const ts = entry.timestamp || entry.created_at || null;
+    if (ts) {
+      if (!firstTimestamp) firstTimestamp = ts;
+      lastTimestamp = ts;
+    }
+
+    // Look for tool_use entries
+    if (entry.type === 'tool_use' || entry.tool || entry.name) {
+      const toolName = entry.name || entry.tool || 'unknown';
+      toolCalls.push(toolName);
+    }
+
+    // Look for nested content blocks with tool_use
+    if (Array.isArray(entry.content)) {
+      for (const block of entry.content) {
+        if (block.type === 'tool_use' && block.name) {
+          toolCalls.push(block.name);
+        }
+      }
+    }
+  }
+
+  // Deduplicate tool calls and count occurrences
+  const toolCounts = {};
+  for (const tool of toolCalls) {
+    toolCounts[tool] = (toolCounts[tool] || 0) + 1;
+  }
+
+  // Calculate approximate duration
+  let durationStr = 'unknown';
+  if (firstTimestamp && lastTimestamp) {
+    try {
+      const startMs = new Date(firstTimestamp).getTime();
+      const endMs = new Date(lastTimestamp).getTime();
+      if (!isNaN(startMs) && !isNaN(endMs)) {
+        const durationMs = endMs - startMs;
+        const minutes = Math.round(durationMs / 60000);
+        durationStr = minutes > 0 ? `~${minutes} minutes` : '< 1 minute';
+      }
+    } catch (_) {
+      // Non-fatal — keep default
+    }
+  }
+
+  // Build the markdown summary
+  const toolList = Object.entries(toolCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([tool, count]) => `- \`${tool}\` (${count}x)`)
+    .join('\n');
+
+  const summary = `# Session Summary
+
+| Field | Value |
+|-------|-------|
+| Session ID | \`${sessionId}\` |
+| Agent ID | \`${agentId}\` |
+| Phase | ${phase} |
+| Duration | ${durationStr} |
+| JSONL Size | ${stat.size} bytes |
+| Entries (tail) | ${entries.length} |
+
+## Tools Used
+
+${toolList || '_No tool calls detected in session tail._'}
+
+## Notes
+
+This is a deterministic summary generated from the last 4KB of the session JSONL file.
+For full context, refer to the archived JSONL transcript.
+`;
+
+  return summary;
+}
+
+// ============================================================================
 // Session Artifact Collection
 // ============================================================================
 
@@ -254,11 +376,23 @@ export function collectSessionArtifact(releaseId, sessionId, agentId, phase, pro
   try {
     fs.copyFileSync(jsonlPath, targetPath);
     log(`Collected session artifact: ${targetPath}`);
-    return { copied: true, jsonlPath, targetPath };
   } catch (err) {
     log(`Warning: failed to copy session artifact: ${err.message}`);
     return { copied: false, jsonlPath, targetPath: null };
   }
+
+  // Generate a deterministic summary from the JSONL tail
+  try {
+    const summaryPath = path.join(phaseDir, `session-${sessionId}-summary.md`);
+    const summary = generateSessionSummary(jsonlPath, sessionId, agentId, phase);
+    fs.writeFileSync(summaryPath, summary, 'utf8');
+    log(`Generated session summary: ${summaryPath}`);
+  } catch (err) {
+    log(`Warning: failed to generate session summary: ${err.message}`);
+    // Non-fatal — the JSONL copy already succeeded
+  }
+
+  return { copied: true, jsonlPath, targetPath };
 }
 
 // ============================================================================

@@ -119,6 +119,15 @@ export const GenerateReleaseReportArgsSchema = z.object({
   release_id: z.string().min(1).describe('Release ID'),
 });
 
+export const OpenReleaseReportArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID'),
+});
+
+export const GetReleaseReportSectionArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID'),
+  section: z.coerce.number().min(1).max(8).describe('Section number (1-8) to extract from the report'),
+});
+
 // ============================================================================
 // Inferred Types
 // ============================================================================
@@ -136,6 +145,8 @@ export type AddReleaseReportArgs = z.infer<typeof AddReleaseReportArgsSchema>;
 export type AddReleaseTaskArgs = z.infer<typeof AddReleaseTaskArgsSchema>;
 export type GetReleaseEvidenceArgs = z.infer<typeof GetReleaseEvidenceArgsSchema>;
 export type GenerateReleaseReportArgs = z.infer<typeof GenerateReleaseReportArgsSchema>;
+export type OpenReleaseReportArgs = z.infer<typeof OpenReleaseReportArgsSchema>;
+export type GetReleaseReportSectionArgs = z.infer<typeof GetReleaseReportSectionArgsSchema>;
 
 // ============================================================================
 // Record Types (SQLite rows)

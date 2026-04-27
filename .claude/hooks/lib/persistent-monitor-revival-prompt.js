@@ -29,6 +29,7 @@ export async function buildPersistentMonitorRevivalPrompt(task, revivalReason, p
   let strictInfraInstructions = '';
   let planSection = '';
   let planId = null;
+  let releaseId = null;
   try {
     const taskMeta = task.metadata ? JSON.parse(task.metadata) : {};
     if (taskMeta.demo_involved) {
@@ -42,6 +43,9 @@ export async function buildPersistentMonitorRevivalPrompt(task, revivalReason, p
       planId = taskMeta.plan_id;
       planSection = `\nYou are a PLAN MANAGER for plan "${taskMeta.plan_title || planId}" (ID: ${planId}).
 Follow the plan-manager agent instructions. Poll get_spawn_ready_tasks, create persistent tasks for ready plan steps, monitor them, and advance the plan until all phases complete.\n`;
+    }
+    if (taskMeta.releaseId) {
+      releaseId = taskMeta.releaseId;
     }
   } catch (err) {
     process.stderr.write(`[persistent-monitor-revival-prompt] demo/strict-infra instructions failed for ${task.id}: ${err.message || err}\n`);
@@ -90,6 +94,11 @@ ${demoInstructions}${strictInfraInstructions}`;
     extraEnv.GENTYR_PLAN_ID = planId;
   }
 
+  // Preserve release ID env var if this task is part of a release
+  if (releaseId) {
+    extraEnv.GENTYR_RELEASE_ID = releaseId;
+  }
+
   const metadata = {
     persistentTaskId: task.id,
     revivalReason,
@@ -97,6 +106,7 @@ ${demoInstructions}${strictInfraInstructions}`;
   // Include planId so plan-level dedup in enqueueSession/requeueDeadPersistentMonitor can
   // detect duplicate monitors for the same plan across different persistentTaskId values
   if (planId) metadata.planId = planId;
+  if (releaseId) metadata.releaseId = releaseId;
 
   const agent = planId ? 'plan-manager' : 'persistent-monitor';
 

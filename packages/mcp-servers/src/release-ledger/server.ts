@@ -16,6 +16,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
+import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import {
@@ -45,6 +46,10 @@ import {
   type AddReleaseTaskArgs,
   type GetReleaseEvidenceArgs,
   type GenerateReleaseReportArgs,
+  OpenReleaseReportArgsSchema,
+  GetReleaseReportSectionArgsSchema,
+  type OpenReleaseReportArgs,
+  type GetReleaseReportSectionArgs,
   type ReleaseRecord,
   type ReleasePrRecord,
   type ReleaseSessionRecord,
@@ -711,11 +716,134 @@ function getReleaseEvidence(args: GetReleaseEvidenceArgs): object | ErrorResult 
 }
 
 /**
- * Generate release report (placeholder).
- * Will be connected to the report pipeline later.
+ * Generate release report.
+ *
+ * Dynamically imports the release-report-generator module from the hooks
+ * lib directory and calls generateStructuredReport with the release ID.
  */
-function generateReleaseReport(_args: GenerateReleaseReportArgs): object {
-  return { error: 'Report generator not yet wired' };
+async function generateReleaseReport(args: GenerateReleaseReportArgs): Promise<object> {
+  const db = getDb();
+  const release = releaseExists(db, args.release_id);
+  if (!release) {
+    return { error: `Release not found: ${args.release_id}` };
+  }
+
+  try {
+    const reportGenPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'release-report-generator.js');
+    const { generateStructuredReport } = await import(reportGenPath);
+    const result = await generateStructuredReport(args.release_id, PROJECT_DIR);
+
+    // Store the report path on the release record
+    if (result && result.mdPath) {
+      db.prepare('UPDATE releases SET report_path = ? WHERE id = ?').run(result.mdPath, args.release_id);
+    }
+
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Report generation failed: ${message}` };
+  }
+}
+
+/**
+ * Open a release report in the default application (macOS).
+ *
+ * If the report does not exist yet, generates it first via generateStructuredReport.
+ */
+async function openReleaseReport(args: OpenReleaseReportArgs): Promise<object> {
+  const db = getDb();
+  const release = releaseExists(db, args.release_id);
+  if (!release) {
+    return { error: `Release not found: ${args.release_id}` };
+  }
+
+  // Determine the report path
+  const artifactDir = release.artifact_dir
+    ? path.resolve(release.artifact_dir)
+    : path.join(PROJECT_DIR, '.claude', 'releases', args.release_id);
+  const reportPath = release.report_path || path.join(artifactDir, 'report.md');
+
+  // Generate report if it does not exist
+  let finalPath = reportPath;
+  if (!fs.existsSync(reportPath)) {
+    try {
+      const reportGenPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'release-report-generator.js');
+      const { generateStructuredReport } = await import(reportGenPath);
+      const result = await generateStructuredReport(args.release_id, PROJECT_DIR);
+      if (result && result.mdPath) {
+        db.prepare('UPDATE releases SET report_path = ? WHERE id = ?').run(result.mdPath, args.release_id);
+        finalPath = result.mdPath;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { error: `Report generation failed: ${message}` };
+    }
+  }
+
+  // Verify the report file exists after generation attempt
+  if (!fs.existsSync(finalPath)) {
+    return { error: `Report file not found at ${finalPath} even after generation attempt` };
+  }
+
+  // Open with macOS `open` command
+  try {
+    execSync(`open "${finalPath}"`, { timeout: 10000, stdio: 'pipe' });
+    return { opened: true, path: finalPath };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to open report: ${message}`, path: finalPath };
+  }
+}
+
+/**
+ * Get a specific section from the release report.
+ *
+ * Parses the report.md and extracts the section matching the `## N.` header pattern.
+ */
+function getReleaseReportSection(args: GetReleaseReportSectionArgs): object {
+  const db = getDb();
+  const release = releaseExists(db, args.release_id);
+  if (!release) {
+    return { error: `Release not found: ${args.release_id}` };
+  }
+
+  const artifactDir = release.artifact_dir
+    ? path.resolve(release.artifact_dir)
+    : path.join(PROJECT_DIR, '.claude', 'releases', args.release_id);
+  const reportPath = release.report_path || path.join(artifactDir, 'report.md');
+
+  if (!fs.existsSync(reportPath)) {
+    return { error: `Report not found at ${reportPath}. Call generate_release_report first.` };
+  }
+
+  const content = fs.readFileSync(reportPath, 'utf8');
+
+  // Find the section header pattern: "## N." (e.g., "## 1.", "## 2.")
+  const sectionNum = args.section;
+  const sectionPattern = new RegExp(`^## ${sectionNum}\\.\\s`, 'm');
+  const nextSectionPattern = new RegExp(`^## ${sectionNum + 1}\\.\\s`, 'm');
+
+  const startMatch = sectionPattern.exec(content);
+  if (!startMatch) {
+    return { error: `Section ${sectionNum} not found in report. The report may use a different section numbering.` };
+  }
+
+  const startIndex = startMatch.index;
+  const nextMatch = nextSectionPattern.exec(content.slice(startIndex + 1));
+
+  let sectionContent: string;
+  if (nextMatch) {
+    sectionContent = content.slice(startIndex, startIndex + 1 + nextMatch.index).trim();
+  } else {
+    // Last section — take everything until end of file
+    sectionContent = content.slice(startIndex).trim();
+  }
+
+  return {
+    release_id: args.release_id,
+    section: sectionNum,
+    content: sectionContent,
+  };
 }
 
 // ============================================================================
@@ -797,9 +925,21 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'generate_release_report',
-    description: 'Generate a release report. Placeholder — will be connected to the report pipeline later.',
+    description: 'Generate a structured markdown release report from the release evidence chain. Reads PRs, sessions, reports, tasks, and artifacts. Writes report.md to the release artifact directory and updates the release record with report_path.',
     schema: GenerateReleaseReportArgsSchema,
     handler: generateReleaseReport,
+  },
+  {
+    name: 'open_release_report',
+    description: 'Open the release report in the default application (macOS). Generates the report first if it does not exist yet.',
+    schema: OpenReleaseReportArgsSchema,
+    handler: openReleaseReport,
+  },
+  {
+    name: 'get_release_report_section',
+    description: 'Get a specific section (1-8) from a release report. Parses the report.md and extracts the content for the requested section number. Call generate_release_report first if the report does not exist.',
+    schema: GetReleaseReportSectionArgsSchema,
+    handler: getReleaseReportSection,
   },
 ];
 
