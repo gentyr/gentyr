@@ -2811,13 +2811,13 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'review_blocking_items',
-    description: 'Review all pending items blocking commits to main. Classifies each by relevance (relevant, likely_irrelevant, unknown) and recommends which can be bypassed vs addressed. Use before create_promotion_bypass to understand the landscape.',
+    description: 'Review all pending items (triage reports and CTO questions). Classifies each by relevance (relevant, likely_irrelevant, unknown) and recommends which can be dismissed vs addressed. Note: these items no longer block commits — production releases are CTO-initiated via /promote-to-prod.',
     schema: ReviewBlockingItemsArgsSchema,
     handler: reviewBlockingItems,
   },
   {
     name: 'create_promotion_bypass',
-    description: 'Create a time-limited bypass allowing commits to main despite pending blocking items. CTO-only — blocked in spawned agent sessions. Use after reviewing blocking items with review_blocking_items.',
+    description: 'DEPRECATED — Use /promote-to-prod for production releases. The automated promotion pipeline has been replaced with CTO-initiated production releases.',
     schema: CreatePromotionBypassArgsSchema,
     handler: createPromotionBypass,
   },

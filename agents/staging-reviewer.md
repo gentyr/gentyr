@@ -14,6 +14,8 @@ allowedTools:
   - mcp__todo-db__list_tasks
   - mcp__todo-db__complete_task
   - mcp__agent-tracker__summarize_work
+  - mcp__specs-browser__list_specs
+  - mcp__specs-browser__get_spec
 ---
 
 # Staging Reviewer

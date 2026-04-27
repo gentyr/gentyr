@@ -156,6 +156,25 @@ async function main() {
     return;
   }
 
+  // Validate the release is actually in_progress before acting
+  try {
+    const Database = (await import('better-sqlite3')).default;
+    const ledgerDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'release-ledger.db');
+    if (fs.existsSync(ledgerDbPath)) {
+      const db = new Database(ledgerDbPath, { readonly: true });
+      db.pragma('busy_timeout = 3000');
+      const release = db.prepare('SELECT status FROM releases WHERE id = ?').get(releaseId);
+      db.close();
+      if (release && release.status !== 'in_progress') {
+        log(`Release ${releaseId} is ${release.status}, not in_progress — skipping completion`);
+        process.stdout.write(NOOP);
+        return;
+      }
+    }
+  } catch (err) {
+    log(`Warning: could not validate release status: ${err.message} — proceeding anyway`);
+  }
+
   log(`Release completion detected for release ${releaseId} (persistent task ${persistentTaskId})`);
 
   // Step 1: Unlock staging
