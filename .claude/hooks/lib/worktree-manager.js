@@ -281,7 +281,7 @@ export function provisionWorktree(worktreePath, options = {}) {
     // 'secret-sync' is only included when present in the config — in local prototyping
     // mode it is excluded from .mcp.json and must not receive port env injection.
     const configuredServerNames = new Set(Object.keys(mcpConfig.mcpServers));
-    const worktreeAwareServers = ['playwright', 'secret-sync'].filter(s =>
+    const worktreeAwareServers = ['playwright', 'secret-sync', 'agent-reports'].filter(s =>
       [...configuredServerNames].some(name => name.includes(s))
     );
     let ports = null;
@@ -302,6 +302,12 @@ export function provisionWorktree(worktreePath, options = {}) {
           server.env.PLAYWRIGHT_WEB_PORT = String(ports.webPort);
           server.env.PLAYWRIGHT_BACKEND_PORT = String(ports.backendPort);
           server.env.PLAYWRIGHT_BRIDGE_PORT = String(ports.bridgePort);
+        }
+        // Inject GENTYR_REPORT_TIER for agent-reports server based on base branch.
+        // Agents branching from staging get staging-tier reports; all others get preview-tier.
+        // This can be overridden via extraEnv passed to enqueueSession().
+        if (serverName.includes('agent-reports') && options.baseBranch) {
+          server.env.GENTYR_REPORT_TIER = options.baseBranch === 'staging' ? 'staging' : 'preview';
         }
       }
     }
@@ -719,7 +725,7 @@ export function createWorktree(branchName, baseBranch, options = {}) {
 
   // Provision with GENTYR config (strict mode may throw on install/build failure)
   try {
-    provisionWorktree(worktreePath, { skipInstall: options.skipInstall });
+    provisionWorktree(worktreePath, { skipInstall: options.skipInstall, baseBranch });
   } catch (err) {
     // Strict provisioning failed — clean up the broken worktree
     console.error(`[worktree-manager] Provisioning failed, removing worktree: ${err.message}`);

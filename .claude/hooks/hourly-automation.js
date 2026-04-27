@@ -304,6 +304,7 @@ function getConfig() {
     productManagerEnabled: false,
     demoValidationEnabled: false,
     dailyFeedbackEnabled: false,
+    stagingReactiveReviewEnabled: true,
     lastModified: null,
     intervals: {},
   };
@@ -667,6 +668,8 @@ function getState() {
       lastTaskGateCleanupRun: 0,
       lastUserFeedbackRun: 0,
       lastDailyFeedbackCheck: 0,
+      lastStagingReactiveReviewCheck: 0,
+      lastStagingReviewedSha: null,
     };
   }
 
@@ -698,6 +701,8 @@ function getState() {
     if (state.lastReportAutoResolveRun === undefined) state.lastReportAutoResolveRun = 0;
     if (state.lastReportDedupRun === undefined) state.lastReportDedupRun = 0;
     if (state.lastMergedPRTimestamp === undefined) state.lastMergedPRTimestamp = 0;
+    if (state.lastStagingReactiveReviewCheck === undefined) state.lastStagingReactiveReviewCheck = 0;
+    if (state.lastStagingReviewedSha === undefined) state.lastStagingReviewedSha = null;
     return state;
   } catch (err) {
     log(`FATAL: State file corrupted: ${err.message}`);
@@ -817,6 +822,32 @@ function hasReportsReadyForTriage() {
     return (row?.cnt || 0) > 0;
   } catch (err) {
     log(`WARN: Failed to check for pending reports: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Check if there are any reports ready for triage in a specific tier.
+ * @param {string|null} tier - Report tier ('preview', 'staging', or null for legacy/untiered)
+ * @returns {boolean}
+ */
+function hasReportsReadyForTriageByTier(tier) {
+  if (!Database || !fs.existsSync(CTO_REPORTS_DB)) {
+    return false;
+  }
+
+  try {
+    const db = new Database(CTO_REPORTS_DB, { readonly: true });
+    let row;
+    if (tier === null) {
+      row = db.prepare("SELECT COUNT(*) as cnt FROM reports WHERE triage_status = 'pending' AND tier IS NULL").get();
+    } else {
+      row = db.prepare("SELECT COUNT(*) as cnt FROM reports WHERE triage_status = 'pending' AND tier = ?").get(tier);
+    }
+    db.close();
+    return (row?.cnt || 0) > 0;
+  } catch (err) {
+    log(`WARN: Failed to check for pending ${tier ?? 'legacy'}-tier reports: ${err.message}`);
     return false;
   }
 }
@@ -1010,6 +1041,297 @@ After processing all reports, output a summary:
     buildPrompt: (agentId) => `[Automation][report-triage][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
     metadata: {},
+    projectDir: PROJECT_DIR,
+  });
+}
+
+/**
+ * Spawn preview-tier triage agent (fire-and-forget via queue).
+ * Preview-tier reports CANNOT be escalated to the CTO — the agent must self-handle or dismiss.
+ */
+function spawnPreviewTriage() {
+  const promptBody = `You are an orchestrator performing PREVIEW-TIER REPORT TRIAGE.
+
+## TIER CONSTRAINT — CRITICAL
+
+You are triaging PREVIEW-TIER reports. You CANNOT escalate to the CTO.
+For each report, you must either:
+1. Dismiss it (already resolved, not actionable, duplicate, low-impact)
+2. Create a task to fix it (via mcp__todo-db__create_task)
+3. Create a persistent task for complex issues (via mcp__persistent-task__create_persistent_task + activate)
+4. Create a plan for multi-step work (via mcp__plan-orchestrator__create_plan)
+
+Do NOT call add_question() — preview-tier reports are handled entirely by automation.
+
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the deputy-cto sub-agent:
+\`\`\`
+Task(subagent_type='deputy-cto', prompt='Triage all pending preview-tier agent reports. Use mcp__agent-reports__get_reports_for_triage to get reports, then investigate and decide on each. You CANNOT escalate — use self_handled or dismissed only.')
+\`\`\`
+
+The deputy-cto sub-agent has specialized instructions loaded from .claude/agents/deputy-cto.md.
+
+## Mission
+
+Triage all pending preview-tier agent reports. For each report:
+1. Investigate to understand the context
+2. Self-handle (create a task/persistent-task/plan) or dismiss
+3. Complete triage with status "self_handled" or "dismissed" — NEVER "escalated"
+
+## Step 1: Get Reports Ready for Triage
+
+\`\`\`
+mcp__agent-reports__get_reports_for_triage({ limit: 10 })
+\`\`\`
+
+Filter to reports where tier = 'preview'. If no preview-tier reports are returned, output "No preview-tier reports ready for triage" and exit.
+
+## Step 2: Triage Each Report
+
+For each preview-tier report:
+
+### 2a: Start Triage
+\`\`\`
+mcp__agent-reports__start_triage({ id: "<report-id>" })
+\`\`\`
+
+### 2b: Read the Report
+\`\`\`
+mcp__agent-reports__read_report({ id: "<report-id>" })
+\`\`\`
+
+### 2c: Investigate
+
+**Search for related work:**
+\`\`\`
+mcp__todo-db__list_tasks({ limit: 50 })
+mcp__agent-tracker__search_sessions({ query: "<keywords>", limit: 10 })
+\`\`\`
+
+### 2d: Apply Decision Framework
+
+| SELF-HANDLE | DISMISS |
+|-------------|---------|
+| Breaking change (fix path clear) | Already resolved |
+| Architecture issue (precedent exists) | Not a real problem |
+| Issue already in todos | False positive |
+| Similar issue recently fixed | Duplicate report |
+| Clear fix, low risk | Informational only |
+| Code quality fix | Outdated concern |
+| Documentation/test gap | Style suggestions |
+| Performance fix clear path | Minor improvements |
+| Isolated bug fix | Low-severity patterns |
+| Security vulnerability (create urgent task) | Tangential observations |
+
+**Decision Rules:**
+- **Actionable with clear fix** → self-handle (create task)
+- **Not actionable** (already fixed, false positive, duplicate, low-impact) → dismiss
+- **Default to dismiss** for informational-only reports, minor suggestions, and low-severity patterns
+
+### 2e: Take Action
+
+**If SELF-HANDLING:**
+\`\`\`
+mcp__todo-db__create_task({
+  category_id: "standard",
+  title: "Brief actionable title",
+  description: "Full context: what to fix, where, why, and acceptance criteria",
+  assigned_by: "deputy-cto",
+  priority: "normal"
+})
+
+mcp__agent-reports__complete_triage({
+  id: "<report-id>",
+  status: "self_handled",
+  outcome: "Created task to [brief description of fix]"
+})
+\`\`\`
+
+**If DISMISSING:**
+\`\`\`
+mcp__agent-reports__complete_triage({
+  id: "<report-id>",
+  status: "dismissed",
+  outcome: "Dismissed: [reason]"
+})
+\`\`\`
+
+## Output
+
+After processing all reports, output a summary:
+- How many self-handled vs dismissed
+- Brief description of each action taken`;
+
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Triaging pending preview-tier reports',
+    agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'report-triage-preview',
+    source: 'hourly-automation',
+    priority: 'low',
+    buildPrompt: (agentId) => `[Automation][report-triage-preview][AGENT:${agentId}] ${promptBody}`,
+    extraEnv: { ...resolvedCredentials, GENTYR_REPORT_TIER: 'preview' },
+    metadata: { triageTier: 'preview' },
+    projectDir: PROJECT_DIR,
+  });
+}
+
+/**
+ * Spawn staging-tier triage agent (fire-and-forget via queue).
+ * Staging-tier reports CAN escalate to the CTO but are informational for quality tracking,
+ * not blocking for production promotion.
+ */
+function spawnStagingTriage() {
+  const promptBody = `You are an orchestrator performing STAGING-TIER REPORT TRIAGE.
+
+## TIER CONTEXT
+
+You are triaging STAGING-TIER reports. You CAN escalate to the CTO when needed.
+These reports do NOT block production promotion — they are informational for quality tracking.
+Otherwise, use the same decision framework as standard triage.
+
+## IMMEDIATE ACTION
+
+Your first action MUST be to spawn the deputy-cto sub-agent:
+\`\`\`
+Task(subagent_type='deputy-cto', prompt='Triage all pending staging-tier agent reports. Use mcp__agent-reports__get_reports_for_triage to get reports, then investigate and decide on each.')
+\`\`\`
+
+The deputy-cto sub-agent has specialized instructions loaded from .claude/agents/deputy-cto.md.
+
+## Mission
+
+Triage all pending staging-tier agent reports. For each report:
+1. Investigate to understand the context
+2. Decide whether to handle it yourself, escalate to CTO, or dismiss
+3. Take appropriate action
+
+## Step 1: Get Reports Ready for Triage
+
+\`\`\`
+mcp__agent-reports__get_reports_for_triage({ limit: 10 })
+\`\`\`
+
+Filter to reports where tier = 'staging'. If no staging-tier reports are returned, output "No staging-tier reports ready for triage" and exit.
+
+## Step 2: Triage Each Report
+
+For each staging-tier report:
+
+### 2a: Start Triage
+\`\`\`
+mcp__agent-reports__start_triage({ id: "<report-id>" })
+\`\`\`
+
+### 2b: Read the Report
+\`\`\`
+mcp__agent-reports__read_report({ id: "<report-id>" })
+\`\`\`
+
+### 2c: Investigate
+
+**Search for related work:**
+\`\`\`
+mcp__todo-db__list_tasks({ limit: 50 })
+mcp__deputy-cto__search_cleared_items({ query: "<keywords from report>" })
+mcp__agent-tracker__search_sessions({ query: "<keywords>", limit: 10 })
+\`\`\`
+
+### 2d: Check Auto-Escalation Rules
+
+**ALWAYS ESCALATE (no exceptions):**
+- **G002 Violations**: Any report mentioning stub code, placeholder, TODO, FIXME, or "not implemented"
+- **Security vulnerabilities**: Any report with category "security" or mentioning vulnerabilities
+- **Bypass requests**: Any bypass-request type (these require CTO approval)
+
+If the report matches ANY auto-escalation rule, skip to "If ESCALATING".
+
+### 2e: Apply Decision Framework (if no auto-escalation)
+
+| ESCALATE to CTO | SELF-HANDLE | DISMISS |
+|-----------------|-------------|---------|
+| Active security breach | Breaking change (fix path clear) | Already resolved |
+| Resource/budget implications | Architecture (precedent exists) | Not a real problem |
+| Cross-team coordination | Issue already in todos | False positive |
+| Policy/process change | Similar issue recently fixed | Duplicate report |
+|  | Clear fix, low risk | Informational only |
+|  | Obvious code quality fix | Outdated concern |
+|  | Documentation/test gap | Style suggestions |
+|  | Performance fix clear path | Minor improvements |
+|  | Isolated bug fix | Low-severity patterns |
+|  | Uncertain but low-impact | Tangential observations |
+
+**Decision Rules:**
+- **>70% confident** you know the right action AND issue is not high-severity → self-handle
+- **<70% confident** AND high-severity → escalate
+- **Not actionable** → dismiss
+- **Default to dismiss** for informational-only reports
+- Target distribution: dismiss ~40%, self-handle ~40%, escalate ~20%
+
+### 2f: Take Action
+
+**If SELF-HANDLING:**
+\`\`\`
+mcp__todo-db__create_task({
+  category_id: "standard",
+  title: "Brief actionable title",
+  description: "Full context: what to fix, where, why, and acceptance criteria",
+  assigned_by: "deputy-cto",
+  priority: "normal"
+})
+
+mcp__agent-reports__complete_triage({
+  id: "<report-id>",
+  status: "self_handled",
+  outcome: "Created task to [brief description of fix]"
+})
+\`\`\`
+
+**If ESCALATING:**
+\`\`\`
+mcp__deputy-cto__add_question({
+  type: "escalation",
+  title: "Brief title of the issue",
+  description: "Context from investigation + why CTO input needed",
+  suggested_options: ["Option A", "Option B"],
+  recommendation: "Your recommended course of action and why"
+})
+
+mcp__agent-reports__complete_triage({
+  id: "<report-id>",
+  status: "escalated",
+  outcome: "Escalated: [reason CTO input is needed]"
+})
+\`\`\`
+
+**If DISMISSING:**
+\`\`\`
+mcp__agent-reports__complete_triage({
+  id: "<report-id>",
+  status: "dismissed",
+  outcome: "Dismissed: [reason]"
+})
+\`\`\`
+
+## Output
+
+After processing all reports, output a summary:
+- How many self-handled vs escalated vs dismissed
+- Brief description of each action taken`;
+
+  ensureCredentials();
+  return enqueueSession({
+    title: 'Triaging pending staging-tier reports',
+    agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
+    hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+    tagContext: 'report-triage-staging',
+    source: 'hourly-automation',
+    priority: 'low',
+    buildPrompt: (agentId) => `[Automation][report-triage-staging][AGENT:${agentId}] ${promptBody}`,
+    extraEnv: { ...resolvedCredentials, GENTYR_REPORT_TIER: 'staging' },
+    metadata: { triageTier: 'staging' },
     projectDir: PROJECT_DIR,
   });
 }
@@ -3332,6 +3654,8 @@ async function main() {
 
   // =========================================================================
   // TRIAGE CHECK (dynamic interval, default 5 min)
+  // Two-tier triage: preview-tier cannot escalate, staging-tier can.
+  // Legacy (null-tier) reports use the original spawnReportTriage() for backward compat.
   // Per-item cooldown is handled by the MCP server's get_reports_for_triage
   // =========================================================================
   await runIfDue('triage_check', {
@@ -3339,14 +3663,136 @@ async function main() {
     stateKey: 'lastTriageCheck',
     label: 'Triage check',
     fn: async () => {
-      if (hasReportsReadyForTriage()) {
-        log('Pending reports found, spawning triage agent...');
-        // The agent will call get_reports_for_triage which handles cooldown filtering
-        spawnReportTriage();
-        log('Report triage enqueued.');
-      } else {
-        log('No pending reports found.');
+      let anyFound = false;
+
+      // Preview-tier pending reports
+      if (hasReportsReadyForTriageByTier('preview')) {
+        log('Preview-tier pending reports found, spawning preview triage agent...');
+        spawnPreviewTriage();
+        log('Preview-tier report triage enqueued.');
+        anyFound = true;
       }
+
+      // Staging-tier pending reports
+      if (hasReportsReadyForTriageByTier('staging')) {
+        log('Staging-tier pending reports found, spawning staging triage agent...');
+        spawnStagingTriage();
+        log('Staging-tier report triage enqueued.');
+        anyFound = true;
+      }
+
+      // Legacy (null-tier) reports — backward compatibility
+      if (hasReportsReadyForTriageByTier(null)) {
+        log('Legacy (untiered) pending reports found, spawning triage agent...');
+        spawnReportTriage();
+        log('Legacy report triage enqueued.');
+        anyFound = true;
+      }
+
+      if (!anyFound) {
+        log('No pending reports found in any tier.');
+      }
+    },
+  });
+
+  // =========================================================================
+  // STAGING REACTIVE REVIEW (dynamic interval, default 60 min)
+  // Spawns 4 concurrent review sessions to review staging changes ahead of main
+  // =========================================================================
+  await runIfDue('staging_reactive_review', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStagingReactiveReviewCheck',
+    configToggle: 'stagingReactiveReviewEnabled',
+    config,
+    localModeSkip: localMode,
+    label: 'Staging reactive review',
+    fn: async () => {
+      // 1. Fetch staging and main
+      try {
+        execSync('git fetch origin staging main --quiet 2>/dev/null || true', {
+          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+        });
+      } catch { return; }
+
+      if (!remoteBranchExists('staging') || !remoteBranchExists('main')) return;
+
+      // 2. Get commits staging has ahead of main
+      const newCommits = getNewCommits('staging', 'main');
+      if (newCommits.length === 0) {
+        log('Staging reactive review: no new commits on staging ahead of main.');
+        return;
+      }
+
+      // 3. Track last reviewed SHA to avoid re-reviewing
+      const lastReviewedSha = state.lastStagingReviewedSha || null;
+      let currentSha;
+      try {
+        currentSha = execSync('git rev-parse origin/staging', {
+          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        }).trim();
+      } catch { return; }
+
+      if (lastReviewedSha === currentSha) {
+        log('Staging reactive review: staging SHA unchanged since last review.');
+        return;
+      }
+
+      log(`Staging reactive review: ${newCommits.length} commits to review. Spawning 4 review sessions.`);
+
+      ensureCredentials();
+
+      // 4. Spawn 4 concurrent review sessions
+      const reviewTypes = [
+        { focus: 'antipattern', label: 'Antipattern Hunter' },
+        { focus: 'code-quality', label: 'Code Reviewer' },
+        { focus: 'user-alignment', label: 'User Alignment' },
+        { focus: 'spec-compliance', label: 'Spec Enforcement' },
+      ];
+
+      const diffContext = newCommits.join('\n');
+
+      for (const { focus, label } of reviewTypes) {
+        const prompt = [
+          `[Automation][staging-reviewer][AGENT:{AGENT_ID}]`,
+          `## Staging Review: ${label}`,
+          `Review focus: ${focus}`,
+          ``,
+          `You are reviewing ${newCommits.length} commits that staging has ahead of production.`,
+          `These are the commits:`,
+          diffContext,
+          ``,
+          `Your job:`,
+          `1. Run \`git diff origin/main..origin/staging\` to see the full diff`,
+          `2. Review the changes with focus on: ${focus}`,
+          `3. If you find issues, report them via mcp__agent-reports__report_to_deputy_cto`,
+          `4. If fixes are needed:`,
+          `   a. Spawn a code-writer sub-agent to implement the fix`,
+          `   b. The project-manager should merge the fix to preview first`,
+          `   c. Then immediately create a preview->staging PR and merge it`,
+          `5. Call summarize_work when done`,
+        ].join('\n');
+
+        try {
+          enqueueSession({
+            title: `[Staging Review] ${label}`,
+            agentType: 'staging-reactive-reviewer',
+            hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+            tagContext: `staging-review-${focus}`,
+            source: 'hourly-automation',
+            priority: 'normal',
+            agent: 'staging-reviewer',
+            buildPrompt: (agentId) => prompt.replace('{AGENT_ID}', agentId),
+            extraEnv: { ...resolvedCredentials, GENTYR_REPORT_TIER: 'staging' },
+            metadata: { reviewFocus: focus, stagingSha: currentSha },
+            projectDir: PROJECT_DIR,
+          });
+        } catch (err) {
+          log(`Staging reactive review: failed to enqueue ${label}: ${err.message}`);
+        }
+      }
+
+      state.lastStagingReviewedSha = currentSha;
+      saveState(state);
     },
   });
 
