@@ -30,6 +30,8 @@ export interface ExecutionTargetInput {
   scenarioHeaded: boolean;
   /** Whether the scenario uses chrome-bridge fixtures */
   usesChromeBridge: boolean;
+  /** Whether the scenario has remote_eligible=true in the DB (explicit eligibility flag). Undefined = use heuristics. */
+  remoteEligible?: boolean;
   /** Explicit remote override from the agent (true=force remote, false=force local, undefined=auto) */
   explicitRemote?: boolean;
   /** Number of currently running Fly machines */
@@ -87,6 +89,7 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
     displayLockContended,
     scenarioHeaded,
     usesChromeBridge,
+    remoteEligible,
     explicitRemote,
     activeMachineCount = 0,
     maxConcurrentMachines = 3,
@@ -99,6 +102,18 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
   // explicit remote=false always wins regardless of other flags
   if (explicitRemote === false) {
     return { target: 'local', reason: 'Explicitly requested local execution (remote: false)' };
+  }
+
+  // Scenario explicitly marked as not remote-eligible in the DB — authoritative
+  // override that takes precedence over all heuristic checks.
+  if (remoteEligible === false) {
+    if (explicitRemote === true) {
+      return {
+        target: 'local',
+        reason: 'Scenario has remote_eligible=false — cannot run remotely (DB override)',
+      };
+    }
+    return { target: 'local', reason: 'Scenario not remote-eligible (remote_eligible=false in DB)' };
   }
 
   // Chrome-bridge scenarios require a local Chrome process with an active

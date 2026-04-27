@@ -400,6 +400,8 @@ CREATE TABLE IF NOT EXISTS demo_scenarios (
     test_file TEXT NOT NULL UNIQUE,
     sort_order INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
+    headed INTEGER NOT NULL DEFAULT 0,
+    remote_eligible INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL,

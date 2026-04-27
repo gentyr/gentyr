@@ -2137,15 +2137,18 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
     let scenarioHeaded = false;
     let usesChromeBridge = false;
+    let remoteEligible: boolean | undefined;
     if (args.scenario_id) {
       try {
         const feedbackDbPath = getUserFeedbackDbPath();
         if (fs.existsSync(feedbackDbPath)) {
           const scenarioDb = new Database(feedbackDbPath, { readonly: true });
           try {
-            const scenarioRow = scenarioDb.prepare('SELECT headed, consumption_mode FROM demo_scenarios WHERE id = ?')
-              .get(args.scenario_id) as { headed: number | null; consumption_mode: string | null } | undefined;
+            const scenarioRow = scenarioDb.prepare('SELECT headed, remote_eligible FROM demo_scenarios WHERE id = ?')
+              .get(args.scenario_id) as { headed: number | null; remote_eligible: number | null } | undefined;
             if (scenarioRow?.headed === 1) scenarioHeaded = true;
+            if (scenarioRow?.remote_eligible === 0) remoteEligible = false;
+            else if (scenarioRow?.remote_eligible === 1) remoteEligible = true;
           } catch { /* column may not exist */ }
           scenarioDb.close();
         }
@@ -2202,6 +2205,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         displayLockContended,
         scenarioHeaded,
         usesChromeBridge,
+        remoteEligible,
         explicitRemote: args.remote,
         activeMachineCount,
         maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
@@ -6561,10 +6565,11 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
           if (fs.existsSync(feedbackDbPath)) {
             const db = new Database(feedbackDbPath, { readonly: true });
             try {
-              const row = db.prepare('SELECT test_file, headed FROM demo_scenarios WHERE id = ?')
-                .get(scenario.scenario_id) as { test_file: string | null; headed: number | null } | undefined;
+              const row = db.prepare('SELECT test_file, headed, remote_eligible FROM demo_scenarios WHERE id = ?')
+                .get(scenario.scenario_id) as { test_file: string | null; headed: number | null; remote_eligible: number | null } | undefined;
               if (row?.test_file) scenarioTestFile = row.test_file;
               if (row?.headed === 1) { db.close(); continue; } // Headed scenarios stay local
+              if (row?.remote_eligible === 0) { db.close(); continue; } // Explicitly marked local-only
             } catch { /* */ }
             db.close();
           }

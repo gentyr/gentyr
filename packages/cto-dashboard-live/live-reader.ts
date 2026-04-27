@@ -537,7 +537,7 @@ export function getSessionSummaries(agentId: string): Array<{ id: string; summar
 interface ScenarioRow {
   id: string; persona_id: string; title: string; description: string;
   category: string | null; playwright_project: string; test_file: string;
-  sort_order: number; enabled: number; headed: number;
+  sort_order: number; enabled: number; headed: number; remote_eligible: number | null;
   last_recorded_at: string | null; recording_path: string | null; persona_name: string;
   env_vars: string | null;
   result_status: string | null; result_mode: string | null; result_completed: string | null;
@@ -550,6 +550,8 @@ export function readDemoScenarios(): DemoScenarioItem[] {
     // Check whether optional columns exist (may not be present in older DBs)
     let hasEnvVars = false;
     try { db.prepare('SELECT env_vars FROM demo_scenarios LIMIT 0').run(); hasEnvVars = true; } catch { /* column not yet migrated */ }
+    let hasRemoteEligible = false;
+    try { db.prepare('SELECT remote_eligible FROM demo_scenarios LIMIT 0').run(); hasRemoteEligible = true; } catch { /* column not yet migrated */ }
     let hasResults = false;
     try { db.prepare('SELECT id FROM demo_results LIMIT 0').run(); hasResults = true; } catch { /* table not yet migrated */ }
 
@@ -564,7 +566,7 @@ export function readDemoScenarios(): DemoScenarioItem[] {
     const query = `
       SELECT ds.id, ds.persona_id, ds.title, ds.description, ds.category,
              ds.playwright_project, ds.test_file, ds.sort_order, ds.enabled,
-             ds.headed, ds.last_recorded_at, ds.recording_path,
+             ds.headed, ${hasRemoteEligible ? 'ds.remote_eligible,' : ''} ds.last_recorded_at, ds.recording_path,
              ${hasEnvVars ? 'ds.env_vars,' : ''}
              ${hasResults ? 'dr.result_status, dr.result_mode, dr.result_completed,' : ''}
              p.name AS persona_name
@@ -598,6 +600,7 @@ export function readDemoScenarios(): DemoScenarioItem[] {
         sortOrder: r.sort_order,
         enabled: r.enabled === 1,
         headed: r.headed === 1,
+        remoteEligible: hasRemoteEligible ? r.remote_eligible === 1 : true,
         lastRecordedAt: r.last_recorded_at,
         recordingPath: r.recording_path && fs.existsSync(r.recording_path) ? r.recording_path : null,
         envVars,

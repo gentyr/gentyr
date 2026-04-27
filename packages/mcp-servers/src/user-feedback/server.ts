@@ -397,6 +397,20 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     } catch {
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN headed INTEGER NOT NULL DEFAULT 0");
     }
+    try {
+      db.prepare("SELECT remote_eligible FROM demo_scenarios LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE demo_scenarios ADD COLUMN remote_eligible INTEGER NOT NULL DEFAULT 1");
+      // One-time seed: mark chrome-bridge and headed scenarios as not remote-eligible
+      db.exec(`
+        UPDATE demo_scenarios SET remote_eligible = 0
+        WHERE headed = 1
+           OR test_file LIKE '%ext-%'
+           OR test_file LIKE '%platform%'
+           OR test_file LIKE '%/extension/%'
+           OR test_file LIKE '%/platform-fixtures%'
+      `);
+    }
 
     // Auto-migration: create demo_prerequisites table if missing
     try {
@@ -550,6 +564,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       sort_order: record.sort_order,
       enabled: record.enabled === 1,
       headed: record.headed === 1,
+      remote_eligible: record.remote_eligible === 1,
       created_at: record.created_at,
       updated_at: record.updated_at,
       persona_name: personaName,
@@ -1424,8 +1439,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     try {
       db.prepare(`
-        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, created_at, created_timestamp, updated_at, env_vars)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, created_at, created_timestamp, updated_at, env_vars)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         args.persona_id,
@@ -1436,6 +1451,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         args.test_file,
         args.sort_order ?? 0,
         args.headed ? 1 : 0,
+        args.remote_eligible ? 1 : 0,
         created_at,
         created_timestamp,
         created_at,
@@ -1486,6 +1502,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.sort_order !== undefined) { updates.push('sort_order = ?'); params.push(args.sort_order); }
     if (args.enabled !== undefined) { updates.push('enabled = ?'); params.push(args.enabled ? 1 : 0); }
     if (args.headed !== undefined) { updates.push('headed = ?'); params.push(args.headed ? 1 : 0); }
+    if (args.remote_eligible !== undefined) { updates.push('remote_eligible = ?'); params.push(args.remote_eligible ? 1 : 0); }
     if (args.env_vars !== undefined) {
       if (args.env_vars === null) {
         updates.push('env_vars = ?'); params.push(null);
@@ -1548,6 +1565,10 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.category) {
       conditions.push('ds.category = ?');
       params.push(args.category);
+    }
+    if (args.remote_eligible !== undefined) {
+      conditions.push('ds.remote_eligible = ?');
+      params.push(args.remote_eligible ? 1 : 0);
     }
 
     if (conditions.length > 0) {
