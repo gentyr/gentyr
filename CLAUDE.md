@@ -1419,7 +1419,7 @@ feedback-reporter, playwright-feedback, programmatic-feedback
 **Plans**: plan, plan-progress, plan-timeline, plan-audit, plan-sessions
 **Config**: concurrent-sessions, configure-personas, focus-mode, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
 **Operations**: cto-dashboard, deputy-cto, promote-to-prod, session-queue, show, workstream
-**Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr
+**Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr, setup-fly
 **Analysis**: persona-feedback, product-manager, replay, run-feedback
 
 ### Prompt Injection Points (7 major sources)
