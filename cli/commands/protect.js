@@ -98,6 +98,8 @@ function doProtect(projectDir) {
     'plan-merge-tracker.js',
     'plan-persistent-sync.js',
     'plan-activation-spawner.js',
+    'staging-lock-guard.js',
+    'release-completion-hook.js',
     'git-wrappers/git',
   ];
 

@@ -385,7 +385,7 @@ main().catch((err) => {
   // G001 fail-closed: staging lock guard must not silently allow on crash
   try { process.stderr.write(`[staging-lock-guard] Unexpected error: ${err?.message || err}\n`); } catch (_) { /* ignore */ }
   process.stdout.write(JSON.stringify({
-    decision: 'deny',
-    reason: `Staging lock guard crashed: ${err?.message || 'unknown error'}. Run again or check .claude/state/staging-lock.json manually.`,
+    permissionDecision: 'deny',
+    permissionDecisionReason: `Staging lock guard crashed: ${err?.message || 'unknown error'}. Run again or check .claude/state/staging-lock.json manually.`,
   }));
 });

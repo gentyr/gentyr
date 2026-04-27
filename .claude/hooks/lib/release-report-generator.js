@@ -483,7 +483,7 @@ function generateScreenshots(artifactDir) {
  *
  * @param {string} releaseId
  * @param {string} [projectDir]
- * @returns {Promise<{ mdPath: string }>}
+ * @returns {Promise<{ mdPath: string, pdfPath: string|null }>}
  */
 export async function generateStructuredReport(releaseId, projectDir = PROJECT_DIR) {
   if (!releaseId || typeof releaseId !== 'string') {
@@ -586,7 +586,22 @@ export async function generateStructuredReport(releaseId, projectDir = PROJECT_D
   fs.writeFileSync(mdPath, template, 'utf8');
   log(`Generated release report at ${mdPath}`);
 
-  return { mdPath };
+  // Generate PDF
+  const pdfPath = path.join(artifactDir, 'report.pdf');
+  let pdfResult;
+  try {
+    pdfResult = await convertToPdf(mdPath, pdfPath);
+    if (pdfResult.pdfPath) {
+      log(`Generated PDF at ${pdfResult.pdfPath}`);
+    } else {
+      log('PDF generation skipped (Chromium not available) — .md report is the primary artifact');
+    }
+  } catch (err) {
+    log(`Warning: PDF generation failed: ${err.message}`);
+    pdfResult = { pdfPath: null, mdPath, fallback: true };
+  }
+
+  return { mdPath, pdfPath: pdfResult?.pdfPath || null };
 }
 
 /**

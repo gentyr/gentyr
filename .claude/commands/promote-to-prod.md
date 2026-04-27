@@ -159,28 +159,28 @@ Record the returned `plan_id`.
 Create each phase in order using `mcp__plan-orchestrator__add_phase`:
 
 1. **Phase 1** — "Per-PR Quality Review"
-   - `plan_id`, `title: "Per-PR Quality Review"`, `phase_order: 1`
+   - `plan_id`, `title: "Per-PR Quality Review"`, `gate: true`
 
 2. **Phase 2** — "Initial Triage"
-   - `plan_id`, `title: "Initial Triage"`, `phase_order: 2`
+   - `plan_id`, `title: "Initial Triage"`
 
 3. **Phase 3** — "Meta-Review"
-   - `plan_id`, `title: "Meta-Review"`, `phase_order: 3`
+   - `plan_id`, `title: "Meta-Review"`, `gate: true`
 
 4. **Phase 4** — "Test & Demo Execution"
-   - `plan_id`, `title: "Test & Demo Execution"`, `phase_order: 4`
+   - `plan_id`, `title: "Test & Demo Execution"`, `gate: true`
 
 5. **Phase 5** — "Demo Coverage Audit"
-   - `plan_id`, `title: "Demo Coverage Audit"`, `phase_order: 5`
+   - `plan_id`, `title: "Demo Coverage Audit"`, `gate: true`
 
 6. **Phase 6** — "Final Triage"
-   - `plan_id`, `title: "Final Triage"`, `phase_order: 6`
+   - `plan_id`, `title: "Final Triage"`
 
 7. **Phase 7** — "CTO Sign-off"
-   - `plan_id`, `title: "CTO Sign-off"`, `phase_order: 7`
+   - `plan_id`, `title: "CTO Sign-off"`, `gate: true`
 
 8. **Phase 8** — "Release Report"
-   - `plan_id`, `title: "Release Report"`, `phase_order: 8`
+   - `plan_id`, `title: "Release Report"`
 
 Record each phase ID.
 

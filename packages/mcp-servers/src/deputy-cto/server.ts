@@ -2280,6 +2280,17 @@ function requestHotfixPromotion(_args: RequestHotfixPromotionArgs): RequestHotfi
 }
 
 async function executeHotfixPromotion(_args: ExecuteHotfixPromotionArgs): Promise<ExecuteHotfixPromotionResult | ErrorResult> {
+  // Check staging lock — block hotfix during active production release
+  try {
+    const stagingLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'staging-lock.js');
+    if (fs.existsSync(stagingLockPath)) {
+      const { isStagingLocked } = await import(stagingLockPath);
+      if (isStagingLocked(PROJECT_DIR)) {
+        return { error: 'Hotfix blocked: staging is locked for a production release in progress. Complete or cancel the release via /promote-to-prod before executing a hotfix.' };
+      }
+    }
+  } catch { /* non-fatal — proceed if lock check fails */ }
+
   // Read approval token
   if (!fs.existsSync(HOTFIX_APPROVAL_TOKEN_PATH)) {
     return { error: 'No hotfix approval token found. The CTO must type "APPROVE HOTFIX <code>" first.' };
