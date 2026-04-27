@@ -118,6 +118,7 @@ const ALLOWED_MCP_INDIVIDUAL = new Set([
   'mcp__onepassword__op_vault_map',               // Returns op:// references — no secret values
   'mcp__onepassword__create_item',                // Create items — values go direct to op CLI
   'mcp__onepassword__add_item_fields',            // Add fields — values go direct to op CLI
+  'mcp__secret-sync__populate_secrets_local',     // Writes op:// refs only — no secret values in context
 ]);
 
 /**
