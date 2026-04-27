@@ -8,6 +8,10 @@
  * A single daemon process replaces ~15 per-session stdio processes,
  * saving ~750MB RAM per concurrent agent.
  *
+ * Two-phase startup: HTTP server binds immediately (health endpoint
+ * responds with status:'starting'), then credentials resolve in
+ * parallel and server modules load (status:'ok').
+ *
  * Usage: node scripts/mcp-server-daemon.js
  *
  * Environment:
@@ -16,13 +20,16 @@
  *   OP_SERVICE_ACCOUNT_TOKEN - 1Password token (optional)
  *   GENTYR_LAUNCHD_SERVICE   - Set to 'true' in headless launchd context
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import path from 'path';
 import fs from 'fs';
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { fileURLToPath } from 'url';
+
+const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,15 +59,36 @@ function log(msg) {
 // Set flag before importing any server modules so they skip stdio transport
 process.env.MCP_SHARED_DAEMON = '1';
 
-// ---------------------------------------------------------------------------
-// Credential Resolution
-// Adapted from mcp-launcher.js — resolves credentials for all Tier 1 servers
-// at once rather than per-server.
-// ---------------------------------------------------------------------------
-
 import { TIER1_SERVERS } from '../lib/shared-mcp-config.js';
 
-function resolveAllCredentials() {
+const DIST_DIR = path.join(__dirname, '..', 'packages', 'mcp-servers', 'dist');
+const stateDir = path.join(PROJECT_DIR, '.claude', 'state');
+const stateFile = path.join(stateDir, 'shared-mcp-daemon.json');
+
+// ---------------------------------------------------------------------------
+// Phase 1: Start HTTP Server immediately (responds with status:'starting')
+// ---------------------------------------------------------------------------
+
+const servers = new Map();
+let daemonReady = false;
+
+const { startSharedHttpServer } = await import(
+  path.join(DIST_DIR, 'shared', 'http-transport.js')
+);
+
+const { httpServer, close } = startSharedHttpServer({
+  port: PORT,
+  servers,
+  isReady: () => daemonReady,
+});
+
+log(`HTTP server listening on port ${PORT} (status: starting)`);
+
+// ---------------------------------------------------------------------------
+// Phase 2: Resolve credentials in parallel, then load server modules
+// ---------------------------------------------------------------------------
+
+async function resolveAllCredentials() {
   const mappingsPath = path.join(PROJECT_DIR, '.claude', 'vault-mappings.json');
   const actionsPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'protected-actions.json');
 
@@ -90,6 +118,9 @@ function resolveAllCredentials() {
   let skipped = 0;
   let failed = 0;
 
+  // Separate direct values (sync) from op:// refs (async parallel)
+  const opReads = [];
+
   for (const key of allKeys) {
     if (process.env[key]) {
       skipped++;
@@ -100,27 +131,11 @@ function resolveAllCredentials() {
     if (!ref) { continue; }
 
     if (ref.startsWith('op://')) {
-      // In headless automation without a service account token, skip op read
-      // to prevent macOS TCC prompts and 1Password Touch ID prompts.
       if (process.env.GENTYR_LAUNCHD_SERVICE === 'true' && !process.env.OP_SERVICE_ACCOUNT_TOKEN) {
         log(`Skipping ${key}: headless automation, no OP_SERVICE_ACCOUNT_TOKEN`);
         continue;
       }
-
-      try {
-        const value = execFileSync('op', ['read', ref], {
-          encoding: 'utf-8',
-          timeout: 15000,
-          env: process.env,
-        }).trim();
-        if (value) {
-          process.env[key] = value;
-          resolved++;
-        }
-      } catch (err) {
-        log(`Failed to resolve ${key}: ${err.message || 'unknown error'}`);
-        failed++;
-      }
+      opReads.push({ key, ref });
     } else {
       // Direct value (non-secret identifier like URL, zone ID)
       process.env[key] = ref;
@@ -128,18 +143,42 @@ function resolveAllCredentials() {
     }
   }
 
+  // Resolve all op:// references in parallel
+  if (opReads.length > 0) {
+    const startTime = Date.now();
+    const results = await Promise.allSettled(
+      opReads.map(({ key, ref }) =>
+        execFileAsync('op', ['read', ref], {
+          encoding: 'utf-8',
+          timeout: 15000,
+          env: process.env,
+        }).then(({ stdout }) => ({ key, value: stdout.trim() }))
+      )
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === 'fulfilled' && result.value.value) {
+        process.env[result.value.key] = result.value.value;
+        resolved++;
+      } else {
+        const reason = result.status === 'rejected' ? result.reason?.message : 'empty value';
+        log(`Failed to resolve ${opReads[i].key}: ${reason || 'unknown error'}`);
+        failed++;
+      }
+    }
+
+    log(`Parallel op:// resolution: ${opReads.length} refs in ${Date.now() - startTime}ms`);
+  }
+
   log(`Credentials: resolved=${resolved} skipped(from-env)=${skipped} failed=${failed} total=${allKeys.size}`);
 }
 
-resolveAllCredentials();
+await resolveAllCredentials();
 
 // ---------------------------------------------------------------------------
 // Load Tier 1 Server Modules
 // ---------------------------------------------------------------------------
-
-const DIST_DIR = path.join(__dirname, '..', 'packages', 'mcp-servers', 'dist');
-
-const servers = new Map();
 
 for (const name of TIER1_SERVERS) {
   const serverPath = path.join(DIST_DIR, name, 'server.js');
@@ -172,22 +211,12 @@ if (servers.size === 0) {
   process.exit(1);
 }
 
-// ---------------------------------------------------------------------------
-// Start HTTP Server
-// ---------------------------------------------------------------------------
-
-const { startSharedHttpServer } = await import(
-  path.join(DIST_DIR, 'shared', 'http-transport.js')
-);
-
-const { httpServer } = startSharedHttpServer({ port: PORT, servers });
+// Mark as ready — health endpoint now returns status:'ok'
+daemonReady = true;
 
 // ---------------------------------------------------------------------------
 // Write State File (for config-gen detection)
 // ---------------------------------------------------------------------------
-
-const stateDir = path.join(PROJECT_DIR, '.claude', 'state');
-const stateFile = path.join(stateDir, 'shared-mcp-daemon.json');
 
 try {
   fs.mkdirSync(stateDir, { recursive: true });
@@ -209,8 +238,22 @@ function cleanup() {
   try { fs.unlinkSync(stateFile); } catch { /* non-fatal */ }
 }
 
-process.on('SIGINT', () => { cleanup(); process.exit(0); });
-process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+process.on('SIGINT', async () => {
+  cleanup();
+  try {
+    await Promise.race([close(), new Promise(r => setTimeout(r, 5000))]);
+  } catch { /* non-fatal */ }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  cleanup();
+  try {
+    await Promise.race([close(), new Promise(r => setTimeout(r, 5000))]);
+  } catch { /* non-fatal */ }
+  process.exit(0);
+});
+
 process.on('exit', cleanup);
 
-log(`Shared MCP daemon started: ${servers.size}/${TIER1_SERVERS.length} servers on port ${PORT}`);
+log(`Shared MCP daemon ready: ${servers.size}/${TIER1_SERVERS.length} servers on port ${PORT}`);

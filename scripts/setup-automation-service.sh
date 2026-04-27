@@ -501,6 +501,7 @@ launchd_load() {
   local plist="$1"
   local label="$2"
   launchctl bootout "$LAUNCHD_DOMAIN/$label" 2>/dev/null || true
+  sleep 1  # Allow launchd to fully deregister before re-bootstrap
   if launchctl bootstrap "$LAUNCHD_DOMAIN" "$plist" 2>/dev/null; then
     return 0
   fi

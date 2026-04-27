@@ -15,6 +15,7 @@ import { createDirectorySymlinks, createAgentSymlinks, createReporterSymlinks } 
 import { buildState, writeState, getFrameworkAgents } from '../lib/state.js';
 import { restoreVaultMappings } from '../../lib/vault-mappings.js';
 import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
+import { safeReadJson, safeWriteJson } from '../../lib/safe-json-io.js';
 
 const RED = '\x1b[0;31m';
 const GREEN = '\x1b[0;32m';
@@ -237,17 +238,25 @@ function cleanupRotationProxy(projectDir) {
 }
 
 /**
- * Check MCP shared daemon health via HTTP GET /health.
- * Returns true if the daemon responds with HTTP 2xx within the given timeout.
+ * Check daemon health. Returns 'ok', 'starting', or false.
  * @param {number} port
- * @param {number} [timeoutMs=3000]
- * @returns {Promise<boolean>}
+ * @param {number} timeoutMs
+ * @returns {Promise<'ok'|'starting'|false>}
  */
 function checkDaemonHealth(port, timeoutMs = 3000) {
   return new Promise((resolve) => {
     const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: timeoutMs }, (res) => {
-      resolve(res.statusCode >= 200 && res.statusCode < 300);
-      res.resume(); // Consume response to free socket
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) return resolve(false);
+        try {
+          const data = JSON.parse(body);
+          resolve(data.status === 'starting' ? 'starting' : 'ok');
+        } catch {
+          resolve('ok'); // unparseable but 2xx = treat as ok
+        }
+      });
     });
     req.on('error', () => resolve(false));
     req.on('timeout', () => { req.destroy(); resolve(false); });
@@ -278,75 +287,91 @@ async function ensureMcpDaemonHealthy(projectDir) {
   const statePid = daemonState.pid;
 
   // ── Check current health ───────────────────────────────────────────────────
-  const healthy = await checkDaemonHealth(port);
-  if (healthy) {
+  const healthStatus = await checkDaemonHealth(port);
+  if (healthStatus === 'ok') {
     console.log(`  ${GREEN}MCP daemon healthy (port ${port})${NC}`);
     return;
   }
 
-  console.log(`  ${YELLOW}MCP daemon unhealthy — attempting restart...${NC}`);
+  // If daemon is starting (HTTP server up, loading servers), skip kill and just poll
+  if (healthStatus === 'starting') {
+    console.log(`  ${YELLOW}MCP daemon is starting up — waiting for ready...${NC}`);
+  } else {
+    console.log(`  ${YELLOW}MCP daemon unhealthy — attempting restart...${NC}`);
 
-  // ── Kill zombie process ────────────────────────────────────────────────────
-  // Kill by state-file PID
-  if (statePid) {
-    try {
-      process.kill(statePid, 'SIGTERM');
-    } catch { /* ESRCH = already dead */ }
-  }
-
-  // Kill any process still holding the port
-  try {
-    const pids = execFileSync('lsof', ['-ti', `:${port}`], { stdio: 'pipe', timeout: 5000, encoding: 'utf8' }).trim();
-    for (const pid of pids.split('\n').filter(Boolean)) {
-      try { process.kill(Number(pid), 'SIGKILL'); } catch { /* ESRCH */ }
+    // ── Kill zombie process ──────────────────────────────────────────────────
+    // Kill by state-file PID
+    if (statePid) {
+      try {
+        process.kill(statePid, 'SIGTERM');
+      } catch { /* ESRCH = already dead */ }
     }
-  } catch { /* lsof exits non-zero when nothing is found */ }
 
-  // ── Restart via service manager ───────────────────────────────────────────
-  let restarted = false;
+    // Kill any process still holding the port
+    try {
+      const pids = execFileSync('lsof', ['-ti', `:${port}`], { stdio: 'pipe', timeout: 5000, encoding: 'utf8' }).trim();
+      for (const pid of pids.split('\n').filter(Boolean)) {
+        try { process.kill(Number(pid), 'SIGKILL'); } catch { /* ESRCH */ }
+      }
+    } catch { /* lsof exits non-zero when nothing is found */ }
 
-  if (process.platform === 'darwin') {
-    const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.local.gentyr-mcp-daemon.plist');
-    if (fs.existsSync(plistPath)) {
+    // ── Restart via service manager ─────────────────────────────────────────
+    let restarted = false;
+
+    if (process.platform === 'darwin') {
+      const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.local.gentyr-mcp-daemon.plist');
+      if (fs.existsSync(plistPath)) {
+        try {
+          execFileSync('launchctl', ['bootout', `gui/${process.getuid()}`, plistPath], { stdio: 'pipe', timeout: 10000 });
+        } catch { /* may already be unloaded */ }
+
+        // Allow launchd to fully deregister before re-bootstrap
+        await new Promise(r => setTimeout(r, 1000));
+
+        try {
+          execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, plistPath], { stdio: 'pipe', timeout: 10000 });
+          restarted = true;
+        } catch (err) {
+          // Fallback to legacy launchctl load
+          try {
+            execFileSync('launchctl', ['load', plistPath], { stdio: 'pipe', timeout: 10000 });
+            restarted = true;
+          } catch {
+            console.log(`  ${YELLOW}Warning: launchctl bootstrap and load both failed: ${err.message}${NC}`);
+          }
+        }
+      }
+    } else if (process.platform === 'linux') {
       try {
-        execFileSync('launchctl', ['bootout', `gui/${process.getuid()}`, plistPath], { stdio: 'pipe', timeout: 10000 });
-      } catch { /* may already be unloaded */ }
-      try {
-        execFileSync('launchctl', ['bootstrap', `gui/${process.getuid()}`, plistPath], { stdio: 'pipe', timeout: 10000 });
+        execFileSync('systemctl', ['--user', 'restart', 'gentyr-mcp-daemon.service'], { stdio: 'pipe', timeout: 15000 });
         restarted = true;
       } catch (err) {
-        console.log(`  ${YELLOW}Warning: launchctl bootstrap failed: ${err.message}${NC}`);
+        console.log(`  ${YELLOW}Warning: systemctl restart failed: ${err.message}${NC}`);
       }
     }
-  } else if (process.platform === 'linux') {
-    try {
-      execFileSync('systemctl', ['--user', 'restart', 'gentyr-mcp-daemon.service'], { stdio: 'pipe', timeout: 15000 });
-      restarted = true;
-    } catch (err) {
-      console.log(`  ${YELLOW}Warning: systemctl restart failed: ${err.message}${NC}`);
+
+    if (!restarted) {
+      console.log(`  ${YELLOW}MCP daemon restart skipped (no service manager available)${NC}`);
+      return;
     }
   }
 
-  if (!restarted) {
-    console.log(`  ${YELLOW}MCP daemon restart skipped (no service manager available)${NC}`);
-    return;
-  }
-
-  // ── Poll for health (up to 15 seconds) ────────────────────────────────────
-  const deadline = Date.now() + 15000;
+  // ── Poll for health (up to 30 seconds) ────────────────────────────────────
+  const deadline = Date.now() + 30000;
   const pollInterval = 1000;
-  let nowHealthy = false;
+  let finalStatus = false;
 
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, pollInterval));
-    nowHealthy = await checkDaemonHealth(port);
-    if (nowHealthy) break;
+    const status = await checkDaemonHealth(port);
+    if (status === 'ok') { finalStatus = true; break; }
+    // 'starting' means alive but not ready — keep polling
   }
 
-  if (nowHealthy) {
+  if (finalStatus) {
     console.log(`  ${GREEN}MCP daemon restarted successfully (port ${port})${NC}`);
   } else {
-    console.log(`  ${RED}MCP daemon did not recover within 15 seconds — sessions may lack Tier-1 tools${NC}`);
+    console.log(`  ${RED}MCP daemon did not recover within 30 seconds — sessions may lack Tier-1 tools${NC}`);
   }
 }
 
@@ -737,6 +762,12 @@ export default async function sync(args) {
   // 1.4. Ensure services.json exists (create scaffold if missing)
   const svcConfigDir = path.join(projectDir, '.claude', 'config');
   const svcConfigPath = path.join(svcConfigDir, 'services.json');
+  const svcBackupPath = path.join(projectDir, '.claude', 'state', 'services.json.backup');
+  const hasSecretsLocal = (d) => {
+    const secrets = d?.secrets;
+    const local = secrets?.local;
+    return !!local && typeof local === 'object' && Object.keys(local).length > 0;
+  };
   if (!fs.existsSync(svcConfigPath)) {
     console.log(`\n${YELLOW}Creating services.json scaffold...${NC}`);
     fs.mkdirSync(svcConfigDir, { recursive: true });
@@ -752,22 +783,14 @@ export default async function sync(args) {
       const pending = JSON.parse(fs.readFileSync(pendingConfigPath, 'utf8'));
       // Defense-in-depth: strip secrets key even though the MCP tool blocks it
       delete pending.secrets;
-      let current = {};
-      if (fs.existsSync(svcConfigPath)) {
-        try {
-          current = JSON.parse(fs.readFileSync(svcConfigPath, 'utf8'));
-        } catch (parseErr) {
-          console.log(`  ${RED}Warning: services.json is malformed — skipping merge to avoid data loss${NC}`);
-          throw parseErr;
-        }
-      }
+      const current = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
       const merged = { ...current, ...pending };
       // Validate merged config against ServicesConfigSchema (imported dynamically to avoid TS dependency in JS CLI)
       // Lightweight check: ensure no unknown top-level types that would corrupt the file
       if (typeof merged !== 'object' || merged === null) {
         throw new Error('Merged config is not a valid object');
       }
-      fs.writeFileSync(svcConfigPath, JSON.stringify(merged, null, 2) + '\n');
+      safeWriteJson(svcConfigPath, merged, { backupPath: svcBackupPath, backupValidator: hasSecretsLocal });
       fs.unlinkSync(pendingConfigPath);
       console.log(`  Applied ${Object.keys(pending).length} pending config update(s)`);
     } catch (err) {
@@ -789,19 +812,11 @@ export default async function sync(args) {
           throw new Error(`Invalid entry: ${key} is not an op:// reference`);
         }
       }
-      let current = {};
-      if (fs.existsSync(svcConfigPath)) {
-        try {
-          current = JSON.parse(fs.readFileSync(svcConfigPath, 'utf8'));
-        } catch (parseErr) {
-          console.log(`  ${RED}Warning: services.json is malformed — skipping secrets.local merge${NC}`);
-          throw parseErr;
-        }
-      }
+      const current = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
       if (!current.secrets) current.secrets = {};
       if (!current.secrets.local) current.secrets.local = {};
       Object.assign(current.secrets.local, entries);
-      fs.writeFileSync(svcConfigPath, JSON.stringify(current, null, 2) + '\n');
+      safeWriteJson(svcConfigPath, current, { backupPath: svcBackupPath, backupValidator: hasSecretsLocal });
       fs.unlinkSync(pendingSecretsPath);
       console.log(`  Applied ${Object.keys(entries).length} secrets.local entry/entries`);
     } catch (err) {

@@ -19,6 +19,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync } from 'fs';
 import { resolve, join, dirname } from 'path';
+import { safeReadJson, safeWriteJson } from '../shared/safe-json-io.js';
 import { createServer } from 'net';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import { INFRA_CRED_KEYS, opRead, loadServicesConfig as loadServicesConfigShared, resolveLocalSecrets } from '../shared/op-secrets.js';
@@ -74,6 +75,16 @@ import {
 const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID } = process.env;
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || '.';
 const WORKTREE_DIR = process.env.CLAUDE_WORKTREE_DIR || null;
+
+const SERVICES_BACKUP_PATH = join(PROJECT_DIR, '.claude', 'state', 'services.json.backup');
+
+/** Returns true if the config has non-empty secrets.local (worth backing up). */
+const hasSecretsLocal = (d: unknown): boolean => {
+  const s = d as Record<string, unknown>;
+  const secrets = s?.secrets as Record<string, unknown> | undefined;
+  const local = secrets?.local as Record<string, unknown> | undefined;
+  return !!local && Object.keys(local).length > 0;
+};
 
 /** Compute effective CWD for dev server processes: explicit arg > worktree > project */
 function effectiveCwd(argCwd?: string): string {
@@ -1446,13 +1457,17 @@ function writeServicesConfig(config: ServicesConfig): { applied: boolean; pendin
   }
 
   try {
-    writeFileSync(configPath, JSON.stringify(result.data, null, 2) + '\n');
+    safeWriteJson(configPath, result.data, { backupPath: SERVICES_BACKUP_PATH, backupValidator: hasSecretsLocal });
     return { applied: true, pending: false };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
       // Diff new config against on-disk config, stage only changed keys
       let current: Record<string, unknown> = {};
-      try { current = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>; } catch { /* no file */ }
+      try { current = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>; } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw new Error(`Cannot read services.json to compute diff: ${(e as Error).message}`);
+        }
+      }
       let pending: Record<string, unknown> = {};
       try { pending = JSON.parse(readFileSync(pendingPath, 'utf-8')) as Record<string, unknown>; } catch { /* new */ }
       const validated = result.data as Record<string, unknown>;
@@ -1574,12 +1589,14 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
   const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
   const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'services-config-pending.json');
 
-  // Load current config — seed with { secrets: {} } so schema validation passes
-  // even when the file doesn't exist yet (secrets is required but agents can't set it)
-  let current: Record<string, unknown> = { secrets: {} };
+  // Load current config — seed with { secrets: {} } only when file truly doesn't exist
+  let current: Record<string, unknown>;
   try {
-    current = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-  } catch { /* file may not exist yet — use seeded default */ }
+    const existing = safeReadJson<Record<string, unknown>>(configPath, { backupPath: SERVICES_BACKUP_PATH });
+    current = existing ?? { secrets: {} };
+  } catch (readErr) {
+    return JSON.stringify({ error: `Cannot read services.json: ${(readErr as Error).message}. Aborting update to prevent data loss.` });
+  }
 
   // Merge updates (top-level only — nested objects like devServices are replaced wholesale)
   const merged = { ...current, ...args.updates };
@@ -1590,10 +1607,9 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
     return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
   }
 
-  // Try direct write — ensure directory exists first
+  // Try direct write — atomic with backup
   try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(result.data, null, 2) + '\n');
+    safeWriteJson(configPath, result.data, { backupPath: SERVICES_BACKUP_PATH, backupValidator: hasSecretsLocal });
     return JSON.stringify({ applied: true, pending: false, updatedKeys: Object.keys(args.updates) });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
@@ -1641,11 +1657,14 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
   const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
   const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'secrets-local-pending.json');
 
-  // Load current config
-  let current: Record<string, unknown> = { secrets: {} };
+  // Load current config — seed with { secrets: {} } only when file truly doesn't exist
+  let current: Record<string, unknown>;
   try {
-    current = JSON.parse(readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-  } catch { /* file may not exist */ }
+    const existing = safeReadJson<Record<string, unknown>>(configPath, { backupPath: SERVICES_BACKUP_PATH });
+    current = existing ?? { secrets: {} };
+  } catch (readErr) {
+    return JSON.stringify({ error: `Cannot read services.json: ${(readErr as Error).message}. Aborting update to prevent data loss.` });
+  }
 
   // Merge into secrets.local
   const secrets = (current.secrets || {}) as Record<string, unknown>;
@@ -1667,10 +1686,9 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
     return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
   }
 
-  // Try direct write
+  // Try direct write ��� atomic with backup
   try {
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(result.data, null, 2) + '\n');
+    safeWriteJson(configPath, result.data, { backupPath: SERVICES_BACKUP_PATH, backupValidator: hasSecretsLocal });
     return JSON.stringify({
       applied: true,
       pending: false,

@@ -18,6 +18,7 @@ export interface SharedHttpServerOptions {
   port: number;
   host?: string;
   servers: Map<string, McpServer>;
+  isReady?: () => boolean;
 }
 
 export interface SharedHttpServer {
@@ -93,8 +94,9 @@ export function startSharedHttpServer(options: SharedHttpServerOptions): SharedH
 
     // Health check
     if (url === '/health' && method === 'GET') {
+      const ready = options.isReady?.() ?? true;
       writeJson(res, 200, {
-        status: 'ok',
+        status: ready ? 'ok' : 'starting',
         servers: [...servers.keys()],
         uptime: process.uptime(),
       });
