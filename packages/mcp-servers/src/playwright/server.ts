@@ -230,6 +230,122 @@ function getSteelConfigFromServices(): SteelServicesConfig | null {
 }
 
 // ============================================================================
+// Profile-Scoped Secret Resolution for run_demo
+// ============================================================================
+
+interface ProfileScopedResult {
+  /** Successfully resolved secrets (key→value) */
+  resolved: Record<string, string>;
+  /** Keys that failed to resolve but were skipped (non-fatal) */
+  skippedKeys: string[];
+  /** Warning messages for skipped keys */
+  warnings: string[];
+}
+
+/**
+ * Resolve secrets.local entries scoped to the current scenario's profile.
+ *
+ * Instead of resolving ALL secrets.local (which blocks all demos if any
+ * single op:// reference is broken), this function:
+ * 1. Checks if any secretProfile matches the scenario (via scenarioTags or stealth_required)
+ * 2. If matched: resolves ONLY the keys in that profile
+ * 3. If no match: resolves all keys individually, skipping failures with warnings
+ *
+ * This prevents unrelated broken secrets from blocking demos that don't need them.
+ */
+function resolveProfileScopedSecrets(
+  scenarioId: string | undefined,
+  stealthRequired: boolean,
+): ProfileScopedResult {
+  const result: ProfileScopedResult = { resolved: {}, skippedKeys: [], warnings: [] };
+
+  try {
+    const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (!fs.existsSync(servicesPath)) return result;
+    const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+    const allLocalSecrets = services.secrets?.local as Record<string, string> | undefined;
+    if (!allLocalSecrets || Object.keys(allLocalSecrets).length === 0) return result;
+
+    const profiles = services.secretProfiles as Record<string, { secretKeys: string[]; match?: { scenarioTags?: string[] } }> | undefined;
+
+    // Determine which keys to resolve based on profile matching
+    let keysToResolve: string[] | null = null; // null = resolve all (fallback)
+
+    if (profiles) {
+      // Check for profiles that match this scenario via stealth_required flag
+      if (stealthRequired) {
+        // Look for profiles tagged with stealth scenarios (e.g., "steel-aws", "steel-claude")
+        for (const [, profile] of Object.entries(profiles)) {
+          if (profile.match?.scenarioTags?.includes('stealth_required')) {
+            keysToResolve = keysToResolve || [];
+            keysToResolve.push(...profile.secretKeys);
+          }
+        }
+      }
+
+      // If still no match, look for profiles that match the scenario's test_file
+      // via existing commandPattern (repurposed for demo file matching)
+      if (!keysToResolve && scenarioId) {
+        try {
+          const feedbackDbPath = getUserFeedbackDbPath();
+          if (fs.existsSync(feedbackDbPath)) {
+            const feedbackDb = new Database(feedbackDbPath, { readonly: true });
+            try {
+              const row = feedbackDb.prepare('SELECT test_file FROM demo_scenarios WHERE id = ?')
+                .get(scenarioId) as { test_file: string } | undefined;
+              if (row?.test_file) {
+                for (const [, profile] of Object.entries(profiles)) {
+                  const pattern = (profile.match as Record<string, unknown> | undefined)?.commandPattern as string | undefined;
+                  if (pattern) {
+                    try {
+                      if (new RegExp(pattern).test(row.test_file)) {
+                        keysToResolve = keysToResolve || [];
+                        keysToResolve.push(...profile.secretKeys);
+                      }
+                    } catch { /* invalid regex — skip */ }
+                  }
+                }
+              }
+            } catch { /* non-fatal */ }
+            feedbackDb.close();
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
+
+    // Resolve the determined set of keys
+    const targetKeys = keysToResolve
+      ? [...new Set(keysToResolve)].filter(k => k in allLocalSecrets)
+      : Object.keys(allLocalSecrets);
+
+    // Resolve individually so one failure doesn't block the rest
+    for (const key of targetKeys) {
+      const ref = allLocalSecrets[key];
+      if (!ref) continue;
+      try {
+        const { resolved: single, failedKeys } = resolveOpReferencesStrict({ [key]: ref });
+        if (failedKeys.length === 0) {
+          result.resolved[key] = single[key];
+        } else {
+          result.skippedKeys.push(key);
+          result.warnings.push(`${key}: failed to resolve (non-fatal, skipped)`);
+        }
+      } catch {
+        result.skippedKeys.push(key);
+        result.warnings.push(`${key}: resolution threw (non-fatal, skipped)`);
+      }
+    }
+
+    // Also include demoDevModeEnv if available
+    if (services.demoDevModeEnv) {
+      Object.assign(result.resolved, services.demoDevModeEnv);
+    }
+  } catch { /* non-fatal — return whatever we resolved */ }
+
+  return result;
+}
+
+// ============================================================================
 // Per-Mode Fly.io Machine RAM Configuration
 // ============================================================================
 
@@ -2341,17 +2457,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
             if (scenarioEnvVars) Object.assign(remoteEnv, scenarioEnvVars);
             if (args.extra_env) Object.assign(remoteEnv, args.extra_env);
 
-            // Resolve all secrets.local for the Fly.io side
-            try {
-              const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
-              if (fs.existsSync(servicesPath)) {
-                const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
-                if (services.secrets?.local) {
-                  const { resolved: localResolved, failedKeys: localFailed } = resolveOpReferencesStrict(services.secrets.local as Record<string, string>);
-                  if (localFailed.length === 0) Object.assign(remoteEnv, localResolved);
-                }
-              }
-            } catch { /* non-fatal */ }
+            // Profile-scoped secret resolution: only resolve secrets needed by this scenario
+            const dualSecrets = resolveProfileScopedSecrets(args.scenario_id, true /* stealth */);
+            Object.assign(remoteEnv, dualSecrets.resolved);
+            if (dualSecrets.warnings.length > 0) {
+              process.stderr.write(`[steel-runner] Skipped secrets: ${dualSecrets.warnings.join('; ')}\n`);
+            }
             if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
             if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GITHUB_TOKEN;
 
@@ -2446,17 +2557,13 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       if (scenarioEnvVars) Object.assign(remoteEnv, scenarioEnvVars);
       if (args.extra_env) Object.assign(remoteEnv, args.extra_env);
 
-      try {
-        const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
-        if (fs.existsSync(servicesPath)) {
-          const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
-          if (services.secrets?.local) {
-            const { resolved: localResolved, failedKeys: localFailed } = resolveOpReferencesStrict(services.secrets.local as Record<string, string>);
-            if (localFailed.length === 0) Object.assign(remoteEnv, localResolved);
-          }
-          if (services.demoDevModeEnv && devServer.ready) Object.assign(remoteEnv, services.demoDevModeEnv);
-        }
-      } catch { /* non-fatal */ }
+      // Profile-scoped secret resolution: resolve only secrets needed by this scenario.
+      // Individual failures are non-fatal — only the broken key is skipped, not all secrets.
+      const remoteSecrets = resolveProfileScopedSecrets(args.scenario_id, stealthRequired);
+      Object.assign(remoteEnv, remoteSecrets.resolved);
+      if (remoteSecrets.warnings.length > 0) {
+        process.stderr.write(`[fly-runner] Skipped secrets for scenario ${args.scenario_id}: ${remoteSecrets.warnings.join('; ')}\n`);
+      }
 
       if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
       // Also map GITHUB_TOKEN from resolved secrets.local to GIT_AUTH_TOKEN

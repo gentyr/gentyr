@@ -120,11 +120,13 @@ export const SecretProfileSchema = z.object({
         (val) => { if (!val) return true; return !/\([^)]*[+*]\)[+*?{]/.test(val) && !/[+*]\??\{/.test(val); },
         { message: 'commandPattern contains nested quantifiers (potential ReDoS). Simplify the pattern.' },
       )
-      .describe('Regex tested against the joined command string (e.g. "vitest.*aws-login").'),
+      .describe('Regex tested against the joined command string (e.g. "vitest.*aws-login"). Also matched against demo test_file paths.'),
     cwdPattern: z.string().optional()
       .describe('Glob-style suffix tested against cwd (e.g. "*/aws-integration").'),
+    scenarioTags: z.array(z.string()).optional()
+      .describe('Scenario flags that trigger this profile (e.g., ["stealth_required"]). When a demo scenario has any of these flags set to true, this profile\'s secretKeys are resolved.'),
   }).optional()
-    .describe('Auto-match rules. When a secret_run_command call matches these patterns, the agent is gated to use this profile.'),
+    .describe('Auto-match rules. When a secret_run_command call or run_demo scenario matches these patterns, the profile\'s secrets are resolved.'),
 });
 
 export type SecretProfile = z.infer<typeof SecretProfileSchema>;
