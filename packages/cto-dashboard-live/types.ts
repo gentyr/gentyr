@@ -157,6 +157,22 @@ export interface CommentaryContext {
 }
 
 // ============================================================================
+// Release Status (Page 1 banner)
+// ============================================================================
+
+export interface ReleaseStatus {
+  releaseId: string;
+  version: string | null;
+  lockedAt: string | null;
+  prCount: number;
+  passedPrs: number;
+  sessionCount: number;
+  currentPhase: string | null;
+  totalPhases: number;
+  completedPhases: number;
+}
+
+// ============================================================================
 // Page 2: Demos & Tests
 // ============================================================================
 

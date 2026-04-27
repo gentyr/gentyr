@@ -531,6 +531,61 @@ export function getSessionSummaries(agentId: string): Array<{ id: string; summar
 }
 
 // ============================================================================
+// Release Status (Page 1 banner)
+// ============================================================================
+
+import type { ReleaseStatus } from './types.js';
+
+export function readReleaseStatus(): ReleaseStatus | null {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'release-ledger.db');
+  if (!fs.existsSync(dbPath)) return null;
+
+  const db = openDb(dbPath);
+  if (!db) return null;
+
+  try {
+    const release = db.prepare("SELECT * FROM releases WHERE status = 'in_progress' LIMIT 1").get() as Record<string, unknown> | undefined;
+    if (!release) return null;
+
+    const releaseId = release.id as string;
+    const prCount = (db.prepare('SELECT COUNT(*) as cnt FROM release_prs WHERE release_id = ?').get(releaseId) as { cnt: number })?.cnt || 0;
+    const passedPrs = (db.prepare("SELECT COUNT(*) as cnt FROM release_prs WHERE release_id = ? AND review_status = 'passed'").get(releaseId) as { cnt: number })?.cnt || 0;
+    const sessionCount = (db.prepare('SELECT COUNT(*) as cnt FROM release_sessions WHERE release_id = ?').get(releaseId) as { cnt: number })?.cnt || 0;
+
+    // Get plan phase info if plan_id exists
+    let currentPhase: string | null = null;
+    let totalPhases = 0;
+    let completedPhases = 0;
+    if (release.plan_id) {
+      const planDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+      const planDb = openDb(planDbPath);
+      if (planDb) {
+        try {
+          const phases = planDb.prepare('SELECT title, status FROM phases WHERE plan_id = ? ORDER BY phase_order ASC').all(release.plan_id as string) as Array<{ title: string; status: string }>;
+          totalPhases = phases.length;
+          completedPhases = phases.filter(p => p.status === 'completed' || p.status === 'skipped').length;
+          currentPhase = phases.find(p => p.status === 'in_progress')?.title || phases.find(p => p.status === 'pending')?.title || null;
+        } catch { /* non-fatal */ }
+        closeDb(planDb);
+      }
+    }
+
+    return {
+      releaseId,
+      version: (release.version as string) || null,
+      lockedAt: (release.staging_lock_at as string) || null,
+      prCount,
+      passedPrs,
+      sessionCount,
+      currentPhase,
+      totalPhases,
+      completedPhases,
+    };
+  } catch { return null; }
+  finally { closeDb(db); }
+}
+
+// ============================================================================
 // Page 2: Demo Scenarios + Test Files
 // ============================================================================
 

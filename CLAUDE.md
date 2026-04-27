@@ -1107,6 +1107,37 @@ The release-ledger MCP server (`packages/mcp-servers/src/release-ledger/`) track
 
 **PreToolUse hook**: `.claude/hooks/staging-lock-guard.js` — blocks Bash commands that would merge into staging when the lock is active. Blocked patterns: `gh pr merge --base staging` (and `--base=staging`, `-B staging`), `git push origin staging` (including refspecs like `HEAD:staging`), `git merge staging`. Uses the same shell tokenizer as `main-tree-commit-guard.js`. Fast exits: `GENTYR_PROMOTION_PIPELINE=true` passes through unconditionally, as does any call when staging is unlocked (most common path). Fail-open on unexpected errors.
 
+### /promote-to-prod — CTO-Initiated Production Release
+
+The ONLY path to production. Replaces the former automated midnight-window promotion pipeline.
+
+**Command**: `/promote-to-prod`
+
+**Prerequisites**: staging and main branches exist, no active release in progress.
+
+**8-Phase Release Plan**:
+
+| Phase | Name | Gate | Description |
+|-------|------|------|-------------|
+| 1 | Per-PR Quality Review | Yes | Persistent task per PR: antipattern, code-review, user-alignment, spec-enforcement |
+| 2 | Initial Triage | No | Deputy-CTO triages Phase 1 findings |
+| 3 | Meta-Review | Yes | Cross-PR consistency check across all changes |
+| 4 | Test & Demo Execution | Yes | All unit/integration/playwright tests + all demo scenarios via Fly.io |
+| 5 | Demo Coverage Audit | Yes | Verify every new feature has demo coverage with screenshot proof |
+| 6 | Final Triage | No | Pre-release readiness check |
+| 7 | CTO Sign-off | Yes | CTO reviews and explicitly approves the release |
+| 8 | Release Report | No | 8-section structured report generated (.md + .pdf) |
+
+**Flow**: CTO runs `/promote-to-prod` -> enumerates PRs -> locks staging (GitHub API + local) -> creates release plan -> plan-manager drives phases -> CTO signs off -> staging merges to main -> report generated -> staging unlocked.
+
+**Monitoring**: `/plan-progress`, `/monitor`, `/persistent-tasks`
+
+**Staging Lock**: During a release, all merges to staging are blocked (GitHub branch protection + `staging-lock-guard.js` PreToolUse hook). `GENTYR_PROMOTION_PIPELINE=true` agents are exempt.
+
+**Release Artifacts**: Collected in `.claude/releases/{release-id}/` — JSONL transcripts, session summaries, screenshots, test/demo results, triage actions, CTO decisions.
+
+**Release Ledger**: `release-ledger` MCP server tracks PRs, sessions, reports, and tasks per release for post-mortem traceability.
+
 ## Plan Orchestrator MCP Server
 
 The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`) manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db` and the persistent task system. State is in `.claude/state/plans.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
