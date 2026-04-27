@@ -113,11 +113,11 @@ export function findSessionFile(agentId: string, worktreePath?: string | null): 
           fd = fs.openSync(fp, 'r');
           const stat = fs.fstatSync(fd);
           const fileSize = stat.size;
-          const headSize = Math.min(8192, fileSize);
+          const headSize = Math.min(16000, fileSize);
           const headBuf = Buffer.alloc(headSize);
           fs.readSync(fd, headBuf, 0, headSize, 0);
           if (headBuf.toString('utf8').includes(marker)) { fs.closeSync(fd); return fp; }
-          if (fileSize > 8192) {
+          if (fileSize > 16000) {
             const tailSize = Math.min(16384, fileSize - headSize);
             const tailBuf = Buffer.alloc(tailSize);
             fs.readSync(fd, tailBuf, 0, tailSize, fileSize - tailSize);
@@ -799,11 +799,15 @@ function getDefaultLocalBranch(): string {
 }
 
 export function readEnvironments(): DemoEnvironment[] {
-  const defaultLocalBranch = getDefaultLocalBranch();
-
+  // Always provide the three branch-based environments (Preview/Staging/Prod).
+  // These run demos locally from the selected git branch via autoPullBranch().
   const envs: DemoEnvironment[] = [
-    { id: 'local', label: 'Local', baseUrl: null, branch: defaultLocalBranch },
+    { id: 'preview', label: 'Preview', baseUrl: null, branch: 'preview' },
+    { id: 'staging', label: 'Staging', baseUrl: null, branch: 'staging' },
+    { id: 'prod', label: 'Prod', baseUrl: null, branch: 'main' },
   ];
+
+  // Also include any URL-based remote environments from services.json
   try {
     const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -820,7 +824,7 @@ export function readEnvironments(): DemoEnvironment[] {
         }
       }
     }
-  } catch { /* services.json missing or invalid — local only */ }
+  } catch { /* services.json missing or invalid — branch-only environments still work */ }
   return envs;
 }
 
