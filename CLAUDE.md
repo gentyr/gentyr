@@ -529,6 +529,36 @@ Polls for recently merged PRs every 2 minutes via `hourly-automation.js` (`runIf
 
 **Cooldown defaults** in `config-reader.js`: `report_auto_resolve: 2` (minutes), `report_dedup: 30` (minutes).
 
+## Two-Tier Report Triage
+
+The `triage_check` block in `hourly-automation.js` (default 5-minute cooldown) now routes reports to tier-specific triage agents based on the `tier` column of the `reports` table in `cto-reports.db`.
+
+**Three triage paths** (all dispatched in the same `runIfDue` cycle):
+- **Preview-tier** (`tier = 'preview'`): Spawns `spawnPreviewTriage()`. Preview-tier agents cannot escalate directly to production; reports are scoped to preview quality.
+- **Staging-tier** (`tier = 'staging'`): Spawns `spawnStagingTriage()`. Staging-tier agents can escalate to the deputy-CTO for blocking production promotion.
+- **Legacy (null-tier)**: Reports with no `tier` value use the original `spawnReportTriage()` for backward compatibility.
+
+**Tier injection**: When a worktree is provisioned via `createWorktree()`, the `agent-reports` MCP server entry in the worktree-local `.mcp.json` receives `GENTYR_REPORT_TIER` injected based on the worktree's `baseBranch` (`'staging'` when branching from staging; `'preview'` otherwise). This ensures reports filed from staging worktrees are automatically tagged with the staging tier.
+
+**`hasReportsReadyForTriageByTier(tier)`** in `hourly-automation.js`: Queries `cto-reports.db` for pending reports matching the given tier (or `IS NULL` for legacy). Fast-exit if the DB is missing. Returns `false` on error (non-fatal).
+
+## Staging Reactive Review
+
+Automated 4-review-stream analysis of every new commit on staging that hasn't been promoted to main. Controlled by `stagingReactiveReviewEnabled: true` in `automation-config.json` (default off, skipped in local mode). Cooldown: `staging_reactive_review` (default 60 minutes).
+
+**How it works** (`runIfDue('staging_reactive_review', ...)` in `hourly-automation.js`):
+1. Fetches `origin/staging` and `origin/main`; exits early if either branch is absent
+2. Lists commits staging has ahead of main (`git log origin/main..origin/staging`)
+3. Checks `state.lastStagingReviewedSha` against the current staging SHA — skips if unchanged since the last review cycle
+4. Spawns 4 concurrent `staging-reviewer` sessions (one per review focus):
+   - `antipattern` — checks for G001–G019 anti-pattern violations
+   - `code-quality` — security, correctness, performance, maintainability
+   - `user-alignment` — verifies changes align with original user intent from prompts
+   - `spec-compliance` — verifies adherence to project specifications
+5. Records `state.lastStagingReviewedSha = currentSha` so the same set of commits is not reviewed again
+
+**`staging-reviewer` agent** (`agents/staging-reviewer.md`): Sonnet-tier. Receives `review_focus` in its prompt, runs `git diff origin/main..origin/staging`, reports critical issues via `mcp__agent-reports__report_to_deputy_cto`, and spawns `code-writer` sub-agents for fixes. Reports are automatically tagged `tier: 'staging'` via `GENTYR_REPORT_TIER=staging` injected into the session environment. Maximum 3 reports per session to prevent noise. Only critical issues are escalated; minor style issues are ignored.
+
 ## CTO Session Search
 
 The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session files to user-only (non-autonomous) sessions before searching.
@@ -1169,7 +1199,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
 | 1. Hooks | 76 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
-| 2. Agent Definitions | 19 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
+| 2. Agent Definitions | 20 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
@@ -1308,7 +1338,7 @@ Key modules consumed by hooks:
 - `deferred-action-executor.js` — MCP HTTP execution, HMAC verification with timing-safe comparison, full execution pipeline for deferred actions
 - `staging-lock.js` — Staging lock state management (`lockStaging`, `unlockStaging`, `isStagingLocked`, `getStagingLockState`); persists lock to `.claude/state/staging-lock.json`; best-effort GitHub branch protection via `gh api`
 
-### Agent Definitions (19 shared)
+### Agent Definitions (20 shared)
 
 | Agent | Model | Purpose | Key Constraints |
 |-------|-------|---------|----------------|
@@ -1331,6 +1361,7 @@ Key modules consumed by hooks:
 | secret-manager | sonnet | Credential lifecycle | 1Password-based operations |
 | repo-hygiene-expert | sonnet | Repo structure analysis | Read-only |
 | workstream-manager | haiku | Queue dependency analysis | Read-only |
+| staging-reviewer | sonnet | Staging reactive review (antipattern, code-quality, user-alignment, spec-compliance) | Read-only reviewer; spawns code-writer sub-agents for fixes |
 
 ### MCP Servers (~38 servers)
 
