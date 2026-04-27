@@ -2372,7 +2372,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       let lastRemoteProgressCount = 0;
       let lastRemoteProgressAt = Date.now();
       const REMOTE_STALL_GRACE_MS = 60_000;
-      const REMOTE_STALL_TIMEOUT_MS = args.stall_timeout_ms ?? 120_000;
+      // Remote default is 5 minutes (not 45s like local) — pnpm install on cold machines
+      // takes 2-4 minutes with no progress events between install_start and install_done.
+      const REMOTE_STALL_TIMEOUT_MS = args.stall_timeout_ms ?? 300_000;
 
       const pollInterval = setInterval(async () => {
         try {

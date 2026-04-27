@@ -110,8 +110,12 @@ echo '{"type":"setup","phase":"clone_done","timestamp":"'$(date -u +%Y-%m-%dT%H:
 # ---------------------------------------------------------------------------
 log "Running pnpm install (store: ${PNPM_STORE_DIR:-/cache/pnpm-store}) ..."
 echo '{"type":"setup","phase":"install_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+# Heartbeat during install — write progress events every 30s to prevent stall detector timeout
+(while true; do sleep 30; echo '{"type":"setup","phase":"install_progress","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true; done) &
+INSTALL_HEARTBEAT_PID=$!
 NODE_ENV=development PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
   pnpm install --frozen-lockfile 2>&1 | tee -a /app/.error.log
+kill "$INSTALL_HEARTBEAT_PID" 2>/dev/null || true
 echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 export NODE_ENV=production
 
