@@ -158,8 +158,8 @@ export function findSessionFileByAgentId(sessionDir, agentId) {
     let fd;
     try {
       fd = fs.openSync(filePath, 'r');
-      const buf = Buffer.alloc(2000);
-      const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
+      const buf = Buffer.alloc(16000);
+      const bytesRead = fs.readSync(fd, buf, 0, 16000, 0);
       const head = buf.toString('utf8', 0, bytesRead);
       if (head.includes(marker)) return filePath;
     } catch (err) {

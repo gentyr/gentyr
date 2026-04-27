@@ -36,7 +36,7 @@ try {
 // ============================================================================
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
-const HEAD_BYTES = 2000;  // Bytes to read from start of JSONL for agent ID match
+const HEAD_BYTES = 16000;  // Bytes to read from start of JSONL for agent ID match
 const TAIL_BYTES = 4000;  // Bytes to read from end of JSONL for completion check
 
 // ============================================================================

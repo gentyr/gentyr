@@ -289,7 +289,7 @@ A plan-manager has been spawned to drive the release through all phases.
 
 ## Monitoring
 - /plan-progress — view phase-by-phase progress
-- /monitor-tasks — watch running agents
+- /monitor — watch running agents
 - /persistent-tasks — manage the release plan-manager
 
 ## When Phase 7 is reached

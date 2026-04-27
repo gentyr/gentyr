@@ -3829,11 +3829,11 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
 }
 
 // ============================================================================
-// /monitor-tasks state management
+// /monitor state management
 // ============================================================================
 
-const MONITOR_STATE_FILE = path.join(PROJECT_DIR, '.claude', 'state', 'monitor-tasks-active.json');
-const MONITOR_COUNTER_FILE = path.join(PROJECT_DIR, '.claude', 'state', 'monitor-tasks-reminder.count');
+const MONITOR_STATE_FILE = path.join(PROJECT_DIR, '.claude', 'state', 'monitor-active.json');
+const MONITOR_COUNTER_FILE = path.join(PROJECT_DIR, '.claude', 'state', 'monitor-reminder.count');
 
 async function updateMonitorState(args: UpdateMonitorStateArgs): Promise<object | ErrorResult> {
   let existing: Record<string, unknown> = {};
@@ -3846,6 +3846,7 @@ async function updateMonitorState(args: UpdateMonitorStateArgs): Promise<object 
     roundNumber: args.round_number,
     monitoredSessions: args.monitored_sessions,
     monitoredTaskIds: args.monitored_task_ids,
+    monitoredPlanIds: args.monitored_plan_ids ?? [],
     currentStep: args.current_step,
     lastRoundAt: new Date().toISOString(),
   };
@@ -5738,13 +5739,13 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'update_monitor_state',
-    description: 'Update the /monitor-tasks monitoring state file. Called each round to track progress. The monitor-tasks-reminder hook reads this file to inject reminders.',
+    description: 'Update the /monitor monitoring state file. Called each round to track progress. The monitor-reminder hook reads this file to inject reminders.',
     schema: UpdateMonitorStateArgsSchema,
     handler: updateMonitorState,
   },
   {
     name: 'stop_monitoring',
-    description: 'Stop /monitor-tasks monitoring. Removes the state file and counter file so the reminder hook stops firing.',
+    description: 'Stop /monitor monitoring. Removes the state file and counter file so the reminder hook stops firing.',
     schema: StopMonitoringArgsSchema,
     handler: stopMonitoring,
   },

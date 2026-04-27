@@ -348,7 +348,7 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/monitor-tasks-reminder.js",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/monitor-reminder.js",
             "timeout": 3
           },
           {

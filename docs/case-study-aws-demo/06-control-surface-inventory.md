@@ -48,7 +48,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | alignment-reminder.js | `""` (all) | Remind agents to check task alignment |
 | persistent-task-briefing.js | `""` (all) | Inject persistent task state into monitor context |
 | progress-tracker.js | `""` (all) | Track pipeline stage progress |
-| monitor-tasks-reminder.js | `""` (all) | Remind monitors to check sub-task status |
+| monitor-reminder.js | `""` (all) | Remind monitors to check sub-task status |
 | uncommitted-change-monitor.js | `Write,Edit` | Warn after 5 uncommitted file edits |
 | pr-auto-merge-nudge.js | `Bash` | Nudge to self-merge after PR creation |
 | plan-merge-tracker.js | `Bash` | Auto-advance plan tasks on PR merge |
@@ -231,7 +231,7 @@ These are NOT hooks themselves but shared modules consumed by hooks:
 demo, demo-all, demo-autonomous, demo-bulk, demo-interactive, demo-session, demo-validate
 
 ### Task Management
-spawn-tasks, task-queue, triage, persistent-task, persistent-tasks, monitor-tasks
+spawn-tasks, task-queue, triage, persistent-task, persistent-tasks, monitor, status
 
 ### Plan Management
 plan, plan-progress, plan-timeline, plan-audit, plan-sessions

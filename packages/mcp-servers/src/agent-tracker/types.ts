@@ -341,7 +341,8 @@ export const UpdateMonitorStateArgsSchema = z.object({
   round_number: z.number().describe('Current monitoring round number'),
   monitored_sessions: z.array(z.string()).describe('Agent IDs being monitored'),
   monitored_task_ids: z.array(z.string()).describe('Persistent task IDs being monitored'),
-  current_step: z.string().describe('Current step: OVERVIEW, BROWSE, QUEUE, ASSESS, or SLEEP'),
+  monitored_plan_ids: z.array(z.string()).optional().describe('Plan IDs being monitored'),
+  current_step: z.string().describe('Current step: PLANS, PERSISTENT_TASKS, TASKS, BROWSE, QUEUE, ASSESS, or SLEEP'),
 });
 export type UpdateMonitorStateArgs = z.infer<typeof UpdateMonitorStateArgsSchema>;
 

@@ -510,7 +510,8 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 **4 slash commands**:
 - `/persistent-task` — create flow: researches context, refines the CTO's input into a high-specificity prompt, previews the draft, creates and activates on approval
 - `/persistent-tasks` — management view: lists all tasks, shows monitor health, and provides amend/pause/resume/cancel/revive actions
-- `/monitor-tasks` — continuous monitoring loop that shows raw session data from running agents and persistent task monitors. Each round calls MCP tools directly (no investigator sub-agents) and displays verbatim indexed session messages via `browse_session`. Subscribes the CTO interactive session to verbatim-tier summaries from monitored agents for automatic delivery. Tracks unverified success claims across rounds in `successClaimsUnverified`; classifies evidence as `confirmed`/`unverified`/`refuted` in `evidenceLog`; signals monitors when claims are refuted. Accepts optional argument: `persistent` (focus on persistent task monitors), a task-ID prefix (monitor a specific task), or bare (user selects scope). Stops automatically on intervention-needed conditions: monitor dead with no revival queued, task self-paused, task completed/cancelled, critical memory pressure for 3+ rounds, child agent stale 15+ minutes, or a systemic error pattern across 3+ child attempts.
+- `/monitor` — continuous monitoring loop that shows raw data from plans, persistent tasks, todo-db tasks, running sessions, and the session queue. Each round calls MCP tools directly (no investigator sub-agents) and displays verbatim indexed session messages via `browse_session`. Subscribes the CTO interactive session to verbatim-tier summaries from monitored agents for automatic delivery. Tracks unverified success claims across rounds in `successClaimsUnverified`; classifies evidence as `confirmed`/`unverified`/`refuted` in `evidenceLog`; signals monitors when claims are refuted. Accepts optional argument: `plans` (focus on plans), `persistent` (focus on persistent task monitors), a plan/task-ID prefix (monitor a specific item), or bare (monitors everything). Stops automatically on intervention-needed conditions: monitor dead with no revival queued, task self-paused, task completed/cancelled, critical memory pressure for 3+ rounds, child agent stale 15+ minutes, plan fully blocked with no parallel work for 3+ rounds, or a systemic error pattern across 3+ child attempts.
+- `/status` — one-shot version of `/monitor`. Same data gathering and display format (plans, persistent tasks, tasks, sessions, queue) but runs once and exits — no sleep loop, no state file, no reminder hook.
 
 
 ## Report Auto-Resolution
@@ -576,7 +577,7 @@ Agent-tracker session introspection tools detect and recover context lost when C
 **3 tools with compaction awareness** (on `agent-tracker` server):
 
 - `peek_session` — reads session tail and returns `compactionDetected: boolean` at zero cost. Pass `include_compaction_context: true` to trigger a backward file scan that retrieves the full compaction summary, boundary count, most-recent timestamp, and pre-compaction token total.
-- `browse_session` — message-indexed session browsing for CTO monitoring. Returns numbered messages (`index`, `type`, `timestamp`, `content`/`tool`/`result_preview`) with backward pagination via `before_index`. Designed for raw session viewing — shows verbatim content with minimal processing. Files >10MB fall back to `peek_session`. Used by `/monitor-tasks` to display indexed session history.
+- `browse_session` — message-indexed session browsing for CTO monitoring. Returns numbered messages (`index`, `type`, `timestamp`, `content`/`tool`/`result_preview`) with backward pagination via `before_index`. Designed for raw session viewing — shows verbatim content with minimal processing. Files >10MB fall back to `peek_session`. Used by `/monitor` to display indexed session history.
 - `inspect_persistent_task` — deep inspection tool for persistent task monitors. Auto-includes compaction context for the monitor session (full backward scan at 6000-char summary limit); returns `compactionDetected` for each child session.
 - `get_session_activity_summary` — per-session summary includes `compacted: boolean` flag. `extractActivity()` emits `compaction_boundary` activity entries and suppresses system-injected compaction summary messages to avoid polluting the activity log with noise.
 
@@ -1250,7 +1251,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | alignment-reminder.js | `""` (all) | Remind agents to check task alignment |
 | persistent-task-briefing.js | `""` (all) | Inject persistent task state into monitor context |
 | progress-tracker.js | `""` (all) | Track pipeline stage progress |
-| monitor-tasks-reminder.js | `""` (all) | Remind monitors to check sub-task status |
+| monitor-reminder.js | `""` (all) | Remind monitors to check sub-task status |
 | uncommitted-change-monitor.js | `Write,Edit` | Warn after 5 uncommitted file edits |
 | pr-auto-merge-nudge.js | `Bash` | Nudge to self-merge after PR creation |
 | plan-merge-tracker.js | `Bash` | Auto-advance plan tasks on PR merge |
@@ -1410,10 +1411,11 @@ specs-browser, cto-report, cto-reports, show, setup-helper, feedback-explorer, i
 #### Feedback Agent Servers
 feedback-reporter, playwright-feedback, programmatic-feedback
 
-### Slash Commands (40)
+### Slash Commands (42)
 
 **Demo**: demo, demo-all, demo-autonomous, demo-bulk, demo-interactive, demo-session, demo-validate
-**Tasks**: spawn-tasks, task-queue, triage, persistent-task, persistent-tasks, monitor-tasks
+**Tasks**: spawn-tasks, task-queue, triage, persistent-task, persistent-tasks
+**Monitoring**: monitor, status
 **Plans**: plan, plan-progress, plan-timeline, plan-audit, plan-sessions
 **Config**: concurrent-sessions, configure-personas, focus-mode, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
 **Operations**: cto-dashboard, deputy-cto, promote-to-prod, session-queue, show, workstream

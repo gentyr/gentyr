@@ -594,7 +594,7 @@ function buildInteractiveBriefing() {
       lines.push(`Staging: LOCKED since ${activeRelease.stagingLockAt}`);
     }
     lines.push(`PRs: ${activeRelease.prCount}`);
-    lines.push('Monitor: /plan-progress or /monitor-tasks');
+    lines.push('Monitor: /plan-progress or /monitor');
     lines.push('');
   }
 
