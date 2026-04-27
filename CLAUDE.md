@@ -1198,10 +1198,10 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 76 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 78 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 20 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
-| 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
+| 4. Slash Commands | 43 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
 | 6. Session Briefing | 1 hook + content | Session start | One-time context dump: queue status, active tasks, bypass requests |
 | 7. Prompt Templates | ~10 builders | Agent spawn | Task-specific instructions injected into spawn prompts |
@@ -1240,7 +1240,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | protected-action-gate.js | `mcp__*` | Block protected MCP actions; store as deferred action for spawned agents |
 | staging-lock-guard.js | `Bash` | Block staging merges (gh pr merge, git push, git merge) when staging is locked for a production release |
 
-#### PostToolUse (27 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (29 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1271,6 +1271,8 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | plan-activation-spawner.js | `update_plan_status` | Spawn plan manager on plan activation |
 | plan-audit-spawner.js | `update_task_progress` | Spawn independent auditor on pending_audit |
 | screenshot-reminder.js | `""` (all) | Remind agents to Read screenshot paths in tool responses |
+| release-artifact-collector.js | `complete_task,summarize_work` | Archive session transcripts to release artifact directory when GENTYR_RELEASE_ID is set |
+| release-completion-hook.js | `complete_persistent_task` | On release plan-manager completion: unlock staging, generate report, emit audit event, broadcast signal |
 
 #### SessionStart (9 hooks — set initial context)
 
@@ -1309,7 +1311,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 |------|---------|
 | stop-continue-hook.js | Gate session stop, check unfinished work, trigger revival |
 
-### Shared Hook Libraries (hooks/lib/ — 31 modules)
+### Shared Hook Libraries (hooks/lib/ — 33 modules)
 
 Key modules consumed by hooks:
 - `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
@@ -1337,6 +1339,8 @@ Key modules consumed by hooks:
 - `deferred-action-db.js` — Deferred protected action DB operations (create, read, list, mark approved/executing/completed/failed, dedup, expire)
 - `deferred-action-executor.js` — MCP HTTP execution, HMAC verification with timing-safe comparison, full execution pipeline for deferred actions
 - `staging-lock.js` — Staging lock state management (`lockStaging`, `unlockStaging`, `isStagingLocked`, `getStagingLockState`); persists lock to `.claude/state/staging-lock.json`; best-effort GitHub branch protection via `gh api`
+- `release-orchestrator.js` — Production release artifact collection: `enumerateReleasePRs` (gh pr list with git fallback), `getArtifactDir` (create `.claude/releases/{id}/prs|sessions|reports/`), `collectSessionArtifact` (copy JSONL by agent marker), `collectDemoArtifacts` (copy screenshots/recordings + demo-results.json), `collectTriageArtifacts` (query cto-reports.db + deputy-cto.db)
+- `release-report-generator.js` — Structured release report pipeline: `generateStructuredReport` reads release-ledger.db + artifacts, fills `templates/release-report-template.md` with 16 placeholders, writes `report.md` to artifact dir; `convertToPdf` placeholder for future PDF output
 
 ### Agent Definitions (20 shared)
 
@@ -1406,13 +1410,13 @@ specs-browser, cto-report, cto-reports, show, setup-helper, feedback-explorer, i
 #### Feedback Agent Servers
 feedback-reporter, playwright-feedback, programmatic-feedback
 
-### Slash Commands (39)
+### Slash Commands (40)
 
 **Demo**: demo, demo-all, demo-autonomous, demo-bulk, demo-interactive, demo-session, demo-validate
 **Tasks**: spawn-tasks, task-queue, triage, persistent-task, persistent-tasks, monitor-tasks
 **Plans**: plan, plan-progress, plan-timeline, plan-audit, plan-sessions
 **Config**: concurrent-sessions, configure-personas, focus-mode, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
-**Operations**: cto-dashboard, deputy-cto, session-queue, show, workstream
+**Operations**: cto-dashboard, deputy-cto, promote-to-prod, session-queue, show, workstream
 **Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr
 **Analysis**: persona-feedback, product-manager, replay, run-feedback
 

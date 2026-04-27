@@ -263,6 +263,8 @@ The compliance checker validates against framework specifications on every file 
 
 The merge chain promotes code through four stages on configurable timers. The stale work detector flags uncommitted changes and unpushed branches. Feedback agents spawn on staging changes to test the product as real users across GUI, CLI, API, and SDK modes.
 
+When staging is ready for production, `/promote-to-prod` orchestrates an 8-phase release plan: per-PR quality review, initial triage, meta-review, test and demo execution, demo coverage audit, final triage, CTO sign-off, and release report generation. The plan-manager runs autonomously through all phases, locks staging during the release, collects artifacts (session transcripts, screenshots, triage actions), and unlocks staging when the release is signed off. The CTO reviews and approves at Phase 7 via `sign_off_release`.
+
 ### protection
 
 Critical files are root-owned. Agents cannot modify the hooks, guards, or specs that govern them. The credential file guard blocks agents from reading `.mcp.json`. Secret leak detection scans every diff. Protected path enforcement triggers on any write attempt to `.claude/hooks/`.
