@@ -1352,8 +1352,15 @@ function spawnQueueItem(db, item) {
     spawnEnv.CLAUDE_WORKTREE_DIR = item.worktree_path;
   }
 
-  // Spawn
-  const effectiveCwd = item.cwd || item.worktree_path || item.project_dir;
+  // Spawn — validate CWD exists, fall back to project dir if worktree was cleaned up
+  let effectiveCwd = item.cwd || item.worktree_path || item.project_dir;
+  if (effectiveCwd && !fs.existsSync(effectiveCwd)) {
+    log(`Warning: CWD ${effectiveCwd} does not exist, falling back to project dir`);
+    effectiveCwd = item.project_dir;
+    // Clear worktree env since the path is gone
+    delete spawnEnv.CLAUDE_WORKTREE_DIR;
+  }
+
   const claude = spawn('claude', spawnArgs, {
     detached: true,
     stdio: 'ignore',
@@ -1361,10 +1368,14 @@ function spawnQueueItem(db, item) {
     env: spawnEnv,
   });
 
+  // Attach error handler IMMEDIATELY to prevent unhandled 'error' event crash.
+  // The !pid check below handles spawn failures synchronously.
+  claude.on('error', () => {});
+
   claude.unref();
 
   if (!claude.pid) {
-    throw new Error('spawn returned no PID');
+    throw new Error(`spawn returned no PID (cwd: ${effectiveCwd})`);
   }
 
   // Update DB and agent-tracker
