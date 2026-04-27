@@ -48,7 +48,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const [runningProcess, setRunningProcess] = useState<RunningProcess | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [selectedEnvId, setSelectedEnvId] = useState<string>('local');
+  const [selectedEnvId, setSelectedEnvId] = useState<string>('preview');
   const [executionMode, setExecutionMode] = useState<DemoExecutionMode>('local');
 
   // Resolve the active environment object
@@ -195,8 +195,8 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       const idx = environments.findIndex(e => e.id === selectedEnvId);
       const next = environments[(idx + 1) % environments.length];
       setSelectedEnvId(next.id);
-      const envDetail = next.baseUrl ? ` (${next.baseUrl})` : next.branch ? ` (branch: ${next.branch})` : '';
-      setStatusMessage(`Environment: ${next.label}${envDetail}`);
+      const envDetail = next.baseUrl ? ` (${next.baseUrl})` : next.branch ? ` (${next.branch})` : '';
+      setStatusMessage(`Branch: ${next.label}${envDetail}`);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
       statusTimerRef.current = setTimeout(() => setStatusMessage(null), 3000);
       return;
@@ -224,9 +224,9 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
   const leftWidth = Math.floor(bodyWidth * LEFT_WIDTH_FRACTION);
   const rightWidth = bodyWidth - leftWidth - 1;
 
-  const showEnvBar = environments.length > 1;
+  const showEnvBar = true;  // Always show branch selector
   const showModeBar = data.flyStatus.configured;
-  const controlBarHeight = (showEnvBar || showModeBar) ? 1 : 0;
+  const controlBarHeight = 1;
   const hasOutput = runningProcess != null;
   const outputHeight = hasOutput ? Math.max(4, Math.floor(bodyHeight * OUTPUT_HEIGHT_FRACTION)) : 0;
   const listsHeight = bodyHeight - outputHeight - controlBarHeight;
@@ -236,24 +236,23 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
 
   return (
     <Box flexDirection="column" height={bodyHeight}>
-      {/* Control bar — environment selector + execution mode */}
-      {(showEnvBar || showModeBar) && (
-        <Box height={1} flexDirection="row">
-          {showEnvBar && (
-            <>
-              <Text dimColor> ENV </Text>
-              {environments.map((env) => (
-                <Box key={env.id} marginRight={1}>
-                  {env.id === selectedEnv.id
-                    ? <Text bold inverse color="white">{` ${env.label} `}</Text>
-                    : <Text dimColor>{` ${env.label} `}</Text>}
-                </Box>
-              ))}
-              <Text dimColor>(e)</Text>
-              {selectedEnv.baseUrl && <Text color="cyan"> {'\u2192'} {selectedEnv.baseUrl}</Text>}
-              {selectedEnv.branch && !selectedEnv.baseUrl && <Text color="green"> {'\u2192'} {selectedEnv.branch}</Text>}
-            </>
-          )}
+      {/* Control bar — branch selector + execution mode */}
+      <Box height={1} flexDirection="row">
+        {showEnvBar && (
+          <>
+            <Text dimColor> BRANCH </Text>
+            {environments.map((env) => (
+              <Box key={env.id} marginRight={1}>
+                {env.id === selectedEnv.id
+                  ? <Text bold inverse color="white">{` ${env.label} `}</Text>
+                  : <Text dimColor>{` ${env.label} `}</Text>}
+              </Box>
+            ))}
+            <Text dimColor>(e)</Text>
+            {selectedEnv.baseUrl && <Text color="cyan"> {'\u2192'} {selectedEnv.baseUrl}</Text>}
+            {selectedEnv.branch && !selectedEnv.baseUrl && <Text color="green"> {'\u2192'} {selectedEnv.branch}</Text>}
+          </>
+        )}
           {showModeBar && (
             <>
               <Text dimColor>{showEnvBar ? '  \u2502 ' : ' '}</Text>
@@ -271,8 +270,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
               <Text dimColor>(r)</Text>
             </>
           )}
-        </Box>
-      )}
+      </Box>
 
       {/* Top: two-column lists */}
       <Box flexDirection="row" height={listsHeight}>
