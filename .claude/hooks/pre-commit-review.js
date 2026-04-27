@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 /**
- * Pre-Commit Review Hook (v4.0 - PR-Based Review)
+ * Pre-Commit Review Hook (v4.1 - PR-Based Review)
  *
  * Flow:
  * 1. Run lint config integrity check
  * 2. Run ESLint with --max-warnings 0
  * 3. Check protection / tamper integrity
  * 4. Enforce protected branch guard
- * 5. Check pending CTO items (warn on staging, block on main)
- * 6. If all pass → commit approved. Code review happens at PR time.
+ * 5. If all pass → commit approved. Code review happens at PR time.
  *
- * @version 4.0.0
+ * Note: G020 CTO items commit blocking was removed in v4.1.
+ * hasPendingCtoItems() is retained for session briefing use.
+ *
+ * @version 4.1.0
  */
 
 import fs from 'fs';
@@ -66,7 +68,8 @@ function getStagedInfo() {
 }
 
 /**
- * Check for pending CTO items that block commits (G020 compliance)
+ * Check for pending CTO items (used by session briefing).
+ * Note: G020 commit blocking was removed — this function no longer blocks commits.
  * This includes ALL pending questions (not just rejections) and pending triage items.
  */
 function hasPendingCtoItems() {
@@ -611,48 +614,9 @@ async function main() {
     process.exit(0);
   }
 
-  // G020: Branch-aware commit blocking
-  const ctoItemsCheck = hasPendingCtoItems();
-  if (ctoItemsCheck.hasItems) {
-    const currentBranch = getBranchInfo();
-
-    if (currentBranch === 'main' || currentBranch === 'unknown') {
-      // MAIN/UNKNOWN: Hard block (G001 fail-closed treats unknown as main)
-      console.error('');
-      console.error('══════════════════════════════════════════════════════════════');
-      console.error('  COMMIT BLOCKED: Pending CTO item(s) require attention');
-      console.error('');
-      if (ctoItemsCheck.questionCount > 0) {
-        console.error(`  • ${ctoItemsCheck.questionCount} CTO question(s) pending`);
-      }
-      if (ctoItemsCheck.triageCount > 0) {
-        console.error(`  • ${ctoItemsCheck.triageCount} untriaged report(s) pending`);
-      }
-      console.error('');
-      console.error('  Run /deputy-cto to address blocking items');
-      console.error('══════════════════════════════════════════════════════════════');
-      console.error('');
-      process.exit(1);
-    } else if (currentBranch === 'develop' || currentBranch === 'staging' || currentBranch === 'preview') {
-      // STAGING/DEVELOP: Warn but allow commit
-      console.warn('');
-      console.warn('══════════════════════════════════════════════════════════════');
-      console.warn(`  WARNING: Pending CTO items exist (committing to ${currentBranch})`);
-      console.warn('');
-      if (ctoItemsCheck.questionCount > 0) {
-        console.warn(`  • ${ctoItemsCheck.questionCount} CTO question(s) pending`);
-      }
-      if (ctoItemsCheck.triageCount > 0) {
-        console.warn(`  • ${ctoItemsCheck.triageCount} untriaged report(s) pending`);
-      }
-      console.warn('');
-      console.warn('  These must be resolved before merging to main.');
-      console.warn('══════════════════════════════════════════════════════════════');
-      console.warn('');
-      // Allow commit to proceed (do NOT exit)
-    }
-    // Feature branches: no blocking, no warning -- items checked on merge
-  }
+  // G020 branch-aware commit blocking removed in Phase 2 of production promotion
+  // overhaul. Pending CTO items no longer block commits on any branch.
+  // hasPendingCtoItems() is retained for use by session briefing.
 
   // ============================================================================
   // COMMIT APPROVED — lint and security checks passed

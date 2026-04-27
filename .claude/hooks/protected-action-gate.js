@@ -597,10 +597,68 @@ function createRequest(server, tool, args, phrase, options = {}) {
 }
 
 // ============================================================================
+// Deferred Action Support (for spawned/non-interactive sessions)
+// ============================================================================
+
+const IS_SPAWNED = process.env.CLAUDE_SPAWNED_SESSION === 'true';
+
+/**
+ * Create a deferred action for a spawned agent.
+ * The action is stored in the DB and will be executed when the CTO approves it.
+ * Returns the deferred action record, or null on failure.
+ */
+async function createDeferredAction(server, tool, args, phrase) {
+  try {
+    const { openDb, createDeferredAction: createRecord, findDuplicatePending } = await import('./lib/deferred-action-db.js');
+    const { computePendingHmac } = await import('./lib/deferred-action-executor.js');
+
+    const db = openDb();
+    if (!db) return null;
+
+    try {
+      const argsHash = crypto.createHash('sha256')
+        .update(JSON.stringify(args || {}))
+        .digest('hex');
+
+      // Check for duplicate pending request with same server+tool+args
+      const existing = findDuplicatePending(db, server, tool, argsHash);
+      if (existing) {
+        return { code: existing.code, id: existing.id, duplicate: true };
+      }
+
+      const code = generateCode();
+      const pendingHmac = computePendingHmac(code, server, tool, argsHash);
+      if (!pendingHmac) return null; // Protection key missing
+
+      const record = createRecord(db, {
+        server,
+        tool,
+        args,
+        argsHash,
+        code,
+        phrase,
+        pendingHmac,
+        requesterAgentId: process.env.CLAUDE_AGENT_ID || null,
+        requesterSessionId: process.env.CLAUDE_SESSION_ID || null,
+        requesterTaskType: process.env.GENTYR_PERSISTENT_TASK_ID ? 'persistent' : null,
+        requesterTaskId: process.env.GENTYR_PERSISTENT_TASK_ID || null,
+      });
+
+      return record;
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    console.error(`[protected-action-gate] Failed to create deferred action: ${err.message}`);
+    return null;
+  }
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
-function main() {
+async function main() {
   // Only check MCP tool calls
   const mcpInfo = parseMcpToolName(toolName);
   if (!mcpInfo) {
@@ -718,7 +776,64 @@ function main() {
   const approvalMode = protection.protection || 'approval-only';
   const isDeputyCtoMode = approvalMode === 'deputy-cto-approval';
 
-  // No approval - block and request one
+  // ── Spawned agent path: create deferred action (fire-and-forget) ──────────
+  if (IS_SPAWNED) {
+    const deferred = await createDeferredAction(mcpInfo.server, mcpInfo.tool, args, protection.phrase);
+
+    if (deferred) {
+      if (deferred.duplicate) {
+        console.error('');
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('  PROTECTED ACTION DEFERRED (duplicate request)');
+        console.error('');
+        console.error(`  Server: ${mcpInfo.server}`);
+        console.error(`  Tool:   ${mcpInfo.tool}`);
+        console.error(`  Code:   ${deferred.code}`);
+        console.error('');
+        console.error('  A deferred execution request already exists for this exact action.');
+        console.error('  The CTO will be notified at their next interactive session.');
+        console.error('  Continue with other work — this action will execute automatically');
+        console.error('  when the CTO approves it.');
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('');
+      } else {
+        console.error('');
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('  PROTECTED ACTION DEFERRED: Queued for CTO Approval');
+        console.error('');
+        console.error(`  Server: ${mcpInfo.server}`);
+        console.error(`  Tool:   ${mcpInfo.tool}`);
+        console.error(`  Code:   ${deferred.code}`);
+        console.error('');
+        if (Object.keys(args).length > 0) {
+          console.error('  Arguments:');
+          const argsStr = JSON.stringify(args, null, 2).split('\n');
+          argsStr.forEach(line => console.error(`    ${line}`));
+          console.error('');
+        }
+        console.error('  This action has been registered as a deferred protected action.');
+        console.error('  The CTO will see it in their next session briefing and can approve');
+        console.error(`  by typing: ${protection.phrase} ${deferred.code}`);
+        console.error('');
+        console.error('  The action will be executed automatically upon approval.');
+        console.error('  You do NOT need to retry — continue with other work.');
+        console.error('══════════════════════════════════════════════════════════════════════');
+        console.error('');
+      }
+    } else {
+      // Deferred creation failed — fall through to standard block message
+      console.error('[protected-action-gate] Warning: Could not create deferred action, falling back to standard block.');
+    }
+
+    // Block the tool call regardless — the deferred system handles execution
+    if (deferred) {
+      logBlockedAction(mcpInfo.server, mcpInfo.tool, 'deferred for CTO approval');
+      blockAndExit();
+    }
+    // If deferred creation failed, fall through to standard block message below
+  }
+
+  // ── Interactive session path: standard approval request (retry-based) ─────
   const request = createRequest(mcpInfo.server, mcpInfo.tool, args, protection.phrase, {
     approvalMode: isDeputyCtoMode ? 'deputy-cto' : 'cto',
   });
@@ -779,4 +894,7 @@ function main() {
   blockAndExit();
 }
 
-main();
+main().catch((err) => {
+  console.error(`[protected-action-gate] Fatal error: ${err.message}`);
+  process.exit(1);
+});

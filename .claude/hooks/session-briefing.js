@@ -359,6 +359,28 @@ function getPendingBypassRequests() {
 }
 
 // ---------------------------------------------------------------------------
+// Data gathering: pending deferred protected actions
+// ---------------------------------------------------------------------------
+
+function getPendingDeferredActions() {
+  if (!Database || !fs.existsSync(BYPASS_DB_PATH)) return null;
+  try {
+    const db = new Database(BYPASS_DB_PATH, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    // Check if deferred_actions table exists
+    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deferred_actions'").get();
+    if (!tableExists) { db.close(); return null; }
+    const actions = db.prepare(
+      "SELECT id, server, tool, args, code, phrase, requester_agent_id, created_at FROM deferred_actions WHERE status = 'pending' ORDER BY created_at ASC"
+    ).all();
+    db.close();
+    return actions.length > 0 ? actions : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data gathering: persistent task state
 // ---------------------------------------------------------------------------
 
@@ -648,6 +670,29 @@ function buildInteractiveBriefing() {
       lines.push(`    ${truncate(req.summary, 120)}`);
       lines.push(`    → mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "approved"|"rejected", context: "..." })`);
     }
+  }
+
+  // Deferred Protected Actions
+  const deferredActions = getPendingDeferredActions();
+  if (deferredActions) {
+    lines.push('');
+    lines.push('=== DEFERRED PROTECTED ACTIONS AWAITING APPROVAL ===');
+    for (let i = 0; i < deferredActions.length; i++) {
+      const act = deferredActions[i];
+      const ago = timeAgoStr(act.created_at);
+      let argsSummary = '';
+      try {
+        const args = typeof act.args === 'string' ? JSON.parse(act.args) : act.args;
+        const keys = Object.keys(args);
+        argsSummary = keys.length > 0 ? ` (${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''})` : '';
+      } catch { /* non-fatal */ }
+      lines.push(`[${i + 1}] ${act.server}:${act.tool}${argsSummary} — ${ago}`);
+      lines.push(`    To approve: ${act.phrase} ${act.code}`);
+      if (act.requester_agent_id) {
+        lines.push(`    Requested by: ${act.requester_agent_id}`);
+      }
+    }
+    lines.push('    Approved actions execute automatically via MCP daemon.');
   }
 
   // Persistent tasks
