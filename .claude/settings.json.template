@@ -44,6 +44,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-cwd-guard.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/staging-lock-guard.js",
+            "timeout": 3
           }
         ]
       },
@@ -440,6 +445,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/session-completion-gate.js",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/release-artifact-collector.js",
+            "timeout": 10
           }
         ]
       },
@@ -454,6 +464,11 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/workstream-dep-satisfier.js",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/release-artifact-collector.js",
             "timeout": 10
           }
         ]
@@ -560,6 +575,10 @@
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-persistent-sync.js",
           "timeout": 10
+        }, {
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/release-completion-hook.js",
+          "timeout": 30
         }]
       },
       {

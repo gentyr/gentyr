@@ -46,7 +46,8 @@
       "command": "node",
       "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/agent-reports/server.js"],
       "env": {
-        "CLAUDE_PROJECT_DIR": "."
+        "CLAUDE_PROJECT_DIR": ".",
+        "GENTYR_REPORT_TIER": ""
       }
     },
     "deputy-cto": {
@@ -227,6 +228,13 @@
     "persistent-task": {
       "command": "node",
       "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/persistent-task/server.js"],
+      "env": {
+        "CLAUDE_PROJECT_DIR": "."
+      }
+    },
+    "release-ledger": {
+      "command": "node",
+      "args": ["${FRAMEWORK_PATH}/packages/mcp-servers/dist/release-ledger/server.js"],
       "env": {
         "CLAUDE_PROJECT_DIR": "."
       }

@@ -70,6 +70,7 @@ const DEPUTY_CTO_DB = path.join(PROJECT_DIR, '.claude', 'deputy-cto.db');
 const CTO_REPORTS_DB = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
 const TODO_DB = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const PLANS_DB = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+const RELEASE_LEDGER_DB = path.join(PROJECT_DIR, '.claude', 'state', 'release-ledger.db');
 const AGENT_TRACKER_HISTORY = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
 const AUTONOMOUS_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
 const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automation-state.json');
@@ -483,6 +484,45 @@ function getBlockingQueueCount() {
 }
 
 /**
+ * Get active release status for the CTO status line.
+ * Returns null if no active release, or { label } with the display string.
+ */
+function getReleaseStatus() {
+  if (!Database || !fs.existsSync(RELEASE_LEDGER_DB)) return null;
+  try {
+    const db = new Database(RELEASE_LEDGER_DB, { readonly: true });
+    db.pragma('busy_timeout = 3000');
+    const release = db.prepare(
+      "SELECT id, plan_id FROM releases WHERE status = 'in_progress' LIMIT 1"
+    ).get();
+    if (!release) { db.close(); return null; }
+
+    // Check if the release plan has reached Phase 7 (CTO Sign-off)
+    let awaitingSignOff = false;
+    if (release.plan_id && fs.existsSync(PLANS_DB)) {
+      try {
+        const planDb = new Database(PLANS_DB, { readonly: true });
+        planDb.pragma('busy_timeout = 3000');
+        const completedPhases = planDb.prepare(
+          "SELECT COUNT(*) as count FROM phases WHERE plan_id = ? AND status IN ('completed', 'skipped')"
+        ).get(release.plan_id);
+        planDb.close();
+        if ((completedPhases?.count || 0) >= 6) {
+          awaitingSignOff = true;
+        }
+      } catch (_) {
+        // Non-fatal
+      }
+    }
+
+    db.close();
+    return { label: awaitingSignOff ? 'RELEASE AWAITING SIGN-OFF' : 'RELEASE IN PROGRESS' };
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
  * Get persistent task counts for status line
  */
 function getPersistentTaskCounts() {
@@ -717,6 +757,7 @@ async function main() {
   const gitContext = getGitContext();
   const sessionMetricsCached = getSessionMetricsCached();
   const planSummary = getPlanSummary();
+  const releaseStatus = getReleaseStatus();
   const [quota, deputyCto, unreadReports, autonomousMode, todoCounts] = await Promise.all([
     getQuotaStatus(),
     Promise.resolve(getDeputyCtoCounts()),
@@ -768,10 +809,13 @@ async function main() {
   if (isCritical) {
     // Critical blocking mode - compact format
     const parts = [];
+    if (releaseStatus) {
+      parts.push(releaseStatus.label);
+    }
     const itemCount = deputyCto.pending + unreadReports;
     const blockingCount = getBlockingQueueCount();
     if (blockingCount > 0) {
-      parts.unshift(`${blockingCount} BLOCKING`);
+      parts.push(`${blockingCount} BLOCKING`);
     }
     parts.push(`${itemCount} pending item(s)`);
     if (quotaPart) parts.push(quotaPart);
@@ -785,6 +829,11 @@ async function main() {
     // Line 0: Git context (branch + worktree)
     if (gitLabel) {
       lines.push(gitLabel);
+    }
+
+    // Line 0b: Active release status
+    if (releaseStatus) {
+      lines.push(releaseStatus.label);
     }
 
     // Line 1: Quota status (reuse quotaPart built above)
