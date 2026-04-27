@@ -102,6 +102,10 @@ import {
   type SetFlyMachineRamArgs,
   GetFlyMachineRamArgsSchema,
   type GetFlyMachineRamArgs,
+  SteelHealthCheckArgsSchema,
+  type SteelHealthCheckArgs,
+  UploadSteelExtensionArgsSchema,
+  type UploadSteelExtensionArgs,
 } from './types.js';
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
@@ -172,6 +176,53 @@ function getFlyConfigFromServices(): FlyConfig | null {
       machineSize: typeof fly['machineSize'] === 'string' ? fly['machineSize'] : undefined,
       machineRam: typeof fly['machineRam'] === 'number' ? fly['machineRam'] : undefined,
       maxConcurrentMachines: typeof fly['maxConcurrentMachines'] === 'number' ? fly['maxConcurrentMachines'] : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the `steel` section from services.json.
+ * Returns null if the file is missing, malformed, or has no `steel` section.
+ */
+interface SteelServicesConfig {
+  enabled: boolean;
+  apiKey: string;
+  orgId?: string;
+  defaultTimeout?: number;
+  extensionId?: string;
+  proxyConfig?: { enabled: boolean; country?: string };
+  maxConcurrentSessions?: number;
+}
+
+function getSteelConfigFromServices(): SteelServicesConfig | null {
+  try {
+    const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (!fs.existsSync(servicesPath)) return null;
+    const raw = fs.readFileSync(servicesPath, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('steel' in parsed) ||
+      typeof (parsed as Record<string, unknown>)['steel'] !== 'object' ||
+      (parsed as Record<string, unknown>)['steel'] === null
+    ) {
+      return null;
+    }
+    const steel = (parsed as Record<string, unknown>)['steel'] as Record<string, unknown>;
+    if (typeof steel['apiKey'] !== 'string') return null;
+    return {
+      enabled: steel['enabled'] !== false,
+      apiKey: steel['apiKey'],
+      orgId: typeof steel['orgId'] === 'string' ? steel['orgId'] : undefined,
+      defaultTimeout: typeof steel['defaultTimeout'] === 'number' ? steel['defaultTimeout'] : undefined,
+      extensionId: typeof steel['extensionId'] === 'string' ? steel['extensionId'] : undefined,
+      proxyConfig: typeof steel['proxyConfig'] === 'object' && steel['proxyConfig'] !== null
+        ? steel['proxyConfig'] as { enabled: boolean; country?: string }
+        : undefined,
+      maxConcurrentSessions: typeof steel['maxConcurrentSessions'] === 'number' ? steel['maxConcurrentSessions'] : undefined,
     };
   } catch {
     return null;
@@ -2123,32 +2174,51 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
-  // ── Remote execution routing (Fly.io) ──
+  // ── Remote/Steel execution routing ──
   // All dynamic imports use .js extension for ESM. Both modules may not exist
   // in all environments — all errors fall through to local execution.
   let remoteRoutingWarning = '';
+  let steelOnlySessionId: string | undefined; // Set when stealth-only Steel session created (for cleanup in local path)
   remoteRoutingBlock: {
+    // Resolve Fly.io config (may be absent — Steel-only scenarios don't need it)
     const flyConfig = getFlyConfigFromServices();
-    if (!flyConfig || flyConfig.enabled === false || !flyConfig.appName || !flyConfig.apiToken) break remoteRoutingBlock;
+    const flyAvailable = !!(flyConfig && flyConfig.enabled !== false && flyConfig.appName && flyConfig.apiToken);
+    let resolvedFlyToken = '';
+    if (flyAvailable) {
+      const { resolved: flyResolved, failedKeys: flyFailedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig!.apiToken });
+      if (flyFailedKeys.length === 0) resolvedFlyToken = flyResolved['FLY_API_TOKEN'];
+    }
 
-    const { resolved: flyResolved, failedKeys: flyFailedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
-    if (flyFailedKeys.length > 0) break remoteRoutingBlock;
-    const resolvedFlyToken = flyResolved['FLY_API_TOKEN'];
+    // Resolve Steel config (may be absent — non-stealth scenarios don't need it)
+    const steelSection = getSteelConfigFromServices();
+    const steelAvailable = !!(steelSection && steelSection.enabled);
+    let resolvedSteelKey = '';
+    if (steelAvailable) {
+      const { resolved: steelResolved, failedKeys: steelFailedKeys } = resolveOpReferencesStrict({ STEEL_API_KEY: steelSection!.apiKey });
+      if (steelFailedKeys.length === 0) resolvedSteelKey = steelResolved['STEEL_API_KEY'];
+    }
+
+    // If neither Fly.io nor Steel is configured, skip remote routing entirely
+    if (!flyAvailable && !resolvedFlyToken && !steelAvailable) break remoteRoutingBlock;
 
     let scenarioHeaded = false;
     let usesChromeBridge = false;
     let remoteEligible: boolean | undefined;
+    let stealthRequired = false;
+    let dualInstance = false;
     if (args.scenario_id) {
       try {
         const feedbackDbPath = getUserFeedbackDbPath();
         if (fs.existsSync(feedbackDbPath)) {
           const scenarioDb = new Database(feedbackDbPath, { readonly: true });
           try {
-            const scenarioRow = scenarioDb.prepare('SELECT headed, remote_eligible FROM demo_scenarios WHERE id = ?')
-              .get(args.scenario_id) as { headed: number | null; remote_eligible: number | null } | undefined;
+            const scenarioRow = scenarioDb.prepare('SELECT headed, remote_eligible, stealth_required, dual_instance FROM demo_scenarios WHERE id = ?')
+              .get(args.scenario_id) as { headed: number | null; remote_eligible: number | null; stealth_required: number | null; dual_instance: number | null } | undefined;
             if (scenarioRow?.headed === 1) scenarioHeaded = true;
             if (scenarioRow?.remote_eligible === 0) remoteEligible = false;
             else if (scenarioRow?.remote_eligible === 1) remoteEligible = true;
+            if (scenarioRow?.stealth_required === 1) stealthRequired = true;
+            if (scenarioRow?.dual_instance === 1) dualInstance = true;
           } catch { /* column may not exist */ }
           scenarioDb.close();
         }
@@ -2176,44 +2246,202 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         import('./execution-target.js'),
         import('./fly-runner.js'),
       ]);
-      const { resolveExecutionTarget } = executionTargetMod;
+      const { resolveExecutionTarget, checkSteelHealth: checkSteelHealthFn } = executionTargetMod;
       const { listActiveMachines, spawnRemoteMachine, isMachineAlive } = flyRunnerMod;
 
       // Read per-mode RAM config (state file, always writable, no sync needed)
       const ramConfig = readFlyMachineConfig();
       const effectiveRam = args.headless ? ramConfig.machineRamHeadless : ramConfig.machineRamHeaded;
 
-      const machineConfig = {
+      const machineConfig = flyAvailable ? {
         apiToken: resolvedFlyToken,
-        appName: flyConfig.appName,
-        region: flyConfig.region || 'iad',
-        machineSize: flyConfig.machineSize || 'shared-cpu-2x',
+        appName: flyConfig!.appName,
+        region: flyConfig!.region || 'iad',
+        machineSize: flyConfig!.machineSize || 'shared-cpu-2x',
         machineRam: effectiveRam,
-        maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
-      };
+        maxConcurrentMachines: flyConfig!.maxConcurrentMachines || 3,
+      } : null;
 
       let activeMachineCount = 0;
-      try {
-        const machines = await listActiveMachines(machineConfig);
-        activeMachineCount = machines.length;
-      } catch { /* non-fatal */ }
+      if (machineConfig) {
+        try {
+          const machines = await listActiveMachines(machineConfig);
+          activeMachineCount = machines.length;
+        } catch { /* non-fatal */ }
+      }
+
+      // Steel health and capacity checks (only when configured)
+      let steelHealthy = false;
+      let activeSteelSessionCount = 0;
+      if (steelAvailable && resolvedSteelKey) {
+        steelHealthy = await checkSteelHealthFn(resolvedSteelKey, 5000);
+        if (steelHealthy) {
+          try {
+            const { listActiveSteelSessions } = await import('./steel-runner.js');
+            const sessions = await listActiveSteelSessions({ apiKey: resolvedSteelKey, orgId: steelSection!.orgId });
+            activeSteelSessionCount = sessions.length;
+          } catch { /* non-fatal */ }
+        }
+      }
 
       const target = resolveExecutionTarget({
         headless: args.headless,
-        flyConfigured: true,
-        flyHealthy: true,
+        flyConfigured: flyAvailable && !!resolvedFlyToken,
+        flyHealthy: flyAvailable && !!resolvedFlyToken,
         displayLockContended,
         scenarioHeaded,
         usesChromeBridge,
         remoteEligible,
         explicitRemote: args.remote,
         activeMachineCount,
-        maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+        maxConcurrentMachines: flyConfig?.maxConcurrentMachines || 3,
+        stealthRequired,
+        dualInstance,
+        steelConfigured: steelAvailable && !!resolvedSteelKey,
+        steelHealthy,
+        activeSteelSessionCount,
+        maxConcurrentSteelSessions: steelSection?.maxConcurrentSessions ?? 2,
       });
 
-      if (target.target !== 'remote') break remoteRoutingBlock;
+      // ── Fail-closed: routing error (e.g., stealth required but Steel unavailable) ──
+      if (target.error) {
+        return {
+          success: false,
+          project,
+          message: `Routing error: ${target.reason}`,
+          execution_target: target.target,
+          execution_target_reason: target.reason,
+        };
+      }
 
-      // ── REMOTE EXECUTION PATH ──
+      // ── STEEL EXECUTION PATH ──
+      if (target.target === 'steel') {
+        try {
+          const { createSteelSession } = await import('./steel-runner.js');
+          const steelConfig = {
+            apiKey: resolvedSteelKey,
+            orgId: steelSection!.orgId,
+            defaultTimeout: steelSection!.defaultTimeout ?? 300000,
+            extensionId: steelSection!.extensionId,
+            proxyConfig: steelSection!.proxyConfig ? {
+              enabled: steelSection!.proxyConfig.enabled,
+              country: steelSection!.proxyConfig.country,
+            } : undefined,
+          };
+
+          const session = await createSteelSession(steelConfig, {
+            useProxy: steelConfig.proxyConfig?.enabled,
+            solveCaptcha: true,
+            timeout: args.timeout ?? steelConfig.defaultTimeout,
+          });
+
+          if (dualInstance && machineConfig) {
+            // Dual-instance: also spawn Fly.io machine with Steel CDP URL as env var
+            const remoteEnv: Record<string, string> = {};
+            if (scenarioEnvVars) Object.assign(remoteEnv, scenarioEnvVars);
+            if (args.extra_env) Object.assign(remoteEnv, args.extra_env);
+
+            // Resolve all secrets.local for the Fly.io side
+            try {
+              const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+              if (fs.existsSync(servicesPath)) {
+                const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+                if (services.secrets?.local) {
+                  const { resolved: localResolved, failedKeys: localFailed } = resolveOpReferencesStrict(services.secrets.local as Record<string, string>);
+                  if (localFailed.length === 0) Object.assign(remoteEnv, localResolved);
+                }
+              }
+            } catch { /* non-fatal */ }
+            if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
+            if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GITHUB_TOKEN;
+
+            // Inject Steel env vars for the test code on Fly.io
+            remoteEnv.STEEL_CDP_URL = session.cdpUrl;
+            remoteEnv.STEEL_SESSION_ID = session.sessionId;
+            remoteEnv.STEEL_DUAL_INSTANCE = '1';
+
+            let gitRemote = '';
+            let gitRef = 'main';
+            try {
+              gitRemote = execSync('git remote get-url origin', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+              if (gitRemote.startsWith('git@github.com:')) gitRemote = gitRemote.replace('git@github.com:', 'https://github.com/');
+              gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+              if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+            } catch { /* non-fatal */ }
+
+            const handle = await spawnRemoteMachine(machineConfig, {
+              gitRemote,
+              gitRef,
+              testFile: effectiveTestFile || '',
+              env: remoteEnv,
+              timeout: args.timeout ?? 120000,
+              slowMo: args.slow_mo ?? 0,
+              headless: args.headless,
+              scenarioId: args.scenario_id,
+            });
+
+            // Synthetic PID in the Steel range (-1_000_001 to -2_000_000)
+            const syntheticPid = -(Math.abs(hashCode(session.sessionId)) % 1_000_000 + 1_000_001);
+            const steelDemoState: DemoRunState = {
+              pid: syntheticPid,
+              project,
+              test_file: effectiveTestFile,
+              started_at: new Date().toISOString(),
+              status: 'running',
+              scenario_id: args.scenario_id,
+              remote: true,
+              fly_machine_id: handle.machineId,
+              fly_app_name: handle.appName,
+              steel_session_id: session.sessionId,
+              dual_instance: true,
+              execution_target: 'steel',
+            };
+            demoRuns.set(syntheticPid, steelDemoState);
+            persistDemoRuns();
+
+            return {
+              success: true,
+              project,
+              message: `Dual-instance demo started: Steel session ${session.sessionId} + Fly.io machine ${handle.machineId}. Use check_demo_result with pid=${syntheticPid} to poll.`,
+              pid: syntheticPid,
+              test_file: effectiveTestFile,
+              remote: true,
+              execution_target: 'steel',
+              execution_target_reason: target.reason,
+              fly_machine_id: handle.machineId,
+              steel_session_id: session.sessionId,
+            };
+          } else {
+            // Stealth-only: inject Steel env vars and fall through to the
+            // local Playwright execution path below remoteRoutingBlock.
+            // The local path will spawn Playwright with these env vars,
+            // and the test code connects to the Steel browser via STEEL_CDP_URL.
+            if (!args.extra_env) args.extra_env = {};
+            args.extra_env.STEEL_CDP_URL = session.cdpUrl;
+            args.extra_env.STEEL_SESSION_ID = session.sessionId;
+
+            // Store the Steel session ID so cleanup paths can release it
+            steelOnlySessionId = session.sessionId;
+            // Fall through to local execution path
+            break remoteRoutingBlock;
+          }
+        } catch (steelErr) {
+          // Stealth scenarios must NOT fall back — fail-closed
+          return {
+            success: false,
+            project,
+            message: `Steel execution failed: ${steelErr instanceof Error ? steelErr.message : String(steelErr)}`,
+            execution_target: 'steel' as const,
+            execution_target_reason: target.reason,
+          };
+        }
+      }
+
+      if (target.target !== 'remote') break remoteRoutingBlock;
+      // Fly.io is guaranteed available when target === 'remote'
+      if (!machineConfig) break remoteRoutingBlock;
+
+      // ── REMOTE EXECUTION PATH (Fly.io) ──
       const remoteEnv: Record<string, string> = {};
       if (scenarioEnvVars) Object.assign(remoteEnv, scenarioEnvVars);
       if (args.extra_env) Object.assign(remoteEnv, args.extra_env);
@@ -2733,6 +2961,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       demoState.screenshot_interval = screenshotCapture.interval;
       demoState.screenshot_dir = screenshotCapture.dir;
       demoState.screenshot_start_time = screenshotCapture.startTime;
+    }
+    // Track Steel session for cleanup if this is a stealth-only run
+    if (steelOnlySessionId) {
+      demoState.steel_session_id = steelOnlySessionId;
+      demoState.execution_target = 'steel';
     }
     demoRuns.set(demoPid, demoState);
 
@@ -3458,6 +3691,20 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
 
       try { await stopRemoteMachine(remoteHandle, remoteMachineConfig); } catch { /* non-fatal */ }
 
+      // Release Steel session if this was a Steel-backed run (dual-instance or stealth-only)
+      if (entry.steel_session_id) {
+        try {
+          const { releaseSteelSession } = await import('./steel-runner.js');
+          const steelSection = getSteelConfigFromServices();
+          if (steelSection) {
+            const { resolved } = resolveOpReferencesStrict({ STEEL_API_KEY: steelSection.apiKey });
+            if (resolved['STEEL_API_KEY']) {
+              await releaseSteelSession({ apiKey: resolved['STEEL_API_KEY'], orgId: steelSection.orgId }, entry.steel_session_id);
+            }
+          }
+        } catch { /* non-fatal — Steel sessions auto-expire after timeout */ }
+      }
+
       const entryWithInterval = entry as DemoRunState & { _remotePollInterval?: ReturnType<typeof setInterval> };
       if (entryWithInterval._remotePollInterval) clearInterval(entryWithInterval._remotePollInterval);
 
@@ -4049,11 +4296,27 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
     } catch (e) {
       process.stderr.write(`[fly-runner] Failed to stop remote machine: ${e instanceof Error ? e.message : String(e)}\n`);
     }
+    // Release Steel session if this was a Steel-backed run
+    if (entry.steel_session_id) {
+      try {
+        const { releaseSteelSession } = await import('./steel-runner.js');
+        const steelSection = getSteelConfigFromServices();
+        if (steelSection) {
+          const { resolved } = resolveOpReferencesStrict({ STEEL_API_KEY: steelSection.apiKey });
+          if (resolved['STEEL_API_KEY']) {
+            await releaseSteelSession({ apiKey: resolved['STEEL_API_KEY'], orgId: steelSection.orgId }, entry.steel_session_id);
+          }
+        }
+      } catch { /* non-fatal — Steel sessions auto-expire */ }
+    }
     const entryWithInterval = entry as DemoRunState & { _remotePollInterval?: ReturnType<typeof setInterval> };
     if (entryWithInterval._remotePollInterval) clearInterval(entryWithInterval._remotePollInterval);
     demoRuns.delete(pid);
     persistDemoRuns();
-    return { success: true, pid, project: entry.project, message: `Remote Fly.io machine ${entry.fly_machine_id} stopped.` };
+    const stopMsg = entry.steel_session_id
+      ? `Steel session ${entry.steel_session_id} released + Fly.io machine ${entry.fly_machine_id} stopped.`
+      : `Remote Fly.io machine ${entry.fly_machine_id} stopped.`;
+    return { success: true, pid, project: entry.project, message: stopMsg };
   }
 
   // Guard: only stop running or interrupted demos
@@ -7535,6 +7798,147 @@ const tools: AnyToolHandler[] = [
     handler: async (_args: GetFlyMachineRamArgs) => {
       const config = readFlyMachineConfig();
       return JSON.stringify(config);
+    },
+  },
+  // ── Steel.dev Cloud Browser Tools ──
+  {
+    name: 'steel_health_check',
+    description:
+      'Check Steel.dev cloud browser configuration, API connectivity, and active sessions. ' +
+      'Shows whether Steel is configured in services.json, API key resolves, API is reachable, ' +
+      'active session count, and extension deployment status. Analogous to get_fly_status for Steel.',
+    schema: SteelHealthCheckArgsSchema,
+    handler: async (_args: SteelHealthCheckArgs) => {
+      const steelSection = getSteelConfigFromServices();
+      if (!steelSection) {
+        return JSON.stringify({
+          configured: false,
+          message: 'Steel.dev not configured. Add a "steel" section to services.json via update_services_config.',
+        });
+      }
+      if (!steelSection.enabled) {
+        return JSON.stringify({
+          configured: true,
+          enabled: false,
+          message: 'Steel.dev is configured but disabled. Set steel.enabled=true in services.json.',
+        });
+      }
+
+      // Resolve API key
+      let apiKey: string;
+      try {
+        const { resolved, failedKeys, failureDetails } = resolveOpReferencesStrict({ STEEL_API_KEY: steelSection.apiKey });
+        if (failedKeys.length > 0) {
+          return JSON.stringify({
+            configured: true,
+            enabled: true,
+            healthy: false,
+            message: `STEEL_API_KEY credential resolution failed: ${failureDetails['STEEL_API_KEY'] || 'unknown error'}`,
+          });
+        }
+        apiKey = resolved['STEEL_API_KEY'];
+      } catch {
+        return JSON.stringify({
+          configured: true,
+          enabled: true,
+          healthy: false,
+          message: 'Failed to resolve STEEL_API_KEY from 1Password',
+        });
+      }
+
+      // Health check + list sessions
+      let healthy = false;
+      let activeSessions: Array<{ sessionId: string; status: string; createdAt: string }> = [];
+      try {
+        const { checkSteelHealth: checkHealth } = await import('./execution-target.js');
+        healthy = await checkHealth(apiKey, 5000);
+        if (healthy) {
+          const { listActiveSteelSessions } = await import('./steel-runner.js');
+          activeSessions = await listActiveSteelSessions({ apiKey, orgId: steelSection.orgId });
+        }
+      } catch { /* non-fatal */ }
+
+      return JSON.stringify({
+        configured: true,
+        enabled: true,
+        healthy,
+        activeSessions: activeSessions.length,
+        maxConcurrentSessions: steelSection.maxConcurrentSessions ?? 2,
+        extensionId: steelSection.extensionId ?? null,
+        proxyConfig: steelSection.proxyConfig ?? null,
+        defaultTimeout: steelSection.defaultTimeout ?? 300000,
+      });
+    },
+  },
+  {
+    name: 'upload_steel_extension',
+    description:
+      'Upload a Chrome extension (ZIP or CRX) to Steel.dev for use in stealth demo scenarios. ' +
+      'Extensions are stored at the org level — upload once, use in many sessions. ' +
+      'The returned extension ID is saved to services.json steel.extensionId. ' +
+      'The target project builds the extension; this tool just uploads it.',
+    schema: UploadSteelExtensionArgsSchema,
+    handler: async (args: UploadSteelExtensionArgs) => {
+      const steelSection = getSteelConfigFromServices();
+      if (!steelSection || !steelSection.enabled) {
+        return JSON.stringify({ error: 'Steel.dev not configured or disabled. Add/enable "steel" in services.json first.' });
+      }
+
+      if (!args.force && steelSection.extensionId) {
+        return JSON.stringify({
+          message: `Extension already uploaded (ID: ${steelSection.extensionId}). Use force=true to re-upload.`,
+          extensionId: steelSection.extensionId,
+        });
+      }
+
+      // Resolve API key
+      let apiKey: string;
+      try {
+        const { resolved, failedKeys } = resolveOpReferencesStrict({ STEEL_API_KEY: steelSection.apiKey });
+        if (failedKeys.length > 0) {
+          return JSON.stringify({ error: 'STEEL_API_KEY credential resolution failed.' });
+        }
+        apiKey = resolved['STEEL_API_KEY'];
+      } catch {
+        return JSON.stringify({ error: 'Failed to resolve STEEL_API_KEY from 1Password.' });
+      }
+
+      // Resolve ZIP path
+      const zipPath = path.isAbsolute(args.zip_path) ? args.zip_path : path.join(PROJECT_DIR, args.zip_path);
+      if (!fs.existsSync(zipPath)) {
+        return JSON.stringify({ error: `Extension file not found: ${zipPath}` });
+      }
+
+      try {
+        const { uploadSteelExtension: upload } = await import('./steel-runner.js');
+        const result = await upload({ apiKey, orgId: steelSection.orgId }, zipPath);
+
+        // Persist extension ID to services.json via atomic write pattern
+        // (best-effort — may be root-owned)
+        try {
+          const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+          if (fs.existsSync(servicesPath)) {
+            const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+            if (services.steel) {
+              services.steel.extensionId = result.extensionId;
+              const { safeWriteJson } = await import('../shared/safe-json-io.js');
+              safeWriteJson(servicesPath, services);
+            }
+          }
+        } catch {
+          // If services.json is root-owned, the agent can update via update_services_config
+        }
+
+        return JSON.stringify({
+          success: true,
+          extensionId: result.extensionId,
+          message: `Extension uploaded to Steel.dev. ID: ${result.extensionId}`,
+        });
+      } catch (err) {
+        return JSON.stringify({
+          error: `Upload failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     },
   },
 ];

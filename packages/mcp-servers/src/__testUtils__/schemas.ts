@@ -402,6 +402,8 @@ CREATE TABLE IF NOT EXISTS demo_scenarios (
     enabled INTEGER NOT NULL DEFAULT 1,
     headed INTEGER NOT NULL DEFAULT 0,
     remote_eligible INTEGER NOT NULL DEFAULT 1,
+    stealth_required INTEGER NOT NULL DEFAULT 0,
+    dual_instance INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     created_timestamp TEXT NOT NULL,
     updated_at TEXT NOT NULL,

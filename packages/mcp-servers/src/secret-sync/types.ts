@@ -298,6 +298,26 @@ export const ServicesConfigSchema = z.object({
     enabled: z.boolean().default(true)
       .describe('Enable/disable remote Playwright execution'),
   }).optional().describe('Fly.io remote Playwright execution configuration. When configured, headless demos auto-route to ephemeral Fly machines.'),
+  steel: z.object({
+    apiKey: z.string().regex(/^op:\/\//, 'Must be an op:// reference')
+      .describe('op:// reference to STEEL_API_KEY for Steel.dev Cloud Browser API'),
+    orgId: z.string().optional()
+      .describe('Steel.dev organization ID (optional, for multi-org accounts)'),
+    enabled: z.boolean().default(false)
+      .describe('Enable/disable Steel.dev cloud browser execution for stealth-required scenarios'),
+    defaultTimeout: z.number().int().min(30000).max(600000).default(120000)
+      .describe('Default Steel session timeout in ms (default: 120s)'),
+    extensionId: z.string().optional()
+      .describe('Pre-uploaded Chrome extension ID for Steel sessions (from dist-steel/ build via upload_steel_extension)'),
+    proxyConfig: z.object({
+      enabled: z.boolean().default(false),
+      country: z.string().max(5).default('US')
+        .describe('Residential proxy country code (e.g., "US", "GB")'),
+    }).optional()
+      .describe('Residential proxy configuration for Steel sessions'),
+    maxConcurrentSessions: z.number().int().min(1).max(10).default(2)
+      .describe('Max concurrent Steel browser sessions'),
+  }).optional().describe('Steel.dev cloud browser configuration for stealth-required scenarios. Provides anti-bot stealth (residential proxies, undetectable Chromium). Scenarios with stealth_required=true route here.'),
   environments: z.record(z.string(), z.object({
     baseUrl: z.string().url().describe('Base URL for this environment (e.g., "https://staging.example.com")'),
     label: z.string().optional().describe('Human-readable label shown in the dashboard (defaults to the key name)'),

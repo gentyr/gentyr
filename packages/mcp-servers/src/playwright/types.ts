@@ -284,9 +284,10 @@ export interface RunDemoResult {
   test_file?: string;
   context?: string;
   remote?: boolean;
-  execution_target?: 'local' | 'remote';
+  execution_target?: 'local' | 'remote' | 'steel';
   execution_target_reason?: string;
   fly_machine_id?: string;
+  steel_session_id?: string;
 }
 
 export const CheckDemoResultArgsSchema = z.object({
@@ -337,7 +338,7 @@ export interface CheckDemoResultResult {
   artifacts?: string[];
   degraded_features?: string[];
   recording_path?: string;
-  recording_source?: 'window' | 'none';
+  recording_source?: 'window' | 'none' | 'steel';
   recording_permission_error?: string;
   duration_seconds?: number;
   screenshot_hint?: string;
@@ -350,6 +351,13 @@ export interface CheckDemoResultResult {
   remote_routing_warning?: string;
   /** Errors from artifact retrieval — explains WHY artifacts may be missing */
   artifact_errors?: string[];
+  execution_target?: 'local' | 'remote' | 'steel';
+  /** Steel.dev session ID for stealth demo runs */
+  steel_session_id?: string;
+  /** Steel cloud browser recording path (user-facing view) for dual-instance scenarios */
+  steel_recording_path?: string;
+  /** Fly.io recording path (test orchestration view) for dual-instance scenarios */
+  fly_recording_path?: string;
   message: string;
 }
 
@@ -390,6 +398,16 @@ export interface DemoRunState {
   artifacts_pulled?: boolean;
   /** Local directory where pulled artifacts are stored (proactive pull path) */
   artifacts_dest_dir?: string;
+  // Steel.dev execution fields (set when run is on Steel cloud browser)
+  steel_session_id?: string;
+  /** Whether this is a dual-instance run (Fly.io + Steel) */
+  dual_instance?: boolean;
+  /** Fly.io side recording path for dual-instance scenarios */
+  fly_recording_path?: string;
+  /** Steel side recording path for dual-instance scenarios */
+  steel_recording_path?: string;
+  /** Execution target resolved by routing */
+  execution_target?: 'local' | 'remote' | 'steel';
 }
 
 export interface StopDemoResult {
@@ -599,6 +617,19 @@ export type SetFlyMachineRamArgs = z.infer<typeof SetFlyMachineRamArgsSchema>;
 
 export const GetFlyMachineRamArgsSchema = z.object({});
 export type GetFlyMachineRamArgs = z.infer<typeof GetFlyMachineRamArgsSchema>;
+
+// Steel.dev MCP tool schemas
+export const SteelHealthCheckArgsSchema = z.object({});
+export type SteelHealthCheckArgs = z.infer<typeof SteelHealthCheckArgsSchema>;
+
+export const UploadSteelExtensionArgsSchema = z.object({
+  zip_path: z.string().min(1).max(500)
+    .refine(v => !v.startsWith('/') && !v.includes('..'), 'zip_path must be a relative path without ".." traversal')
+    .describe('Relative path to the extension ZIP or CRX file to upload to Steel.dev. Resolved from project root.'),
+  force: z.coerce.boolean().optional().default(false)
+    .describe('Re-upload even if steel.extensionId already exists in services.json.'),
+});
+export type UploadSteelExtensionArgs = z.infer<typeof UploadSteelExtensionArgsSchema>;
 
 export type ListExtensionTabsArgs = z.infer<typeof ListExtensionTabsArgsSchema>;
 export type ScreenshotExtensionTabArgs = z.infer<typeof ScreenshotExtensionTabArgsSchema>;

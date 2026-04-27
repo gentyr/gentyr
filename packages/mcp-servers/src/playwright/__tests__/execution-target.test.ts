@@ -61,6 +61,119 @@ function localInput(overrides: Partial<ExecutionTargetInput> = {}): ExecutionTar
 }
 
 // ============================================================================
+// Tier 0 — Steel stealth routing
+// ============================================================================
+
+/**
+ * Returns an input that routes to Steel by default (stealth_required, Steel
+ * configured and healthy, Fly.io also configured for dual-instance).
+ */
+function steelInput(overrides: Partial<ExecutionTargetInput> = {}): ExecutionTargetInput {
+  return {
+    headless: true,
+    flyConfigured: true,
+    flyHealthy: true,
+    displayLockContended: false,
+    scenarioHeaded: false,
+    usesChromeBridge: false,
+    remoteEligible: undefined,
+    explicitRemote: undefined,
+    activeMachineCount: 0,
+    maxConcurrentMachines: 3,
+    stealthRequired: true,
+    dualInstance: false,
+    steelConfigured: true,
+    steelHealthy: true,
+    activeSteelSessionCount: 0,
+    maxConcurrentSteelSessions: 2,
+    ...overrides,
+  };
+}
+
+describe('resolveExecutionTarget — Tier 0: Steel stealth', () => {
+  it('should route to steel when stealth_required and Steel configured+healthy', () => {
+    const result = resolveExecutionTarget(steelInput());
+    expect(result.target).toBe('steel');
+    expect(result.error).toBeUndefined();
+    expect(result.reason).toContain('Stealth-required');
+  });
+
+  it('should fail-closed when stealth_required but Steel not configured', () => {
+    const result = resolveExecutionTarget(steelInput({ steelConfigured: false }));
+    expect(result.target).toBe('steel');
+    expect(result.error).toBe(true);
+    expect(result.reason).toContain('not configured');
+  });
+
+  it('should fail-closed when stealth_required but Steel unhealthy', () => {
+    const result = resolveExecutionTarget(steelInput({ steelHealthy: false }));
+    expect(result.target).toBe('steel');
+    expect(result.error).toBe(true);
+    expect(result.reason).toContain('unreachable');
+  });
+
+  it('should fail-closed when stealth_required but Steel at session capacity', () => {
+    const result = resolveExecutionTarget(steelInput({
+      activeSteelSessionCount: 2,
+      maxConcurrentSteelSessions: 2,
+    }));
+    expect(result.target).toBe('steel');
+    expect(result.error).toBe(true);
+    expect(result.reason).toContain('capacity');
+    expect(result.reason).toContain('2/2');
+  });
+
+  it('should route to steel for dual_instance scenarios', () => {
+    const result = resolveExecutionTarget(steelInput({
+      stealthRequired: false,
+      dualInstance: true,
+    }));
+    expect(result.target).toBe('steel');
+    expect(result.error).toBeUndefined();
+    expect(result.reason).toContain('Dual-instance');
+  });
+
+  it('should fail-closed for dual_instance when Fly.io not configured', () => {
+    const result = resolveExecutionTarget(steelInput({
+      dualInstance: true,
+      flyConfigured: false,
+    }));
+    expect(result.target).toBe('steel');
+    expect(result.error).toBe(true);
+    expect(result.reason).toContain('Fly.io');
+    expect(result.reason).toContain('not configured');
+  });
+
+  it('should fail-closed for dual_instance when Fly.io unhealthy', () => {
+    const result = resolveExecutionTarget(steelInput({
+      dualInstance: true,
+      flyHealthy: false,
+    }));
+    expect(result.target).toBe('steel');
+    expect(result.error).toBe(true);
+    expect(result.reason).toContain('Fly.io');
+    expect(result.reason).toContain('unreachable');
+  });
+
+  it('should not route to steel when stealthRequired=false and dualInstance=false', () => {
+    // Should fall through to Tier 1-3
+    const result = resolveExecutionTarget(remoteInput({
+      stealthRequired: false,
+      dualInstance: false,
+      steelConfigured: true,
+      steelHealthy: true,
+    }));
+    expect(result.target).not.toBe('steel');
+  });
+
+  it('should take priority over explicitRemote=false (stealth always wins)', () => {
+    const result = resolveExecutionTarget(steelInput({ explicitRemote: false }));
+    // stealth_required fires in Tier 0, before the explicitRemote=false check in Tier 1
+    expect(result.target).toBe('steel');
+  });
+});
+
+// ============================================================================
 // Tier 1 — Forced local (physical requirements)
 // ============================================================================
 
@@ -278,7 +391,7 @@ describe('resolveExecutionTarget — return value shape', () => {
     for (const input of [remoteInput(), localInput()]) {
       const result = resolveExecutionTarget(input);
       expect(typeof result.target).toBe('string');
-      expect(['local', 'remote']).toContain(result.target);
+      expect(['local', 'remote', 'steel']).toContain(result.target);
     }
   });
 

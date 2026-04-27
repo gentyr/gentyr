@@ -1,9 +1,11 @@
 /**
  * Execution Target Resolver for Remote Playwright
  *
- * Determines whether a demo should run locally or on a remote Fly.io machine.
- * Implements a three-tier priority system: forced-local physical requirements,
- * forced-remote explicit requests, and intelligent auto-routing.
+ * Determines whether a demo should run locally, on a remote Fly.io machine,
+ * or on a Steel.dev cloud browser (for stealth-required scenarios).
+ * Implements a four-tier priority system: Steel stealth routing, forced-local
+ * physical requirements, forced-remote explicit requests, and intelligent
+ * auto-routing.
  *
  * This module is pure — no side effects, no imports of GENTYR hooks or MCP
  * infrastructure. All I/O is isolated to the async utility functions at the
@@ -38,14 +40,26 @@ export interface ExecutionTargetInput {
   activeMachineCount?: number;
   /** Max concurrent machines allowed */
   maxConcurrentMachines?: number;
+  /** Whether the scenario has stealth_required=true in the DB (needs Steel.dev cloud browser) */
+  stealthRequired?: boolean;
+  /** Whether the scenario has dual_instance=true in the DB (Fly.io + Steel in parallel) */
+  dualInstance?: boolean;
+  /** Whether Steel.dev is configured in services.json */
+  steelConfigured?: boolean;
+  /** Whether Steel.dev API is reachable (health check passed) */
+  steelHealthy?: boolean;
+  /** Number of currently active Steel sessions */
+  activeSteelSessionCount?: number;
+  /** Max concurrent Steel sessions allowed */
+  maxConcurrentSteelSessions?: number;
 }
 
 /**
  * The resolved execution target with a human-readable routing reason.
  */
 export interface ExecutionTarget {
-  /** Where to execute: local machine or remote Fly.io */
-  target: 'local' | 'remote';
+  /** Where to execute: local machine, remote Fly.io, or Steel.dev cloud browser */
+  target: 'local' | 'remote' | 'steel';
   /** Human-readable reason for the routing decision */
   reason: string;
   /**
@@ -53,6 +67,11 @@ export interface ExecutionTarget {
    * Only set to true on the specific contention-bypass path.
    */
   autoDowngraded?: boolean;
+  /**
+   * When true, the routing decision is an error — the caller must abort, not execute.
+   * Used for fail-closed scenarios (e.g., stealth_required but Steel not configured).
+   */
+  error?: boolean;
 }
 
 // ============================================================================
@@ -60,9 +79,15 @@ export interface ExecutionTarget {
 // ============================================================================
 
 /**
- * Determine whether a demo should run locally or on a remote Fly.io machine.
+ * Determine whether a demo should run locally, on a remote Fly.io machine,
+ * or on a Steel.dev cloud browser.
  *
- * Three-tier priority system:
+ * Four-tier priority system:
+ *
+ * Tier 0 (Steel stealth): Scenarios requiring anti-bot stealth
+ *   - stealth_required=true + Steel configured + healthy → steel
+ *   - stealth_required=true + Steel not configured/healthy → error (fail-closed)
+ *   - dual_instance=true implies stealth; routes to Steel (Fly.io + Steel orchestrated)
  *
  * Tier 1 (forced local): Scenarios that physically require local resources
  *   - Headed demos (need display for window recording)
@@ -93,7 +118,68 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
     explicitRemote,
     activeMachineCount = 0,
     maxConcurrentMachines = 3,
+    stealthRequired = false,
+    dualInstance = false,
+    steelConfigured = false,
+    steelHealthy = false,
+    activeSteelSessionCount = 0,
+    maxConcurrentSteelSessions = 2,
   } = input;
+
+  // --------------------------------------------------------------------------
+  // Tier 0: Steel stealth routing (highest priority)
+  // --------------------------------------------------------------------------
+  // Stealth scenarios MUST run on Steel — fail-closed if Steel is unavailable.
+  // This prevents silent fallback to Fly.io where bot detection would block them.
+
+  if (stealthRequired || dualInstance) {
+    if (!steelConfigured) {
+      return {
+        target: 'steel',
+        reason: 'Scenario requires Steel.dev cloud browser (stealth_required) but Steel is not configured in services.json',
+        error: true,
+      };
+    }
+    if (!steelHealthy) {
+      return {
+        target: 'steel',
+        reason: 'Scenario requires Steel.dev cloud browser but Steel API is unreachable',
+        error: true,
+      };
+    }
+    if (activeSteelSessionCount >= maxConcurrentSteelSessions) {
+      return {
+        target: 'steel',
+        reason: `Scenario requires Steel.dev but at session capacity (${activeSteelSessionCount}/${maxConcurrentSteelSessions})`,
+        error: true,
+      };
+    }
+    // Dual-instance also requires Fly.io for the Playwright/bridge side
+    if (dualInstance) {
+      if (!flyConfigured) {
+        return {
+          target: 'steel',
+          reason: 'Dual-instance scenario requires both Steel.dev and Fly.io, but Fly.io is not configured',
+          error: true,
+        };
+      }
+      if (!flyHealthy) {
+        return {
+          target: 'steel',
+          reason: 'Dual-instance scenario requires both Steel.dev and Fly.io, but Fly.io API is unreachable',
+          error: true,
+        };
+      }
+      return {
+        target: 'steel',
+        reason: 'Dual-instance scenario routed to Steel.dev + Fly.io (stealth browser + Playwright orchestration)',
+      };
+    }
+    return {
+      target: 'steel',
+      reason: 'Stealth-required scenario routed to Steel.dev cloud browser',
+    };
+  }
 
   // --------------------------------------------------------------------------
   // Tier 1: Forced local (physical requirements)
@@ -269,6 +355,41 @@ export async function checkFlyHealth(
       {
         method: 'GET',
         headers: { Authorization: `Bearer ${apiToken}` },
+        signal: controller.signal,
+      },
+    );
+
+    clearTimeout(timer);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Quick health check for the Steel.dev Cloud Browser API.
+ *
+ * Issues a GET request to the sessions list endpoint and returns `true`
+ * if the API responds with a 2xx status within `timeoutMs`. Returns
+ * `false` on any network error, timeout, or non-2xx response so that
+ * callers treat an unreachable API as a fail-closed error for stealth
+ * scenarios, not an unhandled exception.
+ */
+export async function checkSteelHealth(
+  apiKey: string,
+  timeoutMs: number = 5000,
+): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const response = await fetch(
+      'https://api.steel.dev/v1/sessions',
+      {
+        method: 'GET',
+        headers: {
+          'steel-api-key': apiKey,
+        },
         signal: controller.signal,
       },
     );

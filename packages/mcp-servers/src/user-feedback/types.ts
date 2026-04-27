@@ -380,6 +380,10 @@ export const CreateScenarioArgsSchema = z.object({
     .describe('Whether this scenario requires exclusive display access (headed Playwright, real Chrome, etc.). Headed scenarios are serialized through the display queue to prevent window capture conflicts and corrupted recordings.'),
   remote_eligible: z.coerce.boolean().optional().default(true)
     .describe('Whether this scenario can run on remote Fly.io machines. Set false for scenarios requiring local Chrome, extension sockets, or headed display access. Defaults to true.'),
+  stealth_required: z.coerce.boolean().optional().default(false)
+    .describe('Whether this scenario requires a stealth cloud browser (Steel.dev). Stealth scenarios bypass bot detection via residential proxies and undetectable Chromium. Fail-closed: errors if Steel not configured.'),
+  dual_instance: z.coerce.boolean().optional().default(false)
+    .describe('Whether this scenario requires dual-instance mode (Fly.io + Steel in parallel). Fly.io runs Playwright; Steel provides the stealth browser connected via bridge.'),
 });
 
 export const UpdateScenarioArgsSchema = z.object({
@@ -400,6 +404,10 @@ export const UpdateScenarioArgsSchema = z.object({
     .describe('Whether this scenario requires exclusive display access. Headed scenarios are serialized through the display queue.'),
   remote_eligible: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
     .describe('Whether this scenario can run on remote Fly.io machines.'),
+  stealth_required: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
+    .describe('Whether this scenario requires a stealth cloud browser (Steel.dev).'),
+  dual_instance: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
+    .describe('Whether this scenario requires dual-instance mode (Fly.io + Steel).'),
 });
 
 export const DeleteScenarioArgsSchema = z.object({
@@ -411,6 +419,7 @@ export const ListScenariosArgsSchema = z.object({
   enabled_only: z.coerce.boolean().optional().default(true),
   category: z.string().optional(),
   remote_eligible: z.coerce.boolean().optional().describe('Filter by remote eligibility'),
+  stealth_required: z.coerce.boolean().optional().describe('Filter by stealth requirement (Steel.dev)'),
   limit: z.coerce.number().int().min(1).max(100).optional().default(50),
 });
 
@@ -436,6 +445,8 @@ export interface ScenarioRecord {
   enabled: number;
   headed: number; // SQLite boolean (0/1)
   remote_eligible: number; // SQLite boolean (0/1)
+  stealth_required: number; // SQLite boolean (0/1)
+  dual_instance: number; // SQLite boolean (0/1)
   created_at: string;
   created_timestamp: string;
   updated_at: string;
@@ -456,6 +467,8 @@ export interface ScenarioResult {
   enabled: boolean;
   headed: boolean;
   remote_eligible: boolean;
+  stealth_required: boolean;
+  dual_instance: boolean;
   created_at: string;
   updated_at: string;
   persona_name?: string;

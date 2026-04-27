@@ -296,6 +296,71 @@ describe('Secret Sync MCP Server - Schema Validation', () => {
         expect(result.data.secrets.manual).toHaveLength(2);
       }
     });
+
+    it('should validate config with steel section', () => {
+      const config = {
+        steel: {
+          apiKey: 'op://Production/Steel/api-key',
+          enabled: true,
+          maxConcurrentSessions: 3,
+        },
+        secrets: {},
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.steel?.enabled).toBe(true);
+        expect(result.data.steel?.maxConcurrentSessions).toBe(3);
+        expect(result.data.steel?.defaultTimeout).toBe(120000);
+      }
+    });
+
+    it('should reject steel.apiKey that is not an op:// reference', () => {
+      const config = {
+        steel: {
+          apiKey: 'raw-api-key-not-a-reference',
+          enabled: true,
+        },
+        secrets: {},
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should validate steel section with optional proxy config', () => {
+      const config = {
+        steel: {
+          apiKey: 'op://Vault/Steel/api-key',
+          enabled: true,
+          proxyConfig: {
+            enabled: true,
+            country: 'GB',
+          },
+        },
+        secrets: {},
+      };
+
+      const result = ServicesConfigSchema.safeParse(config);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.steel?.proxyConfig?.enabled).toBe(true);
+        expect(result.data.steel?.proxyConfig?.country).toBe('GB');
+      }
+    });
+
+    it('should validate config without steel section (steel is optional)', () => {
+      const result = ServicesConfigSchema.safeParse({ secrets: {} });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.steel).toBeUndefined();
+      }
+    });
   });
 
   describe('VercelSecretEntrySchema - Per-Environment Support', () => {
@@ -2870,13 +2935,22 @@ describe('Secret Sync MCP Server - RunCommandArgsSchema Validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('should reject outputLines above max (200)', () => {
+  it('should reject outputLines above max (500)', () => {
     const result = RunCommandArgsSchema.safeParse({
       command: ['node', 'script.js'],
-      outputLines: 300,
+      outputLines: 600,
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it('should accept outputLines at max boundary (500)', () => {
+    const result = RunCommandArgsSchema.safeParse({
+      command: ['node', 'script.js'],
+      outputLines: 500,
+    });
+
+    expect(result.success).toBe(true);
   });
 
   it('should validate background mode with label', () => {

@@ -24,6 +24,8 @@ import {
   CheckDemoResultArgsSchema,
   StopDemoArgsSchema,
   OpenVideoArgsSchema,
+  SteelHealthCheckArgsSchema,
+  UploadSteelExtensionArgsSchema,
   PLAYWRIGHT_PROJECTS,
   type DemoRunState,
   type CheckDemoResultResult,
@@ -723,11 +725,13 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should default headless to false when omitted', () => {
+    it('should leave headless undefined when omitted (low-level override, no default)', () => {
+      // headless is a low-level override — prefer using "recorded" flag instead.
+      // When omitted, headless is undefined; the server derives headedness from "recorded".
       const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.headless).toBe(false);
+        expect(result.data.headless).toBeUndefined();
       }
     });
 
@@ -887,11 +891,13 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     // skip_recording field (added alongside scenario_id requirement)
     // -------------------------------------------------------------------------
 
-    it('should default skip_recording to false when omitted', () => {
+    it('should leave skip_recording undefined when omitted (low-level override, no default)', () => {
+      // skip_recording is a low-level override — prefer using "recorded" flag instead.
+      // When omitted, skip_recording is undefined; the server derives recording from "recorded".
       const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.skip_recording).toBe(false);
+        expect(result.data.skip_recording).toBeUndefined();
       }
     });
 
@@ -952,14 +958,23 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should reject pid of 0 (must be >= 1)', () => {
+    it('should accept pid of 0 (no range constraint — server validates in handler)', () => {
+      // The schema only enforces integer type. Range validation (pid !== 0) happens
+      // in the handler, not the schema, so zero passes schema parsing.
       const result = CheckDemoResultArgsSchema.safeParse({ pid: 0 });
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
     });
 
-    it('should reject negative pid (G003)', () => {
-      const result = CheckDemoResultArgsSchema.safeParse({ pid: -1 });
-      expect(result.success).toBe(false);
+    it('should accept negative pid (synthetic remote execution handle)', () => {
+      // Negative PIDs are synthetic identifiers for remote Fly.io / Steel.dev runs.
+      // Fly.io range: -1 to -1_000_000; Steel range: -1_000_001 to -2_000_000.
+      const flyPid = CheckDemoResultArgsSchema.safeParse({ pid: -42 });
+      expect(flyPid.success).toBe(true);
+      if (flyPid.success) expect(flyPid.data.pid).toBe(-42);
+
+      const steelPid = CheckDemoResultArgsSchema.safeParse({ pid: -1_500_000 });
+      expect(steelPid.success).toBe(true);
+      if (steelPid.success) expect(steelPid.data.pid).toBe(-1_500_000);
     });
 
     it('should reject non-integer pid (G003)', () => {
@@ -1002,14 +1017,21 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
-    it('should reject pid of 0 (must be >= 1)', () => {
+    it('should accept pid of 0 (no range constraint — server validates in handler)', () => {
+      // The schema only enforces integer type. Range validation happens in the handler.
       const result = StopDemoArgsSchema.safeParse({ pid: 0 });
-      expect(result.success).toBe(false);
+      expect(result.success).toBe(true);
     });
 
-    it('should reject negative pid (G003)', () => {
-      const result = StopDemoArgsSchema.safeParse({ pid: -1 });
-      expect(result.success).toBe(false);
+    it('should accept negative pid (synthetic remote execution handle)', () => {
+      // Negative PIDs are synthetic identifiers for remote Fly.io / Steel.dev runs.
+      const flyPid = StopDemoArgsSchema.safeParse({ pid: -999 });
+      expect(flyPid.success).toBe(true);
+      if (flyPid.success) expect(flyPid.data.pid).toBe(-999);
+
+      const steelPid = StopDemoArgsSchema.safeParse({ pid: -1_200_000 });
+      expect(steelPid.success).toBe(true);
+      if (steelPid.success) expect(steelPid.data.pid).toBe(-1_200_000);
     });
 
     it('should reject non-integer pid (G003)', () => {
@@ -1051,6 +1073,82 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       const result = LaunchUiModeArgsSchema.safeParse({
         project: 'vendor-owner',
         test_file: 'a'.repeat(501),
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('SteelHealthCheckArgsSchema', () => {
+    it('should accept empty object (no required fields)', () => {
+      const result = SteelHealthCheckArgsSchema.safeParse({});
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept null-like input gracefully (empty object is the canonical form)', () => {
+      // z.object({}) requires an object input — undefined fails schema parsing.
+      // Callers should always pass {} for schemas with no required fields.
+      const result = SteelHealthCheckArgsSchema.safeParse(null);
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('UploadSteelExtensionArgsSchema', () => {
+    it('should require zip_path field', () => {
+      const result = UploadSteelExtensionArgsSchema.safeParse({});
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept a valid zip_path', () => {
+      const result = UploadSteelExtensionArgsSchema.safeParse({
+        zip_path: 'dist/extension.zip',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.zip_path).toBe('dist/extension.zip');
+        expect(result.data.force).toBe(false);
+      }
+    });
+
+    it('should default force to false', () => {
+      const result = UploadSteelExtensionArgsSchema.safeParse({
+        zip_path: 'build/extension.crx',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.force).toBe(false);
+      }
+    });
+
+    it('should accept force=true', () => {
+      const result = UploadSteelExtensionArgsSchema.safeParse({
+        zip_path: 'dist/extension.zip',
+        force: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.force).toBe(true);
+      }
+    });
+
+    it('should coerce force from string via z.coerce', () => {
+      const result = UploadSteelExtensionArgsSchema.safeParse({
+        zip_path: 'dist/extension.zip',
+        force: 'true',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.force).toBe(true);
+      }
+    });
+
+    it('should reject empty zip_path', () => {
+      const result = UploadSteelExtensionArgsSchema.safeParse({ zip_path: '' });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject zip_path exceeding 500 characters', () => {
+      const result = UploadSteelExtensionArgsSchema.safeParse({
+        zip_path: 'a'.repeat(501),
       });
       expect(result.success).toBe(false);
     });
