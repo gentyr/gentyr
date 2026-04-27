@@ -210,12 +210,12 @@ Add one task per phase:
 - verification_strategy: "Meta-review report generated with no unresolved cross-cutting issues"
 
 **Phase 4 task**: "Run full test suite and all demo scenarios"
-- Description: "Execute unit tests, integration tests, and all registered demo scenarios. Record results."
-- verification_strategy: "All tests pass and all demo scenarios complete successfully"
+- Description: "Execute unit tests, integration tests, and all registered demo scenarios. ALL demos MUST run remotely on Fly.io with video recording (use run_demo_batch — recorded: true and remote: true are the defaults, meaning headed + Xvfb + ffmpeg on Fly.io). Use run_demo_batch for concurrent execution across multiple Fly.io machines. Collect test-results.json and demo-results.json in the release artifact directory."
+- verification_strategy: "All tests pass, all demo scenarios pass with video recordings captured"
 
 **Phase 5 task**: "Demo Coverage Audit"
-- Description: "Verify every user-facing feature changed in this release has demo coverage. Create demo scenarios for uncovered features."
-- verification_strategy: "All changed features have passing demo scenarios"
+- Description: "Review all PRs in this release and verify every user-facing feature has a demo scenario. Create missing demos via demo-manager. Run all new demos remotely on Fly.io with recording (run_demo with recorded: true, remote: true). Gate: screenshot proof from demos covering new features — use get_demo_screenshot and extract_video_frames to collect visual evidence."
+- verification_strategy: "All changed features have passing demo scenarios with screenshot evidence in the release artifact directory"
 
 **Phase 6 task**: "Final Triage — Pre-release readiness check"
 - Description: "Deputy-CTO reviews all test/demo results, outstanding issues, and Phase 3 meta-review findings. Makes go/no-go recommendation."
