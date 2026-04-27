@@ -42,6 +42,7 @@ export const ReportToCtoArgsSchema = SubmitReportArgsSchema;
 export const ListReportsArgsSchema = z.object({
   unread_only: z.coerce.boolean().optional().default(false).describe('Only show unread reports'),
   untriaged_only: z.coerce.boolean().optional().default(false).describe('Only show reports not yet triaged by deputy-cto'),
+  tier: z.string().optional().describe('Filter by report tier (e.g., "preview", "staging"). Omit to show all tiers.'),
   limit: z.coerce.number().optional().default(20).describe('Maximum reports to return'),
 });
 
@@ -134,6 +135,8 @@ export interface ReportRecord {
   acknowledged_at: string | null;
   // Idempotency
   idempotency_key: string | null;
+  // Tier (preview, staging, or null for legacy/default)
+  tier: string | null;
   // Triage lifecycle fields
   triage_status: TriageStatus;
   triage_started_at: string | null;
@@ -154,6 +157,7 @@ export interface ReportListItem {
   created_at: string;
   is_read: boolean;
   is_acknowledged: boolean;
+  tier: string | null;
   triage_status: TriageStatus;
   triage_outcome: string | null;
   // Legacy
@@ -245,6 +249,7 @@ export interface ReportForTriage {
   summary: string;
   category: ReportCategory;
   priority: string;
+  tier: string | null;
   created_at: string;
 }
 
