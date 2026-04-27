@@ -286,18 +286,9 @@ async function ensureMcpDaemonHealthy(projectDir) {
   const port = daemonState.port || 18090;
   const statePid = daemonState.pid;
 
-  // ── Check current health ───────────────────────────────────────────────────
-  const healthStatus = await checkDaemonHealth(port);
-  if (healthStatus === 'ok') {
-    console.log(`  ${GREEN}MCP daemon healthy (port ${port})${NC}`);
-    return;
-  }
-
-  // If daemon is starting (HTTP server up, loading servers), skip kill and just poll
-  if (healthStatus === 'starting') {
-    console.log(`  ${YELLOW}MCP daemon is starting up — waiting for ready...${NC}`);
-  } else {
-    console.log(`  ${YELLOW}MCP daemon unhealthy — attempting restart...${NC}`);
+  // ── Always restart during sync to pick up new code/credentials ─────────────
+  {
+    console.log(`  Restarting MCP daemon to pick up changes...`);
 
     // ── Kill zombie process ──────────────────────────────────────────────────
     // Kill by state-file PID
@@ -600,6 +591,13 @@ async function recycleAutomatedSessions(projectDir) {
     }
 
     try {
+      // Validate worktree still exists — skip stale paths from cleaned-up worktrees
+      let worktreePath = item.worktree_path || undefined;
+      if (worktreePath && !fs.existsSync(worktreePath)) {
+        console.log(`  ${YELLOW}Warning: Worktree ${worktreePath} no longer exists — spawning without worktree${NC}`);
+        worktreePath = undefined;
+      }
+
       const result = enqueueSession({
         title: item.title || 'Recycled session',
         agentType: item.agent_type,
@@ -613,7 +611,7 @@ async function recycleAutomatedSessions(projectDir) {
         projectDir: item.project_dir || projectDir,
         extraEnv: item.extra_env ? JSON.parse(item.extra_env) : undefined,
         metadata: item.metadata ? JSON.parse(item.metadata) : undefined,
-        worktreePath: item.worktree_path || undefined,
+        worktreePath,
         agent: item.agent || undefined,
         spawnType,
         resumeSessionId,
