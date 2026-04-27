@@ -97,14 +97,22 @@ export function safeWriteJson(
     }
   }
 
-  // Step 2: atomic write
+  // Step 2: atomic write (tmp+rename), falling back to direct write if directory is read-only
   mkdirSync(dirname(filePath), { recursive: true });
+  const content = JSON.stringify(data, null, 2) + '\n';
   const tmpPath = filePath + '.tmp.' + process.pid;
   try {
-    writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n');
+    writeFileSync(tmpPath, content);
     renameSync(tmpPath, filePath);
   } catch (err) {
-    try { unlinkSync(tmpPath); } catch { /* cleanup best-effort */ }
-    throw err;
+    // If tmp file creation fails (e.g. root-owned directory), fall back to direct overwrite.
+    // Direct write is not atomic but works when the file itself is writable.
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      try { unlinkSync(tmpPath); } catch { /* may not exist */ }
+      writeFileSync(filePath, content);
+    } else {
+      try { unlinkSync(tmpPath); } catch { /* cleanup best-effort */ }
+      throw err;
+    }
   }
 }
