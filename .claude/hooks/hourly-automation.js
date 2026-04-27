@@ -1082,10 +1082,10 @@ Triage all pending preview-tier agent reports. For each report:
 ## Step 1: Get Reports Ready for Triage
 
 \`\`\`
-mcp__agent-reports__get_reports_for_triage({ limit: 10 })
+mcp__agent-reports__get_reports_for_triage({ limit: 10, tier: 'preview' })
 \`\`\`
 
-Filter to reports where tier = 'preview'. If no preview-tier reports are returned, output "No preview-tier reports ready for triage" and exit.
+If no reports are returned, output "No preview-tier reports ready for triage" and exit.
 
 ## Step 2: Triage Each Report
 
@@ -1211,10 +1211,10 @@ Triage all pending staging-tier agent reports. For each report:
 ## Step 1: Get Reports Ready for Triage
 
 \`\`\`
-mcp__agent-reports__get_reports_for_triage({ limit: 10 })
+mcp__agent-reports__get_reports_for_triage({ limit: 10, tier: 'staging' })
 \`\`\`
 
-Filter to reports where tier = 'staging'. If no staging-tier reports are returned, output "No staging-tier reports ready for triage" and exit.
+If no reports are returned, output "No staging-tier reports ready for triage" and exit.
 
 ## Step 2: Triage Each Report
 

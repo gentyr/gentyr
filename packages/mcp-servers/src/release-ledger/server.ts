@@ -220,6 +220,9 @@ function createRelease(args: CreateReleaseArgs): object {
   const artifactDir = path.join(PROJECT_DIR, '.claude', 'releases', id);
   try {
     fs.mkdirSync(artifactDir, { recursive: true });
+    fs.mkdirSync(path.join(artifactDir, 'prs'), { recursive: true });
+    fs.mkdirSync(path.join(artifactDir, 'sessions'), { recursive: true });
+    fs.mkdirSync(path.join(artifactDir, 'reports'), { recursive: true });
     const manifest = {
       release_id: id,
       version: args.version ?? null,
