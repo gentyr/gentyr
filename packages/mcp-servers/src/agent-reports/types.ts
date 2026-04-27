@@ -80,6 +80,7 @@ export const GetTriageStatsArgsSchema = z.object({
 
 export const GetReportsForTriageArgsSchema = z.object({
   limit: z.coerce.number().optional().default(10).describe('Maximum reports to return'),
+  tier: z.string().optional().describe('Filter by report tier (preview, staging). Omit for all tiers.'),
 });
 
 // ============================================================================

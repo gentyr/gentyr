@@ -93,9 +93,9 @@ export function getStagingLockState(projectDir = PROJECT_DIR) {
     }
     return state;
   } catch (err) {
-    // Corrupted or unreadable file — treat as unlocked
-    try { process.stderr.write(`[staging-lock] Warning: failed to read lock state: ${err.message}\n`); } catch (_) { /* ignore */ }
-    return { locked: false };
+    // G001 fail-closed: if lock file exists but is unreadable/corrupted, assume locked
+    try { process.stderr.write(`[staging-lock] Warning: failed to read lock state: ${err.message} — failing closed (assuming locked)\n`); } catch (_) { /* ignore */ }
+    return { locked: true, reason: 'lock_file_unreadable', error: err.message };
   }
 }
 

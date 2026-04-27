@@ -504,6 +504,11 @@ function markTriaged(args: MarkTriagedArgs): MarkTriagedResult | ErrorResult {
     };
   }
 
+  // Tier enforcement: preview tier cannot escalate (matches completeTriage restriction)
+  if (REPORT_TIER === 'preview' && args.action === 'escalated') {
+    return { error: 'Preview tier cannot escalate reports to CTO. Use auto-acknowledged or needs-cto-review, or create a task/persistent-task/plan to address the issue.' };
+  }
+
   const now = new Date().toISOString();
   db.prepare('UPDATE reports SET triaged_at = ?, triage_action = ? WHERE id = ?').run(now, args.action, args.id);
 
@@ -675,11 +680,15 @@ function getReportsForTriage(args: GetReportsForTriageArgs): GetReportsForTriage
   // Get reports that are:
   // 1. Status = pending
   // 2. Either never attempted, or last attempt was > 1 hour ago
+  // 3. Optionally filtered by tier
+  const tierFilter = args.tier ? 'AND tier = ?' : '';
+  const tierParams = args.tier ? [cooldownCutoff, args.tier, args.limit ?? 10] : [cooldownCutoff, args.limit ?? 10];
   const reports = db.prepare(`
     SELECT id, reporting_agent, title, summary, category, priority, tier, created_at
     FROM reports
     WHERE triage_status = 'pending'
       AND (triage_attempted_at IS NULL OR triage_attempted_at < ?)
+      ${tierFilter}
     ORDER BY
       CASE priority
         WHEN 'critical' THEN 1
@@ -689,7 +698,7 @@ function getReportsForTriage(args: GetReportsForTriageArgs): GetReportsForTriage
       END,
       created_timestamp ASC
     LIMIT ?
-  `).all(cooldownCutoff, args.limit ?? 10) as {
+  `).all(...tierParams) as {
     id: string;
     reporting_agent: string;
     title: string;
