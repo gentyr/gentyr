@@ -327,9 +327,11 @@ export function getSignalLog({ since, tier, limit = 50, projectDir } = {}) {
       continue;
     }
 
-    // Filter by since
-    if (since && entry.ts) {
-      const entryMs = new Date(entry.ts).getTime();
+    // Filter by since (fall back to created_at for entries missing ts)
+    if (since) {
+      const entryTs = entry.ts || entry.created_at;
+      if (!entryTs) continue;
+      const entryMs = new Date(entryTs).getTime();
       if (entryMs <= sinceMs) continue;
     }
 

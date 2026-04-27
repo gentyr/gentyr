@@ -513,6 +513,22 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 - `/monitor-tasks` — continuous monitoring loop that shows raw session data from running agents and persistent task monitors. Each round calls MCP tools directly (no investigator sub-agents) and displays verbatim indexed session messages via `browse_session`. Subscribes the CTO interactive session to verbatim-tier summaries from monitored agents for automatic delivery. Tracks unverified success claims across rounds in `successClaimsUnverified`; classifies evidence as `confirmed`/`unverified`/`refuted` in `evidenceLog`; signals monitors when claims are refuted. Accepts optional argument: `persistent` (focus on persistent task monitors), a task-ID prefix (monitor a specific task), or bare (user selects scope). Stops automatically on intervention-needed conditions: monitor dead with no revival queued, task self-paused, task completed/cancelled, critical memory pressure for 3+ rounds, child agent stale 15+ minutes, or a systemic error pattern across 3+ child attempts.
 
 
+## Report Auto-Resolution
+
+Polls for recently merged PRs every 2 minutes via `hourly-automation.js` (`runIfDue('report_auto_resolve', 2)`), feeds PR diffs + pending reports to Haiku via structured JSON output (`--json-schema`), and auto-resolves reports the LLM confirms are fixed. Gate-exempt (runs before the CTO gate check).
+
+**Shared LLM Client** (`.claude/hooks/lib/llm-client.js`): Extracted `callLLMStructured(prompt, systemPrompt, jsonSchema, opts)` from `scripts/session-activity-broadcaster.js`. Calls `claude -p --model haiku --output-format json --json-schema <schema>` via `execFile`. Double-parses the JSON envelope (`data.result` as string). Returns parsed object or `null` on failure. Injects `CLAUDE_SPAWNED_SESSION=true`. Accepts `opts.model` and `opts.timeout` overrides. Test-hookable via `_setTestHandler(fn)`.
+
+**Report Auto-Resolver** (`.claude/hooks/lib/report-auto-resolver.js`): Core logic module. Two exports:
+- `runReportAutoResolve(log, lastMergedPRTimestamp)` — queries pending reports from `.claude/cto-reports.db`, detects recently merged PRs via `gh pr list --state merged`, gets PR diffs via `gh pr diff`, calls Haiku to match, auto-resolves. Returns `{ processedPRs, resolved, deduped, latestMergedAt }` or `null`.
+- `runReportDedup(log)` — standalone dedup pass (30-minute cooldown, `runIfDue('report_dedup', 30)`). Skips when fewer than 3 pending reports. Returns `{ deduped }` or `null`.
+
+**DB updates** (in transaction): Resolved reports get `triage_status='self_handled'`, `triage_outcome='Auto-resolved by PR #N: <reason>'`. Deduped reports get `triage_status='dismissed'`, `triage_outcome='Duplicate of report <keep_id>: <reason>'`. All UPDATEs include `WHERE triage_status = 'pending'` guard. All LLM-returned report IDs are validated against the pending set before update (rejects hallucinated IDs).
+
+**Fast-exit paths** (no LLM call): 0 pending reports, 0 new merged PRs, or fewer than 3 pending reports (dedup only).
+
+**Cooldown defaults** in `config-reader.js`: `report_auto_resolve: 2` (minutes), `report_dedup: 30` (minutes).
+
 ## CTO Session Search
 
 The `search_cto_sessions` tool on the `agent-tracker` MCP server filters session files to user-only (non-autonomous) sessions before searching.
@@ -1212,7 +1228,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 |------|---------|
 | stop-continue-hook.js | Gate session stop, check unfinished work, trigger revival |
 
-### Shared Hook Libraries (hooks/lib/ — 26 modules)
+### Shared Hook Libraries (hooks/lib/ — 28 modules)
 
 Key modules consumed by hooks:
 - `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
@@ -1235,6 +1251,8 @@ Key modules consumed by hooks:
 - `user-prompt-resolver.js` — Resolve user prompt UUIDs to content
 - `spawn-env.js` — Environment variable injection for spawned agents
 - `feature-branch-helper.js` — Branch naming and detection
+- `llm-client.js` — Shared `callLLMStructured` for Haiku structured JSON output via `--json-schema`
+- `report-auto-resolver.js` — PR-based report auto-resolution and dedup (runReportAutoResolve, runReportDedup)
 
 ### Agent Definitions (19 shared)
 

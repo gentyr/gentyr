@@ -470,7 +470,8 @@ export function resumeSessionWithMessage(agentOrSessionId: string, message: stri
 export function sendDirectiveSignal(toAgentId: string, message: string, worktreePath?: string | null): { success: boolean; signalId: string } {
   const id = `sig-${crypto.randomUUID().slice(0, 8)}`;
   const filename = `${toAgentId}-${Date.now()}-${id}.json`;
-  const signal = { id, from_agent_id: 'cto-dashboard', from_agent_type: 'cto', from_task_title: 'CTO Dashboard Signal', to_agent_id: toAgentId, to_agent_type: 'agent', tier: 'directive', message, created_at: new Date().toISOString(), read_at: null, acknowledged_at: null };
+  const now = new Date().toISOString();
+  const signal = { ts: now, id, from_agent_id: 'cto-dashboard', from_agent_type: 'cto', from_task_title: 'CTO Dashboard Signal', to_agent_id: toAgentId, to_agent_type: 'agent', tier: 'directive', message, created_at: now, read_at: null, acknowledged_at: null };
   const content = JSON.stringify(signal);
 
   // Write to main project signal dir
