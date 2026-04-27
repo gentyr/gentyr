@@ -947,11 +947,13 @@ Tier 1 (stateless/read-only) MCP servers can be hosted in a single shared daemon
 **Tier 1 servers** (hosted in daemon): `github`, `cloudflare`, `supabase`, `vercel`, `render`, `codecov`, `resend`, `elastic-logs`, `onepassword`, `secret-sync`, `feedback-explorer`, `cto-report`, `specs-browser`, `setup-helper`, `show`.
 
 **Key files:**
-- `scripts/mcp-server-daemon.js` — Daemon entry point; resolves 1Password credentials at startup, hosts all Tier 1 servers via `lib/shared-mcp-config.js`
+- `scripts/mcp-server-daemon.js` — Daemon entry point; binds the HTTP server first (two-phase startup), then resolves 1Password credentials in parallel via `Promise.allSettled`. Handles graceful SIGTERM shutdown. Hosts all Tier 1 servers via `lib/shared-mcp-config.js`
 - `lib/shared-mcp-config.js` — Single source of truth for `TIER1_SERVERS` list, default port (`18090`), and project-local server preservation helpers (`extractProjectServers`, `mergeProjectServers`)
-- `packages/mcp-servers/src/shared/http-transport.ts` — HTTP transport adapter with path-based routing (`/mcp/<server-name>`)
+- `packages/mcp-servers/src/shared/http-transport.ts` — HTTP transport adapter with path-based routing (`/mcp/<server-name>`). Health endpoint returns `{ status: 'starting' }` while credentials are still resolving and `{ status: 'ok' }` once ready.
 
-**Activation:** `setup-automation-service.sh` installs a KeepAlive launchd service (`com.local.gentyr-mcp-daemon`, macOS) or systemd user service (`gentyr-mcp-daemon`, Linux) on port `18090`. Once the service is installed, `config-gen.js` auto-detects it (via plist/service/state-file presence) and converts Tier 1 stdio entries in `.mcp.json` to HTTP entries pointing at `http://127.0.0.1:18090/mcp/<server-name>`.
+**Activation:** `setup-automation-service.sh` installs a KeepAlive launchd service (`com.local.gentyr-mcp-daemon`, macOS) or systemd user service (`gentyr-mcp-daemon`, Linux) on port `18090`. A 1-second delay after `launchctl load` prevents the health check from racing the launchd startup. Once the service is installed, `config-gen.js` auto-detects it (via plist/service/state-file presence) and converts Tier 1 stdio entries in `.mcp.json` to HTTP entries pointing at `http://127.0.0.1:18090/mcp/<server-name>`.
+
+**Startup health polling:** `sync.js` `ensureMcpDaemonHealthy()` recognizes the `status:'starting'` state (daemon HTTP server is up but credentials are still resolving) and polls for up to 30 seconds. It also has a `launchctl load` fallback for the case where the plist exists but the service was never loaded into launchd.
 
 **Conditional stdio start:** Each Tier 1 server only calls `server.start()` if `MCP_SHARED_DAEMON` is not set. When running inside the daemon, `MCP_SHARED_DAEMON=1` suppresses stdio startup — the same compiled `dist/` is shared between both execution modes.
 
@@ -999,6 +1001,8 @@ The root `package.json` `dependencies` field includes MCP server runtime deps (`
 ## Secret Management
 
 The secret-sync MCP server orchestrates secrets from 1Password to deployment platforms without exposing values to agent context. 13 tools available. Secret values never pass through agent context window. The `update_services_config` and `get_services_config` tools allow agents to read and update `services.json` config fields (e.g., `worktreeBuildCommand`, `worktreeInstallTimeout`, `devServices`) without CTO manual intervention. `update_services_config` validates updates against `ServicesConfigSchema`, writes directly when the file is writable, and stages to `.claude/state/services-config-pending.json` on EACCES (root-owned file); staged changes are applied by `sync.js` step 1.5 on the next `npx gentyr sync`. The `secrets` key is blocked on both paths.
+
+**Atomic write safety (`safe-json-io`)**: All three write paths in the secret-sync server (`updateServicesConfig`, `populateSecretsLocal`, `writeServicesConfig`) and `sync.js` steps 1.5 and 1.6 use atomic tmp+rename writes via `safeWriteJson` / `safeReadJson` (TypeScript: `packages/mcp-servers/src/shared/safe-json-io.ts`; JS: `lib/safe-json-io.js`). A `.bak` backup is written before each overwrite; if a subsequent read finds the primary file corrupt or empty, the backup is automatically restored. This prevents `services.json` data loss from mid-write crashes or process kills.
 
 **Secret Profile Management**: 4 tools manage named profiles in `services.json` that bundle secret key sets for reuse: `register_secret_profile` (create/update a profile with optional `commandPattern`/`cwdPattern` auto-match rules), `get_secret_profile` (retrieve a profile by name), `list_secret_profiles` (list all profiles), `delete_secret_profile` (remove a profile). The `secret_run_command` tool accepts a `profile` parameter to merge a named profile's `secretKeys` with any explicit `secretKeys`. The `secret-profile-gate.js` PreToolUse hook fires on `secret_run_command` calls — when a matching profile exists but the agent did not specify one, the call is blocked on first attempt (agents must re-invoke with the profile or re-invoke without it a second time to prove intent).
 
