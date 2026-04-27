@@ -47,6 +47,11 @@
           },
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-sync-guard.js",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/staging-lock-guard.js",
             "timeout": 3
           }
