@@ -716,7 +716,7 @@ Rules:
 
 Agents blocked by access, authorization, or resource constraints can pause themselves and request CTO authorization rather than failing silently or spinning in retry loops. The CTO sees pending requests in the next interactive session briefing and resolves them with a single MCP tool call.
 
-**DB**: `.claude/state/bypass-requests.db` (SQLite, auto-created). Two tables: `bypass_requests` with `id`, `task_type` (`persistent`/`todo`), `task_id`, `task_title`, `agent_id`, `category`, `summary`, `details`, `status` (`pending`/`approved`/`rejected`/`cancelled`), `resolution_context`, `resolved_at`, `resolved_by`, `created_at`; and `blocking_queue` (see below). Two indexes on `status` and `(task_type, task_id)` for `bypass_requests`.
+**DB**: `.claude/state/bypass-requests.db` (SQLite, auto-created). Three tables: `bypass_requests` with `id`, `task_type` (`persistent`/`todo`), `task_id`, `task_title`, `agent_id`, `category`, `summary`, `details`, `status` (`pending`/`approved`/`rejected`/`cancelled`), `resolution_context`, `resolved_at`, `resolved_by`, `created_at`; `blocking_queue` (see below); and `deferred_actions` (see Deferred Protected Actions section). Two indexes on `status` and `(task_type, task_id)` for `bypass_requests`.
 
 **Bypass categories** (passed as `category` to `submit_bypass_request`): guides the CTO on what kind of authorization is needed — e.g., `"infrastructure"`, `"secrets"`, `"scope"`, `"access"`, or any custom string.
 
@@ -753,6 +753,34 @@ Agents blocked by access, authorization, or resource constraints can pause thems
 - `submit_bypass_request` — agent-facing; submits a bypass request and pauses the task. After submitting, the agent MUST summarize work and exit.
 - `resolve_bypass_request` — CTO-facing; approves or rejects a pending request. On approval of a persistent task, immediately enqueues a revival monitor.
 - `list_bypass_requests` — CTO-facing; lists requests by status (default: `pending`). Auto-cancels stale requests for gone/completed tasks.
+
+## Deferred Protected Actions
+
+Extends the protected action gate system for spawned (non-interactive) agents. When a spawned agent hits a protected action block, the system stores the exact tool call (server, tool, args) in a persistent DB with HMAC signatures rather than requiring the agent to wait interactively. The CTO sees pending deferred actions in the session briefing and can approve them hours later — the system executes the tool call automatically via HTTP POST to the MCP shared daemon with no agent session required.
+
+**Key distinction from standard protected actions**: Standard approvals require the requesting agent to retry the tool call after CTO approval (synchronous, interactive). Deferred approvals are fire-and-forget — the requesting agent exits immediately, and the tool call executes autonomously when approved (asynchronous, non-interactive).
+
+**DB**: `deferred_actions` table in `.claude/state/bypass-requests.db` (shared with `bypass_requests` table). Fields: `id`, `server`, `tool`, `args` (JSON), `args_hash` (SHA256 of args), `code` (6-char approval code), `phrase`, `pending_hmac`, `approved_hmac`, `status` (`pending`/`approved`/`executing`/`completed`/`failed`/`expired`/`cancelled`), `requester_agent_id`, `requester_session_id`, `requester_task_type`, `requester_task_id`, `execution_result`, `execution_error`, timestamps.
+
+**Status lifecycle**: `pending` → `approved` → `executing` → `completed` or `failed`. Atomic transition from `approved` to `executing` prevents double-execution. `expired` for past-TTL pending items; `cancelled` for CTO-cancelled items.
+
+**Tier 1 only**: Deferred execution is only supported for Tier 1 servers (those hosted in the shared MCP daemon on port 18090). Tier 2 servers require per-session stdio and cannot be auto-executed — the approval hook shows a manual execution hint for these.
+
+**Security model**:
+- HMAC domain separation: `'deferred-pending'` and `'deferred-approved'` domains prevent cross-replay with standard approvals
+- `pending_hmac` verified before marking approved (prevents forged approval requests)
+- `approved_hmac` verified before execution (prevents replay attacks)
+- `args_hash` binding prevents bait-and-switch (approved args must match stored args)
+- Timing-safe HMAC comparison (`crypto.timingSafeEqual`) throughout
+- Fail-closed: missing protection key blocks execution
+
+**CTO workflow**: Pending deferred actions appear in the `=== DEFERRED PROTECTED ACTIONS AWAITING APPROVAL ===` section of the interactive session briefing (above the bypass requests section) showing `server:tool`, age, and the exact `APPROVE <phrase> <code>` incantation to type. Typing the phrase triggers `protected-action-approval-hook.js`, which verifies both HMACs, transitions the action to `approved`, then immediately executes it via the MCP daemon. Success/failure output is printed in the terminal.
+
+**Dedup guard**: If the same `server + tool + args_hash` combination already has a `pending` deferred action, the gate hook returns the existing code rather than creating a duplicate.
+
+**Key modules**:
+- `lib/deferred-action-db.js` — DB operations: `createDeferredAction`, `getDeferredActionByCode`, `listPendingDeferredActions`, `markApproved`, `markExecuting`, `markCompleted`, `markFailed`, `cancelAction`, `expireStaleActions`, `findDuplicatePending`
+- `lib/deferred-action-executor.js` — MCP HTTP execution, HMAC verification, full pipeline: `executeAction`, `executeMcpTool`, `verifyActionHmac`, `computePendingHmac`, `computeApprovedHmac`, `isDaemonHealthy`, `isTier1Server`
 
 ## Hooks Reference
 
@@ -1028,6 +1056,24 @@ The icon-processor MCP server provides 12 tools for sourcing, downloading, proce
 
 > Full details: [Icon Processor MCP Server](docs/CLAUDE-REFERENCE.md#icon-processor-mcp-server)
 
+## Production Promotion System (Phase 0)
+
+Two components that form the foundation of the production promotion overhaul — tracking releases with a full evidence chain and preventing staging contamination during active releases.
+
+### Release Ledger MCP Server
+
+The release-ledger MCP server (`packages/mcp-servers/src/release-ledger/`) tracks production releases from staging lock through CTO sign-off. State is in `.claude/state/release-ledger.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
+
+**13 tools**: `create_release`, `get_release`, `list_releases`, `update_release`, `sign_off_release`, `cancel_release`, `add_release_pr`, `update_release_pr_status`, `add_release_session`, `add_release_report`, `add_release_task`, `get_release_evidence`, `generate_release_report`.
+
+**5-table SQLite schema**: `releases`, `release_prs`, `release_sessions`, `release_reports`, `release_tasks`. The `releases` table tracks `version`, `status` (`in_progress`/`signed_off`/`cancelled`), `plan_id`, `persistent_task_id`, `staging_lock_at`/`staging_unlock_at`, `signed_off_at`/`signed_off_by`, and `report_path`. The `get_release_evidence` tool returns the full evidence chain for a release (PRs, sessions, reports, tasks). `generate_release_report` produces a human-readable markdown summary.
+
+### Staging Lock Guard
+
+**Shared module**: `.claude/hooks/lib/staging-lock.js` — manages lock state at `.claude/state/staging-lock.json`. Exports `lockStaging(releaseId, options)`, `unlockStaging(releaseId, options)`, `isStagingLocked()`, `getStagingLockState()`. Best-effort GitHub branch protection via `gh api` (non-fatal — local state file is the primary enforcement mechanism).
+
+**PreToolUse hook**: `.claude/hooks/staging-lock-guard.js` — blocks Bash commands that would merge into staging when the lock is active. Blocked patterns: `gh pr merge --base staging` (and `--base=staging`, `-B staging`), `git push origin staging` (including refspecs like `HEAD:staging`), `git merge staging`. Uses the same shell tokenizer as `main-tree-commit-guard.js`. Fast exits: `GENTYR_PROMOTION_PIPELINE=true` passes through unconditionally, as does any call when staging is unlocked (most common path). Fail-open on unexpected errors.
+
 ## Plan Orchestrator MCP Server
 
 The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`) manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db` and the persistent task system. State is in `.claude/state/plans.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
@@ -1122,7 +1168,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 73 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 76 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 19 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
@@ -1146,7 +1192,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 ### Hooks by Lifecycle Phase
 
-#### PreToolUse (12 hooks — BLOCK dangerous actions)
+#### PreToolUse (13 hooks — BLOCK dangerous actions)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1161,7 +1207,8 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | interactive-agent-guard.js | `Agent` | Block code-modifying sub-agents in interactive sessions |
 | block-team-tools.js | `TeamCreate,TeamDelete,SendMessage` | Block Team tools (use Agent tool instead) |
 | secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
-| protected-action-gate.js | `mcp__*` | Block protected MCP actions without approval |
+| protected-action-gate.js | `mcp__*` | Block protected MCP actions; store as deferred action for spawned agents |
+| staging-lock-guard.js | `Bash` | Block staging merges (gh pr merge, git push, git merge) when staging is locked for a production release |
 
 #### PostToolUse (27 hooks — REACT to actions, inject context, spawn agents)
 
@@ -1207,7 +1254,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | credential-health-check.js | Verify 1Password connectivity |
 | playwright-health-check.js | Verify Playwright and browser availability |
 | plan-briefing.js | Brief agent on active plan state |
-| session-briefing.js | Comprehensive context dump: queue, tasks, bypass requests, focus mode |
+| session-briefing.js | Comprehensive context dump: queue, tasks, deferred actions, bypass requests, focus mode |
 
 #### UserPromptSubmit (12 hooks — process user/CTO input)
 
@@ -1216,7 +1263,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | cto-notification-hook.js | Update CTO status line |
 | secret-leak-detector.js | Scan for leaked secrets |
 | bypass-approval-hook.js | Detect "APPROVE BYPASS" pattern |
-| protected-action-approval-hook.js | Detect protected action approval tokens |
+| protected-action-approval-hook.js | Detect protected action approval tokens; execute approved deferred actions via MCP daemon |
 | slash-command-prefetch.js | Pre-fetch data for slash commands |
 | branch-drift-check.js | Check for upstream branch drift |
 | comms-notifier.js | Notify about pending inter-agent communications |
@@ -1232,7 +1279,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 |------|---------|
 | stop-continue-hook.js | Gate session stop, check unfinished work, trigger revival |
 
-### Shared Hook Libraries (hooks/lib/ — 28 modules)
+### Shared Hook Libraries (hooks/lib/ — 31 modules)
 
 Key modules consumed by hooks:
 - `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
@@ -1257,6 +1304,9 @@ Key modules consumed by hooks:
 - `feature-branch-helper.js` — Branch naming and detection
 - `llm-client.js` — Shared `callLLMStructured` for Haiku structured JSON output via `--json-schema`
 - `report-auto-resolver.js` — PR-based report auto-resolution and dedup (runReportAutoResolve, runReportDedup)
+- `deferred-action-db.js` — Deferred protected action DB operations (create, read, list, mark approved/executing/completed/failed, dedup, expire)
+- `deferred-action-executor.js` — MCP HTTP execution, HMAC verification with timing-safe comparison, full execution pipeline for deferred actions
+- `staging-lock.js` — Staging lock state management (`lockStaging`, `unlockStaging`, `isStagingLocked`, `getStagingLockState`); persists lock to `.claude/state/staging-lock.json`; best-effort GitHub branch protection via `gh api`
 
 ### Agent Definitions (19 shared)
 
@@ -1295,6 +1345,7 @@ Key modules consumed by hooks:
 | user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature | Personas, features, scenarios, prerequisites |
 | product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
 | deputy-cto | create_report, list_reports, acknowledge_report | Reports, triage, delegation |
+| release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report | Production release evidence chain (staging lock → CTO sign-off) |
 
 #### Infrastructure Servers (Tier 1 — shared daemon)
 

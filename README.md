@@ -38,7 +38,7 @@ The persistent monitor is a long-running Opus session that the CTO delegates com
 
 ### hooks
 
-Sixty-nine automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing. Hooks govern what agents can and cannot do.
+Seventy-six automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing. Hooks govern what agents can and cannot do.
 
 ### servers
 
@@ -233,7 +233,7 @@ npm run generate:readme
 
 ## the automation layer
 
-Sixty-nine hooks and background timers keep the system running without human triggers.
+Seventy-six hooks and background timers keep the system running without human triggers.
 
 ### credentials
 
@@ -253,7 +253,7 @@ Complex delegated objectives run through the persistent task system. The CTO cre
 
 Task routing is driven by a category system stored in `todo.db`. Each category defines an agent pipeline (sequence of sub-agent types), model tier, creator restrictions, and urgency authorization. Five categories are seeded by default: Standard Development (6-step pipeline), Deep Investigation, Test Suite Work, Triage & Delegation, and Demo Design. Categories replace the legacy hardcoded section routing and can be created or modified at runtime via MCP tools without code changes.
 
-Agents blocked by authorization or access constraints use the bypass request system instead of failing silently. The agent calls `submit_bypass_request` (on the `agent-tracker` MCP server), which pauses the task and surfaces the request in the CTO's next session briefing with a one-call resolution (`resolve_bypass_request`). On approval, the task is immediately revived with the CTO's instructions injected into the revival prompt. All revival paths check for pending bypass requests before spawning, preventing auto-resumption while a request is awaiting the CTO.
+Agents blocked by authorization or access constraints use the bypass request system instead of failing silently. The agent calls `submit_bypass_request` (on the `agent-tracker` MCP server), which pauses the task and surfaces the request in the CTO's next session briefing with a one-call resolution (`resolve_bypass_request`). On approval, the task is immediately revived with the CTO's instructions injected into the revival prompt. All revival paths check for pending bypass requests before spawning, preventing auto-resumption while a request is awaiting the CTO. For spawned agents that hit a protected MCP action block, the deferred protected actions system stores the exact tool call persistently — the CTO sees it in the briefing and approves it with a phrase, triggering automatic execution via the shared MCP daemon without requiring the original session to still be alive.
 
 ### code quality
 
@@ -285,7 +285,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-38 MCP servers. 19 agents. 73 hooks. 42 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+39 MCP servers. 19 agents. 76 hooks. 42 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 
