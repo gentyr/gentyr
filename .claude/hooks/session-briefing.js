@@ -34,6 +34,7 @@ const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const SESSION_COMMS_LOG = path.join(PROJECT_DIR, '.claude', 'state', 'session-comms.log');
 const BYPASS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+const RELEASE_LEDGER_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'release-ledger.db');
 
 // Lazy SQLite
 let Database = null;
@@ -381,6 +382,62 @@ function getPendingDeferredActions() {
 }
 
 // ---------------------------------------------------------------------------
+// Data gathering: active production release
+// ---------------------------------------------------------------------------
+
+function getActiveRelease() {
+  if (!Database || !fs.existsSync(RELEASE_LEDGER_DB_PATH)) return null;
+  try {
+    const db = new Database(RELEASE_LEDGER_DB_PATH, { readonly: true });
+    db.pragma('busy_timeout = 3000');
+    const release = db.prepare(
+      "SELECT * FROM releases WHERE status = 'in_progress' LIMIT 1"
+    ).get();
+    if (!release) { db.close(); return null; }
+
+    // Count PRs
+    const prCount = db.prepare(
+      "SELECT COUNT(*) as count FROM release_prs WHERE release_id = ?"
+    ).get(release.id);
+
+    db.close();
+
+    // Determine current phase from plans.db if plan_id is set
+    let currentPhase = '?';
+    let totalPhases = '?';
+    if (release.plan_id && fs.existsSync(PLANS_DB_PATH)) {
+      try {
+        const planDb = new Database(PLANS_DB_PATH, { readonly: true });
+        planDb.pragma('busy_timeout = 3000');
+        const completedPhases = planDb.prepare(
+          "SELECT COUNT(*) as count FROM phases WHERE plan_id = ? AND status IN ('completed', 'skipped')"
+        ).get(release.plan_id);
+        const allPhases = planDb.prepare(
+          "SELECT COUNT(*) as count FROM phases WHERE plan_id = ?"
+        ).get(release.plan_id);
+        planDb.close();
+        currentPhase = String((completedPhases?.count || 0) + 1);
+        totalPhases = String(allPhases?.count || '?');
+      } catch (_) {
+        // Non-fatal — plan DB access failure
+      }
+    }
+
+    return {
+      id: release.id,
+      version: release.version || 'unversioned',
+      stagingLockAt: release.staging_lock_at,
+      prCount: prCount?.count || 0,
+      currentPhase,
+      totalPhases,
+      planId: release.plan_id,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data gathering: persistent task state
 // ---------------------------------------------------------------------------
 
@@ -524,6 +581,20 @@ function buildInteractiveBriefing() {
   const localMode = getLocalModeState();
   if (localMode) {
     lines.push('[LOCAL MODE] Remote servers excluded. Local tooling only. Run /local-mode to disable.');
+    lines.push('');
+  }
+
+  // Active production release (high-priority — shown before queue)
+  const activeRelease = getActiveRelease();
+  if (activeRelease) {
+    lines.push('=== ACTIVE PRODUCTION RELEASE ===');
+    lines.push(`Release: ${activeRelease.id} (v${activeRelease.version})`);
+    lines.push(`Status: Phase ${activeRelease.currentPhase} of ${activeRelease.totalPhases}`);
+    if (activeRelease.stagingLockAt) {
+      lines.push(`Staging: LOCKED since ${activeRelease.stagingLockAt}`);
+    }
+    lines.push(`PRs: ${activeRelease.prCount}`);
+    lines.push('Monitor: /plan-progress or /monitor-tasks');
     lines.push('');
   }
 
