@@ -7,7 +7,7 @@
  * Page 5: Live AI Commentary Feed (60s polling, streaming claude -p)
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, useApp, useInput } from 'ink';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
 import { useClock } from './hooks/useClock.js';
@@ -19,11 +19,13 @@ import { useLiveFeed } from './hooks/useLiveFeed.js';
 import { Header } from './components/Header.js';
 import { Footer } from './components/Footer.js';
 import { ObserveView } from './components/ObserveView.js';
+import { ReleaseBanner } from './components/ReleaseBanner.js';
 import { DemosTestsView } from './components/DemosTestsView.js';
 import { PlansView } from './components/PlansView.js';
 import { SpecsView } from './components/SpecsView.js';
 import { CommentaryView } from './components/CommentaryView.js';
-import type { PageId } from './types.js';
+import { readReleaseStatus } from './live-reader.js';
+import type { PageId, ReleaseStatus } from './types.js';
 
 interface AppProps {
   mock: boolean;
@@ -42,7 +44,20 @@ export function App({ mock }: AppProps): React.ReactElement {
   const page4Data = usePage4Data(10000, mock, activePage === 4, selectedSpecId);
   const page5Data = useLiveFeed(mock);
 
-  const bodyHeight = Math.max(5, rows - 2);
+  // Release status polling (10s interval, Page 1 only)
+  const [releaseStatus, setReleaseStatus] = useState<ReleaseStatus | null>(null);
+  useEffect(() => {
+    if (mock) return;
+    // Initial read
+    try { setReleaseStatus(readReleaseStatus()); } catch { /* */ }
+    const id = setInterval(() => {
+      try { setReleaseStatus(readReleaseStatus()); } catch { /* */ }
+    }, 10000);
+    return () => clearInterval(id);
+  }, [mock]);
+
+  const releaseBannerHeight = releaseStatus && activePage === 1 ? 4 : 0;
+  const bodyHeight = Math.max(5, rows - 2 - releaseBannerHeight);
 
   useInput((input, key) => {
     if (input === 'q') { exit(); return; }
@@ -58,6 +73,9 @@ export function App({ mock }: AppProps): React.ReactElement {
     <Box flexDirection="column" height={rows}>
       <Header now={now} running={data.capacity.running} max={data.capacity.max} mock={mock} activePage={activePage} />
 
+      {activePage === 1 && releaseStatus && (
+        <ReleaseBanner release={releaseStatus} width={columns} />
+      )}
       {activePage === 1 && (
         <ObserveView
           data={data}

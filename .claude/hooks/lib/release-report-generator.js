@@ -108,8 +108,8 @@ function generateChangesTable(prs) {
 /**
  * Generate the customer-facing changelog.
  *
- * Groups PR titles by conventional commit prefix (feat/fix/docs/chore/refactor/test).
- * This is a pure data-driven approach; LLM enhancement can be added later.
+ * Primary path: LLM-generated changelog via `claude -p` subprocess.
+ * Fallback: structured grouping by conventional commit prefix.
  *
  * @param {Array} prs - Release PR records
  * @returns {string}
@@ -119,6 +119,26 @@ function generateChangelog(prs) {
     return '_No changes._';
   }
 
+  // Primary path: LLM-generated changelog
+  try {
+    const prSummary = prs.map(pr => `- PR #${pr.pr_number}: ${pr.pr_title || 'Untitled'}`).join('\n');
+    const prompt = `You are generating a customer-facing changelog from these merged PRs:\n\n${prSummary}\n\nGenerate a bulleted changelog grouped by category (Features, Bug Fixes, Improvements, Other). Each bullet should be a single clear sentence describing the user-visible change. Do not include PR numbers or technical details. Output ONLY the markdown bullets, nothing else.`;
+
+    const result = execFileSync('claude', ['-p', prompt, '--model', 'haiku', '--output-format', 'text'], {
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
+    }).trim();
+
+    if (result && result.length > 10) {
+      return result;
+    }
+  } catch (err) {
+    log(`LLM changelog generation failed, falling back to structured grouping: ${err.message}`);
+  }
+
+  // Fallback: structured grouping by conventional commit prefix
   const groups = {
     Feature: [],
     Fix: [],
