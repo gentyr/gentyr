@@ -568,7 +568,7 @@ export async function execInMachine(
 
   if (result.exit_code !== 0) {
     const stderrSnippet = result.stderr
-      ? Buffer.from(result.stderr, 'base64').toString('utf8').slice(0, 500)
+      ? result.stderr.slice(0, 500)
       : 'no stderr';
     throw new FlyAPIError(
       `Exec command failed (exit ${result.exit_code}): ${stderrSnippet}`,
@@ -577,8 +577,8 @@ export async function execInMachine(
     );
   }
 
-  // stdout from the exec API is base64-encoded binary data
-  return Buffer.from(result.stdout ?? '', 'base64');
+  // Fly exec API returns stdout as plain text (UTF-8), not base64-encoded
+  return Buffer.from(result.stdout ?? '', 'utf8');
 }
 
 // ============================================================================
@@ -608,14 +608,21 @@ export async function pullRemoteArtifacts(
   const errors: string[] = [];
 
   // --- Step 1: Extract /app/.artifacts tarball ---
+  // The Fly exec API returns stdout as plain text (UTF-8), not base64. For binary
+  // data like tar archives, we pipe through base64 on the remote side so the JSON
+  // response contains valid UTF-8, then decode it locally.
   let tarBuffer: Buffer | null = null;
   try {
-    tarBuffer = await execInMachine(
+    const b64Buffer = await execInMachine(
       handle,
       config,
-      ['tar', '-cz', '-C', '/app/.artifacts', '.'],
+      ['sh', '-c', 'tar -cz -C /app/.artifacts . 2>/dev/null | base64'],
       60_000,
     );
+    const b64Text = b64Buffer.toString('utf8').replace(/\s/g, '');
+    if (b64Text.length > 0) {
+      tarBuffer = Buffer.from(b64Text, 'base64');
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`[fly-runner] artifact tar exec non-fatal error: ${message}\n`);
@@ -691,8 +698,9 @@ export async function pullRemoteArtifacts(
       const statBuf = await execInMachine(handle, config, ['stat', '-c', '%s', remotePath], 5_000);
       fileSize = parseInt(statBuf.toString('utf8').trim(), 10);
       if (isNaN(fileSize)) fileSize = 0;
-    } catch {
-      // stat failed — file doesn't exist or machine stopped. Skip.
+    } catch (statErr: unknown) {
+      const statMsg = statErr instanceof Error ? statErr.message : String(statErr);
+      process.stderr.write(`[fly-runner] stat failed for ${remotePath}: ${statMsg}\n`);
       continue;
     }
 
