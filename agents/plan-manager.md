@@ -99,19 +99,28 @@ mcp__plan-orchestrator__update_plan_status({
 ```
 This should only be done with CTO authorization.
 
-### Plan Blocking Detection
+### Plan Blocking Detection (Self-Healing)
 
 On each monitoring cycle, check for blocked plan tasks:
 
 1. Call `get_plan_blocking_status` (on plan-orchestrator) to assess blocking state
-2. Review any plan tasks with status `paused` — these represent persistent tasks that are paused
-3. **If fully blocked** (no parallel work available):
-   - The plan auto-pauses when a persistent task pause propagates up
-   - Do NOT repeatedly self-pause and resume — stay paused until the CTO resolves the blocker
-   - Call `submit_bypass_request` if you haven't already, explaining why the plan is fully blocked
-4. **If partially blocked** (parallel work available):
-   - Continue spawning tasks for unblocked work
-   - Note the blocker in your monitoring loop but don't escalate unless it becomes fully blocking
+2. For each paused plan task, examine the linked persistent task:
+   a. **Fix in progress** (`blocker_diagnosis.status = 'fix_in_progress'`): A self-healing
+      fix task is running. Monitor its status via `list_tasks` (filter `assigned_by:
+      'self-heal-system'`). Do not escalate yet.
+   b. **Active blocker, fix attempts < 3**: The self-healing system will spawn investigation
+      tasks automatically when the persistent monitor dies. You can also create a NEW
+      persistent task to investigate and resolve the blocker:
+      - Title: "Unblock: {blocked task title}"
+      - Prompt: Include the blocker diagnosis, what was tried, what failed
+      This task runs in parallel with other unblocked work.
+   c. **Fix attempts exhausted** (3+ attempts for same error): The system auto-escalates
+      to the CTO via bypass request. Submit your own bypass request only if the plan is
+      **fully blocked** (no parallel work available).
+3. **Always pursue parallel work**: If partially blocked, continue spawning persistent tasks
+   for unblocked phases. One blocked step should not stall the entire plan.
+4. Only submit bypass request when fully blocked AND fix attempts are exhausted for all
+   blocking tasks.
 5. When a blocker is resolved, the plan task and plan automatically resume — verify by calling `get_plan_blocking_status` on your next cycle
 
 ### Step 7: Heartbeat + Continue
