@@ -1306,7 +1306,7 @@ function stopWindowRecorderSync(pid: number, outputPath: string): boolean {
     try { process.kill(pid, 'SIGINT'); } catch { /* already dead */ }
 
     let exited = false;
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       try {
         process.kill(pid, 0);
@@ -1314,12 +1314,13 @@ function stopWindowRecorderSync(pid: number, outputPath: string): boolean {
         exited = true;
         break;
       }
-      const spinEnd = Date.now() + 200;
+      const spinEnd = Date.now() + 500;
       while (Date.now() < spinEnd) { /* spin */ }
     }
 
     if (!exited) {
       // Process still alive at deadline — SIGKILL corrupts the MP4 (no moov atom)
+      process.stderr.write(`[playwright] WindowRecorder PID ${pid} did not exit within 30s — sending SIGKILL (recording will be corrupted)\n`);
       try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
       return false;
     }
@@ -2772,18 +2773,44 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           }
         } catch { /* non-fatal */ }
 
-        // ── Proactive artifact pull: check if demo finished (exit code written) ──
-        // The exit-code file is written by remote-runner.sh right before the 60s
-        // grace period, so its presence means all artifacts are ready to pull.
+        // ── Proactive artifact pull: check if artifacts are ready ──
+        // The .artifacts-ready sentinel is written by remote-runner.sh AFTER all
+        // artifacts have been copied and the exit code has been written. Checking
+        // this instead of .exit-code avoids the race where artifacts haven't been
+        // copied yet when the exit code appears.
         const currentEntry = demoRuns.get(syntheticPid);
         if (currentEntry && !currentEntry.artifacts_pulled) {
           try {
             const { execInMachine: execCmd, pullRemoteArtifacts: pullArtifacts, stopRemoteMachine: stopMachine } = await import('./fly-runner.js');
-            const exitCodeBuf = await execCmd(handle, machineConfig, ['cat', '/app/.exit-code'], 5_000);
-            const exitCodeStr = exitCodeBuf.toString('utf8').trim();
-            if (exitCodeStr !== '') {
+            // Primary: check .artifacts-ready sentinel (new remote-runner.sh)
+            // Fallback: check .exit-code with delay (old remote-runner.sh without sentinel)
+            let artifactsReady = false;
+            try {
+              await execCmd(handle, machineConfig, ['cat', '/app/.artifacts-ready'], 5_000);
+              artifactsReady = true;
+            } catch {
+              // Sentinel not found — try .exit-code as backward-compat fallback
+              try {
+                const ecBuf = await execCmd(handle, machineConfig, ['cat', '/app/.exit-code'], 5_000);
+                if (ecBuf.toString('utf8').trim() !== '') {
+                  // Exit code exists but no sentinel — old Docker image. Wait 15s
+                  // for cleanup to finish copying artifacts before pulling.
+                  process.stderr.write('[fly-runner] .artifacts-ready not found, falling back to .exit-code with 15s delay\n');
+                  await new Promise(r => setTimeout(r, 15_000));
+                  artifactsReady = true;
+                }
+              } catch { /* neither file exists — demo still running */ }
+            }
+            if (artifactsReady) {
+              // Read exit code
+              let exitCodeStr = '1';
+              try {
+                const exitCodeBuf = await execCmd(handle, machineConfig, ['cat', '/app/.exit-code'], 5_000);
+                exitCodeStr = exitCodeBuf.toString('utf8').trim() || '1';
+              } catch { /* non-fatal, use default */ }
+
               // Demo finished — pull artifacts now while machine is still alive
-              process.stderr.write(`[fly-runner] Exit code detected (${exitCodeStr}), pulling artifacts proactively\n`);
+              process.stderr.write(`[fly-runner] Artifacts ready (exit code: ${exitCodeStr}), pulling proactively\n`);
 
               const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${handle.machineId}`);
               fs.mkdirSync(destDir, { recursive: true });
@@ -2820,7 +2847,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               return;
             }
           } catch {
-            // Exit code file doesn't exist yet — demo still running, continue polling
+            // Unexpected error in artifact readiness check — continue polling
           }
         }
 
@@ -3354,6 +3381,37 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
             entry.window_recorder_pid = undefined;
           }
 
+          // Fallback: scan playwright-results/ and test-results/ for Playwright CDP-recorded .webm video
+          if (!videoToUse) {
+            try {
+              const findWebm = (dir: string): string | null => {
+                if (!fs.existsSync(dir)) return null;
+                let largest: string | null = null;
+                let largestSize = 0;
+                const walk = (d: string) => {
+                  for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+                    const fp = path.join(d, f.name);
+                    if (f.isDirectory()) walk(fp);
+                    else if (f.name.endsWith('.webm')) {
+                      const sz = fs.statSync(fp).size;
+                      if (sz > largestSize) { largest = fp; largestSize = sz; }
+                    }
+                  }
+                };
+                walk(dir);
+                return largest;
+              };
+              const webm = findWebm(path.join(EFFECTIVE_CWD, 'playwright-results'))
+                        || findWebm(path.join(EFFECTIVE_CWD, 'test-results'))
+                        || findWebm(path.join(PROJECT_DIR, 'playwright-results'))
+                        || findWebm(path.join(PROJECT_DIR, 'test-results'));
+              if (webm) {
+                videoToUse = webm;
+                process.stderr.write(`[playwright] Fallback: using Playwright CDP video: ${webm}\n`);
+              }
+            } catch { /* Non-fatal */ }
+          }
+
           if (videoToUse) {
             persistScenarioRecording(entry.scenario_id, videoToUse);
           }
@@ -3851,22 +3909,51 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
       let remoteRecordingPath: string | undefined;
       let remoteRecordingSource: 'window' | 'none' = 'none';
       const pulledRecording = path.join(destDir, 'recording.mp4');
-      if (fs.existsSync(pulledRecording)) {
-        const recStats = fs.statSync(pulledRecording);
-        if (recStats.size > 0) {
-          if (entry.scenario_id) {
-            try {
-              persistScenarioRecording(entry.scenario_id, pulledRecording);
-              remoteRecordingPath = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${entry.scenario_id}.mp4`);
-              remoteRecordingSource = 'window';
-            } catch (recErr) {
-              process.stderr.write(`[playwright] Failed to persist remote recording: ${recErr instanceof Error ? recErr.message : String(recErr)}\n`);
-            }
-          } else {
-            // No scenario_id — keep recording in the artifact directory
-            remoteRecordingPath = pulledRecording;
-            remoteRecordingSource = 'window';
+      let videoToUseRemote: string | undefined;
+      if (fs.existsSync(pulledRecording) && fs.statSync(pulledRecording).size > 0) {
+        videoToUseRemote = pulledRecording;
+      }
+
+      // Fallback: scan pulled artifacts for Playwright CDP .webm videos
+      if (!videoToUseRemote) {
+        try {
+          const findWebmInDir = (dir: string): string | null => {
+            if (!fs.existsSync(dir)) return null;
+            let largest: string | null = null;
+            let largestSize = 0;
+            const walk = (d: string) => {
+              for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+                const fp = path.join(d, f.name);
+                if (f.isDirectory()) walk(fp);
+                else if (f.name.endsWith('.webm')) {
+                  const sz = fs.statSync(fp).size;
+                  if (sz > largestSize) { largest = fp; largestSize = sz; }
+                }
+              }
+            };
+            walk(dir);
+            return largest;
+          };
+          const remoteWebm = findWebmInDir(destDir);
+          if (remoteWebm) {
+            videoToUseRemote = remoteWebm;
+            process.stderr.write(`[playwright] Remote fallback: using CDP video from artifacts: ${remoteWebm}\n`);
           }
+        } catch { /* Non-fatal */ }
+      }
+
+      if (videoToUseRemote) {
+        if (entry.scenario_id) {
+          try {
+            persistScenarioRecording(entry.scenario_id, videoToUseRemote);
+            remoteRecordingPath = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', `${entry.scenario_id}.mp4`);
+            remoteRecordingSource = 'window';
+          } catch (recErr) {
+            process.stderr.write(`[playwright] Failed to persist remote recording: ${recErr instanceof Error ? recErr.message : String(recErr)}\n`);
+          }
+        } else {
+          remoteRecordingPath = videoToUseRemote;
+          remoteRecordingSource = 'window';
         }
       }
 
@@ -6593,19 +6680,28 @@ async function runRemoteBatchSequence(
         let batchArtifactsPulled = false;
 
         while (await flyRunnerMod.isMachineAlive(handle, machineConfig)) {
-          // Check if demo has completed (exit code written = all artifacts ready to pull)
+          // Check if artifacts are ready (sentinel written AFTER artifacts are copied)
+          let batchReady = false;
           try {
-            const exitBuf = await flyRunnerMod.execInMachine(handle, machineConfig, ['cat', '/app/.exit-code'], 5_000);
-            const exitStr = exitBuf.toString('utf8').trim();
-            if (exitStr !== '') {
-              // Demo done — pull artifacts now while machine is still alive
-              process.stderr.write(`[fly-runner] Batch: exit code ${exitStr} detected, pulling artifacts proactively\n`);
-              try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); batchArtifactsPulled = true; if (r.errors.length) process.stderr.write(`[fly-runner] Batch proactive pull errors: ${r.errors.join('; ')}\n`); }
-              catch { /* non-fatal */ }
-              break;
-            }
+            await flyRunnerMod.execInMachine(handle, machineConfig, ['cat', '/app/.artifacts-ready'], 5_000);
+            batchReady = true;
           } catch {
-            // Exit code not yet written — demo still running
+            // Sentinel not found — try .exit-code fallback (old Docker image)
+            try {
+              const ecBuf = await flyRunnerMod.execInMachine(handle, machineConfig, ['cat', '/app/.exit-code'], 5_000);
+              if (ecBuf.toString('utf8').trim() !== '') {
+                process.stderr.write('[fly-runner] Batch: .artifacts-ready not found, falling back to .exit-code with 15s delay\n');
+                await new Promise(r => setTimeout(r, 15_000));
+                batchReady = true;
+              }
+            } catch { /* neither file — still running */ }
+          }
+          if (batchReady) {
+            // Demo done — pull artifacts now while machine is still alive
+            process.stderr.write(`[fly-runner] Batch: artifacts ready, pulling proactively\n`);
+            try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); batchArtifactsPulled = true; if (r.errors.length) process.stderr.write(`[fly-runner] Batch proactive pull errors: ${r.errors.join('; ')}\n`); }
+            catch { /* non-fatal */ }
+            break;
           }
 
           await new Promise(r => setTimeout(r, 10_000));

@@ -221,13 +221,13 @@ describe('resolveExecutionTarget — Tier 1: forced local', () => {
     expect(result.reason).toContain('headed=true');
   });
 
-  it('should route to local when scenarioHeaded=true even if explicitRemote=true', () => {
+  it('should route to remote when scenarioHeaded=true and explicitRemote=true (Xvfb path)', () => {
     const result = resolveExecutionTarget(remoteInput({
       scenarioHeaded: true,
       explicitRemote: true,
     }));
-    expect(result.target).toBe('local');
-    expect(result.reason).toContain('headed=true');
+    expect(result.target).toBe('remote');
+    expect(result.reason).toContain('Xvfb');
   });
 
   it('should route to local when headless=false without explicit remote', () => {

@@ -681,12 +681,36 @@ export async function pullRemoteArtifacts(
     { remotePath: '/app/.ffmpeg.log', localName: 'ffmpeg.log' },
   ];
 
+  // 15MB limit — base64 encoding adds ~33%, keeping well under exec API response limits
+  const MAX_EXEC_FILE_SIZE = 15 * 1024 * 1024;
+
   for (const { remotePath, localName } of individualFiles) {
+    // Check file size before pulling to avoid exec API truncation on large files
+    let fileSize = 0;
+    try {
+      const statBuf = await execInMachine(handle, config, ['stat', '-c', '%s', remotePath], 5_000);
+      fileSize = parseInt(statBuf.toString('utf8').trim(), 10);
+      if (isNaN(fileSize)) fileSize = 0;
+    } catch {
+      // stat failed — file doesn't exist or machine stopped. Skip.
+      continue;
+    }
+
+    if (fileSize === 0) {
+      continue;
+    }
+
+    if (fileSize > MAX_EXEC_FILE_SIZE) {
+      process.stderr.write(`[fly-runner] WARNING: skipping ${remotePath} (${(fileSize / 1024 / 1024).toFixed(1)}MB exceeds ${MAX_EXEC_FILE_SIZE / 1024 / 1024}MB exec API limit)\n`);
+      errors.push(`${localName}: skipped (${(fileSize / 1024 / 1024).toFixed(1)}MB exceeds exec API size limit)`);
+      continue;
+    }
+
     let fileBuffer: Buffer;
     try {
       fileBuffer = await execInMachine(handle, config, ['cat', remotePath]);
     } catch (err: unknown) {
-      // File absent or command failed — non-fatal, skip this file
+      // Command failed — non-fatal, skip this file
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[fly-runner] skipping ${remotePath}: ${message}\n`);
       errors.push(`${localName}: ${message}`);
