@@ -16,7 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { auditEvent } from './session-audit.js';
 import { killProcessGroup, killProcessGroupEscalated } from './process-tree.js';
 import { getCooldown } from '../config-reader.js';
@@ -446,26 +446,55 @@ export function reapSyncPass(db) {
       }
 
       // Reactive worktree cleanup: if the dead agent was in a worktree, clean it up immediately
-      // instead of waiting for the 5-min background sweep. Only remove if the worktree is clean.
+      // instead of waiting for the 5-min background sweep. Only remove if the worktree is clean
+      // AND no surviving child processes are detected.
       const worktreePath = metadata?.worktreePath || item.worktree_path;
       if (worktreePath && fs.existsSync(worktreePath)) {
         try {
-          const gitStatus = execSync('git status --porcelain', {
-            cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-          }).trim();
-          if (gitStatus.length === 0) {
-            // Clean worktree — safe to remove immediately
-            // Extract branch name from worktree path
-            const wtBranch = execSync('git branch --show-current', {
-              cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-            }).trim();
-            if (wtBranch) {
-              removeWorktreeCleanup(wtBranch);
-              debugLog(`[session-reaper] Cleaned up worktree for dead agent ${item.agent_id}: ${wtBranch}`);
-              try { auditEvent('worktree_cleaned_on_reap', { queue_id: item.id, agent_id: item.agent_id, worktree_path: metadata?.worktreePath || item.worktree_path }); } catch (_) { /* non-fatal */ }
+          // Check for surviving child processes before destroying the worktree (fail-closed)
+          let hasActiveProcesses = false;
+          try {
+            const lsofResult = execFileSync('lsof', ['+D', worktreePath, '-t'], {
+              encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+            });
+            if (lsofResult.trim().length > 0) {
+              hasActiveProcesses = true;
+              debugLog('session-reaper', 'worktree_cleanup_skipped_active_processes', {
+                agent_id: item.agent_id, worktree_path: worktreePath,
+                pids: lsofResult.trim().split('\n').filter(Boolean),
+              });
+            }
+          } catch (lsofErr) {
+            // lsof exit code 1 with empty stdout = no processes found — safe to proceed.
+            // Any other error = fail-closed: skip worktree cleanup.
+            if (lsofErr.status === 1 && (!lsofErr.stdout || lsofErr.stdout.trim().length === 0)) {
+              hasActiveProcesses = false;
+            } else {
+              hasActiveProcesses = true;
+              debugLog('session-reaper', 'worktree_cleanup_skipped_lsof_error', {
+                agent_id: item.agent_id, worktree_path: worktreePath, error: lsofErr.message,
+              });
             }
           }
-          // Dirty worktrees are left for rescueAbandonedWorktrees()
+
+          if (!hasActiveProcesses) {
+            const gitStatus = execSync('git status --porcelain', {
+              cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+            }).trim();
+            if (gitStatus.length === 0) {
+              // Clean worktree with no active processes — safe to remove immediately
+              // Extract branch name from worktree path
+              const wtBranch = execSync('git branch --show-current', {
+                cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+              }).trim();
+              if (wtBranch) {
+                removeWorktreeCleanup(wtBranch);
+                debugLog(`[session-reaper] Cleaned up worktree for dead agent ${item.agent_id}: ${wtBranch}`);
+                try { auditEvent('worktree_cleaned_on_reap', { queue_id: item.id, agent_id: item.agent_id, worktree_path: metadata?.worktreePath || item.worktree_path }); } catch (_) { /* non-fatal */ }
+              }
+            }
+            // Dirty worktrees are left for rescueAbandonedWorktrees()
+          }
         } catch (_) { /* non-fatal — background sweep will catch it */ }
       }
     } else if (item.lane === 'persistent') {
