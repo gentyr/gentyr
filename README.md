@@ -38,7 +38,7 @@ The persistent monitor is a long-running Opus session that the CTO delegates com
 
 ### hooks
 
-Seventy-six automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing. Hooks govern what agents can and cannot do.
+Eighty automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing. Hooks govern what agents can and cannot do.
 
 ### servers
 
@@ -233,7 +233,7 @@ npm run generate:readme
 
 ## the automation layer
 
-Seventy-six hooks and background timers keep the system running without human triggers.
+Eighty hooks and background timers keep the system running without human triggers.
 
 ### credentials
 
@@ -287,7 +287,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-39 MCP servers. 19 agents. 76 hooks. 42 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+39 MCP servers. 19 agents. 80 hooks. 42 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 
