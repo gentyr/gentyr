@@ -293,24 +293,36 @@ and `run_demo` tools instead of running Bash infrastructure commands.
 
 **Display queue**: Child agents running headed demos (video recording, real Chrome) automatically coordinate exclusive display access via the display queue. You do NOT need to manage display exclusivity — the demo-manager agent acquires and releases the lock as part of its headed demo workflow.
 
-### Self-Pause on Blockers
+### Handling Blockers (Self-Healing)
 
-If you hit a **permanent infrastructure blocker requiring CTO intervention** (missing credentials,
-permission issues, broken external dependencies), use `submit_bypass_request` — see "Escalating to CTO (Bypass Request)" below. This auto-pauses your task, notifies the CTO, and allows the stop hook to exit cleanly.
+When you detect a child task failure or infrastructure issue, the system has automated
+self-healing that handles many blockers without CTO intervention:
 
-**Do NOT use raw `pause_persistent_task` for CTO-blocking scenarios.** Raw pause should only be used for temporary self-pauses where you intend to resume automatically (e.g., waiting for a child task to complete). Using raw pause for permanent blockers bypasses CTO notification and plan-level propagation.
+1. **Check for active fix tasks first**: On revival, check the "Failure Diagnosis" and
+   "Active Self-Healing" sections in your revival context. If a self-healing fix task
+   is in progress, monitor it via `list_tasks` (filter by `assigned_by: 'self-heal-system'`
+   and your persistent task ID) before retrying the blocked operation.
 
-**NEVER self-pause for transient/auto-recovering issues:**
-- API rate limits or quota exhaustion (auto-recover — exit gracefully instead)
-- Temporary network errors
-- Child agent failures (create a new child task instead)
-- Any condition that will resolve without CTO intervention
+2. **Rate limits / quota exhaustion**: Do NOT pause. Exit gracefully (`summarize_work`).
+   The infrastructure applies an automatic cooldown and revives your monitor once the
+   limit resets. Your task stays `active` throughout — no circuit breaker trip.
 
-For transient issues: report via `report_to_deputy_cto`, then exit gracefully
-(`summarize_work`). The auto-revival system respawns your monitor within seconds
-once conditions improve. The task stays `active` so recovery systems work.
+3. **Child task failures**: Create a diagnostic sub-task using `deep-investigation` category
+   with investigation context (see "Investigation Context Injection" above). Include what
+   was tried, what failed, and eliminated hypotheses.
 
-When the CTO resolves a permanent blocker and adds an amendment or resumes the task, a new monitor session is spawned automatically within seconds.
+4. **Infrastructure failures (credentials, MCP servers, broken builds)**: The self-healing
+   system spawns investigation tasks automatically when your monitor dies from these issues.
+   On revival, check if fixes were applied before retrying.
+
+5. **After 3 failed fix attempts for the same blocker**: The system auto-escalates to the
+   CTO via `submit_bypass_request`. You do not need to escalate manually unless you
+   identify a blocker the system cannot diagnose (scope ambiguity, missing external access,
+   CTO-only authorization).
+
+**NEVER self-pause for transient issues.** The self-healing infrastructure handles rate
+limits, auth stalls, and crash recovery automatically. Only submit bypass requests
+for blockers that demonstrably cannot be auto-resolved after investigation.
 
 ### Escalating to CTO (Bypass Request)
 
@@ -325,6 +337,12 @@ When you hit a blocker that requires CTO intervention — not just a temporary p
 2. This automatically pauses your persistent task AND propagates to the plan layer (if applicable)
 3. After submitting, call `summarize_work` and exit — do NOT continue working
 4. **Use bypass requests instead of raw `pause_persistent_task`** when you need a CTO decision. Raw pause should only be used for temporary self-pauses (e.g., waiting for a child task to complete)
+
+**Note**: The self-healing system automatically escalates after 3 failed fix attempts for
+the same blocker. You should only manually submit bypass requests for blockers that are
+clearly non-automatable from the start (e.g., CTO authorization needed, scope decisions,
+external vendor access). For infrastructure and credential issues, let the self-healing
+system attempt fixes first.
 
 ### Handling Blocked Children
 

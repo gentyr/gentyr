@@ -22,7 +22,8 @@ import Database from 'better-sqlite3';
 import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tracker.js';
 import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
-import { reapSyncPass } from './session-reaper.js';
+import { reapSyncPass, diagnoseSessionFailure } from './session-reaper.js';
+import { getCooldown } from '../config-reader.js';
 import { killProcessGroup, isClaudeProcess } from './process-tree.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
@@ -32,6 +33,13 @@ import { checkAndExpireResources } from './resource-lock.js';
 import { cleanupStaleAllocations as cleanupStalePortAllocations } from './port-allocator.js';
 import { buildRevivalContext } from './persistent-revival-context.js';
 import { checkBypassBlock, getBypassResolutionContext } from './bypass-guard.js';
+
+// Self-healing module — loaded eagerly but non-fatal if missing
+let _handleBlocker = null;
+try {
+  const mod = await import('./blocker-auto-heal.js');
+  _handleBlocker = mod.handleBlocker;
+} catch (_) { /* non-fatal — self-healing unavailable */ }
 import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
@@ -223,6 +231,13 @@ function getDb() {
     _db.prepare('SELECT agent FROM queue_items LIMIT 0').get();
   } catch {
     _db.exec('ALTER TABLE queue_items ADD COLUMN agent TEXT');
+  }
+
+  // Idempotent migration: add diagnosis column to revival_events
+  try {
+    _db.prepare('SELECT diagnosis FROM revival_events LIMIT 0').get();
+  } catch {
+    _db.exec('ALTER TABLE revival_events ADD COLUMN diagnosis TEXT');
   }
 
   // Seed default config if not present
@@ -609,26 +624,66 @@ function detectRateLimitDeath(db, taskId) {
  * @param {object} db - session-queue.db instance (already open)
  * @param {string} taskId - persistent task ID
  */
-function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
-  // Check if this death was caused by an API rate limit — not a real crash
-  const rateLimitCheck = detectRateLimitDeath(db, taskId);
-  if (rateLimitCheck.rateLimited) {
-    log(`[persistent-revival] Rate-limit detected for ${taskId} (resets ${rateLimitCheck.resetInfo || 'unknown'}) — skipping crash-loop counter, setting 15min cooldown`);
-    // Set a cooldown: update the task's metadata with a rate_limit_cooldown_until timestamp
+function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagnosis = null) {
+  // Rate limit detection: use structured diagnosis if available, fall back to existing detection
+  const isRateLimited = (diagnosis?.error_type === 'rate_limit' && diagnosis?.is_transient) ||
+    (() => { try { return detectRateLimitDeath(db, taskId).rateLimited; } catch (_) { return false; } })();
+
+  if (isRateLimited) {
+    const cooldownMinutes = getCooldown('rate_limit_cooldown_minutes', 5);
+    log(`[persistent-revival] Rate-limit detected for ${taskId} — skipping crash-loop counter, setting ${cooldownMinutes}min cooldown`);
+
+    // Record blocker_diagnosis with cooldown in persistent-tasks.db
     try {
       const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
       if (fs.existsSync(ptDbPath)) {
         const ptDb = new Database(ptDbPath);
         ptDb.pragma('busy_timeout = 3000');
-        const metaRow = ptDb.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
-        const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
-        meta.rate_limit_cooldown_until = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        ptDb.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
+        const cooldownUntil = new Date(Date.now() + cooldownMinutes * 60 * 1000).toISOString();
+
+        // Also set legacy metadata cooldown for backward compat
+        try {
+          const metaRow = ptDb.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
+          const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
+          meta.rate_limit_cooldown_until = cooldownUntil;
+          ptDb.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
+        } catch (_) { /* non-fatal */ }
+
+        // Upsert blocker_diagnosis: if existing active/cooling_down diagnosis exists, update it
+        try {
+          // Check if blocker_diagnosis table exists first
+          const tableExists = ptDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+          if (tableExists) {
+            const existing = ptDb.prepare(
+              "SELECT id, fix_attempts FROM blocker_diagnosis WHERE persistent_task_id = ? AND error_type = 'rate_limit' AND status IN ('active', 'cooling_down') LIMIT 1"
+            ).get(taskId);
+            if (existing) {
+              ptDb.prepare("UPDATE blocker_diagnosis SET status = 'cooling_down', cooldown_until = ?, diagnosis_details = ? WHERE id = ?")
+                .run(cooldownUntil, JSON.stringify(diagnosis || { error_type: 'rate_limit', is_transient: true }), existing.id);
+            } else {
+              ptDb.prepare(
+                "INSERT INTO blocker_diagnosis (id, persistent_task_id, error_type, is_transient, diagnosis_details, status, cooldown_until, created_at) VALUES (?, ?, ?, 1, ?, 'cooling_down', ?, ?)"
+              ).run(generateQueueId(), taskId, 'rate_limit', JSON.stringify(diagnosis || { error_type: 'rate_limit', is_transient: true }), cooldownUntil, new Date().toISOString());
+            }
+          }
+        } catch (_) { /* non-fatal — blocker_diagnosis table may not exist yet */ }
+
         ptDb.close();
       }
     } catch (_) { /* non-fatal */ }
-    try { auditEvent('persistent_monitor_rate_limited', { task_id: taskId, reset_info: rateLimitCheck.resetInfo }); } catch (_) { /* non-fatal */ }
-    // Don't count toward crash-loop budget — just defer and return
+
+    // Record revival event with rate_limit_cooldown reason (excluded from hard count)
+    try {
+      db.prepare("INSERT INTO revival_events (id, task_id, reason, diagnosis, created_at) VALUES (?, ?, 'rate_limit_cooldown', ?, datetime('now'))")
+        .run(generateQueueId(), taskId, diagnosis ? JSON.stringify(diagnosis) : null);
+    } catch (_) { /* non-fatal */ }
+
+    // Record in-memory (excluded from hard count)
+    const entries = _monitorRevivalTimestamps.get(taskId) || [];
+    entries.push({ ts: Date.now(), reason: 'rate_limit_cooldown' });
+    _monitorRevivalTimestamps.set(taskId, entries.filter(e => e.ts > Date.now() - 60 * 60 * 1000));
+
+    try { auditEvent('rate_limit_cooldown', { task_id: taskId, cooldown_minutes: cooldownMinutes, sample_error: diagnosis?.sample_error?.slice(0, 100) }); } catch (_) { /* non-fatal */ }
     return;
   }
 
@@ -652,6 +707,26 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
     }
   } catch (_) { /* non-fatal — continue with normal revival */ }
 
+  // Self-healing: attempt to diagnose and fix before circuit breaker
+  // handleBlocker() uses only synchronous better-sqlite3 operations.
+  if (diagnosis && diagnosis.error_type !== 'unknown' && diagnosis.consecutive_errors > 0) {
+    try {
+      if (_handleBlocker) {
+        const healResult = _handleBlocker(taskId, diagnosis);
+        if (healResult.action === 'escalated') {
+          log(`[persistent-revival] Self-healing escalated for ${taskId} — bypass request submitted`);
+          return; // Task paused + bypass request submitted — do not re-enqueue
+        } else if (healResult.action === 'fix_spawned') {
+          log(`[persistent-revival] Self-healing spawned fix task ${healResult.fixTaskId} for ${taskId}`);
+          // Continue with normal re-enqueue — the revived monitor will check fix task status
+        }
+      }
+    } catch (e) {
+      log(`[persistent-revival] Self-healing handleBlocker error: ${e.message}`);
+      // Non-fatal — continue with normal revival
+    }
+  }
+
   // In-memory rate limiter + DB fallback: max 3 hard revivals per task in 10 minutes
   // In-memory is fast path; DB is source of truth after process restart
   const memEntries = _monitorRevivalTimestamps.get(taskId) || [];
@@ -659,12 +734,12 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
   let recentHardCount;
   if (memEntries.length > 0) {
     const recentEntries = memEntries.filter(e => e.ts > tenMinutesAgo);
-    recentHardCount = recentEntries.filter(e => e.reason !== 'stale_heartbeat').length;
+    recentHardCount = recentEntries.filter(e => e.reason !== 'stale_heartbeat' && e.reason !== 'rate_limit_cooldown').length;
   } else {
     // Cold-start: read from DB (survives process restart)
     try {
       const dbRecent = db.prepare(
-        "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason != 'stale_heartbeat'"
+        "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown')"
       ).get(taskId);
       recentHardCount = dbRecent?.cnt || 0;
     } catch (_) {
@@ -754,7 +829,7 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
   // produces '2026-03-29 14:53:59' (space separator) while toISOString() produces
   // '2026-03-29T14:53:59.000Z' (T separator). String comparison breaks across formats.
   const dbRecentRevivals = db.prepare(
-    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown')"
   ).get(taskId);
   if (dbRecentRevivals && dbRecentRevivals.cnt >= 3) {
     log(`[persistent-revival] Circuit breaker tripped for ${taskId}: ${dbRecentRevivals.cnt} revivals in last 10 minutes (max 3). Auto-pausing task.`);
@@ -845,6 +920,33 @@ Follow the plan-manager agent instructions. Poll get_spawn_ready_tasks, create p
     }
   } catch (_) { /* non-fatal */ }
 
+  // Check for active self-healing fix tasks
+  let selfHealSection = '';
+  try {
+    const ptDbSelfHeal = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (fs.existsSync(ptDbSelfHeal)) {
+      const ptDbRo2 = new Database(ptDbSelfHeal, { readonly: true });
+      ptDbRo2.pragma('busy_timeout = 3000');
+      try {
+        const tableExists = ptDbRo2.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+        if (tableExists) {
+          const activeBlockers = ptDbRo2.prepare(
+            "SELECT error_type, fix_attempts, max_fix_attempts, fix_task_ids, status, diagnosis_details FROM blocker_diagnosis WHERE persistent_task_id = ? AND status IN ('active', 'fix_in_progress', 'cooling_down') ORDER BY created_at DESC LIMIT 3"
+          ).all(taskId);
+          if (activeBlockers.length > 0) {
+            const lines = activeBlockers.map(b => {
+              let details;
+              try { details = JSON.parse(b.diagnosis_details); } catch { details = {}; }
+              return `- ${b.error_type} [${b.status}]: ${b.fix_attempts}/${b.max_fix_attempts} fix attempts. ${details.sample_error || ''}${b.fix_task_ids ? ` Fix tasks: ${b.fix_task_ids}` : ''}`;
+            });
+            selfHealSection = `\n## Active Self-Healing\n${lines.join('\n')}\n\nCheck fix task status before retrying blocked operations. If fixes were applied, verify they resolved the issue.\n`;
+          }
+        }
+      } catch (_) { /* non-fatal */ }
+      ptDbRo2.close();
+    }
+  } catch (_) { /* non-fatal */ }
+
   // Build enriched revival prompt with last known state
   const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
 
@@ -852,7 +954,7 @@ Follow the plan-manager agent instructions. Poll get_spawn_ready_tasks, create p
 ${planSection}
 Your previous monitor session died. Here is your last known state:
 ${revivalContext || '(no prior state available — this may be the first revival)'}
-
+${selfHealSection}
 Read full task details to fill any gaps:
 mcp__persistent-task__get_persistent_task({ id: "${taskId}", include_amendments: true, include_subtasks: true })
 ${demoInstructions}${strictInfraInstructions}
@@ -924,8 +1026,8 @@ Persistent Task ID: ${taskId}`;
 
   // Persist revival event (survives process restart)
   try {
-    db.prepare("INSERT INTO revival_events (id, task_id, reason, created_at) VALUES (?, ?, ?, datetime('now'))")
-      .run(generateQueueId(), taskId, reapReason === 'stale_heartbeat' ? 'stale_heartbeat' : 'hard_revival');
+    db.prepare("INSERT INTO revival_events (id, task_id, reason, diagnosis, created_at) VALUES (?, ?, ?, ?, datetime('now'))")
+      .run(generateQueueId(), taskId, reapReason === 'stale_heartbeat' ? 'stale_heartbeat' : 'hard_revival', diagnosis ? JSON.stringify(diagnosis) : null);
   } catch (_) { /* non-fatal */ }
 
   // Record revival entry for in-memory rate limiting
@@ -997,7 +1099,7 @@ export function drainQueue() {
     for (const item of reaperResult.reaped) {
       if (item.metadata?.persistentTaskId) {
         try {
-          requeueDeadPersistentMonitor(db, item.metadata.persistentTaskId, item.reapReason);
+          requeueDeadPersistentMonitor(db, item.metadata.persistentTaskId, item.reapReason, item.diagnosis || null);
         } catch (err) {
           log(`Persistent monitor re-enqueue error (non-fatal): ${err.message}`);
         }

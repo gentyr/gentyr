@@ -85,6 +85,24 @@ export function buildRevivalContext(taskId, projectDir, options = {}) {
       }
     } catch (_) { /* non-fatal */ }
 
+    // 5. Failure diagnosis and fix history (from blocker_diagnosis table)
+    try {
+      const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+      if (tableExists) {
+        const diagRows = db.prepare(
+          "SELECT error_type, is_transient, diagnosis_details, fix_attempts, fix_task_ids, status FROM blocker_diagnosis WHERE persistent_task_id = ? AND status != 'resolved' ORDER BY created_at DESC LIMIT 3"
+        ).all(taskId);
+        if (diagRows.length > 0) {
+          const lines = diagRows.map(d => {
+            let details;
+            try { details = JSON.parse(d.diagnosis_details); } catch { details = {}; }
+            return `- [${d.status}] ${d.error_type} (transient: ${!!d.is_transient}) — ${d.fix_attempts} fix attempts. ${details.sample_error || ''}`;
+          });
+          sections.push(`### Failure Diagnosis\n${lines.join('\n')}`);
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+
     db.close();
   } catch (_) { /* non-fatal — entire context is optional */ }
 

@@ -244,39 +244,84 @@ function sessionContainsTerminalTool(sessionFile) {
 }
 
 /**
+ * Diagnose why a session failed by analyzing its JSONL tail.
+ * Returns structured diagnosis for self-healing decisions.
+ *
+ * @param {string} sessionFile - Path to session JSONL file
+ * @returns {{ stalled: boolean, error_type: string, is_transient: boolean,
+ *             consecutive_errors: number, sample_error: string, suggested_action: string }}
+ */
+export function diagnoseSessionFailure(sessionFile) {
+  const tail = readTail(sessionFile, 4096);
+  if (!tail) return { stalled: false, error_type: 'unknown', is_transient: false, consecutive_errors: 0, sample_error: '', suggested_action: 'retry' };
+
+  const lines = tail.split('\n').filter(l => l.trim());
+  let consecutiveErrors = 0;
+  let rateLimitCount = 0;
+  let authErrorCount = 0;
+  let sampleError = '';
+
+  for (let i = lines.length - 1; i >= 0 && consecutiveErrors < 10; i--) {
+    try {
+      const parsed = JSON.parse(lines[i]);
+      const isRateLimit = (parsed.error === 'rate_limit' && parsed.isApiErrorMessage === true) ||
+        (parsed.type === 'error' && typeof parsed.message === 'string' && parsed.message.includes('rate limit'));
+      const isAuthError = (parsed.error === 'authentication_error') ||
+        (parsed.type === 'error' && typeof parsed.message === 'string' &&
+         (parsed.message.includes('401') || parsed.message.includes('authentication')));
+      // Detect Claude Code usage limit messages (specific patterns to avoid false positives)
+      const isUsageLimit = (parsed.type === 'error' && typeof parsed.message === 'string' &&
+        (parsed.message.includes('out of') && parsed.message.includes('usage')) ||
+        (parsed.type === 'error' && typeof parsed.message === 'string' &&
+         parsed.message.includes('hit your limit')) ||
+        (parsed.type === 'error' && typeof parsed.message === 'string' &&
+         parsed.message.includes('extra usage') && parsed.message.includes('resets')));
+
+      if (isRateLimit || isAuthError || isUsageLimit) {
+        consecutiveErrors++;
+        if (isRateLimit || isUsageLimit) rateLimitCount++;
+        if (isAuthError) authErrorCount++;
+        if (!sampleError) {
+          sampleError = (parsed.message || parsed.error || '').toString().slice(0, 200);
+        }
+      } else {
+        break;
+      }
+    } catch { continue; }
+  }
+
+  const stalled = consecutiveErrors >= 3;
+
+  // Classify error type
+  let error_type = 'unknown';
+  let is_transient = false;
+  let suggested_action = 'retry';
+
+  if (rateLimitCount > 0 && rateLimitCount >= authErrorCount) {
+    error_type = 'rate_limit';
+    is_transient = true;
+    suggested_action = 'cooldown';
+  } else if (authErrorCount > 0) {
+    error_type = 'auth_error';
+    is_transient = false;
+    suggested_action = 'diagnose_credentials';
+  } else if (consecutiveErrors > 0) {
+    error_type = 'crash';
+    is_transient = false;
+    suggested_action = 'investigate';
+  }
+
+  return { stalled, error_type, is_transient, consecutive_errors: consecutiveErrors, sample_error: sampleError, suggested_action };
+}
+
+/**
  * Check if a session is stuck in an auth/quota retry loop.
- * Reads the last 4KB of the JSONL and checks if 3+ consecutive entries
- * are error messages (rate_limit or authentication failures).
+ * Thin wrapper around diagnoseSessionFailure() for backward compat.
  * @param {string} sessionFile
  * @returns {boolean}
  */
 function isAuthStalled(sessionFile) {
-  const tail = readTail(sessionFile, 4096);
-  if (!tail) return false;
-
-  const lines = tail.split('\n').filter(l => l.trim());
-  let consecutiveErrors = 0;
-
-  // Check last entries from newest to oldest
-  for (let i = lines.length - 1; i >= 0 && consecutiveErrors < 5; i--) {
-    try {
-      const parsed = JSON.parse(lines[i]);
-      if (
-        (parsed.error === 'rate_limit' && parsed.isApiErrorMessage === true) ||
-        (parsed.error === 'authentication_error') ||
-        (parsed.type === 'error' && typeof parsed.message === 'string' &&
-         (parsed.message.includes('rate limit') || parsed.message.includes('401') || parsed.message.includes('authentication')))
-      ) {
-        consecutiveErrors++;
-      } else {
-        break; // Non-error entry found — not auth-stalled
-      }
-    } catch {
-      continue; // Unparseable line — skip
-    }
-  }
-
-  return consecutiveErrors >= 3;
+  return diagnoseSessionFailure(sessionFile).stalled;
 }
 
 // ============================================================================
@@ -348,6 +393,17 @@ export function reapSyncPass(db) {
         revival_candidate: revivalCandidate,
       });
 
+      // Diagnose failure for persistent lane items (structured diagnosis for self-healing)
+      let itemDiagnosis = null;
+      if (item.lane === 'persistent' && sessionDir && item.agent_id) {
+        try {
+          const sessFile = findSessionFileByAgentId(sessionDir, item.agent_id);
+          if (sessFile) {
+            itemDiagnosis = diagnoseSessionFailure(sessFile);
+          }
+        } catch (_) { /* non-fatal — diagnosis is optional */ }
+      }
+
       result.reaped.push({
         queueId: item.id,
         agentId: item.agent_id,
@@ -355,6 +411,7 @@ export function reapSyncPass(db) {
         revivalCandidate,
         metadata,
         agentType: item.agent_type,
+        diagnosis: itemDiagnosis,
       });
 
       // Reset linked TODO task to pending so it can be re-spawned
@@ -451,6 +508,7 @@ export function reapSyncPass(db) {
                   metadata,
                   revivalCandidate: true,
                   reapReason: 'stale_heartbeat',
+                  diagnosis: null,
                 });
 
                 auditEvent('session_reaped_dead', {
@@ -492,6 +550,10 @@ export function reapSyncPass(db) {
               let metadata = {};
               try { metadata = item.metadata ? JSON.parse(item.metadata) : {}; } catch { /* ignore */ }
 
+              // Diagnose the auth-stall for self-healing context
+              let authStallDiagnosis = null;
+              try { authStallDiagnosis = diagnoseSessionFailure(sessionFile); } catch (_) { /* non-fatal */ }
+
               result.reaped.push({
                 queueId: item.id,
                 agentId: item.agent_id,
@@ -499,6 +561,7 @@ export function reapSyncPass(db) {
                 metadata,
                 revivalCandidate: true,
                 reapReason: 'auth_stall',
+                diagnosis: authStallDiagnosis,
               });
 
               auditEvent('session_reaped_dead', {

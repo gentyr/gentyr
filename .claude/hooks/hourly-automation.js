@@ -3504,6 +3504,165 @@ async function main() {
   });
 
   // =========================================================================
+  // RATE LIMIT COOLDOWN RECOVERY (gate-exempt, 2-minute cooldown)
+  // Checks for expired rate-limit cooldowns in blocker_diagnosis and
+  // re-enqueues the persistent monitor for revival.
+  // =========================================================================
+  await runIfDue('rate_limit_cooldown_check', {
+    state, now,
+    stateKey: 'lastRateLimitCooldownCheck',
+    label: 'Rate limit cooldown recovery',
+    fn: async () => {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (!Database || !fs.existsSync(ptDbPath)) return;
+
+      let ptDb;
+      try {
+        ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+      } catch { return; }
+
+      try {
+        // Check if blocker_diagnosis table exists
+        const tableExists = ptDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+        if (!tableExists) return;
+
+        // Find expired cooldowns
+        const expired = ptDb.prepare(
+          "SELECT bd.id, bd.persistent_task_id, pt.title, pt.status, pt.metadata, pt.monitor_session_id FROM blocker_diagnosis bd JOIN persistent_tasks pt ON bd.persistent_task_id = pt.id WHERE bd.status = 'cooling_down' AND bd.cooldown_until < datetime('now')"
+        ).all();
+
+        if (expired.length === 0) return;
+
+        log(`Rate limit cooldown recovery: ${expired.length} expired cooldown(s) found`);
+
+        for (const item of expired) {
+          // Resolve the cooldown
+          ptDb.prepare("UPDATE blocker_diagnosis SET status = 'resolved', resolved_at = ? WHERE id = ?")
+            .run(new Date().toISOString(), item.id);
+
+          // Clear legacy metadata cooldown
+          try {
+            const metaRow = ptDb.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(item.persistent_task_id);
+            const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
+            if (meta.rate_limit_cooldown_until) {
+              delete meta.rate_limit_cooldown_until;
+              ptDb.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), item.persistent_task_id);
+            }
+          } catch (_) { /* non-fatal */ }
+
+          // Only re-enqueue if task is still active
+          if (item.status !== 'active') {
+            log(`Rate limit cooldown recovery: skipping ${item.persistent_task_id} — task status is ${item.status}`);
+            continue;
+          }
+
+          // Re-enqueue the monitor
+          try {
+            const { prompt, extraEnv, metadata, agent } = await buildPersistentMonitorRevivalPrompt(
+              item, 'rate_limit_cooldown_expired', PROJECT_DIR
+            );
+
+            const result = await enqueueSession({
+              priority: 'critical',
+              lane: 'persistent',
+              spawnType: item.monitor_session_id ? 'resume' : 'fresh',
+              title: `[Persistent] Rate limit recovery: ${item.title}`,
+              agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+              hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+              prompt,
+              extraArgs: ['--disallowedTools', 'Edit,Write,NotebookEdit'],
+              extraEnv,
+              resumeSessionId: item.monitor_session_id || null,
+              metadata: { ...metadata, revivalReason: 'rate_limit_cooldown_expired' },
+              source: 'rate-limit-cooldown-recovery',
+              agent,
+            });
+
+            if (result?.queueId) {
+              log(`Rate limit cooldown recovery: enqueued revival for ${item.persistent_task_id} (queue: ${result.queueId})`);
+            }
+          } catch (e) {
+            log(`Rate limit cooldown recovery: failed to enqueue ${item.persistent_task_id}: ${e.message}`);
+          }
+        }
+      } finally {
+        try { ptDb.close(); } catch (_) { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
+  // SELF-HEAL FIX TASK COMPLETION CHECK (gate-exempt, 5-minute cooldown)
+  // Checks if self-healing fix tasks have completed or failed, and updates
+  // the blocker_diagnosis accordingly.
+  // =========================================================================
+  await runIfDue('self_heal_fix_check', {
+    state, now,
+    stateKey: 'lastSelfHealFixCheck',
+    label: 'Self-heal fix task completion check',
+    fn: async () => {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+      if (!Database || !fs.existsSync(ptDbPath) || !fs.existsSync(todoDbPath)) return;
+
+      let ptDb, todoDb;
+      try {
+        ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+        todoDb = new Database(todoDbPath, { readonly: true });
+        todoDb.pragma('busy_timeout = 3000');
+      } catch { return; }
+
+      try {
+        // Check if blocker_diagnosis table exists
+        const tableExists = ptDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+        if (!tableExists) return;
+
+        // Find fix_in_progress diagnoses
+        const inProgress = ptDb.prepare(
+          "SELECT id, persistent_task_id, fix_task_ids, fix_attempts, max_fix_attempts, error_type, diagnosis_details FROM blocker_diagnosis WHERE status = 'fix_in_progress'"
+        ).all();
+
+        for (const diag of inProgress) {
+          if (!diag.fix_task_ids) continue;
+          let fixTaskIds;
+          try { fixTaskIds = JSON.parse(diag.fix_task_ids); } catch { continue; }
+          const latestFixId = fixTaskIds[fixTaskIds.length - 1];
+          if (!latestFixId) continue;
+
+          // Check fix task status
+          const fixTask = todoDb.prepare("SELECT status FROM tasks WHERE id = ?").get(latestFixId);
+          if (!fixTask) continue;
+
+          if (fixTask.status === 'completed') {
+            // Fix succeeded — resolve the blocker
+            ptDb.prepare("UPDATE blocker_diagnosis SET status = 'resolved', resolved_at = ? WHERE id = ?")
+              .run(new Date().toISOString(), diag.id);
+            log(`Self-heal fix completed for ${diag.persistent_task_id}: task ${latestFixId} succeeded`);
+          } else if (fixTask.status === 'failed' || fixTask.status === 'cancelled') {
+            // Fix failed — check if we should try again or escalate
+            if (diag.fix_attempts >= diag.max_fix_attempts) {
+              // Escalate
+              ptDb.prepare("UPDATE blocker_diagnosis SET status = 'escalated' WHERE id = ?").run(diag.id);
+              log(`Self-heal fix exhausted for ${diag.persistent_task_id}: ${diag.fix_attempts} attempts. Escalating.`);
+              // The next monitor revival will see the escalated status and the handleBlocker logic handles the rest
+            } else {
+              // Reset to active — next monitor death will trigger another fix attempt
+              ptDb.prepare("UPDATE blocker_diagnosis SET status = 'active' WHERE id = ?").run(diag.id);
+              log(`Self-heal fix failed for ${diag.persistent_task_id}: task ${latestFixId}. ${diag.max_fix_attempts - diag.fix_attempts} attempts remaining.`);
+            }
+          }
+          // If still pending/in_progress, leave it alone
+        }
+      } finally {
+        try { ptDb.close(); } catch (_) { /* non-fatal */ }
+        try { todoDb.close(); } catch (_) { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
   // PLAN ORPHAN DETECTION (gate-exempt, 10-minute cooldown)
   // Detects active plans whose plan-manager persistent task is missing,
   // dead, or in a terminal state, and re-creates the plan-manager.

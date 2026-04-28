@@ -5,9 +5,17 @@
  * @module lib/persistent-monitor-revival-prompt
  */
 
+import fs from 'fs';
+import path from 'path';
 import { buildRevivalContext } from './persistent-revival-context.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { getBypassResolutionContext } from './bypass-guard.js';
+
+// Lazy-load Database — only needed for self-heal section
+let Database = null;
+try {
+  Database = (await import('better-sqlite3')).default;
+} catch (_) { /* non-fatal */ }
 
 /**
  * Build a full revival prompt for a persistent task monitor.
@@ -70,13 +78,42 @@ ${bypassCtx.decision === 'approved' ? 'Proceed with the work, following the CTO\
     }
   } catch (_) { /* non-fatal */ }
 
+  // Check for active self-healing fix tasks
+  let selfHealSection = '';
+  try {
+    if (Database) {
+      const ptDbPath2 = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath2)) {
+        const ptDb = new Database(ptDbPath2, { readonly: true });
+        ptDb.pragma('busy_timeout = 3000');
+        try {
+          const tableExists = ptDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+          if (tableExists) {
+            const activeBlockers = ptDb.prepare(
+              "SELECT error_type, fix_attempts, max_fix_attempts, fix_task_ids, status, diagnosis_details FROM blocker_diagnosis WHERE persistent_task_id = ? AND status IN ('active', 'fix_in_progress', 'cooling_down') ORDER BY created_at DESC LIMIT 3"
+            ).all(task.id);
+            if (activeBlockers.length > 0) {
+              const lines = activeBlockers.map(b => {
+                let details;
+                try { details = JSON.parse(b.diagnosis_details); } catch { details = {}; }
+                return `- ${b.error_type} [${b.status}]: ${b.fix_attempts}/${b.max_fix_attempts} fix attempts. ${details.sample_error || ''}${b.fix_task_ids ? ` Fix tasks: ${b.fix_task_ids}` : ''}`;
+              });
+              selfHealSection = `\n## Active Self-Healing\n${lines.join('\n')}\n\nCheck fix task status before retrying blocked operations. If fixes were applied, verify they resolved the issue.\n`;
+            }
+          }
+        } catch (_) { /* non-fatal */ }
+        ptDb.close();
+      }
+    }
+  } catch (_) { /* non-fatal */ }
+
   const prompt = `[Automation][persistent-monitor][AGENT:{AGENT_ID}]
 
 ## Persistent Task: ${task.title}
 ${planSection}
 Your previous monitor session died. Here is your last known state:
 ${revivalContext || '(no prior state available — this may be the first revival)'}
-${bypassSection}
+${bypassSection}${selfHealSection}
 CRITICAL: You are an ORCHESTRATOR, not an implementer. Never edit files, read source code, or execute sub-tasks directly. Spawn existing pending sub-tasks via force_spawn_tasks. Create new sub-tasks via create_task. All implementation goes through the task queue.
 
 Read full task details to fill any gaps:

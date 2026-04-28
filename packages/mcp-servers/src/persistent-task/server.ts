@@ -122,6 +122,23 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(persistent_task_id);
 CREATE INDEX IF NOT EXISTS idx_events_time ON events(created_at);
+
+CREATE TABLE IF NOT EXISTS blocker_diagnosis (
+    id TEXT PRIMARY KEY,
+    persistent_task_id TEXT NOT NULL,
+    error_type TEXT NOT NULL,
+    is_transient INTEGER NOT NULL DEFAULT 0,
+    diagnosis_details TEXT NOT NULL,
+    fix_attempts INTEGER NOT NULL DEFAULT 0,
+    max_fix_attempts INTEGER NOT NULL DEFAULT 3,
+    fix_task_ids TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    cooldown_until TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_blocker_diag_task ON blocker_diagnosis(persistent_task_id);
+CREATE INDEX IF NOT EXISTS idx_blocker_diag_status ON blocker_diagnosis(status);
 `;
 
 // ============================================================================

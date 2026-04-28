@@ -56,6 +56,11 @@ const DEFAULTS = {
   screenshot_cleanup: 1440,              // daily (24h)
   report_auto_resolve: 2,              // 2 minutes
   report_dedup: 30,                    // 30 minutes
+  rate_limit_cooldown_minutes: 5,      // 5 minutes cooldown after rate limit death
+  rate_limit_cooldown_check: 2,        // check every 2 minutes for expired cooldowns
+  self_heal_max_fix_attempts: 3,       // max fix attempts before escalating to CTO
+  self_heal_fix_task_timeout_minutes: 15, // timeout for fix task completion check
+  self_heal_fix_check: 5,             // 5 minutes between fix task completion checks
 };
 
 /**
