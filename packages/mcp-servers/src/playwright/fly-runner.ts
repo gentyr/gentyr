@@ -403,7 +403,8 @@ export async function spawnRemoteMachine(
     config: {
       image: await resolveAppImage(config),
       guest: {
-        cpu_kind: 'shared',
+        // Derive cpu_kind from machineSize: "performance-*" → dedicated, else shared
+        cpu_kind: config.machineSize.startsWith('performance') ? 'performance' : 'shared',
         cpus: 2,
         memory_mb: config.machineRam,
       },
