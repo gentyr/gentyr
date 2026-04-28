@@ -7349,9 +7349,9 @@ function getCallerAgentId(): string {
   return process.env.CLAUDE_AGENT_ID || 'unknown';
 }
 
-/** Get caller queue ID from env — falls back to null. */
+/** Get caller queue ID from env — prefers CLAUDE_QUEUE_ID (session-queue item ID) for PID lookup. */
 function getCallerQueueId(): string | null {
-  return process.env.CLAUDE_SESSION_ID || null;
+  return process.env.CLAUDE_QUEUE_ID || process.env.CLAUDE_SESSION_ID || null;
 }
 
 /**
