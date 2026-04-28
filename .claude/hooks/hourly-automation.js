@@ -2094,15 +2094,22 @@ function reapStaleWorktrees() {
       continue;
     }
 
-    // Check for active processes — skip if any are found (fail-closed)
+    // Check for active processes — since session-queue confirmed no active session,
+    // any processes found are orphaned (their agent is dead). Kill them.
     try {
       const result = execFileSync('lsof', ['+D', wt.path, '-t'], {
-        encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+        encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'],
       });
       if (result.trim().length > 0) {
-        const pids = result.trim().split('\n').filter(Boolean);
-        log(`Stale reaper: skipping ${wt.branch} — ${pids.length} active process(es) detected`);
-        continue;
+        const pids = result.trim().split('\n').filter(Boolean).map(Number).filter(p => p > 0 && p !== process.pid);
+        if (pids.length > 0) {
+          log(`Stale reaper: killing ${pids.length} orphaned process(es) in ${wt.branch} (no active session in queue)`);
+          for (const pid of pids) {
+            try { killProcessGroup(pid); } catch { /* already dead */ }
+          }
+          // Brief pause for processes to exit
+          try { execFileSync('sleep', ['1'], { timeout: 3000 }); } catch {}
+        }
       }
     } catch (err) {
       // lsof exit code 1 with empty stdout = no processes found — safe to proceed.
@@ -4508,6 +4515,53 @@ async function main() {
         log(`Stale worktree reaper: removed ${reaped} stale worktree(s).`);
       } else {
         log('Stale worktree reaper: no stale worktrees to reap.');
+      }
+    },
+  });
+
+  // =========================================================================
+  // STALE TASK CLEANUP (30min cooldown)
+  // Resets in_progress tasks that have been stuck for >30 minutes back to pending.
+  // Mirrors todo-maintenance.js SessionStart logic but runs continuously.
+  // =========================================================================
+  await runIfDue('stale_task_cleanup', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStaleTaskCleanup',
+    configToggle: 'staleTaskCleanupEnabled',
+    config,
+    label: 'Stale task cleanup',
+    fn: async () => {
+      if (!Database) {
+        log('Stale task cleanup: better-sqlite3 unavailable, skipping.');
+        return;
+      }
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+      if (!fs.existsSync(todoDbPath)) {
+        log('Stale task cleanup: todo.db not found, skipping.');
+        return;
+      }
+      let db;
+      try {
+        db = new Database(todoDbPath);
+        db.pragma('busy_timeout = 3000');
+        db.pragma('journal_mode = WAL');
+        const nowSec = Math.floor(Date.now() / 1000);
+        const result = db.prepare(
+          `UPDATE tasks
+           SET status = 'pending', started_at = NULL, started_timestamp = NULL
+           WHERE status = 'in_progress'
+             AND started_timestamp IS NOT NULL
+             AND (? - started_timestamp) > 1800`
+        ).run(nowSec);
+        if (result.changes > 0) {
+          log(`Stale task cleanup: reset ${result.changes} stale in_progress task(s) to pending.`);
+        } else {
+          log('Stale task cleanup: no stale in_progress tasks found.');
+        }
+      } catch (err) {
+        log(`Stale task cleanup: error — ${err.message}`);
+      } finally {
+        try { if (db) db.close(); } catch { /* non-fatal */ }
       }
     },
   });
