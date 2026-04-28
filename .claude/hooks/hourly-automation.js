@@ -2128,7 +2128,7 @@ function reapStaleWorktrees() {
 
     // Safe to reap
     try {
-      removeWorktree(wt.branch);
+      removeWorktree(wt.branch, { force: true }); // force: safety already verified above (session-queue + lsof + git status)
       log(`Stale reaper: removed stale worktree ${wt.branch} (age: ${Math.round((now - createdAt) / 3600000)}h)`);
       reaped++;
     } catch (err) {
@@ -2298,6 +2298,31 @@ function rescueAbandonedWorktrees() {
       continue;
     }
 
+    // Belt-and-suspenders: check if any session (rescue or otherwise) is already
+    // queued for this worktree. Prevents noisy "worktree_exclusive BLOCKED" log
+    // entries from the enqueueSession() dedup (Layer 1), and catches cases where
+    // the session-queue DB snapshot above missed an in-flight enqueue.
+    if (Database) {
+      try {
+        const queueDbPath2 = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+        if (fs.existsSync(queueDbPath2)) {
+          const queueDb2 = new Database(queueDbPath2, { readonly: true });
+          queueDb2.pragma('busy_timeout = 3000');
+          const normalizedWtPath = wt.path.replace(/\/+$/, '');
+          const existingSession = queueDb2.prepare(
+            "SELECT id, title FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND (worktree_path = ? OR cwd = ?)"
+          ).get(normalizedWtPath, normalizedWtPath);
+          queueDb2.close();
+          if (existingSession) {
+            log(`Rescue: skipping ${wt.path} — session already exists for this worktree (${existingSession.id}: "${existingSession.title}")`);
+            continue;
+          }
+        }
+      } catch (err) {
+        log(`Rescue: worktree dedup check failed (non-fatal): ${err.message}`);
+      }
+    }
+
     // Spawn project-manager to rescue this worktree
     log(`Rescue: spawning project-manager for abandoned worktree ${wt.path} (branch: ${wt.branch})`);
 
@@ -2334,6 +2359,9 @@ BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo
 gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "Rescue: ${wtBranch}" --body "Automated rescue of abandoned worktree changes" 2>/dev/null || true
 \`\`\`
 6. Self-merge: \`gh pr merge --squash --delete-branch\`
+
+IMPORTANT: Do NOT remove the worktree directory. The cleanup automation will handle
+worktree removal after the PR is merged. Your job is only to commit, push, merge, and exit.
 
 Then summarize and exit.`,
       extraEnv: { ...resolvedCredentials },

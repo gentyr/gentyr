@@ -758,13 +758,57 @@ export function createWorktree(branchName, baseBranch, options = {}) {
 }
 
 /**
+ * Check if a PID is alive (process exists and is signalable).
+ * @param {number} pid
+ * @returns {boolean}
+ */
+function isPidAliveCheck(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+/**
  * Remove a worktree and optionally delete the branch.
  *
  * @param {string} branchName - Branch whose worktree should be removed
+ * @param {object} [options]
+ * @param {boolean} [options.force] - Bypass the session-queue safety guard (for callers that already verified safety)
  */
-export function removeWorktree(branchName) {
+export function removeWorktree(branchName, options = {}) {
   const sanitized = sanitizeBranchName(branchName);
   const worktreePath = path.join(WORKTREES_DIR, sanitized);
+
+  // Session-queue guard: refuse to remove worktrees with active sessions (Bug #6 defense).
+  // Callers that already do their own safety checks pass { force: true } to bypass.
+  if (!options.force && _Database) {
+    const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+    if (fs.existsSync(queueDbPath)) {
+      let queueDb;
+      try {
+        queueDb = new _Database(queueDbPath, { readonly: true });
+        queueDb.pragma('busy_timeout = 3000');
+        const normalizedPath = worktreePath.replace(/\/+$/, '');
+        const activeSession = queueDb.prepare(
+          "SELECT id, title, status, pid FROM queue_items WHERE status IN ('running', 'queued', 'spawning', 'suspended') AND (worktree_path = ? OR cwd = ?)"
+        ).get(normalizedPath, normalizedPath);
+        if (activeSession) {
+          // Verify the session's PID is actually alive (avoid blocking on stale DB entries)
+          const pidAlive = activeSession.pid ? isPidAliveCheck(activeSession.pid) : true; // fail-closed: assume alive if no PID
+          if (pidAlive) {
+            throw new Error(
+              `[worktree-manager] BLOCKED: Cannot remove worktree ${worktreePath} — active session ${activeSession.id} ` +
+              `("${activeSession.title}", status: ${activeSession.status}, pid: ${activeSession.pid}). ` +
+              `Use removeWorktree(branch, { force: true }) to bypass.`
+            );
+          }
+        }
+      } catch (err) {
+        if (err.message.includes('BLOCKED')) throw err; // Re-throw our own guard error
+        console.error(`[worktree-manager] Warning: session-queue guard check failed (proceeding with removal): ${err.message}`);
+      } finally {
+        if (queueDb) try { queueDb.close(); } catch (_) { /* cleanup */ }
+      }
+    }
+  }
 
   // Release allocated port block before removing worktree
   try {
@@ -1042,7 +1086,7 @@ export function cleanupMergedWorktrees() {
       }
 
       try {
-        removeWorktree(wt.branch);
+        removeWorktree(wt.branch, { force: true }); // force: safety already verified above (session-queue + lsof + git status)
         cleaned++;
       } catch (err) {
         // Log but continue cleaning other worktrees

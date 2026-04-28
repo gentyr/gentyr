@@ -488,7 +488,7 @@ export function reapSyncPass(db) {
                 cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
               }).trim();
               if (wtBranch) {
-                removeWorktreeCleanup(wtBranch);
+                removeWorktreeCleanup(wtBranch, { force: true }); // force: safety already verified above (lsof + git status, item is dead)
                 debugLog(`[session-reaper] Cleaned up worktree for dead agent ${item.agent_id}: ${wtBranch}`);
                 try { auditEvent('worktree_cleaned_on_reap', { queue_id: item.id, agent_id: item.agent_id, worktree_path: metadata?.worktreePath || item.worktree_path }); } catch (_) { /* non-fatal */ }
               }
