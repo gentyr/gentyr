@@ -524,8 +524,8 @@ export const RunDemoBatchArgsSchema = z.object({
     .describe('Override the base URL (default: http://localhost:3000).'),
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording.'),
-  remote: z.coerce.boolean().optional()
-    .describe('Run batch on remote Fly.io machines. Default: auto-route headless scenarios remotely when Fly.io is configured.'),
+  remote: z.coerce.boolean().optional().default(true)
+    .describe('Run batch on remote Fly.io machines (default: true). Prefer remote execution — it avoids local resource contention and runs scenarios in parallel across multiple Fly machines.'),
 });
 
 export type RunDemoBatchArgs = z.infer<typeof RunDemoBatchArgsSchema>;

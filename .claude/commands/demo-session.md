@@ -42,6 +42,7 @@ Call `mcp__playwright__run_demo_batch({
   project: "demo",
   headless: false,
   slow_mo: 800,
+  remote: true,
   batch_size: <number of selected scenarios>,
   <filter params from Step 3>
 })`.
@@ -49,8 +50,9 @@ Call `mcp__playwright__run_demo_batch({
 Key differences from `/demo-bulk`:
 - `headless: false` — browser window visible
 - `slow_mo: 800` — watchable speed
+- `remote: true` — runs on Fly.io with Xvfb+ffmpeg recording
 - `batch_size` set to selection size — runs all selected in one batch for seamless viewing
-- All demos are automatically recorded
+- All demos are automatically recorded remotely
 
 Report the batch_id and scenario count.
 

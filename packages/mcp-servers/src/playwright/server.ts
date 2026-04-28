@@ -7505,12 +7505,13 @@ const tools: AnyToolHandler[] = [
     name: 'run_demo',
     description:
       'Run a demo scenario. Two main flags: "recorded" (default true — captures video) and "remote" (default true — runs on Fly.io). ' +
-      'That\'s it — GENTYR handles headed/headless mode, display setup, and recording automatically. ' +
+      'ALWAYS prefer remote+recorded (the defaults) unless the CTO explicitly requests local execution. ' +
+      'Remote execution avoids display lock contention, runs in parallel, and produces identical recordings via Xvfb+ffmpeg. ' +
       'RECORDING: When recorded=true (default), runs headed with video recording. Locally uses ScreenCaptureKit; ' +
       'remotely uses Xvfb + ffmpeg. Screenshots extracted at 3s intervals in both cases. ' +
       'When recorded=false, runs headless without video. ' +
       'REMOTE: When remote=true (default), runs on Fly.io with auto-push of worktree branches. ' +
-      'When remote=false, runs locally with prerequisites and dev server auto-started. ' +
+      'When remote=false, runs locally — only use this when the CTO asks to watch live, or when chrome-bridge/extension interaction is required. ' +
       'Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`. ' +
       'Prerequisites execute automatically if registered via register_prerequisite. ' +
       'If this tool fails on prerequisites, run preflight_check to diagnose.',
@@ -7674,7 +7675,7 @@ const tools: AnyToolHandler[] = [
     name: 'run_demo_batch',
     description:
       'Run multiple demo scenarios in sequential batches. ' +
-      'Defaults: headless=true, batch_size=5. No video recording in batch mode. ' +
+      'Defaults: headless=true, batch_size=5, remote=true. Runs on Fly.io by default — prefer remote execution to avoid local resource contention. ' +
       'Discovers scenarios from user-feedback.db — filter by scenario_ids, persona_ids, or category. ' +
       'Returns a batch_id for polling via check_demo_batch_result. ' +
       'Dev server is auto-started if not running.',
