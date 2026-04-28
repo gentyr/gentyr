@@ -1143,6 +1143,9 @@ function buildDemoEnv(opts: {
   // Maximize browser window in headed demos for cleaner recordings
   if (!opts.headless) env.DEMO_MAXIMIZE = '1';
 
+  // Enable Metal GPU acceleration on macOS for smoother headed demos
+  if (process.platform === 'darwin') env.DEMO_METAL_GPU = '1';
+
   // Pass through port env vars from worktree allocation
   if (process.env.PLAYWRIGHT_WEB_PORT) env.PLAYWRIGHT_WEB_PORT = process.env.PLAYWRIGHT_WEB_PORT;
   if (process.env.PLAYWRIGHT_BACKEND_PORT) env.PLAYWRIGHT_BACKEND_PORT = process.env.PLAYWRIGHT_BACKEND_PORT;

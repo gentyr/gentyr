@@ -230,9 +230,9 @@ export const RunDemoArgsSchema = z.object({
     .min(0)
     .max(5000)
     .optional()
-    .default(800)
+    .default(200)
     .describe(
-      'Milliseconds to pause between Playwright actions (default: 800). ' +
+      'Milliseconds to pause between Playwright actions (default: 200). ' +
       'Target project must read process.env.DEMO_SLOW_MO in playwright.config.ts ' +
       'under use.launchOptions.slowMo for this to take effect.'
     ),

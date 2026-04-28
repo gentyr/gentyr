@@ -550,11 +550,11 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should default slow_mo to 800 when omitted', () => {
+    it('should default slow_mo to 200 when omitted', () => {
       const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.slow_mo).toBe(800);
+        expect(result.data.slow_mo).toBe(200);
       }
     });
 
