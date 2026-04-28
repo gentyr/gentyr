@@ -929,7 +929,7 @@ export function releaseAllResources(agentId) {
 }
 
 /**
- * Remove all waiting queue entries for a dead agent across ALL resources.
+ * Remove all waiting and acquired queue entries for a dead agent across ALL resources.
  * Called by the session reaper alongside releaseAllResources().
  *
  * @param {string} agentId
@@ -940,11 +940,11 @@ export function removeFromAllQueues(agentId) {
 
   const db = getDb();
   const result = db.prepare(
-    "DELETE FROM resource_queue WHERE agent_id = ? AND status = 'waiting'"
+    "DELETE FROM resource_queue WHERE agent_id = ? AND status IN ('waiting', 'acquired')"
   ).run(agentId);
 
   if (result.changes > 0) {
-    log(`Removed ${result.changes} waiting queue entries for dead agent ${agentId} across all resources`);
+    log(`Removed ${result.changes} queue entries for dead agent ${agentId} across all resources`);
   }
 
   return { removed: result.changes };
