@@ -210,6 +210,7 @@ function getDb() {
 
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_items(status);
     CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue_items(priority, lane, enqueued_at);
+    CREATE INDEX IF NOT EXISTS idx_queue_worktree ON queue_items(worktree_path) WHERE worktree_path IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS queue_config (
       key TEXT PRIMARY KEY,
@@ -416,6 +417,10 @@ export function enqueueSession(spec) {
     throw new Error(`enqueueSession: tagContext must be a hyphenated lowercase identifier, got: "${spec.tagContext}"`);
   }
 
+  // Normalize worktree/cwd paths (strip trailing slashes for consistent comparison)
+  if (spec.worktreePath) spec.worktreePath = spec.worktreePath.replace(/\/+$/, '');
+  if (spec.cwd) spec.cwd = spec.cwd.replace(/\/+$/, '');
+
   const db = getDb();
 
   // Dedup: if this task is already queued or running, return the existing queue item
@@ -450,6 +455,21 @@ export function enqueueSession(spec) {
     if (planExisting) {
       log(`Dedup: planId ${spec.metadata.planId} already has queue item ${planExisting.id} — skipping`);
       return { queueId: planExisting.id, position: 0, drained: { spawned: 0, atCapacity: false } };
+    }
+  }
+
+  // Worktree exclusivity: block if another session is already using this worktree path.
+  // Two separate queue items must NEVER share the same worktree — sub-agents within a
+  // single session share the parent's CWD (no queue entry), which is fine, but separate
+  // queue items operating on the same worktree leads to Bug #6 (worktree destruction).
+  if (spec.worktreePath || spec.cwd) {
+    const wtCheckPath = spec.worktreePath || spec.cwd;
+    const wtExisting = db.prepare(
+      "SELECT id, title, status FROM queue_items WHERE status IN ('queued', 'running', 'spawning', 'suspended') AND (worktree_path = ? OR cwd = ?)"
+    ).get(wtCheckPath, wtCheckPath);
+    if (wtExisting) {
+      log(`Worktree exclusivity BLOCKED: "${spec.title}" — worktree ${wtCheckPath} already in use by queue item ${wtExisting.id} ("${wtExisting.title}", status: ${wtExisting.status})`);
+      return { queueId: null, blocked: 'worktree_exclusive', title: spec.title, conflictQueueId: wtExisting.id, conflictTitle: wtExisting.title };
     }
   }
 
@@ -1573,6 +1593,9 @@ function spawnQueueItem(db, item) {
   if (item.worktree_path) {
     spawnEnv.CLAUDE_WORKTREE_DIR = item.worktree_path;
   }
+
+  // Inject CLAUDE_QUEUE_ID so hooks can identify the current session's queue entry
+  spawnEnv.CLAUDE_QUEUE_ID = item.id;
 
   // Spawn — validate CWD exists, fall back to project dir if worktree was cleaned up
   let effectiveCwd = item.cwd || item.worktree_path || item.project_dir;
