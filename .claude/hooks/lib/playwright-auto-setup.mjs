@@ -186,13 +186,23 @@ try {
         const existingArgs = options.args || [];
 
         // Remove --disable-gpu if target project accidentally included it
-        const filteredArgs = existingArgs.filter(a => a !== '--disable-gpu');
+        // Remove --disable-dev-shm-usage on macOS (unnecessary, forces slower file-based IPC)
+        const filteredArgs = existingArgs.filter(a =>
+          a !== '--disable-gpu' &&
+          !(process.env.DEMO_METAL_GPU === '1' && a === '--disable-dev-shm-usage')
+        );
 
         // Enable GPU acceleration for smooth headed rendering & recordings
         const gpuArgs = [
           '--enable-gpu-rasterization',
           '--ignore-gpu-blocklist',
           '--enable-zero-copy',
+          // macOS Metal GPU acceleration — avoids SwiftShader software fallback
+          ...(process.env.DEMO_METAL_GPU === '1' ? [
+            '--use-angle=metal',
+            '--enable-features=Metal',
+            '--disable-software-rasterizer',
+          ] : []),
         ];
 
         // Maximize browser window for clean recordings

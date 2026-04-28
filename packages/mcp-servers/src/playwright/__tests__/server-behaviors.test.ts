@@ -971,14 +971,14 @@ describe('Secret injection — non-fatal try/catch contract', () => {
     const successResult = {
       success: true,
       project: 'demo',
-      message: 'Headed auto-play demo launched for project "demo" with 800ms slow motion.',
+      message: 'Headed auto-play demo launched for project "demo" with 200ms slow motion.',
       pid: 54321,
-      slow_mo: 800,
+      slow_mo: 200,
     };
 
     expect(successResult.success).toBe(true);
-    expect(successResult.slow_mo).toBe(800);
-    expect(successResult.message).toContain('800ms slow motion');
+    expect(successResult.slow_mo).toBe(200);
+    expect(successResult.message).toContain('200ms slow motion');
   });
 
   it('RunDemoResult failure should describe the actual error, not a secret injection failure', () => {
