@@ -241,7 +241,7 @@ Single-account model. The `credential-health-check.js` hook validates credential
 
 ### session recovery
 
-Three modes. Interrupted sessions resume automatically via `--resume`. Dead agents are detected immediately at session start and also cross-referenced by the periodic reaper. Session revival follows worktree-based agents into their original working directories. Paused sessions re-spawn immediately when a slot opens. Persistent monitors have their own dedicated revival path: dead monitors re-enqueue at critical priority within seconds, with a crash-loop circuit breaker (max 5 revivals per hour) that auto-pauses the task if a monitor crashes repeatedly.
+Three modes. Interrupted sessions resume automatically via `--resume`. Dead agents are detected immediately at session start and also cross-referenced by the periodic reaper. Session revival follows worktree-based agents into their original working directories. Paused sessions re-spawn immediately when a slot opens. Persistent monitors have their own dedicated revival path: dead monitors re-enqueue at critical priority within seconds, with a crash-loop circuit breaker (max 5 revivals per hour) that auto-pauses the task if a monitor crashes repeatedly. When a monitor hits the circuit breaker, the **self-healing system** (`lib/blocker-auto-heal.js`) classifies the failure type (rate-limit cooldown, auth error, or crash) and automatically spawns a targeted investigation task to diagnose and fix the root cause. If fix attempts are exhausted (configurable, default 3), the system escalates to the CTO via a bypass request rather than spinning indefinitely.
 
 ### task orchestration
 
