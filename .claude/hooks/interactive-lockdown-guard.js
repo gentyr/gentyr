@@ -104,6 +104,7 @@ const ALLOWED_MCP_PREFIXES = [
   'mcp__setup-helper__',       // Setup guidance
   'mcp__workstream__',         // Workstream management
   'mcp__chrome-bridge__',      // Chrome automation
+  'mcp__release-ledger__',     // Production release management (sign-off, listing)
 ];
 
 /**
