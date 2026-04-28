@@ -4412,7 +4412,7 @@ async function acquireSharedResource(args: AcquireSharedResourceArgs): Promise<o
       return { error: 'acquireResource function not found in resource-lock.js' };
     }
     const agentId = process.env.CLAUDE_AGENT_ID || 'unknown';
-    const queueId = process.env.CLAUDE_SESSION_ID || null;
+    const queueId = process.env.CLAUDE_QUEUE_ID || process.env.CLAUDE_SESSION_ID || null;
     const result = mod.acquireResource(
       args.resource_id,
       agentId,

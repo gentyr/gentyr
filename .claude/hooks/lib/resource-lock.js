@@ -249,17 +249,29 @@ function isPidAlive(pid) {
  * Fail-open: callers fall through to TTL check when null is returned.
  *
  * @param {string|null} queueId - The queue_id (maps to queue_items.id in session-queue.db)
+ * @param {string|null} [agentId] - Optional agent_id fallback for PID lookup
  * @returns {number|null}
  */
-function getAgentPid(queueId) {
-  if (!queueId) return null;
+function getAgentPid(queueId, agentId) {
+  if (!queueId && !agentId) return null;
   try {
     if (!fs.existsSync(QUEUE_DB_PATH)) return null;
     const qDb = new Database(QUEUE_DB_PATH, { readonly: true });
     qDb.pragma('busy_timeout = 2000');
     try {
-      const row = qDb.prepare("SELECT pid FROM queue_items WHERE id = ?").get(queueId);
-      return row?.pid ?? null;
+      // Primary: look up by queue_items.id (works when CLAUDE_QUEUE_ID is used)
+      if (queueId) {
+        const row = qDb.prepare("SELECT pid FROM queue_items WHERE id = ?").get(queueId);
+        if (row?.pid) return row.pid;
+      }
+      // Fallback: look up by agent_id (works even with CLAUDE_SESSION_ID mismatch)
+      if (agentId) {
+        const row = qDb.prepare(
+          "SELECT pid FROM queue_items WHERE agent_id = ? AND status IN ('running', 'spawning') ORDER BY spawned_at DESC LIMIT 1"
+        ).get(agentId);
+        if (row?.pid) return row.pid;
+      }
+      return null;
     } finally {
       qDb.close();
     }
@@ -271,6 +283,9 @@ function getAgentPid(queueId) {
 /**
  * Promote the next waiting entry from resource_queue for a given resource to lock holder.
  * Skips dead waiters (PID no longer alive) — marks them 'skipped' and tries the next.
+ * When PID cannot be resolved (agent not in session queue), also skips — fail-closed
+ * to prevent promoting dead agents with fresh TTLs. Falls back to fail-open (promote
+ * first waiter) only when the session-queue DB is entirely unavailable.
  * Must be called inside a transaction.
  * @param {object} db
  * @param {string} resourceId
@@ -283,16 +298,29 @@ function promoteNextWaiter(db, resourceId) {
     "enqueued_at ASC"
   ).all(resourceId);
 
+  // Safety valve: if session-queue DB is entirely unavailable, fall back to old
+  // fail-open behavior (promote first waiter) to avoid permanent deadlock.
+  const queueDbAvailable = fs.existsSync(QUEUE_DB_PATH);
+
   for (const next of waiters) {
-    // Check if waiter is alive via session-queue PID lookup
-    const pid = getAgentPid(next.queue_id);
+    // Check if waiter is alive via session-queue PID lookup (primary: queue_id, fallback: agent_id)
+    const pid = getAgentPid(next.queue_id, next.agent_id);
     if (pid !== null && !isPidAlive(pid)) {
       db.prepare("UPDATE resource_queue SET status = 'skipped' WHERE id = ?").run(next.id);
       log(`Skipped dead waiter: resource_id=${resourceId}, agent_id=${next.agent_id}, pid=${pid}, queue_entry_id=${next.id}`);
       continue;
     }
 
-    // Waiter is alive (or PID unknown — fail-open) — promote
+    // PID unknown and agent has no running/spawning queue entry — likely dead and already reaped.
+    // Fail-closed: skip rather than promoting a dead agent with a fresh TTL.
+    // Exception: if session-queue DB is unavailable, fail-open to prevent deadlock.
+    if (pid === null && queueDbAvailable) {
+      db.prepare("UPDATE resource_queue SET status = 'skipped' WHERE id = ?").run(next.id);
+      log(`Skipped unresolvable waiter (no PID in session queue): resource_id=${resourceId}, agent_id=${next.agent_id}, queue_entry_id=${next.id}`);
+      continue;
+    }
+
+    // Waiter is confirmed alive (or DB unavailable — fail-open) — promote
     const ttlMinutes = getResourceTtl(db, resourceId);
     const ttlMs = ttlMinutes * 60 * 1000;
     const now = new Date();
@@ -803,7 +831,7 @@ export function checkAndExpireResources() {
 
     for (const lock of allLocks) {
       // Fast-path: check if holder PID is dead before waiting for TTL
-      const holderPid = getAgentPid(lock.holder_queue_id);
+      const holderPid = getAgentPid(lock.holder_queue_id, lock.holder_agent_id);
       const holderDead = holderPid !== null && !isPidAlive(holderPid);
 
       if (!holderDead && !isLockExpired(lock)) continue;
@@ -853,7 +881,7 @@ export function checkAndExpireResources() {
     ).all();
 
     for (const waiter of allWaiters) {
-      const pid = getAgentPid(waiter.queue_id);
+      const pid = getAgentPid(waiter.queue_id, waiter.agent_id);
       if (pid !== null && !isPidAlive(pid)) {
         db.prepare("UPDATE resource_queue SET status = 'skipped' WHERE id = ?").run(waiter.id);
         log(`Swept dead waiter from queue: resource_id=${waiter.resource_id}, agent_id=${waiter.agent_id}, pid=${pid}, queue_entry_id=${waiter.id}`);
