@@ -2039,6 +2039,35 @@ function reapStaleWorktrees() {
     }
   } catch { /* non-fatal */ }
 
+  // Pre-load session-queue DB to check for active sessions using worktree paths
+  const activeWorktreePaths = new Set();
+  if (Database) {
+    try {
+      const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+      if (fs.existsSync(queueDbPath)) {
+        const queueDb = new Database(queueDbPath, { readonly: true });
+        queueDb.pragma('busy_timeout = 3000');
+        const rows = queueDb.prepare(
+          "SELECT cwd, worktree_path, metadata FROM queue_items WHERE status IN ('running', 'queued', 'spawning', 'suspended')"
+        ).all();
+        for (const row of rows) {
+          if (row.cwd) activeWorktreePaths.add(row.cwd);
+          if (row.worktree_path) activeWorktreePaths.add(row.worktree_path);
+          if (row.metadata) {
+            try {
+              const meta = JSON.parse(row.metadata);
+              if (meta.worktreePath) activeWorktreePaths.add(meta.worktreePath);
+            } catch { /* non-fatal */ }
+          }
+        }
+        queueDb.close();
+      }
+    } catch (err) {
+      log(`Stale reaper: could not read session-queue DB (non-fatal): ${err.message}`);
+      // Fall through to lsof check
+    }
+  }
+
   for (const wt of worktrees) {
     if (!wt.path || !fs.existsSync(wt.path)) continue;
 
@@ -2056,17 +2085,35 @@ function reapStaleWorktrees() {
     }
     if (!createdAt || (now - createdAt) < STALE_THRESHOLD_MS) continue;
 
-    // Check for active processes — removeWorktree() will kill them before removal,
-    // but log a warning so we have visibility into force-killed processes
+    // Session-queue DB cross-check: skip worktrees with active sessions
+    const hasActiveSession = [...activeWorktreePaths].some(
+      sw => wt.path === sw || wt.path.startsWith(sw + '/') || sw.startsWith(wt.path + '/')
+    );
+    if (hasActiveSession) {
+      log(`Stale reaper: skipping ${wt.branch} — active session found in session-queue DB`);
+      continue;
+    }
+
+    // Check for active processes — skip if any are found (fail-closed)
     try {
       const result = execFileSync('lsof', ['+D', wt.path, '-t'], {
         encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
       });
       if (result.trim().length > 0) {
         const pids = result.trim().split('\n').filter(Boolean);
-        log(`Stale reaper: worktree ${wt.branch} has ${pids.length} active process(es) — will be killed during removal`);
+        log(`Stale reaper: skipping ${wt.branch} — ${pids.length} active process(es) detected`);
+        continue;
       }
-    } catch { /* lsof returned no results or errored — proceed */ }
+    } catch (err) {
+      // lsof exit code 1 with empty stdout = no processes found — safe to proceed.
+      // Any other error (timeout, permission, etc.) = fail-closed: skip this worktree.
+      if (err.status === 1 && (!err.stdout || err.stdout.trim().length === 0)) {
+        // No processes found — safe to proceed
+      } else {
+        log(`Stale reaper: skipping ${wt.branch} — lsof inconclusive (fail-closed): ${err.message}`);
+        continue;
+      }
+    }
 
     // Skip if uncommitted changes (rescue handles those)
     try {
@@ -2168,6 +2215,35 @@ function rescueAbandonedWorktrees() {
   const worktrees = listWorktrees();
   let rescued = 0;
 
+  // Pre-load session-queue DB to check for active sessions using worktree paths
+  const activeWorktreePaths = new Set();
+  if (Database) {
+    try {
+      const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+      if (fs.existsSync(queueDbPath)) {
+        const queueDb = new Database(queueDbPath, { readonly: true });
+        queueDb.pragma('busy_timeout = 3000');
+        const rows = queueDb.prepare(
+          "SELECT cwd, worktree_path, metadata FROM queue_items WHERE status IN ('running', 'queued', 'spawning', 'suspended')"
+        ).all();
+        for (const row of rows) {
+          if (row.cwd) activeWorktreePaths.add(row.cwd);
+          if (row.worktree_path) activeWorktreePaths.add(row.worktree_path);
+          if (row.metadata) {
+            try {
+              const meta = JSON.parse(row.metadata);
+              if (meta.worktreePath) activeWorktreePaths.add(meta.worktreePath);
+            } catch { /* non-fatal */ }
+          }
+        }
+        queueDb.close();
+      }
+    } catch (err) {
+      log(`Rescue: could not read session-queue DB (non-fatal): ${err.message}`);
+      // Fall through to lsof check
+    }
+  }
+
   for (const wt of worktrees) {
     if (!wt.path || !fs.existsSync(wt.path)) continue;
 
@@ -2188,7 +2264,16 @@ function rescueAbandonedWorktrees() {
 
     if (!hasChanges) continue;
 
-    // Check if any agent process is still active in this worktree
+    // Session-queue DB cross-check: skip worktrees with active sessions
+    const hasActiveSession = [...activeWorktreePaths].some(
+      sw => wt.path === sw || wt.path.startsWith(sw + '/') || sw.startsWith(wt.path + '/')
+    );
+    if (hasActiveSession) {
+      log(`Rescue: skipping ${wt.path} — active session found in session-queue DB`);
+      continue;
+    }
+
+    // Check if any agent process is still active in this worktree (fail-closed)
     let inUse = false;
     try {
       const result = execFileSync('lsof', ['+D', wt.path, '-t'], {
@@ -2198,8 +2283,14 @@ function rescueAbandonedWorktrees() {
       });
       inUse = result.trim().length > 0;
     } catch (err) {
-      console.error('[hourly-automation] Warning:', err.message);
-      // lsof returned no results (exit 1) or failed — not in use
+      // lsof exit code 1 with empty stdout = no processes found — not in use.
+      // Any other error (timeout, permission, etc.) = fail-closed: assume in use, skip rescue.
+      if (err.status === 1 && (!err.stdout || err.stdout.trim().length === 0)) {
+        inUse = false;
+      } else {
+        log(`Rescue: skipping ${wt.path} — lsof inconclusive, assuming in use (fail-closed): ${err.message}`);
+        inUse = true;
+      }
     }
 
     if (inUse) {

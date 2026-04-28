@@ -894,10 +894,11 @@ export function isWorktreeAvailable(branchName) {
 /**
  * Check if a worktree directory has active processes using it.
  * Uses `lsof` to detect open file descriptors in the directory.
- * Non-fatal: returns false (safe to clean) on any error.
+ * Fail-closed: returns true (assume in use) on lsof errors/timeouts.
+ * Only returns false when lsof confirms no processes (exit code 1, empty stdout).
  *
  * @param {string} worktreePath - Absolute path to the worktree directory
- * @returns {boolean} true if active processes are detected
+ * @returns {boolean} true if active processes are detected or lsof is inconclusive
  */
 function isWorktreeInUse(worktreePath) {
   try {
@@ -910,9 +911,13 @@ function isWorktreeInUse(worktreePath) {
     });
     return result.trim().length > 0;
   } catch (err) {
-    console.error('[worktree-manager] Warning:', err.message);
-    // lsof returned no results (exit 1) or failed — safe to clean up
-    return false;
+    // lsof exit code 1 with empty stdout means "no processes found" — safe to clean up.
+    // Any other error (timeout, permission, unexpected) — fail-closed: assume in use.
+    if (err.status === 1 && (!err.stdout || err.stdout.trim().length === 0)) {
+      return false;
+    }
+    console.error(`[worktree-manager] isWorktreeInUse: lsof error for ${worktreePath}, assuming in use (fail-closed): ${err.message}`);
+    return true;
   }
 }
 
@@ -954,7 +959,7 @@ export function cleanupMergedWorktrees() {
       .filter(Boolean),
   );
 
-  // Get worktree paths of suspended queue items to avoid cleaning them up
+  // Get worktree paths of active queue items (running, queued, spawning, suspended) to avoid cleaning them up
   const suspendedWorktreePaths = new Set();
   if (_Database) {
     const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
@@ -963,7 +968,7 @@ export function cleanupMergedWorktrees() {
       try {
         queueDb = new _Database(queueDbPath, { readonly: true });
         const suspendedRows = queueDb.prepare(
-          "SELECT metadata, worktree_path FROM queue_items WHERE status = 'suspended'"
+          "SELECT metadata, worktree_path FROM queue_items WHERE status IN ('running', 'queued', 'spawning', 'suspended')"
         ).all();
         for (const row of suspendedRows) {
           // Check explicit worktree_path column first
@@ -978,12 +983,12 @@ export function cleanupMergedWorktrees() {
                 suspendedWorktreePaths.add(meta.worktreePath);
               }
             } catch (err) {
-              console.error('[worktree-manager] Warning: could not parse suspended item metadata:', err.message);
+              console.error('[worktree-manager] Warning: could not parse active queue item metadata:', err.message);
             }
           }
         }
       } catch (err) {
-        console.error('[worktree-manager] Warning: could not read suspended worktrees from queue DB:', err.message);
+        console.error('[worktree-manager] Warning: could not read active worktrees from queue DB:', err.message);
         // Non-fatal: continue without the suspended worktree check
       } finally {
         if (queueDb) {
@@ -998,13 +1003,13 @@ export function cleanupMergedWorktrees() {
 
   for (const wt of managed) {
     if (wt.branch && mergedBranches.has(wt.branch)) {
-      // Skip worktrees that have suspended (preempted) sessions — they will resume
+      // Skip worktrees that have active sessions (running, queued, spawning, or suspended)
       if (wt.path && suspendedWorktreePaths.size > 0) {
-        const isSuspended = [...suspendedWorktreePaths].some(
+        const hasActiveSession = [...suspendedWorktreePaths].some(
           sw => wt.path === sw || wt.path.startsWith(sw) || sw.startsWith(wt.path)
         );
-        if (isSuspended) {
-          console.log(`[worktree-manager] Skipping ${wt.branch} — linked to a suspended (preempted) session`);
+        if (hasActiveSession) {
+          console.log(`[worktree-manager] Skipping ${wt.branch} — linked to an active session in session-queue`);
           continue;
         }
       }
