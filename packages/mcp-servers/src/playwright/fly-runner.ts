@@ -403,9 +403,9 @@ export async function spawnRemoteMachine(
     config: {
       image: await resolveAppImage(config),
       guest: {
-        // Derive cpu_kind from machineSize: "performance-*" → dedicated, else shared
+        // Derive cpu_kind and cpus from machineSize (e.g., "performance-4x" → 4 dedicated CPUs)
         cpu_kind: config.machineSize.startsWith('performance') ? 'performance' : 'shared',
-        cpus: 2,
+        cpus: parseInt(config.machineSize.match(/(\d+)x/)?.[1] ?? '2', 10),
         memory_mb: config.machineRam,
       },
       env: mergedEnv,
