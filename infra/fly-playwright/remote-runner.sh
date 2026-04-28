@@ -42,13 +42,9 @@ export DEMO_PROGRESS_FILE="$PROGRESS_FILE"
 # Ensure exit code is always written and artifacts are retrievable on ANY exit
 cleanup() {
   local exit_code=$?
-
-  # 1. Write exit code immediately (before anything else) so the proactive
-  #    artifact poll can detect completion while we clean up.
-  echo "$exit_code" > /app/.exit-code 2>/dev/null || true
   log "Exit trap fired (exit code: $exit_code)"
 
-  # 2. Stop ffmpeg recording gracefully (SIGINT → moov atom)
+  # 1. Stop ffmpeg recording gracefully (SIGINT → moov atom)
   if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
     kill -INT "$FFMPEG_PID" 2>/dev/null || true
     local count=0
@@ -58,12 +54,12 @@ cleanup() {
     kill -9 "$FFMPEG_PID" 2>/dev/null || true
   fi
 
-  # 3. Stop Xvfb
+  # 2. Stop Xvfb
   if [[ -n "$XVFB_PID" ]]; then
     kill "$XVFB_PID" 2>/dev/null || true
   fi
 
-  # 4. Copy whatever artifacts exist (even partial logs from early failures)
+  # 3. Copy whatever artifacts exist (even partial logs from early failures)
   log "Copying available artifacts..."
   for DIR in test-results playwright-report; do
     if [[ -d "/app/project/$DIR" ]]; then
@@ -73,8 +69,20 @@ cleanup() {
   if [[ -f "/app/.recording.mp4" ]]; then
     cp "/app/.recording.mp4" /app/.artifacts/recording.mp4 2>/dev/null || true
   fi
+  # Copy any Playwright CDP .webm videos not already inside test-results/
+  find /app/project -name "*.webm" -not -path "*/node_modules/*" -exec cp {} /app/.artifacts/ \; 2>/dev/null || true
 
-  # 5. Grace period: keep the machine alive so the MCP server can pull artifacts
+  # 4. Write exit code AFTER artifacts are fully copied — the MCP polling loop
+  #    uses .artifacts-ready as the pull trigger, but .exit-code is still needed
+  #    for backward compatibility with older MCP server versions.
+  echo "$exit_code" > /app/.exit-code 2>/dev/null || true
+
+  # 5. Signal that all artifacts are ready for retrieval. The MCP polling loop
+  #    checks for this file instead of .exit-code to avoid the race condition
+  #    where artifacts haven't been copied yet when exit-code appears.
+  touch /app/.artifacts-ready
+
+  # 6. Grace period: keep the machine alive so the MCP server can pull artifacts
   #    via the /exec API. Without this, auto_destroy kills the machine immediately.
   log "Sleeping 60s for artifact retrieval..."
   sleep 60

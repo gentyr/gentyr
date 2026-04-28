@@ -219,8 +219,8 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
   if (scenarioHeaded) {
     if (explicitRemote === true) {
       return {
-        target: 'local',
-        reason: 'Scenario has headed=true (requires window recording) — cannot run remotely',
+        target: 'remote',
+        reason: 'Scenario has headed=true — Xvfb + ffmpeg will handle display and recording on remote',
       };
     }
     return { target: 'local', reason: 'Scenario requires headed browser (headed=true in DB)' };
