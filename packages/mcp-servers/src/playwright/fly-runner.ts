@@ -687,6 +687,8 @@ export async function pullRemoteArtifacts(
     { remotePath: '/app/.progress.jsonl', localName: 'progress.jsonl' },
     { remotePath: '/app/.recording.mp4', localName: 'recording.mp4' },
     { remotePath: '/app/.ffmpeg.log', localName: 'ffmpeg.log' },
+    { remotePath: '/app/.error.log', localName: 'error.log' },
+    { remotePath: '/app/.devserver.log', localName: 'devserver.log' },
   ];
 
   // 15MB limit — base64 encoding adds ~33%, keeping well under exec API response limits
