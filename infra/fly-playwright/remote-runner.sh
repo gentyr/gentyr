@@ -282,8 +282,8 @@ if [[ "${DEMO_HEADLESS:-1}" != "1" ]]; then
     log "Starting ffmpeg display recording (${RECORDING_RESOLUTION} @ ${RECORDING_FPS}fps)..."
     ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
       -framerate "${RECORDING_FPS}" -i :99 \
-      -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
-      -y "$RECORDING_FILE" \
+      -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
+      -movflags +faststart -y "$RECORDING_FILE" \
       < /dev/null > /app/.ffmpeg.log 2>&1 &
     FFMPEG_PID=$!
     sleep 0.5
