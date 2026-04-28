@@ -41,6 +41,7 @@ import {
   VerificationAuditPassArgsSchema,
   VerificationAuditFailArgsSchema,
   GetPlanBlockingStatusArgsSchema,
+  RetryPlanTaskArgsSchema,
   type CreatePlanArgs,
   type GetPlanArgs,
   type ListPlansArgs,
@@ -63,6 +64,7 @@ import {
   type VerificationAuditPassArgs,
   type VerificationAuditFailArgs,
   type GetPlanBlockingStatusArgs,
+  type RetryPlanTaskArgs,
   type PlanRecord,
   type PhaseRecord,
   type PlanTaskRecord,
@@ -1940,6 +1942,69 @@ function verificationAuditFail(args: VerificationAuditFailArgs) {
   };
 }
 
+function retryPlanTask(args: RetryPlanTaskArgs): object {
+  const db = getDb();
+  const ts = now();
+
+  // Look up the task
+  const task = db.prepare('SELECT * FROM plan_tasks WHERE id = ?').get(args.task_id) as PlanTaskRecord | undefined;
+  if (!task) {
+    return { error: `Task not found: ${args.task_id}` };
+  }
+
+  // Guard: can only retry tasks that have already run or been skipped/paused
+  const retryableStatuses = ['completed', 'pending_audit', 'skipped', 'paused'];
+  if (!retryableStatuses.includes(task.status)) {
+    return {
+      error: `Cannot retry task with status '${task.status}'. Only tasks with status in [${retryableStatuses.join(', ')}] can be retried. Task '${args.task_id}' is currently '${task.status}'.`,
+    };
+  }
+
+  const oldStatus = task.status;
+  let phaseReset = false;
+  let planReset = false;
+
+  const retryTx = db.transaction(() => {
+    // Reset the task: status → pending, clear completed_at and persistent_task_id
+    db.prepare(
+      "UPDATE plan_tasks SET status = 'pending', completed_at = NULL, persistent_task_id = NULL, updated_at = ? WHERE id = ?"
+    ).run(ts, args.task_id);
+
+    // Record state change
+    recordStateChange(db, 'task', args.task_id, 'status', oldStatus, 'pending', 'retry: ' + args.reason);
+
+    // Check if the task's phase needs to be reset
+    const phase = db.prepare('SELECT * FROM phases WHERE id = ?').get(task.phase_id) as PhaseRecord | undefined;
+    if (phase && (phase.status === 'completed' || phase.status === 'skipped')) {
+      db.prepare(
+        "UPDATE phases SET status = 'in_progress', completed_at = NULL, updated_at = ? WHERE id = ?"
+      ).run(ts, phase.id);
+      recordStateChange(db, 'phase', phase.id, 'status', phase.status, 'in_progress', 'retry: task reset');
+      phaseReset = true;
+    }
+
+    // Check if the plan needs to be reset
+    const plan = db.prepare('SELECT * FROM plans WHERE id = ?').get(task.plan_id) as PlanRecord | undefined;
+    if (plan && plan.status === 'completed') {
+      db.prepare(
+        "UPDATE plans SET status = 'active', completed_at = NULL, updated_at = ? WHERE id = ?"
+      ).run(ts, plan.id);
+      recordStateChange(db, 'plan', plan.id, 'status', 'completed', 'active', 'retry: task reset');
+      planReset = true;
+    }
+  });
+  retryTx();
+
+  return {
+    task_id: args.task_id,
+    old_status: oldStatus,
+    new_status: 'pending',
+    phase_reset: phaseReset,
+    plan_reset: planReset,
+    reason: args.reason,
+  };
+}
+
 function forceClosePlan(args: ForceClosePlanArgs): object {
   const db = getDb();
 
@@ -2189,6 +2254,12 @@ const tools: AnyToolHandler[] = [
     description: 'Check whether a plan is blocked by paused tasks. Returns blocking assessment including paused tasks, downstream impact, and available parallel work. Used by plan-manager agents to assess blocking state on each monitoring cycle.',
     schema: GetPlanBlockingStatusArgsSchema,
     handler: getPlanBlockingStatus,
+  },
+  {
+    name: 'retry_plan_task',
+    description: 'Reset a completed, pending_audit, skipped, or paused plan task back to pending for re-attempt. Clears persistent_task_id so a fresh persistent task can be spawned. Use after adding precursor tasks via add_plan_task + add_dependency to address the root cause before retrying.',
+    schema: RetryPlanTaskArgsSchema,
+    handler: retryPlanTask,
   },
 ];
 

@@ -61,6 +61,8 @@ const DEFAULTS = {
   self_heal_max_fix_attempts: 3,       // max fix attempts before escalating to CTO
   self_heal_fix_task_timeout_minutes: 15, // timeout for fix task completion check
   self_heal_fix_check: 5,             // 5 minutes between fix task completion checks
+  crash_backoff_base_minutes: 5,       // base backoff for crash-loop (exponential)
+  crash_backoff_max_minutes: 60,       // max backoff cap for crash-loop
 };
 
 /**

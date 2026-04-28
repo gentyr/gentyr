@@ -9,11 +9,11 @@
  *   5. Fix already in flight via blocker_diagnosis (status='fix_in_progress') → { action: 'retry' }
  *   6. Fix already in flight via todo.db (self-heal-system task pending/in_progress) → { action: 'retry' }
  *   7. Auth error, 0 fix attempts, DB present → { action: 'fix_spawned', fixTaskId }
- *   8. Auth error, max fix attempts reached → { action: 'escalated' }
+ *   8. Auth error, fix attempts >= 3 → { action: 'cooldown_then_fix' } (exponential backoff)
  *   9. Crash error, 0 fix attempts → { action: 'fix_spawned' }
  *  10. Timeout error, 0 fix attempts → { action: 'fix_spawned' }
- *  11. Escalation creates a bypass_request in bypass-requests.db
- *  12. Escalation pauses the persistent task (status → 'paused')
+ *  11. Cooldown sets blocker_diagnosis to cooling_down status
+ *  12. Cooldown does NOT pause the persistent task (task stays active)
  *  13. Spawned fix task appears in todo.db with section='INVESTIGATOR & PLANNER'
  *  14. Spawned fix task updates blocker_diagnosis to status='fix_in_progress'
  *  15. Idempotent: second call with fix already in flight returns retry, not second fix_spawned
@@ -64,6 +64,8 @@ function createPersistentTasksDb(dbPath) {
       max_fix_attempts INTEGER NOT NULL DEFAULT 3,
       fix_task_ids TEXT,
       status TEXT NOT NULL DEFAULT 'active',
+      cooldown_until TEXT,
+      resolved_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -517,15 +519,15 @@ describe('handleBlocker() — fix spawning for crash and timeout errors', () => 
 });
 
 // ============================================================================
-// Test Group 4: Escalation when max fix attempts exceeded
+// Test Group 4: Exponential backoff when fix attempts >= 3
 // ============================================================================
 
-describe('handleBlocker() — escalation when max fix attempts reached', () => {
+describe('handleBlocker() — exponential backoff when fix attempts >= 3', () => {
   let ctx;
   let handleBlockerFresh;
 
   before(async () => {
-    ctx = createTestProject('escalation-test');
+    ctx = createTestProject('backoff-test');
     process.env.CLAUDE_PROJECT_DIR = ctx.projectDir;
 
     const mod = await import(
@@ -538,15 +540,15 @@ describe('handleBlocker() — escalation when max fix attempts reached', () => {
     ctx?.cleanup();
   });
 
-  it('returns { action: "escalated" } when fix_attempts >= max_fix_attempts', () => {
-    const taskId = 'pt-escalate-001';
+  it('returns { action: "cooldown_then_fix" } when fix_attempts >= 3', () => {
+    const taskId = 'pt-backoff-001';
 
     // Insert persistent task
     const ptDb = new Database(ctx.ptDbPath);
-    ptDb.prepare("INSERT INTO persistent_tasks (id, status, title) VALUES (?, 'active', 'Escalation task')")
+    ptDb.prepare("INSERT INTO persistent_tasks (id, status, title) VALUES (?, 'active', 'Backoff task')")
       .run(taskId);
 
-    // Insert a blocker_diagnosis that already has max attempts reached (3/3)
+    // Insert a blocker_diagnosis with 3 fix attempts
     const diagId = 'diag-' + crypto.randomBytes(4).toString('hex');
     ptDb.prepare(`
       INSERT INTO blocker_diagnosis
@@ -557,47 +559,46 @@ describe('handleBlocker() — escalation when max fix attempts reached', () => {
 
     const result = handleBlockerFresh(taskId, makeAuthErrorDiagnosis());
 
-    assert.strictEqual(result.action, 'escalated', 'must escalate when fix_attempts >= max_fix_attempts');
+    assert.strictEqual(result.action, 'cooldown_then_fix', 'must apply backoff when fix_attempts >= 3');
   });
 
-  it('escalation creates a bypass_request in bypass-requests.db', () => {
-    const taskId = 'pt-escalate-bypass-001';
+  it('sets blocker_diagnosis to cooling_down status after backoff', () => {
+    const taskId = 'pt-backoff-cooling-001';
 
     const ptDb = new Database(ctx.ptDbPath);
-    ptDb.prepare("INSERT INTO persistent_tasks (id, status, title) VALUES (?, 'active', 'Bypass request task')")
+    ptDb.prepare("INSERT INTO persistent_tasks (id, status, title) VALUES (?, 'active', 'Cooling down task')")
       .run(taskId);
 
-    const diagId = 'diag-bypass-' + crypto.randomBytes(4).toString('hex');
+    const diagId = 'diag-cool-' + crypto.randomBytes(4).toString('hex');
     ptDb.prepare(`
       INSERT INTO blocker_diagnosis
-        (id, persistent_task_id, error_type, is_transient, diagnosis_details, fix_attempts, max_fix_attempts, status)
-      VALUES (?, ?, 'auth_error', 0, '{}', 3, 3, 'fix_in_progress')
+        (id, persistent_task_id, error_type, is_transient, diagnosis_details, fix_attempts, max_fix_attempts, status, cooldown_until)
+      VALUES (?, ?, 'auth_error', 0, '{}', 3, 3, 'fix_in_progress', NULL)
     `).run(diagId, taskId);
     ptDb.close();
 
     const result = handleBlockerFresh(taskId, makeAuthErrorDiagnosis());
-    assert.strictEqual(result.action, 'escalated');
+    assert.strictEqual(result.action, 'cooldown_then_fix');
 
-    // Verify bypass request was created
-    const bypassDb = new Database(ctx.bypassDbPath);
-    const bypassReq = bypassDb.prepare(
-      "SELECT * FROM bypass_requests WHERE task_id = ? AND task_type = 'persistent' LIMIT 1"
-    ).get(taskId);
-    bypassDb.close();
+    // Verify blocker_diagnosis was updated to cooling_down
+    const ptDb2 = new Database(ctx.ptDbPath);
+    const diagRecord = ptDb2.prepare(
+      "SELECT * FROM blocker_diagnosis WHERE id = ?"
+    ).get(diagId);
+    ptDb2.close();
 
-    assert.ok(bypassReq, 'bypass request must be created in bypass-requests.db');
-    assert.strictEqual(bypassReq.status, 'pending', 'bypass request must start as pending');
-    assert.strictEqual(bypassReq.agent_id, 'self-heal-system', 'bypass request must be from self-heal-system');
+    assert.strictEqual(diagRecord.status, 'cooling_down', 'blocker_diagnosis must be cooling_down after backoff');
+    assert.ok(diagRecord.cooldown_until, 'cooldown_until must be set');
   });
 
-  it('escalation pauses the persistent task (status → paused)', () => {
-    const taskId = 'pt-escalate-pause-001';
+  it('does NOT pause the persistent task (task stays active)', () => {
+    const taskId = 'pt-backoff-active-001';
 
     const ptDb = new Database(ctx.ptDbPath);
-    ptDb.prepare("INSERT INTO persistent_tasks (id, status, title) VALUES (?, 'active', 'Paused by escalation')")
+    ptDb.prepare("INSERT INTO persistent_tasks (id, status, title) VALUES (?, 'active', 'Stays active task')")
       .run(taskId);
 
-    const diagId = 'diag-pause-' + crypto.randomBytes(4).toString('hex');
+    const diagId = 'diag-active-' + crypto.randomBytes(4).toString('hex');
     ptDb.prepare(`
       INSERT INTO blocker_diagnosis
         (id, persistent_task_id, error_type, is_transient, diagnosis_details, fix_attempts, max_fix_attempts, status)
@@ -605,54 +606,41 @@ describe('handleBlocker() — escalation when max fix attempts reached', () => {
     `).run(diagId, taskId);
     ptDb.close();
 
-    const result = handleBlockerFresh(taskId, makeCrashDiagnosis());
-    assert.strictEqual(result.action, 'escalated');
+    handleBlockerFresh(taskId, makeCrashDiagnosis());
 
-    // Verify persistent task was paused
+    // Verify persistent task is still active (NOT paused)
     const ptDb2 = new Database(ctx.ptDbPath);
     const task = ptDb2.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(taskId);
     ptDb2.close();
 
-    assert.strictEqual(task?.status, 'paused', 'persistent task must be paused after escalation');
+    assert.strictEqual(task?.status, 'active', 'persistent task must remain active after backoff (no auto-pause)');
   });
 
-  it('escalation dedup: second escalation call for same task does not create duplicate bypass request', () => {
-    const taskId = 'pt-escalate-dedup-001';
+  it('does NOT create a bypass_request (no auto-escalation)', () => {
+    const taskId = 'pt-backoff-no-bypass-001';
 
     const ptDb = new Database(ctx.ptDbPath);
-    ptDb.prepare("INSERT INTO persistent_tasks (id, status, title) VALUES (?, 'active', 'Dedup escalation')")
+    ptDb.prepare("INSERT INTO persistent_tasks (id, status, title) VALUES (?, 'active', 'No bypass task')")
       .run(taskId);
 
-    const diagId = 'diag-dedup-' + crypto.randomBytes(4).toString('hex');
+    const diagId = 'diag-nobypass-' + crypto.randomBytes(4).toString('hex');
     ptDb.prepare(`
       INSERT INTO blocker_diagnosis
         (id, persistent_task_id, error_type, is_transient, diagnosis_details, fix_attempts, max_fix_attempts, status)
-      VALUES (?, ?, 'crash', 0, '{}', 3, 3, 'active')
+      VALUES (?, ?, 'auth_error', 0, '{}', 5, 3, 'active')
     `).run(diagId, taskId);
     ptDb.close();
 
-    // First escalation
-    const result1 = handleBlockerFresh(taskId, makeCrashDiagnosis());
-    assert.strictEqual(result1.action, 'escalated');
+    handleBlockerFresh(taskId, makeAuthErrorDiagnosis());
 
-    // Second escalation call for same task (task is now paused)
-    // The blocker_diagnosis is already 'escalated' from first call
-    // and the bypass request is pending
-    // Second call should either: return escalated (dedup guard stops second bypass request) or retry
-    const result2 = handleBlockerFresh(taskId, makeCrashDiagnosis());
-    assert.ok(
-      result2.action === 'escalated' || result2.action === 'retry',
-      `second escalation must be either 'escalated' (deduped) or 'retry' (already-paused); got: '${result2.action}'`
-    );
-
-    // Verify only ONE bypass request was created
+    // Verify NO bypass request was created
     const bypassDb = new Database(ctx.bypassDbPath);
-    const requests = bypassDb.prepare(
-      "SELECT COUNT(*) as cnt FROM bypass_requests WHERE task_id = ? AND task_type = 'persistent' AND status = 'pending'"
+    const bypassReq = bypassDb.prepare(
+      "SELECT * FROM bypass_requests WHERE task_id = ? AND task_type = 'persistent' LIMIT 1"
     ).get(taskId);
     bypassDb.close();
 
-    assert.ok(requests.cnt <= 1, `at most 1 pending bypass request must exist; got ${requests.cnt}`);
+    assert.strictEqual(bypassReq, undefined, 'no bypass request must be created (no auto-escalation)');
   });
 });
 

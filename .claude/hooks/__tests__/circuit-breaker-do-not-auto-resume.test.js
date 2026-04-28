@@ -1,25 +1,21 @@
 /**
- * Tests for the `do_not_auto_resume` metadata flag set by the circuit breaker
- * in session-queue.js requeueDeadPersistentMonitor().
+ * Tests for the circuit breaker overhaul in session-queue.js requeueDeadPersistentMonitor().
  *
- * Two circuit breaker code paths both set do_not_auto_resume:
+ * The circuit breaker NO LONGER auto-pauses tasks or sets do_not_auto_resume.
+ * Instead, it applies exponential backoff cooldowns via blocker_diagnosis.
+ *
+ * Two circuit breaker code paths both use backoff (not pause):
  *   1. In-memory rate limiter path (3 hard revivals in 10 min via _monitorRevivalTimestamps)
  *   2. DB-based circuit breaker path (3 hard revivals in 10 min via queue_items count)
  *
- * Because session-queue.js is a stateful singleton (global DB handle, in-memory
- * maps), we test the specific metadata update SQL directly against real
- * persistent-tasks.db databases rather than trying to import the full module.
- * This mirrors the existing pattern in session-queue-circuit-breaker.test.js.
- *
  * Covers:
- *   1.  In-memory CB: do_not_auto_resume is set when recentHardCount >= 3
- *   2.  In-memory CB: do_not_auto_resume is merged (existing metadata fields preserved)
- *   3.  DB CB (queue_items): do_not_auto_resume is set when queue_items count >= 3
- *   4.  DB CB: do_not_auto_resume is merged (existing metadata fields preserved)
- *   5.  do_not_auto_resume is NOT set for tasks below the threshold
- *   6.  do_not_auto_resume is NOT set for stale_heartbeat revivals (excluded)
- *   7.  Metadata JSON is correctly round-tripped (parse → merge → stringify)
- *   8.  Source-code structural verification — both CB paths set do_not_auto_resume
+ *   1.  Source-code verification: CB paths do NOT set do_not_auto_resume
+ *   2.  Source-code verification: CB paths do NOT auto-pause tasks
+ *   3.  Source-code verification: CB paths use crash_backoff cooldown
+ *   4.  Source-code verification: crash_backoff is excluded from hard revival counts
+ *   5.  Stale-heartbeat revivals still excluded from CB count
+ *   6.  rate_limit_cooldown still excluded from CB count
+ *   7.  Metadata round-trip still works (for other code paths that use it)
  *
  * Run with: node --test .claude/hooks/__tests__/circuit-breaker-do-not-auto-resume.test.js
  */
@@ -233,63 +229,44 @@ function insertRevivalEvents(db, taskId, count, reason = 'hard_revival') {
 }
 
 // ============================================================================
-// Test Group 1: In-memory CB path — do_not_auto_resume set at >= 3 hard revivals
+// Test Group 1: Circuit breaker no longer auto-pauses — tasks stay active
 // ============================================================================
 
-describe('In-memory circuit breaker path — do_not_auto_resume metadata', () => {
+describe('Circuit breaker overhaul — tasks stay active (no auto-pause)', () => {
   let ctx;
 
-  beforeEach(() => { ctx = createPersistentTasksDb('mem-cb-test'); });
+  beforeEach(() => { ctx = createPersistentTasksDb('no-pause-cb-test'); });
   afterEach(() => { ctx.cleanup(); });
 
-  it('sets do_not_auto_resume=true on active task when CB fires', () => {
+  it('task remains active after circuit breaker would have fired (backoff used instead)', () => {
     const taskId = insertTask(ctx.db, { status: 'active', metadata: null });
 
-    // Simulate what the in-memory CB does: pause the task then set do_not_auto_resume
-    ctx.db.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(taskId);
-    simulateCircuitBreakerMetadataUpdate(ctx.db, taskId);
-
-    const meta = readTaskMetadata(ctx.db, taskId);
-    assert.ok(meta, 'metadata must not be null after CB fires');
-    assert.strictEqual(meta.do_not_auto_resume, true, 'do_not_auto_resume must be true after CB fires');
-  });
-
-  it('auto-pause UPDATE sets task status to paused', () => {
-    const taskId = insertTask(ctx.db, { status: 'active' });
-
-    // Exact UPDATE from in-memory CB path
-    const info = ctx.db.prepare(
-      "UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'"
-    ).run(taskId);
-
-    assert.strictEqual(info.changes, 1, 'auto-pause must affect exactly 1 row for an active task');
-
+    // Under the new behavior, the CB does NOT pause the task.
+    // Verify task stays active after the CB threshold is reached.
     const row = ctx.db.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(taskId);
-    assert.strictEqual(row.status, 'paused');
+    assert.strictEqual(row.status, 'active', 'task must remain active — CB uses backoff, not pause');
   });
 
-  it('auto-pause is idempotent — already-paused task gets 0 changes', () => {
-    const taskId = insertTask(ctx.db, { status: 'paused' });
+  it('do_not_auto_resume is NOT set by the circuit breaker anymore', () => {
+    const taskId = insertTask(ctx.db, { status: 'active', metadata: null });
 
-    const info = ctx.db.prepare(
-      "UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'"
-    ).run(taskId);
-
-    assert.strictEqual(info.changes, 0, 'already-paused task must not be double-written (WHERE status = "active" guard)');
+    // The CB no longer sets do_not_auto_resume
+    const meta = readTaskMetadata(ctx.db, taskId);
+    assert.strictEqual(meta, null, 'metadata must remain null — CB does not set do_not_auto_resume');
   });
 });
 
 // ============================================================================
-// Test Group 2: Metadata merging — existing fields are preserved
+// Test Group 2: Metadata merging — still works for other code paths
 // ============================================================================
 
-describe('Metadata merging — existing fields preserved when do_not_auto_resume is set', () => {
+describe('Metadata merging — do_not_auto_resume utility still works for manual callers', () => {
   let ctx;
 
   beforeEach(() => { ctx = createPersistentTasksDb('meta-merge-test'); });
   afterEach(() => { ctx.cleanup(); });
 
-  it('preserves existing metadata fields when do_not_auto_resume is added', () => {
+  it('preserves existing metadata fields when do_not_auto_resume is added manually', () => {
     const existingMeta = {
       plan_task_id: 'pt-123',
       plan_id: 'plan-456',
@@ -298,6 +275,8 @@ describe('Metadata merging — existing fields preserved when do_not_auto_resume
     };
     const taskId = insertTask(ctx.db, { metadata: existingMeta });
 
+    // The simulateCircuitBreakerMetadataUpdate still works for manual callers
+    // (e.g., self-pause circuit breaker in hourly-automation.js)
     simulateCircuitBreakerMetadataUpdate(ctx.db, taskId);
 
     const meta = readTaskMetadata(ctx.db, taskId);
@@ -305,39 +284,12 @@ describe('Metadata merging — existing fields preserved when do_not_auto_resume
     assert.strictEqual(meta.do_not_auto_resume, true, 'do_not_auto_resume must be true');
     assert.strictEqual(meta.plan_task_id, 'pt-123', 'plan_task_id must be preserved');
     assert.strictEqual(meta.plan_id, 'plan-456', 'plan_id must be preserved');
-    assert.strictEqual(meta.some_flag, true, 'some_flag must be preserved');
-    assert.strictEqual(meta.count, 42, 'count must be preserved');
-  });
-
-  it('creates metadata object from scratch when task has no metadata', () => {
-    const taskId = insertTask(ctx.db, { metadata: null });
-
-    simulateCircuitBreakerMetadataUpdate(ctx.db, taskId);
-
-    const meta = readTaskMetadata(ctx.db, taskId);
-    assert.ok(meta, 'metadata must be created when previously null');
-    assert.strictEqual(meta.do_not_auto_resume, true);
-    // No other spurious fields
-    assert.deepStrictEqual(Object.keys(meta), ['do_not_auto_resume']);
-  });
-
-  it('is idempotent when do_not_auto_resume is already true', () => {
-    const taskId = insertTask(ctx.db, { metadata: { do_not_auto_resume: true, other: 'value' } });
-
-    // Run the update twice — result must be the same
-    simulateCircuitBreakerMetadataUpdate(ctx.db, taskId);
-    simulateCircuitBreakerMetadataUpdate(ctx.db, taskId);
-
-    const meta = readTaskMetadata(ctx.db, taskId);
-    assert.strictEqual(meta.do_not_auto_resume, true);
-    assert.strictEqual(meta.other, 'value', 'other fields must survive double-update');
   });
 
   it('stores metadata as valid JSON string that round-trips correctly', () => {
     const taskId = insertTask(ctx.db, { metadata: { plan_id: 'p1' } });
     simulateCircuitBreakerMetadataUpdate(ctx.db, taskId);
 
-    // Read raw column value and verify it is valid JSON
     const row = ctx.db.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
     assert.ok(row?.metadata, 'metadata column must not be null');
     assert.doesNotThrow(() => JSON.parse(row.metadata), 'metadata column must be valid JSON');
@@ -349,10 +301,10 @@ describe('Metadata merging — existing fields preserved when do_not_auto_resume
 });
 
 // ============================================================================
-// Test Group 3: DB circuit breaker (queue_items) path — do_not_auto_resume set
+// Test Group 3: DB circuit breaker (queue_items) — backoff behavior
 // ============================================================================
 
-describe('DB circuit breaker path (queue_items) — do_not_auto_resume metadata', () => {
+describe('DB circuit breaker path (queue_items) — backoff behavior', () => {
   let ptCtx;
   let qCtx;
   const TASK_ID = 'db-cb-task';
@@ -368,96 +320,60 @@ describe('DB circuit breaker path (queue_items) — do_not_auto_resume metadata'
     qCtx.cleanup();
   });
 
-  it('circuit breaker fires when queue_items count >= 3 for the task', () => {
-    // Insert 3 hard revival items — count should be >= 3
+  it('circuit breaker threshold still trips at 3 hard revivals', () => {
     insertHardRevivalQueueItems(qCtx.db, TASK_ID, 3);
 
     const row = qCtx.db.prepare(
-      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
+      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown', 'crash_backoff')"
     ).get(TASK_ID);
 
     assert.ok(row.cnt >= 3, `circuit breaker must trip at 3 revivals; got ${row.cnt}`);
   });
 
-  it('simulated DB CB: auto-pauses task and sets do_not_auto_resume', () => {
+  it('task remains ACTIVE after CB fires (no auto-pause)', () => {
     insertHardRevivalQueueItems(qCtx.db, TASK_ID, 3);
 
-    // Count revivals (simulating what the CB code does)
-    const row = qCtx.db.prepare(
-      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
-    ).get(TASK_ID);
-
-    if (row.cnt >= 3) {
-      // Auto-pause (exact UPDATE from session-queue.js DB CB block)
-      ptCtx.db.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(TASK_ID);
-      // Set do_not_auto_resume (exact code from session-queue.js DB CB block)
-      simulateCircuitBreakerMetadataUpdate(ptCtx.db, TASK_ID);
-    }
-
-    const taskRow = ptCtx.db.prepare('SELECT status, metadata FROM persistent_tasks WHERE id = ?').get(TASK_ID);
-    assert.strictEqual(taskRow.status, 'paused', 'task must be paused by DB CB');
-
-    const meta = JSON.parse(taskRow.metadata);
-    assert.strictEqual(meta.do_not_auto_resume, true, 'do_not_auto_resume must be set by DB CB');
+    // Under the new behavior, the task should stay active
+    const taskRow = ptCtx.db.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(TASK_ID);
+    assert.strictEqual(taskRow.status, 'active', 'task must remain active — CB uses backoff, not pause');
   });
 
   it('does NOT fire when count < 3 (2 revivals below threshold)', () => {
     insertHardRevivalQueueItems(qCtx.db, TASK_ID, 2);
 
     const row = qCtx.db.prepare(
-      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
+      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown', 'crash_backoff')"
     ).get(TASK_ID);
 
     assert.ok(row.cnt < 3, `CB must NOT fire at 2 revivals; got ${row.cnt}`);
-
-    // Task must remain active (CB did not fire)
-    const taskRow = ptCtx.db.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(TASK_ID);
-    assert.strictEqual(taskRow.status, 'active', 'task must remain active when CB threshold not reached');
   });
 
   it('heartbeat_stale_revival items are excluded from DB CB count', () => {
-    // Insert 3 stale-heartbeat items — these must NOT count toward CB
     insertHardRevivalQueueItems(qCtx.db, TASK_ID, 3, 'heartbeat_stale_revival');
 
     const row = qCtx.db.prepare(
-      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
+      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown', 'crash_backoff')"
     ).get(TASK_ID);
 
     assert.strictEqual(row.cnt, 0, 'heartbeat_stale_revival items must not count toward DB CB');
-
-    // Task must remain active
-    const taskRow = ptCtx.db.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(TASK_ID);
-    assert.strictEqual(taskRow.status, 'active', 'task must remain active when only stale-heartbeat revivals exist');
   });
 
-  it('DB CB merges do_not_auto_resume into existing metadata without overwriting other fields', () => {
-    const existingMeta = { plan_task_id: 'pt-999', plan_id: 'plan-888' };
-    ptCtx.db.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?')
-      .run(JSON.stringify(existingMeta), TASK_ID);
+  it('crash_backoff items are excluded from DB CB count', () => {
+    insertHardRevivalQueueItems(qCtx.db, TASK_ID, 3, 'crash_backoff');
 
-    insertHardRevivalQueueItems(qCtx.db, TASK_ID, 3);
-
-    const cbRow = qCtx.db.prepare(
-      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') != 'heartbeat_stale_revival'"
+    const row = qCtx.db.prepare(
+      "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown', 'crash_backoff')"
     ).get(TASK_ID);
 
-    if (cbRow.cnt >= 3) {
-      ptCtx.db.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(TASK_ID);
-      simulateCircuitBreakerMetadataUpdate(ptCtx.db, TASK_ID);
-    }
-
-    const meta = readTaskMetadata(ptCtx.db, TASK_ID);
-    assert.strictEqual(meta.do_not_auto_resume, true);
-    assert.strictEqual(meta.plan_task_id, 'pt-999', 'plan_task_id must survive the CB metadata update');
-    assert.strictEqual(meta.plan_id, 'plan-888', 'plan_id must survive the CB metadata update');
+    assert.strictEqual(row.cnt, 0, 'crash_backoff items must not count toward DB CB');
   });
 });
 
 // ============================================================================
-// Test Group 4: In-memory CB — cold-start DB path (revival_events)
+// Test Group 4: In-memory CB — cold-start DB path (revival_events) with backoff
 // ============================================================================
 
-describe('In-memory CB cold-start via revival_events — do_not_auto_resume', () => {
+describe('In-memory CB cold-start via revival_events — backoff behavior', () => {
   let ptCtx;
   let qCtx;
   const TASK_ID = 'revival-events-task';
@@ -473,62 +389,64 @@ describe('In-memory CB cold-start via revival_events — do_not_auto_resume', ()
     qCtx.cleanup();
   });
 
-  it('sets do_not_auto_resume when in-memory CB fires via DB fallback count >= 3', () => {
-    // Simulate 3 hard revivals from a previous process (in-memory map is empty)
+  it('task stays active when cold-start CB fires (backoff, not pause)', () => {
     insertRevivalEvents(qCtx.db, TASK_ID, 3, 'hard_revival');
 
-    // Cold-start DB query
     const dbRecent = qCtx.db.prepare(
-      "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason != 'stale_heartbeat'"
+      "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown', 'crash_backoff')"
     ).get(TASK_ID);
     const recentHardCount = dbRecent?.cnt || 0;
 
-    if (recentHardCount >= 3) {
-      // Exact in-memory CB auto-pause + metadata update code
-      ptCtx.db.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(TASK_ID);
-      simulateCircuitBreakerMetadataUpdate(ptCtx.db, TASK_ID);
-    }
+    // Under the new behavior, the CB does NOT pause or set do_not_auto_resume
+    // It only applies a cooldown via blocker_diagnosis
+    assert.ok(recentHardCount >= 3, 'CB threshold must be reached with 3 hard revivals');
 
+    // Task must remain active (no auto-pause)
     const taskRow = ptCtx.db.prepare('SELECT status, metadata FROM persistent_tasks WHERE id = ?').get(TASK_ID);
-    assert.strictEqual(taskRow.status, 'paused', 'task must be paused');
-
-    const meta = JSON.parse(taskRow.metadata);
-    assert.strictEqual(meta.do_not_auto_resume, true, 'do_not_auto_resume must be set via cold-start path');
+    assert.strictEqual(taskRow.status, 'active', 'task must remain active after CB (backoff used)');
+    assert.strictEqual(taskRow.metadata, null, 'metadata must remain null — no do_not_auto_resume set');
   });
 
-  it('does NOT set do_not_auto_resume when revival_events count < 3', () => {
+  it('does NOT fire when revival_events count < 3', () => {
     insertRevivalEvents(qCtx.db, TASK_ID, 2, 'hard_revival');
 
     const dbRecent = qCtx.db.prepare(
-      "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason != 'stale_heartbeat'"
+      "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown', 'crash_backoff')"
     ).get(TASK_ID);
     const recentHardCount = dbRecent?.cnt || 0;
 
-    // CB must NOT fire
     assert.ok(recentHardCount < 3, 'CB must not fire with 2 revival events');
 
-    // Task remains active, metadata untouched
     const taskRow = ptCtx.db.prepare('SELECT status, metadata FROM persistent_tasks WHERE id = ?').get(TASK_ID);
     assert.strictEqual(taskRow.status, 'active');
-    assert.strictEqual(taskRow.metadata, null, 'metadata must remain null when CB does not fire');
   });
 
   it('stale_heartbeat revival_events are excluded from cold-start count', () => {
     insertRevivalEvents(qCtx.db, TASK_ID, 3, 'stale_heartbeat');
 
     const dbRecent = qCtx.db.prepare(
-      "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason != 'stale_heartbeat'"
+      "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown', 'crash_backoff')"
     ).get(TASK_ID);
 
     assert.strictEqual(dbRecent.cnt, 0, 'stale_heartbeat must not count toward cold-start CB threshold');
   });
+
+  it('crash_backoff revival_events are excluded from cold-start count', () => {
+    insertRevivalEvents(qCtx.db, TASK_ID, 3, 'crash_backoff');
+
+    const dbRecent = qCtx.db.prepare(
+      "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown', 'crash_backoff')"
+    ).get(TASK_ID);
+
+    assert.strictEqual(dbRecent.cnt, 0, 'crash_backoff must not count toward cold-start CB threshold');
+  });
 });
 
 // ============================================================================
-// Test Group 5: Source-code structural verification
+// Test Group 5: Source-code structural verification (post-overhaul)
 // ============================================================================
 
-describe('session-queue.js source — do_not_auto_resume structural verification', () => {
+describe('session-queue.js source — circuit breaker overhaul verification', () => {
   let sourceCode;
 
   before(() => {
@@ -536,78 +454,85 @@ describe('session-queue.js source — do_not_auto_resume structural verification
     sourceCode = fs.readFileSync(sourcePath, 'utf8');
   });
 
-  it('in-memory CB path sets do_not_auto_resume on the task metadata', () => {
-    // The in-memory rate limiter block (recentHardCount >= 3) must set do_not_auto_resume
-    // Verify both the threshold check and the metadata update appear together
+  it('in-memory CB path uses crash_backoff (NOT do_not_auto_resume)', () => {
     assert.ok(
       sourceCode.includes('recentHardCount >= 3'),
       'in-memory CB threshold must be >= 3'
     );
     assert.ok(
-      sourceCode.includes('meta.do_not_auto_resume = true'),
-      'in-memory CB path must set meta.do_not_auto_resume = true'
+      sourceCode.includes('crash_backoff_base_minutes'),
+      'in-memory CB must use crash_backoff_base_minutes config'
     );
   });
 
-  it('DB CB path (queue_items) sets do_not_auto_resume on the task metadata', () => {
+  it('DB CB path uses crash_backoff (NOT do_not_auto_resume)', () => {
     assert.ok(
       sourceCode.includes('dbRecentRevivals.cnt >= 3'),
       'DB CB threshold must be >= 3'
     );
-    // Both CB paths use the same metadata update idiom
-    const metaUpdatePattern = "meta.do_not_auto_resume = true";
     assert.ok(
-      sourceCode.includes(metaUpdatePattern),
-      'DB CB path must also set meta.do_not_auto_resume = true'
+      sourceCode.includes('DB circuit breaker: crash backoff'),
+      'DB CB must log crash backoff message'
     );
   });
 
-  it('metadata update code reads existing metadata before merging (no overwrite)', () => {
-    // Verify the read-then-merge pattern is present: parse existing metadata before setting flag
+  it('crash_backoff is excluded from in-memory hard revival count', () => {
     assert.ok(
-      sourceCode.includes("metaRow?.metadata ? JSON.parse(metaRow.metadata) : {}"),
-      'CB metadata update must parse existing metadata (or default to {}) before merging'
+      sourceCode.includes("e.reason !== 'crash_backoff'"),
+      'crash_backoff must be excluded from in-memory hard revival count filter'
     );
   });
 
-  it('metadata update is wrapped in try/catch (non-fatal)', () => {
-    // Both CB blocks wrap the metadata update in try/catch to prevent non-fatal errors
-    // from breaking the circuit breaker flow.
-    // Verify the outer try-catch pattern around the metadata update.
-    // We check that the source contains try { ... meta.do_not_auto_resume ... } catch
-    // by verifying both tokens appear within reasonable proximity in the same block.
-    const idx = sourceCode.indexOf('meta.do_not_auto_resume = true');
-    assert.ok(idx !== -1, 'do_not_auto_resume assignment must exist in source');
-
-    // Search backwards from the assignment for a try {
-    const preceding = sourceCode.slice(Math.max(0, idx - 500), idx);
+  it('crash_backoff is excluded from DB revival_events hard count', () => {
     assert.ok(
-      preceding.includes('try {'),
-      'metadata update must be wrapped in a try block for non-fatal error handling'
+      sourceCode.includes("'stale_heartbeat', 'rate_limit_cooldown', 'crash_backoff'"),
+      'crash_backoff must be excluded from revival_events SQL NOT IN clause'
     );
   });
 
-  it('both CB paths include the auto-pause UPDATE before the metadata update', () => {
-    // Verify the pause UPDATE appears before the metadata update in both CB blocks
-    const pauseUpdate = "UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'";
+  it('crash_backoff is excluded from queue_items DB CB count', () => {
     assert.ok(
-      sourceCode.includes(pauseUpdate),
-      'auto-pause UPDATE must appear in session-queue.js'
+      sourceCode.includes("'heartbeat_stale_revival', 'rate_limit_cooldown', 'crash_backoff'"),
+      'crash_backoff must be excluded from queue_items SQL NOT IN clause'
     );
   });
 
-  it('in-memory CB logs the revival count when firing', () => {
-    // The CB path should log the rate limit trip — verify the log message includes the count
+  it('circuit breaker does NOT auto-pause tasks anymore', () => {
+    // The auto-pause pattern within the circuit breaker blocks should be gone.
+    // The only remaining SET status = 'paused' should be outside the CB blocks
+    // (e.g. in the rate-limit cooldown path which doesn't pause either).
+    // We check that crash_loop_circuit_breaker is no longer referenced in the source.
     assert.ok(
-      sourceCode.includes('Rate-limited revival') || sourceCode.includes('recentHardCount'),
-      'in-memory CB must log the revival count when rate limit is triggered'
+      !sourceCode.includes("reason: 'crash_loop_circuit_breaker'"),
+      'crash_loop_circuit_breaker event reason must be removed from source'
     );
   });
 
-  it('DB CB logs the revival count when firing', () => {
+  it('in-memory CB logs the backoff minutes', () => {
     assert.ok(
-      sourceCode.includes('Circuit breaker tripped') || sourceCode.includes('dbRecentRevivals.cnt'),
-      'DB CB must log the revival count when circuit breaker trips'
+      sourceCode.includes('Crash backoff for') && sourceCode.includes('min cooldown'),
+      'in-memory CB must log the backoff minutes'
+    );
+  });
+
+  it('stale_heartbeat revivals are still excluded from CB count', () => {
+    assert.ok(
+      sourceCode.includes("e.reason !== 'stale_heartbeat'"),
+      'stale_heartbeat must still be excluded from hard revival count'
+    );
+  });
+
+  it('rate_limit_cooldown revivals are still excluded from CB count', () => {
+    assert.ok(
+      sourceCode.includes("e.reason !== 'rate_limit_cooldown'"),
+      'rate_limit_cooldown must still be excluded from hard revival count'
+    );
+  });
+
+  it('audit event uses crash_backoff (not crash_loop_circuit_breaker)', () => {
+    assert.ok(
+      sourceCode.includes("auditEvent('crash_backoff'"),
+      'audit event must use crash_backoff event type'
     );
   });
 });

@@ -338,6 +338,13 @@ export const GetPlanBlockingStatusArgsSchema = z.object({
 });
 export type GetPlanBlockingStatusArgs = z.infer<typeof GetPlanBlockingStatusArgsSchema>;
 
+// Retry plan task
+export const RetryPlanTaskArgsSchema = z.object({
+  task_id: z.string().describe('Plan task ID to retry'),
+  reason: z.string().describe('Why this task is being retried'),
+});
+export type RetryPlanTaskArgs = z.infer<typeof RetryPlanTaskArgsSchema>;
+
 // Force-close plan
 export const ForceClosePlanArgsSchema = z.object({
   plan_id: z.string().describe('Plan ID to force-close'),
