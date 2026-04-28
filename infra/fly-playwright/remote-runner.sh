@@ -124,6 +124,13 @@ INSTALL_HEARTBEAT_PID=$!
 NODE_ENV=development PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
   pnpm install --frozen-lockfile 2>&1 | tee -a /app/.error.log
 kill "$INSTALL_HEARTBEAT_PID" 2>/dev/null || true
+
+# Install the correct browser version for the project's Playwright version.
+# The Docker base image bundles browsers for its own Playwright version, but the
+# project may use a different version. This is a no-op if versions already match.
+log "Installing Playwright browsers (matching project's @playwright/test version)..."
+npx playwright install chromium 2>&1 | tee -a /app/.error.log || true
+
 echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 export NODE_ENV=production
 
