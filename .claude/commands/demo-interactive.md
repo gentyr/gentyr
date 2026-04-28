@@ -71,8 +71,12 @@ Call `mcp__playwright__run_demo({
   test_file: "<scenario.test_file>",
   scenario_id: "<scenario.id>",
   slow_mo: 200,
+  recorded: true,
+  remote: false,
   success_pause_ms: 5000
 })`.
+
+Runs locally with video recording so the CTO can watch the demo live.
 
 ### Step 7: Report
 

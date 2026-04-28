@@ -19,8 +19,8 @@ export function buildPersistentMonitorDemoInstructions() {
 
 This persistent task involves demo scenarios. You MUST follow these rules:
 
-### 1. Run Demos Headed with Video Recording
-Always instruct child sessions to run demos **headed** (not headless) so video recording captures the full UI flow. Use \`mcp__playwright__run_demo\` with \`headless: false\`.
+### 1. Run Demos Remote + Recorded (Default)
+Always instruct child sessions to use \`mcp__playwright__run_demo\` with the defaults (\`recorded: true, remote: true\`). Remote execution runs on Fly.io with Xvfb+ffmpeg video recording, avoids display lock contention, and produces identical recordings. Only use \`remote: false\` when the CTO explicitly requests to watch live, or when chrome-bridge/extension interaction is required. Never pass \`recorded: false\` unless the CTO specifically asks for headless-only validation.
 
 ### 2. Screenshot-First Diagnosis (MANDATORY -- Before ANY Code Investigation)
 
