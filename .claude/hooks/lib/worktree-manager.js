@@ -967,11 +967,15 @@ export function cleanupMergedWorktrees() {
       let queueDb;
       try {
         queueDb = new _Database(queueDbPath, { readonly: true });
+        queueDb.pragma('busy_timeout = 3000');
         const suspendedRows = queueDb.prepare(
-          "SELECT metadata, worktree_path FROM queue_items WHERE status IN ('running', 'queued', 'spawning', 'suspended')"
+          "SELECT cwd, metadata, worktree_path FROM queue_items WHERE status IN ('running', 'queued', 'spawning', 'suspended')"
         ).all();
         for (const row of suspendedRows) {
-          // Check explicit worktree_path column first
+          if (row.cwd) {
+            suspendedWorktreePaths.add(row.cwd);
+          }
+          // Check explicit worktree_path column
           if (row.worktree_path) {
             suspendedWorktreePaths.add(row.worktree_path);
           }
@@ -1006,7 +1010,7 @@ export function cleanupMergedWorktrees() {
       // Skip worktrees that have active sessions (running, queued, spawning, or suspended)
       if (wt.path && suspendedWorktreePaths.size > 0) {
         const hasActiveSession = [...suspendedWorktreePaths].some(
-          sw => wt.path === sw || wt.path.startsWith(sw) || sw.startsWith(wt.path)
+          sw => wt.path === sw || wt.path.startsWith(sw + '/') || sw.startsWith(wt.path + '/')
         );
         if (hasActiveSession) {
           console.log(`[worktree-manager] Skipping ${wt.branch} — linked to an active session in session-queue`);
@@ -1070,13 +1074,23 @@ export function cleanupMergedWorktrees() {
         // Not a registered worktree — check if it's truly orphaned
         const hasGitFile = fs.existsSync(path.join(dirPath, '.git'));
         if (hasGitFile) continue; // has .git file, might be valid but unlisted — skip to be safe
-        // No .git file = definitely orphaned remnant. Check for active processes before removing.
+        // No .git file = definitely orphaned remnant. Check for active processes before removing (fail-closed).
+        let orphanHasProcesses = false;
         try {
           const lsofResult = execFileSync('lsof', ['+D', dirPath, '-t'], {
             encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
           });
-          if (lsofResult.trim().length > 0) continue; // active processes, skip
-        } catch (_) { /* lsof returned no results — safe to remove */ }
+          if (lsofResult.trim().length > 0) orphanHasProcesses = true;
+        } catch (lsofErr) {
+          // lsof exit code 1 with empty stdout = no processes found — safe to proceed.
+          // Any other error (timeout, permission, etc.) = fail-closed: skip removal.
+          if (lsofErr.status === 1 && (!lsofErr.stdout || lsofErr.stdout.trim().length === 0)) {
+            orphanHasProcesses = false;
+          } else {
+            orphanHasProcesses = true;
+          }
+        }
+        if (orphanHasProcesses) continue;
         fs.rmSync(dirPath, { recursive: true, force: true });
         cleaned++;
       }
