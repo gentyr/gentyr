@@ -99,29 +99,60 @@ mcp__plan-orchestrator__update_plan_status({
 ```
 This should only be done with CTO authorization.
 
-### Plan Blocking Detection (Self-Healing)
+### Plan Blocking Detection (Self-Healing + Retry)
 
 On each monitoring cycle, check for blocked plan tasks:
 
 1. Call `get_plan_blocking_status` (on plan-orchestrator) to assess blocking state
-2. For each paused plan task, examine the linked persistent task:
-   a. **Fix in progress** (`blocker_diagnosis.status = 'fix_in_progress'`): A self-healing
-      fix task is running. Monitor its status via `list_tasks` (filter `assigned_by:
-      'self-heal-system'`). Do not escalate yet.
-   b. **Active blocker, fix attempts < 3**: The self-healing system will spawn investigation
-      tasks automatically when the persistent monitor dies. You can also create a NEW
-      persistent task to investigate and resolve the blocker:
-      - Title: "Unblock: {blocked task title}"
-      - Prompt: Include the blocker diagnosis, what was tried, what failed
-      This task runs in parallel with other unblocked work.
-   c. **Fix attempts exhausted** (3+ attempts for same error): The system auto-escalates
-      to the CTO via bypass request. Submit your own bypass request only if the plan is
-      **fully blocked** (no parallel work available).
-3. **Always pursue parallel work**: If partially blocked, continue spawning persistent tasks
-   for unblocked phases. One blocked step should not stall the entire plan.
-4. Only submit bypass request when fully blocked AND fix attempts are exhausted for all
-   blocking tasks.
-5. When a blocker is resolved, the plan task and plan automatically resume — verify by calling `get_plan_blocking_status` on your next cycle
+2. For each blocked plan task:
+   a. **Diagnose**: Inspect the linked persistent task via `inspect_persistent_task`
+   b. **Add precursor**: If the failure has a fixable root cause, add a precursor
+      task to an earlier phase and wire a dependency (see "Gate Task Retry" below)
+   c. **Retry**: Call `retry_plan_task` to reset the failed task. It will
+      re-queue automatically when the precursor completes via dependency cascade.
+   d. **Parallel work**: Always continue spawning tasks for unblocked phases.
+3. **Never stop trying**: The system applies exponential backoff between retry
+   cycles. Only submit a bypass request if you genuinely need a CTO decision.
+4. **Only submit bypass request** for blockers that are truly non-automatable
+   (CTO authorization, scope decisions, external access that no fix task can provide).
+
+### Gate Task Retry with Precursors
+
+When a persistent task linked to a plan task fails or gets blocked, you can go backward
+in the plan by adding precursor steps:
+
+1. **Diagnose**: Use `inspect_persistent_task` to understand why the task failed
+2. **Add precursor task**: Create a new plan task in an earlier phase (or the same phase)
+   that addresses the root cause:
+   ```
+   mcp__plan-orchestrator__add_plan_task({
+     plan_id: "<your plan ID>",
+     phase_id: "<target phase ID>",
+     title: "Fix: <root cause description>",
+     description: "<what the precursor needs to accomplish>"
+   })
+   ```
+3. **Wire dependency**: Make the failed task depend on the new precursor:
+   ```
+   mcp__plan-orchestrator__add_dependency({
+     blocked_type: "task", blocked_id: "<failed task ID>",
+     blocker_type: "task", blocker_id: "<precursor task ID>"
+   })
+   ```
+4. **Retry the failed task**: Reset it so it re-queues after the precursor completes:
+   ```
+   mcp__plan-orchestrator__retry_plan_task({
+     task_id: "<failed task ID>",
+     reason: "Added precursor to fix: <root cause>"
+   })
+   ```
+5. **Spawn the precursor**: Create and activate a persistent task for the precursor.
+   When the precursor completes, the dependency cascade automatically makes the
+   retried task `ready` again, and you spawn a fresh persistent task for it.
+
+This pattern works for any plan task, including tasks in gate phases. The key is that
+`retry_plan_task` resets the task to `pending` and clears its `persistent_task_id`,
+so a completely fresh attempt runs after the precursor resolves the root cause.
 
 ### Step 7: Heartbeat + Continue
 Write descriptive reasoning text about current plan state, then continue to next cycle.

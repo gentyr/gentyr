@@ -3407,15 +3407,6 @@ async function main() {
             } catch { return {}; }
           })();
 
-          if (pauseDetails.reason === 'crash_loop_circuit_breaker') {
-            const crashLoopCooldownMinutes = getCooldown('crash_loop_auto_resume_minutes', 15);
-            const crashLoopCooldownMs = crashLoopCooldownMinutes * 60 * 1000;
-            if (pauseAge < crashLoopCooldownMs) {
-              log(`Persistent stale pause auto-resume: "${task.title}" was crash-loop paused ${Math.round(pauseAge / 60000)}min ago — below ${crashLoopCooldownMinutes}min crash-loop threshold`);
-              continue;
-            }
-          }
-
           // do_not_auto_resume metadata flag — set by CTO or amendments to permanently suppress auto-resume
           try {
             const meta = task.metadata ? JSON.parse(task.metadata) : {};
@@ -3641,16 +3632,20 @@ async function main() {
               .run(new Date().toISOString(), diag.id);
             log(`Self-heal fix completed for ${diag.persistent_task_id}: task ${latestFixId} succeeded`);
           } else if (fixTask.status === 'failed' || fixTask.status === 'cancelled') {
-            // Fix failed — check if we should try again or escalate
-            if (diag.fix_attempts >= diag.max_fix_attempts) {
-              // Escalate
-              ptDb.prepare("UPDATE blocker_diagnosis SET status = 'escalated' WHERE id = ?").run(diag.id);
-              log(`Self-heal fix exhausted for ${diag.persistent_task_id}: ${diag.fix_attempts} attempts. Escalating.`);
-              // The next monitor revival will see the escalated status and the handleBlocker logic handles the rest
+            // Fix failed — check if backoff is needed before next attempt
+            if (diag.fix_attempts >= 3) {
+              // Apply exponential backoff before next fix attempt
+              const baseMinutes = getCooldown('crash_backoff_base_minutes', 5);
+              const maxMinutes = getCooldown('crash_backoff_max_minutes', 60);
+              const backoffMinutes = Math.min(maxMinutes, baseMinutes * Math.pow(2, diag.fix_attempts - 3));
+              const cooldownUntil = new Date(Date.now() + backoffMinutes * 60 * 1000).toISOString();
+              ptDb.prepare("UPDATE blocker_diagnosis SET status = 'cooling_down', cooldown_until = ? WHERE id = ?")
+                .run(cooldownUntil, diag.id);
+              log(`Self-heal fix failed for ${diag.persistent_task_id}: task ${latestFixId}. Applying ${backoffMinutes}min backoff (attempt ${diag.fix_attempts}).`);
             } else {
               // Reset to active — next monitor death will trigger another fix attempt
               ptDb.prepare("UPDATE blocker_diagnosis SET status = 'active' WHERE id = ?").run(diag.id);
-              log(`Self-heal fix failed for ${diag.persistent_task_id}: task ${latestFixId}. ${diag.max_fix_attempts - diag.fix_attempts} attempts remaining.`);
+              log(`Self-heal fix failed for ${diag.persistent_task_id}: task ${latestFixId}. Resetting for next attempt.`);
             }
           }
           // If still pending/in_progress, leave it alone

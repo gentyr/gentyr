@@ -389,11 +389,27 @@ export function handleBlocker(taskId, diagnosis) {
   const diagRecord = getOrCreateDiagnosis(taskId, diagnosis);
   if (!diagRecord) return { action: 'retry' };
 
-  // Check if max fix attempts exceeded
-  if (diagRecord.fix_attempts >= diagRecord.max_fix_attempts) {
-    log(`Max fix attempts (${diagRecord.max_fix_attempts}) reached for ${taskId} — escalating to CTO`);
-    escalateToCto(taskId, diagnosis, diagRecord);
-    return { action: 'escalated' };
+  // After 3 immediate fix attempts, apply exponential backoff between attempts
+  if (diagRecord.fix_attempts >= 3) {
+    const baseMinutes = getCooldown('crash_backoff_base_minutes', 5);
+    const maxMinutes = getCooldown('crash_backoff_max_minutes', 60);
+    const backoffMinutes = Math.min(maxMinutes, baseMinutes * Math.pow(2, diagRecord.fix_attempts - 3));
+
+    // Update blocker_diagnosis with cooldown
+    try {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath)) {
+        const ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+        const cooldownUntil = new Date(Date.now() + backoffMinutes * 60 * 1000).toISOString();
+        ptDb.prepare("UPDATE blocker_diagnosis SET status = 'cooling_down', cooldown_until = ? WHERE id = ?")
+          .run(cooldownUntil, diagRecord.id);
+        ptDb.close();
+      }
+    } catch (_) { /* non-fatal */ }
+
+    log(`Fix attempt ${diagRecord.fix_attempts} for ${taskId}: applying ${backoffMinutes}min backoff before next fix`);
+    return { action: 'cooldown_then_fix' };
   }
 
   // Spawn fix task

@@ -95,179 +95,27 @@ async function main() {
       return;
     }
 
-    // Filter to only crash-loop-paused tasks (skip manually paused)
-    const crashLoopTasks = [];
+    // The circuit breaker no longer auto-pauses tasks (replaced with exponential backoff).
+    // This hook now only shows paused tasks to the CTO for awareness.
+    // Paused tasks are either: manually paused by a monitor (bypass request) or
+    // paused by the self-pause circuit breaker (2+ self-pauses in 2h).
+    // No auto-resume — the stale-pause auto-resume in hourly-automation handles that.
+    const pauseReasons = [];
     for (const task of pausedTasks) {
+      let reason = 'manual';
       try {
-        const pauseEvent = ptDb.prepare(
-          "SELECT details FROM events WHERE persistent_task_id = ? AND event_type = 'paused' ORDER BY created_at DESC LIMIT 1"
-        ).get(task.id);
-        if (!pauseEvent?.details) continue;
-        const details = JSON.parse(pauseEvent.details);
-        if (details.reason === 'crash_loop_circuit_breaker') {
-          crashLoopTasks.push(task);
+        const bypassCheck = checkBypassBlock('persistent', task.id);
+        if (bypassCheck.blocked) reason = 'bypass-request';
+        else {
+          const meta = task.metadata ? JSON.parse(task.metadata) : {};
+          if (meta.do_not_auto_resume) reason = 'do-not-auto-resume';
         }
-      } catch (err) {
-        warnings.push(`Failed to read pause event for task ${task.id.slice(0, 8)}: ${err.message || err}`);
-      }
+      } catch (_) { /* non-fatal */ }
+      pauseReasons.push(`"${task.title?.slice(0, 40) || task.id.slice(0, 8)}" (${reason})`);
     }
 
-    if (crashLoopTasks.length === 0) {
-      output(warnings.length > 0 ? `[crash-loop-resume] ${warnings.join('; ')}` : null);
-      return;
-    }
-
-    // Plan-level dedup: if multiple crash-loop tasks serve the same plan, keep only the most recent.
-    // reviveOrphanedPlan() can accumulate many persistent tasks for one plan, each with a unique ID.
-    // Without this dedup, all of them would be mass-resumed simultaneously.
-    const planGroups = new Map(); // plan_id -> most-recent task
-    const dedupedTasks = [];
-    for (const task of crashLoopTasks) {
-      try {
-        const meta = task.metadata ? JSON.parse(task.metadata) : {};
-        if (meta.plan_id) {
-          const existing = planGroups.get(meta.plan_id);
-          if (!existing) {
-            planGroups.set(meta.plan_id, task);
-          } else {
-            // Keep the one with the later ID (UUIDs are not time-ordered, but the later
-            // entry in the query result is more recent due to rowid ordering)
-            planGroups.set(meta.plan_id, task);
-            warnings.push(`Skipped duplicate plan-manager "${existing.title?.slice(0, 30) || existing.id.slice(0, 8)}" for plan ${meta.plan_id.slice(0, 8)} — resuming only the most recent`);
-          }
-          continue;
-        }
-      } catch (_) { /* non-fatal — treat as non-plan task */ }
-      dedupedTasks.push(task);
-    }
-    // Add the single winner per plan
-    for (const task of planGroups.values()) {
-      dedupedTasks.push(task);
-    }
-
-    // Dedup: check session-queue.db for already-queued monitors
-    const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
-    let queueDb = null;
-    try {
-      if (fs.existsSync(queueDbPath)) {
-        queueDb = new Database(queueDbPath, { readonly: true });
-      }
-    } catch (err) {
-      warnings.push(`Queue DB open failed: ${err.message || err}`);
-    }
-
-    // Import enqueue and agent types
-    let enqueueSession, AGENT_TYPES, HOOK_TYPES, buildPrompt;
-    try {
-      const sq = await import('./lib/session-queue.js');
-      enqueueSession = sq.enqueueSession;
-      const at = await import('./agent-tracker.js');
-      AGENT_TYPES = at.AGENT_TYPES;
-      HOOK_TYPES = at.HOOK_TYPES;
-      const rp = await import('./lib/persistent-monitor-revival-prompt.js');
-      buildPrompt = rp.buildPersistentMonitorRevivalPrompt;
-    } catch (err) {
-      output(`[crash-loop-resume] Failed to import dependencies: ${err.message || err}. ${crashLoopTasks.length} crash-loop-paused task(s) NOT resumed.`);
-      try { queueDb?.close(); } catch { /* */ }
-      return;
-    }
-
-    const resumed = [];
-    const permanentlyBlocked = [];
-    for (const task of dedupedTasks) {
-      // do_not_auto_resume check — circuit breaker sets this flag to permanently
-      // suppress auto-resume until the CTO intervenes manually. Must be checked
-      // BEFORE dedup, bypass, and the TOCTOU UPDATE.
-      try {
-        const meta = task.metadata ? JSON.parse(task.metadata) : {};
-        if (meta.do_not_auto_resume) {
-          permanentlyBlocked.push(task.title);
-          continue;
-        }
-      } catch (_) { /* non-fatal — proceed with resume if metadata is unparseable */ }
-
-      // Dedup: skip if monitor already queued/running
-      if (queueDb) {
-        try {
-          const existing = queueDb.prepare(
-            "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND metadata LIKE ?"
-          ).get(`%"persistentTaskId":"${task.id}"%`);
-          if (existing && existing.cnt > 0) continue;
-        } catch (err) {
-          warnings.push(`Dedup check failed for ${task.id.slice(0, 8)}: ${err.message || err}`);
-        }
-      }
-
-      // Bypass request guard — skip tasks with pending CTO bypass requests
-      const bypassCheck = checkBypassBlock('persistent', task.id);
-      if (bypassCheck.blocked) {
-        warnings.push(`Skipping "${task.title?.slice(0, 30) || task.id.slice(0, 8)}" — pending CTO bypass request`);
-        continue;
-      }
-
-      // Resume: TOCTOU guard with AND status = 'paused'
-      const result = ptDb.prepare(
-        "UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'"
-      ).run(task.id);
-      if (result.changes === 0) continue; // Already resumed by another process
-
-      // Record resume event
-      ptDb.prepare(
-        "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
-      ).run(
-        randomUUID(),
-        task.id,
-        JSON.stringify({ reason: 'crash_loop_login_resume', source: 'crash-loop-resume' })
-      );
-
-      // Enqueue monitor — prefer --resume if monitor_session_id available
-      try {
-        const { prompt, extraEnv, metadata, agent } = await buildPrompt(task, 'crash_loop_login_resume', PROJECT_DIR);
-        const resumeSessionId = task.monitor_session_id || null;
-        enqueueSession({
-          title: `[Persistent] Login resume: ${task.title}`,
-          agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
-          hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
-          tagContext: 'persistent-monitor',
-          source: 'crash-loop-resume',
-          priority: 'critical',
-          lane: 'persistent',
-          ttlMs: 0,
-          spawnType: resumeSessionId ? 'resume' : 'fresh',
-          resumeSessionId,
-          prompt,
-          projectDir: PROJECT_DIR,
-          extraEnv,
-          metadata,
-          agent,
-        });
-        resumed.push(task.title);
-      } catch (err) {
-        warnings.push(`Enqueue failed for "${task.title}": ${err.message || err}`);
-        // Rollback on enqueue failure
-        try {
-          ptDb.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ?").run(task.id);
-        } catch (rbErr) {
-          warnings.push(`Rollback also failed for ${task.id.slice(0, 8)}: ${rbErr.message || rbErr}`);
-        }
-      }
-    }
-
-    try { queueDb?.close(); } catch { /* */ }
-
-    const parts = [];
-    if (resumed.length > 0) {
-      const titles = resumed.map(t => `"${t}"`).join(', ');
-      parts.push(`Auto-resumed ${resumed.length} crash-loop-paused task(s): ${titles}`);
-    }
-    if (permanentlyBlocked.length > 0) {
-      const titles = permanentlyBlocked.map(t => `"${t}"`).join(', ');
-      parts.push(`Skipped ${permanentlyBlocked.length} permanently-blocked task(s) (do_not_auto_resume set — resolve manually): ${titles}`);
-    }
-    if (warnings.length > 0) {
-      parts.push(`Warnings: ${warnings.join('; ')}`);
-    }
-    output(parts.length > 0 ? `[crash-loop-resume] ${parts.join('. ')}` : null);
+    const msg = `[crash-loop-resume] ${pausedTasks.length} paused task(s): ${pauseReasons.join(', ')}`;
+    output(msg);
   } finally {
     try { ptDb.close(); } catch { /* */ }
   }

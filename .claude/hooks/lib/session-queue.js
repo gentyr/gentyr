@@ -734,12 +734,12 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
   let recentHardCount;
   if (memEntries.length > 0) {
     const recentEntries = memEntries.filter(e => e.ts > tenMinutesAgo);
-    recentHardCount = recentEntries.filter(e => e.reason !== 'stale_heartbeat' && e.reason !== 'rate_limit_cooldown').length;
+    recentHardCount = recentEntries.filter(e => e.reason !== 'stale_heartbeat' && e.reason !== 'rate_limit_cooldown' && e.reason !== 'crash_backoff').length;
   } else {
     // Cold-start: read from DB (survives process restart)
     try {
       const dbRecent = db.prepare(
-        "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown')"
+        "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown', 'crash_backoff')"
       ).get(taskId);
       recentHardCount = dbRecent?.cnt || 0;
     } catch (_) {
@@ -747,42 +747,55 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
     }
   }
   if (recentHardCount >= 3) {
-    log(`[persistent-revival] Rate-limited revival for ${taskId}: ${recentHardCount} hard revivals in last 10min (max 3)`);
-    // Auto-pause the task to stop the crash loop
+    const backoffCycle = Math.floor(recentHardCount / 3);
+    const baseMinutes = getCooldown('crash_backoff_base_minutes', 5);
+    const maxMinutes = getCooldown('crash_backoff_max_minutes', 60);
+    const backoffMinutes = Math.min(maxMinutes, baseMinutes * Math.pow(2, backoffCycle - 1));
+    log(`[persistent-revival] Crash backoff for ${taskId}: ${recentHardCount} hard revivals → ${backoffMinutes}min cooldown`);
+
+    // Write blocker_diagnosis with cooling_down status (same pattern as rate limit cooldown)
     try {
       const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
       if (fs.existsSync(ptDbPath)) {
         const ptDb2 = new Database(ptDbPath);
         ptDb2.pragma('busy_timeout = 3000');
-        ptDb2.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(taskId);
-        try {
-          ptDb2.prepare(
-            "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'paused', ?, ?)"
-          ).run(
-            generateQueueId(),
-            taskId,
-            JSON.stringify({ reason: 'crash_loop_circuit_breaker', source: 'session-queue-rate-limiter' }),
-            new Date().toISOString()
-          );
-        } catch (_) { /* non-fatal */ }
-        // Set do_not_auto_resume to prevent stale-pause auto-resume from fighting the circuit breaker
-        try {
-          const metaRow = ptDb2.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
-          const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
-          meta.do_not_auto_resume = true;
-          ptDb2.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
-        } catch (_) { /* non-fatal */ }
-        // Propagate pause to plan layer so blocking_queue is populated
-        try {
-          import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js'))
-            .then(({ propagatePauseToPlan }) => propagatePauseToPlan(taskId, 'crash_loop_circuit_breaker', null))
-            .catch(() => {});
-        } catch (_) { /* non-fatal */ }
+        const cooldownUntil = new Date(Date.now() + backoffMinutes * 60 * 1000).toISOString();
+
+        // Check if blocker_diagnosis table exists
+        const tableExists = ptDb2.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+        if (tableExists) {
+          const existing = ptDb2.prepare(
+            "SELECT id FROM blocker_diagnosis WHERE persistent_task_id = ? AND status IN ('active', 'cooling_down') LIMIT 1"
+          ).get(taskId);
+          if (existing) {
+            ptDb2.prepare("UPDATE blocker_diagnosis SET status = 'cooling_down', cooldown_until = ? WHERE id = ?")
+              .run(cooldownUntil, existing.id);
+          } else {
+            const diagDetails = diagnosis ? JSON.stringify(diagnosis) : JSON.stringify({ error_type: 'crash', suggested_action: 'investigate' });
+            ptDb2.prepare(
+              "INSERT INTO blocker_diagnosis (id, persistent_task_id, error_type, is_transient, diagnosis_details, status, cooldown_until, created_at) VALUES (?, ?, ?, 0, ?, 'cooling_down', ?, ?)"
+            ).run(generateQueueId(), taskId, diagnosis?.error_type || 'crash', diagDetails, cooldownUntil, new Date().toISOString());
+          }
+        }
         ptDb2.close();
-        log(`Auto-paused persistent task ${taskId} due to rate-limited crash loop`);
-        try { auditEvent('crash_loop_circuit_breaker', { task_id: taskId, revival_count: recentHardCount }); } catch (_) { /* non-fatal */ }
       }
-    } catch (e) { log(`Failed to auto-pause: ${e.message}`); }
+    } catch (e) { log(`[persistent-revival] Failed to record crash backoff: ${e.message}`); }
+
+    // Record revival event with crash_backoff reason (excluded from hard count)
+    try {
+      db.prepare("INSERT INTO revival_events (id, task_id, reason, diagnosis, created_at) VALUES (?, ?, 'crash_backoff', ?, datetime('now'))")
+        .run(generateQueueId(), taskId, diagnosis ? JSON.stringify(diagnosis) : null);
+    } catch (_) { /* non-fatal */ }
+
+    // In-memory tracking (excluded from hard count)
+    const entries2 = _monitorRevivalTimestamps.get(taskId) || [];
+    entries2.push({ ts: Date.now(), reason: 'crash_backoff' });
+    _monitorRevivalTimestamps.set(taskId, entries2.filter(e => e.ts > Date.now() - 60 * 60 * 1000));
+
+    try { auditEvent('crash_backoff', { task_id: taskId, backoff_minutes: backoffMinutes, revival_count: recentHardCount }); } catch (_) { /* non-fatal */ }
+
+    // Task stays ACTIVE — no pause, no do_not_auto_resume
+    // The existing cooldown_recovery check in hourly-automation handles expired cooldowns
     return;
   }
 
@@ -829,50 +842,51 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
   // produces '2026-03-29 14:53:59' (space separator) while toISOString() produces
   // '2026-03-29T14:53:59.000Z' (T separator). String comparison breaks across formats.
   const dbRecentRevivals = db.prepare(
-    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown')"
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown', 'crash_backoff')"
   ).get(taskId);
   if (dbRecentRevivals && dbRecentRevivals.cnt >= 3) {
-    log(`[persistent-revival] Circuit breaker tripped for ${taskId}: ${dbRecentRevivals.cnt} revivals in last 10 minutes (max 3). Auto-pausing task.`);
+    const dbBackoffCycle = Math.floor(dbRecentRevivals.cnt / 3);
+    const dbBaseMinutes = getCooldown('crash_backoff_base_minutes', 5);
+    const dbMaxMinutes = getCooldown('crash_backoff_max_minutes', 60);
+    const dbBackoffMinutes = Math.min(dbMaxMinutes, dbBaseMinutes * Math.pow(2, dbBackoffCycle - 1));
+    log(`[persistent-revival] DB circuit breaker: crash backoff for ${taskId}: ${dbRecentRevivals.cnt} revivals → ${dbBackoffMinutes}min cooldown`);
 
-    // Auto-pause the task to stop the crash loop
+    // Write blocker_diagnosis with cooling_down status
     try {
       const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
       if (fs.existsSync(ptDbPath)) {
         const ptDb2 = new Database(ptDbPath);
         ptDb2.pragma('busy_timeout = 3000');
-        ptDb2.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ? AND status = 'active'").run(taskId);
+        const cooldownUntil = new Date(Date.now() + dbBackoffMinutes * 60 * 1000).toISOString();
 
-        // Record pause event so stale-pause auto-resume knows when THIS pause happened
-        try {
-          ptDb2.prepare(
-            "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'paused', ?, ?)"
-          ).run(
-            generateQueueId(),
-            taskId,
-            JSON.stringify({ reason: 'crash_loop_circuit_breaker', source: 'session-queue' }),
-            new Date().toISOString()
-          );
-        } catch (_) { /* non-fatal */ }
-        // Set do_not_auto_resume to prevent stale-pause auto-resume from fighting the circuit breaker
-        try {
-          const metaRow = ptDb2.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
-          const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
-          meta.do_not_auto_resume = true;
-          ptDb2.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
-        } catch (_) { /* non-fatal */ }
-        // Propagate pause to plan layer so blocking_queue is populated
-        try {
-          import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js'))
-            .then(({ propagatePauseToPlan }) => propagatePauseToPlan(taskId, 'crash_loop_circuit_breaker', null))
-            .catch(() => {});
-        } catch (_) { /* non-fatal */ }
-
+        const tableExists = ptDb2.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+        if (tableExists) {
+          const existing = ptDb2.prepare(
+            "SELECT id FROM blocker_diagnosis WHERE persistent_task_id = ? AND status IN ('active', 'cooling_down') LIMIT 1"
+          ).get(taskId);
+          if (existing) {
+            ptDb2.prepare("UPDATE blocker_diagnosis SET status = 'cooling_down', cooldown_until = ? WHERE id = ?")
+              .run(cooldownUntil, existing.id);
+          } else {
+            const diagDetails = diagnosis ? JSON.stringify(diagnosis) : JSON.stringify({ error_type: 'crash', suggested_action: 'investigate' });
+            ptDb2.prepare(
+              "INSERT INTO blocker_diagnosis (id, persistent_task_id, error_type, is_transient, diagnosis_details, status, cooldown_until, created_at) VALUES (?, ?, ?, 0, ?, 'cooling_down', ?, ?)"
+            ).run(generateQueueId(), taskId, diagnosis?.error_type || 'crash', diagDetails, cooldownUntil, new Date().toISOString());
+          }
+        }
         ptDb2.close();
-        log(`Auto-paused persistent task ${taskId} due to crash loop`);
-        try { auditEvent('crash_loop_circuit_breaker', { task_id: taskId, revival_count: dbRecentRevivals.cnt }); } catch (_) { /* non-fatal */ }
       }
-    } catch (e) { log(`Failed to auto-pause: ${e.message}`); }
+    } catch (e) { log(`[persistent-revival] Failed to record DB crash backoff: ${e.message}`); }
 
+    // Record revival event with crash_backoff reason
+    try {
+      db.prepare("INSERT INTO revival_events (id, task_id, reason, diagnosis, created_at) VALUES (?, ?, 'crash_backoff', ?, datetime('now'))")
+        .run(generateQueueId(), taskId, diagnosis ? JSON.stringify(diagnosis) : null);
+    } catch (_) { /* non-fatal */ }
+
+    try { auditEvent('crash_backoff', { task_id: taskId, backoff_minutes: dbBackoffMinutes, revival_count: dbRecentRevivals.cnt }); } catch (_) { /* non-fatal */ }
+
+    // Task stays ACTIVE — no pause, no do_not_auto_resume
     return;
   }
 

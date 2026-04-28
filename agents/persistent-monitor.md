@@ -295,34 +295,22 @@ and `run_demo` tools instead of running Bash infrastructure commands.
 
 ### Handling Blockers (Self-Healing)
 
-When you detect a child task failure or infrastructure issue, the system has automated
-self-healing that handles many blockers without CTO intervention:
+The infrastructure handles all transient blockers autonomously:
 
-1. **Check for active fix tasks first**: On revival, check the "Failure Diagnosis" and
-   "Active Self-Healing" sections in your revival context. If a self-healing fix task
-   is in progress, monitor it via `list_tasks` (filter by `assigned_by: 'self-heal-system'`
-   and your persistent task ID) before retrying the blocked operation.
+1. **Rate limits**: Automatic cooldown and revival. No action needed from you.
+2. **Crash loops**: Exponential backoff with fix task spawning. The system keeps
+   trying with increasing intervals — it never gives up.
+3. **Auth/credential errors**: Fix tasks are spawned automatically to diagnose.
+   The system retries after each fix attempt with increasing backoff.
+4. **Child task failures**: Create diagnostic sub-tasks using `deep-investigation`
+   category with investigation context. Include what was tried and what failed.
 
-2. **Rate limits / quota exhaustion**: Do NOT pause. Exit gracefully (`summarize_work`).
-   The infrastructure applies an automatic cooldown and revives your monitor once the
-   limit resets. Your task stays `active` throughout — no circuit breaker trip.
+**The infrastructure will NEVER auto-pause your task.** Only YOU can pause by
+calling `submit_bypass_request` when you genuinely need CTO input (scope ambiguity,
+authorization decisions, external vendor access that no automated fix can provide).
 
-3. **Child task failures**: Create a diagnostic sub-task using `deep-investigation` category
-   with investigation context (see "Investigation Context Injection" above). Include what
-   was tried, what failed, and eliminated hypotheses.
-
-4. **Infrastructure failures (credentials, MCP servers, broken builds)**: The self-healing
-   system spawns investigation tasks automatically when your monitor dies from these issues.
-   On revival, check if fixes were applied before retrying.
-
-5. **After 3 failed fix attempts for the same blocker**: The system auto-escalates to the
-   CTO via `submit_bypass_request`. You do not need to escalate manually unless you
-   identify a blocker the system cannot diagnose (scope ambiguity, missing external access,
-   CTO-only authorization).
-
-**NEVER self-pause for transient issues.** The self-healing infrastructure handles rate
-limits, auth stalls, and crash recovery automatically. Only submit bypass requests
-for blockers that demonstrably cannot be auto-resolved after investigation.
+For everything else — let the system iterate. It will keep spawning fix tasks and
+retrying with exponential backoff until the issue is resolved.
 
 ### Escalating to CTO (Bypass Request)
 
@@ -338,11 +326,10 @@ When you hit a blocker that requires CTO intervention — not just a temporary p
 3. After submitting, call `summarize_work` and exit — do NOT continue working
 4. **Use bypass requests instead of raw `pause_persistent_task`** when you need a CTO decision. Raw pause should only be used for temporary self-pauses (e.g., waiting for a child task to complete)
 
-**Note**: The self-healing system automatically escalates after 3 failed fix attempts for
-the same blocker. You should only manually submit bypass requests for blockers that are
-clearly non-automatable from the start (e.g., CTO authorization needed, scope decisions,
-external vendor access). For infrastructure and credential issues, let the self-healing
-system attempt fixes first.
+**Note**: The infrastructure never auto-escalates. Submit bypass requests only when
+you have determined — through investigation and multiple failed fix attempts — that
+the blocker genuinely requires human decision-making. If the issue is technical
+(credentials, infrastructure, configuration), let the self-healing system handle it.
 
 ### Handling Blocked Children
 
