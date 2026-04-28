@@ -313,10 +313,16 @@ function resolveProfileScopedSecrets(
       }
     }
 
-    // Resolve the determined set of keys
-    const targetKeys = keysToResolve
+    // Infrastructure keys that must ALWAYS be resolved regardless of profile.
+    // These are needed for every remote demo (git auth, GitHub API access).
+    const INFRA_KEYS = ['GITHUB_TOKEN', 'GH_TOKEN', 'GIT_AUTH_TOKEN'];
+
+    // Resolve the determined set of keys, always including infrastructure keys
+    const profileKeys = keysToResolve
       ? [...new Set(keysToResolve)].filter(k => k in allLocalSecrets)
       : Object.keys(allLocalSecrets);
+    const infraKeys = INFRA_KEYS.filter(k => k in allLocalSecrets && !profileKeys.includes(k));
+    const targetKeys = [...profileKeys, ...infraKeys];
 
     // Resolve individually so one failure doesn't block the rest
     for (const key of targetKeys) {

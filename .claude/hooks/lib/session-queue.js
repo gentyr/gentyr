@@ -538,14 +538,120 @@ export function enqueueSession(spec) {
 // ============================================================================
 
 /**
+ * Check if a dead session was killed by an API rate limit (not a real crash).
+ * Reads the tail of the session's JSONL and looks for rate-limit error patterns.
+ * Returns the parsed reset time string if found, null otherwise.
+ *
+ * @param {object} db - session-queue.db instance
+ * @param {string} taskId - persistent task ID
+ * @returns {{ rateLimited: boolean; resetInfo?: string }}
+ */
+function detectRateLimitDeath(db, taskId) {
+  try {
+    // Find the most recent queue item for this task to get the agent ID
+    const recentItem = db.prepare(
+      "SELECT agent_id FROM queue_items WHERE json_extract(metadata, '$.persistentTaskId') = ? ORDER BY completed_at DESC, spawned_at DESC LIMIT 1"
+    ).get(taskId);
+    if (!recentItem?.agent_id) return { rateLimited: false };
+
+    // Find the session JSONL file
+    const sessionDir = resolveSessionDir();
+    if (!sessionDir) return { rateLimited: false };
+    const sessionFile = findSessionFileByAgentId(sessionDir, recentItem.agent_id);
+    if (!sessionFile) return { rateLimited: false };
+
+    // Read last 4KB of the session file
+    let fd;
+    try {
+      fd = fs.openSync(sessionFile, 'r');
+      const stat = fs.fstatSync(fd);
+      const start = Math.max(0, stat.size - 4096);
+      const buf = Buffer.alloc(Math.min(4096, stat.size));
+      const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
+      const tail = buf.toString('utf8', 0, bytesRead);
+
+      // Look for rate-limit patterns in the tail
+      const rateLimitPatterns = [
+        /you've hit your limit/i,
+        /you're out of extra usage/i,
+        /usage limit.*reset/i,
+        /rate limit exceeded/i,
+      ];
+      const resetPattern = /resets?\s+(\d{1,2}:\d{2}\s*(?:am|pm)?(?:\s*\([^)]+\))?)/i;
+
+      const lines = tail.split('\n').filter(l => l.trim());
+      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 10); i--) {
+        const line = lines[i];
+        if (rateLimitPatterns.some(p => p.test(line))) {
+          const resetMatch = line.match(resetPattern);
+          return {
+            rateLimited: true,
+            resetInfo: resetMatch ? resetMatch[1].trim() : 'unknown',
+          };
+        }
+      }
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  } catch (_) { /* non-fatal — treat as not rate-limited */ }
+  return { rateLimited: false };
+}
+
+/**
  * Re-enqueue a dead persistent monitor directly into the queue DB.
  * Called from drainQueue after reapSyncPass detects a dead persistent PID.
  * Uses direct INSERT (not enqueueSession) to avoid recursive drain.
+ *
+ * Rate-limit awareness: if the session died due to an API usage limit,
+ * skip the crash-loop counter (not a real crash) and set a 15-minute
+ * cooldown before retrying.
  *
  * @param {object} db - session-queue.db instance (already open)
  * @param {string} taskId - persistent task ID
  */
 function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown') {
+  // Check if this death was caused by an API rate limit — not a real crash
+  const rateLimitCheck = detectRateLimitDeath(db, taskId);
+  if (rateLimitCheck.rateLimited) {
+    log(`[persistent-revival] Rate-limit detected for ${taskId} (resets ${rateLimitCheck.resetInfo || 'unknown'}) — skipping crash-loop counter, setting 15min cooldown`);
+    // Set a cooldown: update the task's metadata with a rate_limit_cooldown_until timestamp
+    try {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath)) {
+        const ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+        const metaRow = ptDb.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
+        const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
+        meta.rate_limit_cooldown_until = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        ptDb.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
+        ptDb.close();
+      }
+    } catch (_) { /* non-fatal */ }
+    try { auditEvent('persistent_monitor_rate_limited', { task_id: taskId, reset_info: rateLimitCheck.resetInfo }); } catch (_) { /* non-fatal */ }
+    // Don't count toward crash-loop budget — just defer and return
+    return;
+  }
+
+  // Check if a rate-limit cooldown is still active (set by a previous rate-limit death)
+  try {
+    const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (fs.existsSync(ptDbPath)) {
+      const ptDb = new Database(ptDbPath, { readonly: true });
+      ptDb.pragma('busy_timeout = 3000');
+      const metaRow = ptDb.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
+      const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
+      ptDb.close();
+      if (meta.rate_limit_cooldown_until) {
+        const cooldownEnd = new Date(meta.rate_limit_cooldown_until).getTime();
+        if (Date.now() < cooldownEnd) {
+          const minsLeft = Math.ceil((cooldownEnd - Date.now()) / 60000);
+          log(`[persistent-revival] Skipping revival for ${taskId}: rate-limit cooldown active (${minsLeft}min remaining)`);
+          return;
+        }
+      }
+    }
+  } catch (_) { /* non-fatal — continue with normal revival */ }
+
   // In-memory rate limiter + DB fallback: max 3 hard revivals per task in 10 minutes
   // In-memory is fast path; DB is source of truth after process restart
   const memEntries = _monitorRevivalTimestamps.get(taskId) || [];
