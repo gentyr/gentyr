@@ -1,7 +1,7 @@
 ---
 name: deputy-cto
 description: CTO's executive assistant for triage, escalation, and decision-making. ONLY invoke when explicitly requested or via system-followup task.
-model: opus
+model: sonnet
 color: purple
 allowedTools:
   - Read

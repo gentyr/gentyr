@@ -1,7 +1,7 @@
 ---
 name: workstream-manager
 description: Analyzes the active session queue for conflicts and dependency issues. Adds or removes queue-level dependencies between tasks, reorders queue items, and records assessments. Spawned by hourly automation or on-demand.
-model: haiku
+model: sonnet
 allowedTools:
   - Read
   - Glob
