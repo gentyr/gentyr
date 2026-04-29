@@ -477,23 +477,64 @@ export function reapSyncPass(db) {
             }
           }
 
-          if (!hasActiveProcesses) {
+          // Helper: check git status and remove worktree if clean
+          const tryCleanWorktree = () => {
             const gitStatus = execSync('git status --porcelain', {
               cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
             }).trim();
             if (gitStatus.length === 0) {
-              // Clean worktree with no active processes — safe to remove immediately
-              // Extract branch name from worktree path
               const wtBranch = execSync('git branch --show-current', {
                 cwd: worktreePath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
               }).trim();
               if (wtBranch) {
-                removeWorktreeCleanup(wtBranch, { force: true }); // force: safety already verified above (lsof + git status, item is dead)
+                removeWorktreeCleanup(wtBranch, { force: true }); // force: safety already verified by caller
                 debugLog(`[session-reaper] Cleaned up worktree for dead agent ${item.agent_id}: ${wtBranch}`);
                 try { auditEvent('worktree_cleaned_on_reap', { queue_id: item.id, agent_id: item.agent_id, worktree_path: metadata?.worktreePath || item.worktree_path }); } catch (_) { /* non-fatal */ }
               }
             }
             // Dirty worktrees are left for rescueAbandonedWorktrees()
+          };
+
+          if (!hasActiveProcesses) {
+            tryCleanWorktree();
+          } else {
+            // Active processes found (orphaned dev servers, etc.) but owning agent is dead.
+            // Cross-reference session-queue to confirm no live session owns this worktree.
+            // If no session claims it, kill the orphaned processes and proceed with cleanup.
+            let sessionOwnsWorktree = true; // fail-closed default
+            const queueDbPath = path.join(projectDir, '.claude', 'state', 'session-queue.db');
+            if (Database && fs.existsSync(queueDbPath)) {
+              try {
+                const qDb = new Database(queueDbPath, { readonly: true });
+                qDb.pragma('busy_timeout = 2000');
+                const active = qDb.prepare(
+                  "SELECT id FROM queue_items WHERE status IN ('running', 'queued', 'spawning', 'suspended') AND (cwd = ? OR worktree_path = ?)"
+                ).get(worktreePath, worktreePath);
+                qDb.close();
+                sessionOwnsWorktree = !!active;
+              } catch (_) { /* fail-closed: assume owned */ }
+            }
+
+            if (!sessionOwnsWorktree) {
+              // Kill orphaned processes, then attempt worktree cleanup
+              try {
+                const killLsof = execFileSync('lsof', ['+D', worktreePath, '-t'], {
+                  encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
+                });
+                const pids = killLsof.trim().split('\n').filter(Boolean).map(Number)
+                  .filter(p => p > 0 && p !== process.pid);
+                for (const pid of pids) {
+                  try { killProcessGroup(pid); } catch (_) { /* already dead */ }
+                }
+              } catch (_) { /* non-fatal — processes may already be gone */ }
+
+              // Brief pause for process cleanup to take effect
+              const buf = new SharedArrayBuffer(4);
+              Atomics.wait(new Int32Array(buf), 0, 0, 1000);
+
+              try { tryCleanWorktree(); } catch (_) { /* non-fatal */ }
+              debugLog(`[session-reaper] Killed orphaned processes and cleaned worktree for dead agent ${item.agent_id}`);
+            }
           }
         } catch (_) { /* non-fatal — background sweep will catch it */ }
       }

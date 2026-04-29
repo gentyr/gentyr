@@ -4567,6 +4567,118 @@ async function main() {
   });
 
   // =========================================================================
+  // BYPASS REQUEST STALENESS CHECK (5min cooldown, gate-exempt)
+  // Auto-cancels pending bypass requests whose blocking condition has cleared:
+  // linked task deleted/terminal, or resource_access requests older than 1 hour.
+  // =========================================================================
+  await runIfDue('bypass_request_staleness_check', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastBypassStalenessCheck',
+    label: 'Bypass request staleness check',
+    fn: async () => {
+      if (!Database) return;
+      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+      if (!fs.existsSync(bypassDbPath)) return;
+
+      let bypassDb;
+      try {
+        bypassDb = new Database(bypassDbPath);
+        bypassDb.pragma('busy_timeout = 3000');
+
+        const pendingRequests = bypassDb.prepare(
+          "SELECT id, task_type, task_id, category, created_at FROM bypass_requests WHERE status = 'pending'"
+        ).all();
+
+        if (pendingRequests.length === 0) return;
+
+        let cancelled = 0;
+        for (const req of pendingRequests) {
+          let shouldCancel = false;
+          let reason = '';
+
+          if (req.task_type === 'todo') {
+            const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+            if (!fs.existsSync(todoDbPath)) { shouldCancel = true; reason = 'todo_db_missing'; }
+            else {
+              try {
+                const todoDb = new Database(todoDbPath, { readonly: true });
+                todoDb.pragma('busy_timeout = 2000');
+                const task = todoDb.prepare('SELECT id, status FROM tasks WHERE id = ?').get(req.task_id);
+                todoDb.close();
+                if (!task) { shouldCancel = true; reason = 'task_deleted'; }
+                else if (task.status === 'completed') { shouldCancel = true; reason = 'task_completed'; }
+              } catch (_) { /* fail-open: don't cancel on read error */ }
+            }
+          } else if (req.task_type === 'persistent') {
+            const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+            if (fs.existsSync(ptDbPath)) {
+              try {
+                const ptDb = new Database(ptDbPath, { readonly: true });
+                ptDb.pragma('busy_timeout = 2000');
+                const task = ptDb.prepare('SELECT id, status FROM persistent_tasks WHERE id = ?').get(req.task_id);
+                ptDb.close();
+                if (!task) { shouldCancel = true; reason = 'task_deleted'; }
+                else if (['completed', 'cancelled', 'failed'].includes(task.status)) { shouldCancel = true; reason = `task_${task.status}`; }
+              } catch (_) { /* fail-open */ }
+            }
+          }
+
+          // Resource access bypass requests: auto-cancel after 1 hour
+          // (resource locks have 15-30 min TTLs, so 1 hour is very generous)
+          if (!shouldCancel && req.category === 'resource_access' && req.created_at) {
+            try {
+              const ageMs = Date.now() - new Date(req.created_at).getTime();
+              if (ageMs > 60 * 60 * 1000) { shouldCancel = true; reason = 'resource_access_stale_1h'; }
+            } catch (_) { /* non-fatal */ }
+          }
+
+          if (shouldCancel) {
+            bypassDb.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = ?, resolved_at = datetime('now') WHERE id = ? AND status = 'pending'"
+            ).run(`Auto-cancelled: ${reason}`, req.id);
+
+            // Also resolve any linked blocking_queue entries
+            bypassDb.prepare(
+              "UPDATE blocking_queue SET status = 'resolved', resolved_at = datetime('now'), resolution_context = ? WHERE bypass_request_id = ? AND status = 'active'"
+            ).run(`Auto-resolved: bypass request cancelled (${reason})`, req.id);
+
+            // If the task was paused for this bypass, resume it
+            if (req.task_type === 'persistent') {
+              try {
+                const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+                if (fs.existsSync(ptDbPath)) {
+                  const ptDb = new Database(ptDbPath);
+                  ptDb.pragma('busy_timeout = 2000');
+                  const task = ptDb.prepare('SELECT id, status FROM persistent_tasks WHERE id = ?').get(req.task_id);
+                  if (task && task.status === 'paused') {
+                    ptDb.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'").run(req.task_id);
+                    ptDb.prepare("INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))").run(
+                      randomUUID(), req.task_id, JSON.stringify({ reason: 'bypass_request_auto_cancelled', bypass_id: req.id })
+                    );
+                    log(`Bypass staleness: auto-resumed persistent task ${req.task_id} (bypass ${req.id} cancelled: ${reason})`);
+                  }
+                  ptDb.close();
+                }
+              } catch (_) { /* non-fatal */ }
+            }
+
+            cancelled++;
+            try { auditEvent('bypass_request_auto_cancelled', { request_id: req.id, task_type: req.task_type, task_id: req.task_id, reason }); } catch (_) { /* non-fatal */ }
+          }
+        }
+
+        if (cancelled > 0) {
+          log(`Bypass staleness check: auto-cancelled ${cancelled} stale request(s).`);
+        }
+      } catch (err) {
+        log(`Bypass staleness check error: ${err.message}`);
+      } finally {
+        try { bypassDb?.close(); } catch (_) { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
   // ORPHAN PROCESS REAPER (60min cooldown)
   // Kills node/esbuild processes whose CWD is a non-existent worktree path
   // =========================================================================
@@ -5307,12 +5419,22 @@ Then exit.`,
 
   log('=== Hourly Automation Complete ===');
 
-  debugLog('hourly-automation', 'cycle_complete', { durationMs: Date.now() - startTime });
+  const cycleDurationMs = Date.now() - startTime;
+  debugLog('hourly-automation', 'cycle_complete', { durationMs: cycleDurationMs });
+
+  // System heartbeat: proves the automation is alive even when nothing was spawned.
+  // This fires every cycle regardless of CTO gate or autonomous mode state.
+  try {
+    auditEvent('system_heartbeat', {
+      cycle_duration_ms: cycleDurationMs,
+      cto_gate_open: ctoGateOpen,
+    });
+  } catch (_) { /* non-fatal */ }
 
   registerHookExecution({
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     status: 'success',
-    durationMs: Date.now() - startTime,
+    durationMs: cycleDurationMs,
     metadata: { fullRun: true }
   });
 }

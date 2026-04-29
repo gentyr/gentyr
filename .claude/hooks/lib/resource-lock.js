@@ -877,7 +877,7 @@ export function checkAndExpireResources() {
     // but its resource_queue entry was never cleaned up (e.g., agent revived with
     // a new ID, leaving the old queue entry behind).
     const allWaiters = db.prepare(
-      "SELECT id, resource_id, agent_id, queue_id FROM resource_queue WHERE status = 'waiting'"
+      "SELECT id, resource_id, agent_id, queue_id FROM resource_queue WHERE status IN ('waiting', 'acquired')"
     ).all();
 
     for (const waiter of allWaiters) {
