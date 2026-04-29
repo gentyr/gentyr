@@ -158,6 +158,19 @@ const AUTOMATION_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'hourly-automati
 const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
 const SERVICES_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
 const PRODUCT_MANAGER_DB = path.join(PROJECT_DIR, '.claude', 'state', 'product-manager.db');
+const PERSONA_PROFILES_DIR = path.join(PROJECT_DIR, '.claude', 'state', 'persona-profiles');
+
+function getActivePersonaProfile() {
+  try {
+    const activePath = path.join(PERSONA_PROFILES_DIR, 'active-profile.json');
+    if (!fs.existsSync(activePath)) return null;
+    const active = JSON.parse(fs.readFileSync(activePath, 'utf8'));
+    if (!active?.name) return null;
+    const metaPath = path.join(PERSONA_PROFILES_DIR, active.name, 'profile.json');
+    const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : {};
+    return { name: active.name, description: meta.description ?? null, guiding_prompt: meta.guiding_prompt ?? null };
+  } catch { return null; }
+}
 
 // ============================================================================
 // Session utilities
@@ -776,6 +789,9 @@ function handleConfigurePersonas() {
   // Auto-detected features (directory structure scan)
   output.gathered.detectedFeatures = detectProjectFeatures();
 
+  // Active persona profile
+  output.gathered.activeProfile = getActivePersonaProfile();
+
   console.log(JSON.stringify({
     continue: true,
     hookSpecificOutput: {
@@ -912,6 +928,9 @@ function handleProductManager() {
     } catch (_) { /* cleanup - failure expected */ /* non-fatal */ }
     finally { feedbackDb.close(); }
   }
+
+  // Active persona profile
+  output.gathered.activeProfile = getActivePersonaProfile();
 
   console.log(JSON.stringify({
     continue: true,

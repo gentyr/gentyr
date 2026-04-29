@@ -121,6 +121,30 @@ See `node_modules/gentyr/docs/DEPLOYMENT-FLOW.md` for the full deployment refere
 - `/cto-report` - Status dashboard with metrics
 - `/deputy-cto` - Interactive CTO briefing session
 - `/demo` - Launch product demo with preflight validation
+- `/configure-personas` - Set up or manage AI user personas and feature mappings
+- `/product-manager` - Run or inspect the PMF analysis pipeline
+- `/run-feedback` - Manually spawn persona feedback agents
+- `/persona-feedback` - Browse persona feedback history and satisfaction trends
+
+### Automation Toggles
+
+Control which hourly automation features are enabled without editing JSON files:
+- `mcp__agent-tracker__set_automation_toggle({ feature: "userFeedbackEnabled", enabled: true })` — enable/disable any of 18 features
+- `mcp__agent-tracker__get_automation_toggles()` — list all toggles with current state and defaults
+
+Key toggles: `userFeedbackEnabled` (persona feedback on staging changes), `demoValidationEnabled` (6-hour demo cycle), `productManagerEnabled` (PMF pipeline), `taskRunnerEnabled` (task execution). Changes take effect on the next hourly-automation cycle.
+
+### Persona Profiles
+
+Named snapshots of the entire persona/market-research configuration. Use when pivoting product focus or A/B testing different target markets:
+- `mcp__user-feedback__archive_persona_profile({ name: "current-focus", description: "..." })` — snapshot current personas, features, scenarios, and PMF analysis
+- `mcp__user-feedback__create_persona_profile({ name: "new-focus", guiding_prompt: "Focus on X vertical" })` — create empty profile and switch (auto-archives current state)
+- `mcp__user-feedback__switch_persona_profile({ name: "old-focus" })` — restore a previous profile (auto-saves current first)
+- `mcp__user-feedback__list_persona_profiles()` — list all profiles with persona/feature counts
+- `mcp__user-feedback__get_persona_profile({ name: "..." })` — detailed profile info
+- `mcp__user-feedback__delete_persona_profile({ name: "..." })` — remove a profile (not the active one)
+
+The `guiding_prompt` on a profile steers the product-manager agent's market research direction. It appears in `get_analysis_status` and the session briefing.
 
 ### Playwright & Demo Best Practices
 

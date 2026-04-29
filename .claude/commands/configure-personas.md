@@ -26,6 +26,20 @@ You have access to `mcp__user-feedback__*` tools for all operations:
 **Testing:**
 - `get_personas_for_changes` - Dry run: given changed files, which personas would trigger?
 
+**Profile Management:**
+- `create_persona_profile` - Create a new empty profile and switch to it (auto-archives current state)
+- `archive_persona_profile` - Snapshot current state as a named profile
+- `switch_persona_profile` - Switch to a different profile (auto-saves current)
+- `list_persona_profiles` - List all profiles with counts
+- `get_persona_profile` - Detailed profile info
+- `delete_persona_profile` - Remove a profile (not the active one)
+
+---
+
+## Active Profile Check
+
+Check the prefetch `activeProfile` field. If a profile is active, show its name and guiding prompt before proceeding. If the CTO wants to switch product focus, offer the profile tools before diving into persona configuration.
+
 ---
 
 ## Route Selection

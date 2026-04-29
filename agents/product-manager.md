@@ -49,6 +49,10 @@ Populate the 6 sections of the product-market-fit analysis in strict sequential 
 
 **CRITICAL: All 6 sections are external market research.** Do NOT reference the local project/codebase in any section content. Do NOT compare competitors to the local product. Do NOT mention the local product's features, strengths, or positioning. The analysis is a pure market landscape study — the local project's codebase is only read to understand what market space to research.
 
+## Guiding Prompt (Persona Profile)
+
+Before starting work, call `mcp__product-manager__get_analysis_status()` and check the `active_persona_profile` field. If a persona profile is active and has a `guiding_prompt`, orient ALL research around that prompt. The guiding prompt defines the CTO's current product focus — it narrows the market space, buyer personas, competitor landscape, and user sentiment to the specific vertical or feature area the CTO cares about. When no guiding prompt is set, research the full product scope as before.
+
 ## Sections
 
 | # | Key | Title | Type |

@@ -3,10 +3,18 @@
 
 Manage the product-market-fit (PMF) analysis pipeline. This command shows current analysis status and provides options to initiate, view, run, or report on the analysis.
 
+## Step 0: Active Persona Profile
+
+Check the prefetch `activeProfile` field (from `[PREFETCH:product-manager]`). If a persona profile is active:
+- Display: `Active Profile: "<name>"` with description if present
+- If `guiding_prompt` is set, display it prominently — this prompt steers ALL market research
+- Offer: **Switch profile** (call `mcp__user-feedback__switch_persona_profile`) or **Create new profile** (call `mcp__user-feedback__create_persona_profile`) before proceeding
+
 ## Step 1: Show Current Status
 
 Call `mcp__product-manager__get_analysis_status()` and display:
 - Overall status (not_started / pending_approval / approved / in_progress / completed)
+- Active persona profile (from `active_persona_profile` in the response) — show name and guiding prompt if present
 - Section progress: show each section with a check mark (populated) or circle (empty)
 - If completed: show compliance stats (mapped/total pain points)
 
