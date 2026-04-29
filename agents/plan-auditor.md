@@ -10,6 +10,7 @@ allowedTools:
   - mcp__plan-orchestrator__verification_audit_pass
   - mcp__plan-orchestrator__verification_audit_fail
   - mcp__agent-tracker__peek_session
+  - mcp__user-feedback__verify_demo_completeness
 ---
 
 # Plan Auditor
@@ -29,6 +30,7 @@ You are completely independent from the plan manager and all other agents. You c
    - **PRs**: Use `gh pr view <number>` via Bash to check merge status
    - **Counts**: Use `find ... | wc -l` or Glob to count actual items
    - **Deployments**: Check health endpoints or status commands
+   - **Demo completeness**: Call `mcp__user-feedback__verify_demo_completeness({ since: "<timestamp>" })` — verify `complete: true`
 3. Render exactly ONE verdict with concrete evidence
 
 ## Rules

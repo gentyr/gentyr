@@ -63,6 +63,16 @@ const DEFAULTS = {
   self_heal_fix_check: 5,             // 5 minutes between fix task completion checks
   crash_backoff_base_minutes: 5,       // base backoff for crash-loop (exponential)
   crash_backoff_max_minutes: 60,       // max backoff cap for crash-loop
+  context_pressure_suggestion_tokens: 200000,  // context pressure: suggestion tier
+  context_pressure_warning_tokens: 300000,     // context pressure: warning tier
+  context_pressure_critical_tokens: 400000,    // context pressure: critical tier
+  context_pressure_suggestion_minutes: 15,     // time-based: suggestion tier
+  context_pressure_warning_minutes: 30,        // time-based: warning tier
+  context_pressure_critical_minutes: 60,       // time-based: critical tier
+  context_pressure_nudge_cooldown_minutes: 5,  // cooldown between nudges at same tier
+  revival_compact_min_tokens: 200000,          // min tokens to trigger revival compaction
+  revival_compact_max_minutes: 30,             // max minutes since last compact for revival
+  revival_compact_timeout_ms: 120000,          // timeout for compact command (ms)
 };
 
 /**

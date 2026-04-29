@@ -569,6 +569,11 @@ export const LaunchInteractiveMonitorArgsSchema = z.object({
 });
 export type LaunchInteractiveMonitorArgs = z.infer<typeof LaunchInteractiveMonitorArgsSchema>;
 
+export const RequestSelfCompactArgsSchema = z.object({
+  reason: z.string().optional().describe('Why the agent is requesting compaction (for audit trail)'),
+});
+export type RequestSelfCompactArgs = z.infer<typeof RequestSelfCompactArgsSchema>;
+
 // ============================================================================
 // Type Definitions
 // ============================================================================

@@ -722,3 +722,42 @@ export type SwitchPersonaProfileArgs = z.infer<typeof SwitchPersonaProfileArgsSc
 export type ListPersonaProfilesArgs = z.infer<typeof ListPersonaProfilesArgsSchema>;
 export type GetPersonaProfileArgs = z.infer<typeof GetPersonaProfileArgsSchema>;
 export type DeletePersonaProfileArgs = z.infer<typeof DeletePersonaProfileArgsSchema>;
+
+// ============================================================================
+// Demo Completeness Verification
+// ============================================================================
+
+export const VerifyDemoCompletenessArgsSchema = z.object({
+  since: z.string().datetime({ offset: true })
+    .describe('ISO 8601 timestamp. Only count demo results completed after this time (e.g. release start time).'),
+  branch: z.string().optional()
+    .describe('Only count results from this git branch (e.g. "staging"). Omit to count all branches.'),
+  require_recording: z.coerce.boolean().optional().default(true)
+    .describe('Require fresh recording (last_recorded_at >= since) for each scenario. Default: true.'),
+});
+
+export type VerifyDemoCompletenessArgs = z.infer<typeof VerifyDemoCompletenessArgsSchema>;
+
+export interface DemoCompletenessScenarioStatus {
+  scenario_id: string;
+  title: string;
+  persona_name: string;
+  latest_result_status: 'passed' | 'failed' | 'none';
+  latest_result_at: string | null;
+  has_fresh_recording: boolean;
+  recording_path: string | null;
+  last_recorded_at: string | null;
+}
+
+export interface VerifyDemoCompletenessResult {
+  complete: boolean;
+  total_enabled_scenarios: number;
+  scenarios_with_passing_result: number;
+  scenarios_with_fresh_recording: number;
+  scenarios_missing_pass: DemoCompletenessScenarioStatus[];
+  scenarios_missing_recording: DemoCompletenessScenarioStatus[];
+  all_scenarios: DemoCompletenessScenarioStatus[];
+  since: string;
+  branch: string | null;
+  checked_at: string;
+}

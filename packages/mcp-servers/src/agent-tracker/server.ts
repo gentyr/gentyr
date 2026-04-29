@@ -82,6 +82,7 @@ import {
   GetSharedResourceStatusArgsSchema,
   RegisterSharedResourceArgsSchema,
   ForceReleaseSharedResourceArgsSchema,
+  RequestSelfCompactArgsSchema,
   AGENT_TYPES,
   type ListSpawnedAgentsArgs,
   type GetAgentPromptArgs,
@@ -5584,6 +5585,96 @@ async function getBlockingSummary(_args: GetBlockingSummaryArgs): Promise<object
   }
 }
 
+// ============================================================================
+// Self-Compaction
+// ============================================================================
+
+type RequestSelfCompactArgs = import('./types.js').RequestSelfCompactArgs;
+
+function requestSelfCompact(args: RequestSelfCompactArgs): object {
+  const agentId = process.env.CLAUDE_AGENT_ID;
+  const sessionId = process.env.CLAUDE_SESSION_ID;
+
+  // Read compact tracker and record the request
+  const trackerPath = path.join(PROJECT_DIR, '.claude', 'state', 'compact-tracker.json');
+  let tracker: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(trackerPath)) {
+      tracker = JSON.parse(fs.readFileSync(trackerPath, 'utf8'));
+    }
+  } catch { /* start fresh */ }
+
+  // Try to get current token count from the session JSONL
+  let currentTokens: number | null = null;
+  if (sessionId) {
+    try {
+      const projectPath = '-' + PROJECT_DIR.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-/, '');
+      const sessionDir = path.join(os.homedir(), '.claude', 'projects', projectPath);
+      const sessionFile = path.join(sessionDir, `${sessionId}.jsonl`);
+      if (fs.existsSync(sessionFile)) {
+        const stat = fs.statSync(sessionFile);
+        const readSize = Math.min(16384, stat.size);
+        const fd = fs.openSync(sessionFile, 'r');
+        try {
+          const buf = Buffer.alloc(readSize);
+          fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+          const tail = buf.toString('utf8');
+          const lines = tail.split('\n');
+          for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            try {
+              const entry = JSON.parse(line);
+              const usage = entry.message?.usage;
+              if (usage && entry.type === 'assistant') {
+                currentTokens = (usage.input_tokens || 0) +
+                  (usage.cache_read_input_tokens || 0) +
+                  (usage.cache_creation_input_tokens || 0);
+                break;
+              }
+            } catch { /* partial line */ }
+          }
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Record the compact request
+  const key = sessionId || agentId || 'unknown';
+  tracker[key] = {
+    compactRequested: true,
+    requestedAt: new Date().toISOString(),
+    requestedByAgent: agentId || null,
+    requestReason: args.reason || 'agent-initiated',
+    preCompactTokens: currentTokens,
+  };
+
+  try {
+    fs.mkdirSync(path.dirname(trackerPath), { recursive: true });
+    const tmpPath = trackerPath + '.tmp';
+    fs.writeFileSync(tmpPath, JSON.stringify(tracker, null, 2));
+    fs.renameSync(tmpPath, trackerPath);
+  } catch { /* non-fatal */ }
+
+  const tokenStr = currentTokens ? ` (current context: ${Math.round(currentTokens / 1000)}K tokens)` : '';
+
+  return {
+    status: 'compaction_requested',
+    currentTokens,
+    instructions: `COMPACTION PROTOCOL INITIATED${tokenStr}.
+
+Your session will be compacted after you exit. Follow these steps:
+1. Call summarize_work with a summary of your current state, progress, and what needs to happen next
+2. Exit gracefully (stop working)
+
+The system will detect your session has stopped, run /compact on your dead session to compress the context, and revive you with your compacted context preserved. Do NOT attempt to run /compact yourself — it would kill your running session.
+
+This is safe and automatic. Your work will not be lost.`,
+  };
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'list_spawned_agents',
@@ -5971,6 +6062,13 @@ const tools: AnyToolHandler[] = [
     description: 'Get a compact summary of active blocking queue items: total count, counts by blocking_level (plan/persistent_task/task), and age of the oldest active item. Fast — suitable for notification hooks.',
     schema: GetBlockingSummaryArgsSchema,
     handler: getBlockingSummary,
+  },
+  // Self-compaction
+  {
+    name: 'request_self_compact',
+    description: 'Request context compaction for your session. Call this when your context window is getting large (200K+ tokens) or when nudged by the context pressure hook. After calling, you MUST call summarize_work and exit. The system will compact your dead session and revive you with compressed context.',
+    schema: RequestSelfCompactArgsSchema,
+    handler: requestSelfCompact,
   },
 ];
 

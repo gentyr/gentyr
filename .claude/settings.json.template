@@ -365,6 +365,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/screenshot-reminder.js",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/context-pressure-hook.js",
+            "timeout": 5
           }
         ]
       },
