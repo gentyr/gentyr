@@ -674,3 +674,51 @@ export interface PrerequisiteResult {
   persona_name?: string;
   scenario_title?: string;
 }
+
+// ============================================================================
+// Persona Profile Schemas
+// ============================================================================
+
+const profileNameRegex = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
+
+export const CreatePersonaProfileArgsSchema = z.object({
+  name: z.string().min(1).max(64).regex(profileNameRegex, 'Profile name must be lowercase alphanumeric with hyphens (e.g., "full-product", "vertical-slice")')
+    .describe('Unique profile name'),
+  description: z.string().max(500).optional()
+    .describe('Description of what this profile covers'),
+  guiding_prompt: z.string().max(2000).optional()
+    .describe('Optional prompt to guide market research and persona generation for this profile (e.g., "Focus on ALLOW authorization features for mid-market SaaS")'),
+});
+
+export const ArchivePersonaProfileArgsSchema = z.object({
+  name: z.string().min(1).max(64).regex(profileNameRegex, 'Profile name must be lowercase alphanumeric with hyphens')
+    .describe('Profile name to save as'),
+  description: z.string().max(500).optional()
+    .describe('Description of what this profile covers'),
+  guiding_prompt: z.string().max(2000).optional()
+    .describe('Optional prompt to guide market research and persona generation'),
+});
+
+export const SwitchPersonaProfileArgsSchema = z.object({
+  name: z.string().min(1).max(64)
+    .describe('Name of the profile to switch to'),
+});
+
+export const ListPersonaProfilesArgsSchema = z.object({});
+
+export const GetPersonaProfileArgsSchema = z.object({
+  name: z.string().min(1).max(64)
+    .describe('Name of the profile to inspect'),
+});
+
+export const DeletePersonaProfileArgsSchema = z.object({
+  name: z.string().min(1).max(64)
+    .describe('Name of the profile to delete'),
+});
+
+export type CreatePersonaProfileArgs = z.infer<typeof CreatePersonaProfileArgsSchema>;
+export type ArchivePersonaProfileArgs = z.infer<typeof ArchivePersonaProfileArgsSchema>;
+export type SwitchPersonaProfileArgs = z.infer<typeof SwitchPersonaProfileArgsSchema>;
+export type ListPersonaProfilesArgs = z.infer<typeof ListPersonaProfilesArgsSchema>;
+export type GetPersonaProfileArgs = z.infer<typeof GetPersonaProfileArgsSchema>;
+export type DeletePersonaProfileArgs = z.infer<typeof DeletePersonaProfileArgsSchema>;

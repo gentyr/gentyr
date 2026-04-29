@@ -699,6 +699,29 @@ function buildInteractiveBriefing() {
     }
   } catch { /* non-fatal */ }
 
+  // Active Persona Profile
+  try {
+    const activeProfilePath = path.join(PROJECT_DIR, '.claude', 'state', 'persona-profiles', 'active-profile.json');
+    if (fs.existsSync(activeProfilePath)) {
+      const activeProfile = JSON.parse(fs.readFileSync(activeProfilePath, 'utf8'));
+      if (activeProfile?.name) {
+        let profileInfo = `Persona Profile: "${activeProfile.name}"`;
+        try {
+          const profileMeta = JSON.parse(fs.readFileSync(
+            path.join(PROJECT_DIR, '.claude', 'state', 'persona-profiles', activeProfile.name, 'profile.json'), 'utf8'));
+          if (profileMeta?.description) profileInfo += ` — ${profileMeta.description}`;
+          if (profileMeta?.guiding_prompt) {
+            const prompt = profileMeta.guiding_prompt.length > 120
+              ? profileMeta.guiding_prompt.substring(0, 120) + '...'
+              : profileMeta.guiding_prompt;
+            profileInfo += `\n  Guiding prompt: ${prompt}`;
+          }
+        } catch { /* non-fatal */ }
+        lines.push(profileInfo);
+      }
+    }
+  } catch { /* non-fatal */ }
+
   // Blocking Queue (work-stopping items — shown above bypass requests)
   const blockingItems = getBlockingQueue();
   if (blockingItems) {
