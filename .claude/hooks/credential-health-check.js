@@ -160,16 +160,43 @@ try {
     output(`${desyncPrefix}GENTYR: ${missingKeys.length} credential mapping(s) not configured. Run /setup-gentyr to complete setup.`);
   } else if (hasOpRefs) {
     // Only test 1Password connectivity if there are op:// references to resolve
+    let opHealthy = false;
     try {
       execFileSync('op', ['whoami', '--format', 'json'], {
         encoding: 'utf-8',
         timeout: 5000,
         env: process.env,
       });
-      // Connected — emit desync warning if present, otherwise silent
-      output(desyncPrefix || null);
+      opHealthy = true;
     } catch (_) {
-      output(`${desyncPrefix}GENTYR: 1Password is not authenticated. MCP servers will start without credentials.`);
+      // OP not authenticated — will warn below
+    }
+
+    // Check shared MCP daemon secrets cache health
+    let daemonWarning = '';
+    try {
+      const daemonPort = process.env.MCP_DAEMON_PORT || '18090';
+      const statsJson = execFileSync('curl', [
+        '-sf', '--max-time', '2',
+        `http://127.0.0.1:${daemonPort}/secrets/stats`,
+      ], { encoding: 'utf-8', timeout: 3000 });
+      const stats = JSON.parse(statsJson);
+      if (stats.errors > 0 && stats.misses > 0) {
+        const errorRate = ((stats.errors / (stats.misses + stats.errors)) * 100).toFixed(0);
+        if (parseInt(errorRate) > 50) {
+          daemonWarning = ` Secrets cache unhealthy: ${stats.errors} errors (${errorRate}% error rate).`;
+        }
+      }
+    } catch (_) {
+      daemonWarning = ' Secrets cache daemon unreachable — credential resolution will be slower.';
+    }
+
+    if (!opHealthy) {
+      output(`${desyncPrefix}GENTYR: 1Password is not authenticated. MCP servers will start without credentials.${daemonWarning}`);
+    } else if (daemonWarning) {
+      output(`${desyncPrefix}GENTYR:${daemonWarning}`);
+    } else {
+      output(desyncPrefix || null);
     }
   } else {
     // All mappings are direct values — no 1Password needed
