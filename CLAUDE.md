@@ -410,10 +410,10 @@ By default, the automation service runs without 1Password credentials in backgro
 ### Automation Toggle Tools
 
 **2 MCP tools** (on `agent-tracker` server):
-- `set_automation_toggle` — enable or disable any of 18 hourly automation features by name (e.g., `worktree_cleanup`, `staging_reactive_review`, `demo_validation`). Persists to `automation-config.json`. Accepts `{ toggle: string, enabled: boolean }`.
-- `get_automation_toggles` — returns the current enabled/disabled state of all 18 automation features alongside their configured cooldown values. CTO-facing — eliminates the need to manually edit `automation-config.json` to control automation behavior.
+- `set_automation_toggle` — enable or disable any of 18 hourly automation features by name (e.g., `userFeedbackEnabled`, `demoValidationEnabled`, `taskRunnerEnabled`). Persists to `autonomous-mode.json`. Accepts `{ feature: z.enum(AUTOMATION_TOGGLE_KEYS), enabled: boolean }`. Blocked for spawned sessions.
+- `get_automation_toggles` — returns the current enabled/disabled state of all 18 automation features with descriptions, default states, and explicit vs. implicit values. CTO-facing — eliminates the need to manually edit `autonomous-mode.json` to control automation behavior.
 
-These tools replace manual JSON editing for all automation on/off decisions. The underlying `automation-config.json` file remains the source of truth; both tools read and write it atomically.
+These tools replace manual JSON editing for all automation on/off decisions. The underlying `autonomous-mode.json` file remains the source of truth; both tools read and write it atomically. Toggle semantics match `hourly-automation.js`: a feature is disabled only when explicitly set to `false`.
 
 ### On-Demand Task Spawning
 
