@@ -269,6 +269,7 @@ function doUnprotect(projectDir) {
 
   const dirs = [
     path.join(projectDir, '.husky'),
+    path.join(projectDir, '.claude', 'config'),
   ];
 
   const ownership = `${originalUser}:${originalGroup}`;
