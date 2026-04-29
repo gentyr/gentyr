@@ -195,7 +195,8 @@ export function findCurrentSessionJsonl(projectDir) {
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
 
   // Derive the encoded project path for Claude's session directory
-  const encodedPath = projectDir.replace(/\//g, '-');
+  // Must match the canonical encoding used everywhere: replace ALL non-alphanumeric chars with dashes
+  const encodedPath = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
   const sessionDir = path.join(homeDir, '.claude', 'projects', encodedPath);
 
   // Strategy 1: Direct lookup via CLAUDE_SESSION_ID
@@ -224,7 +225,11 @@ export function findCurrentSessionJsonl(projectDir) {
           if (stat.size < 100) continue;
 
           // Check first 2KB for automation markers — skip non-CTO sessions
-          const head = fs.readFileSync(filePath, { encoding: 'utf8', flag: 'r' }).slice(0, 2048);
+          const fd = fs.openSync(filePath, 'r');
+          const buf = Buffer.alloc(2048);
+          const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
+          fs.closeSync(fd);
+          const head = buf.toString('utf8', 0, bytesRead);
           if (head.includes('[Automation]') || head.includes('[Task]') || head.includes('[AGENT:')) {
             continue;
           }
