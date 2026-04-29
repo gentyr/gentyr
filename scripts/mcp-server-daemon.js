@@ -83,6 +83,7 @@ const { startSharedHttpServer } = await import(
 const secretsCache = new Map(); // ref → { value, resolvedAt, hits }
 const SECRETS_CACHE_TTL_MS = 5 * 60 * 1000;
 const NO_CACHE_PATTERNS = [/one-time.password/i, /\/otp$/i, /\/totp$/i, /\/mfa/i];
+const inflightRequests = new Map();
 
 function isSecretCacheable(ref) {
   return !NO_CACHE_PATTERNS.some(p => p.test(ref));
@@ -127,7 +128,6 @@ auditFlushTimer.unref();
 async function resolveSecretRef(ref) {
   auditStats.uniqueRefs.add(ref);
 
-  // Check cache
   if (isSecretCacheable(ref)) {
     const cached = secretsCache.get(ref);
     if (cached && Date.now() - cached.resolvedAt < SECRETS_CACHE_TTL_MS) {
@@ -137,23 +137,35 @@ async function resolveSecretRef(ref) {
     }
   }
 
-  // Cache miss — call op read
-  auditStats.misses++;
-  try {
-    const { stdout } = await execFileAsync('op', ['read', ref], {
-      encoding: 'utf-8',
-      timeout: 15000,
-      env: process.env,
-    });
-    const value = stdout.trim();
-    if (isSecretCacheable(ref)) {
-      secretsCache.set(ref, { value, resolvedAt: Date.now(), hits: 0 });
-    }
-    return { value, fromCache: false };
-  } catch (err) {
-    auditStats.errors++;
-    return { error: err.message || String(err) };
+  const inflight = inflightRequests.get(ref);
+  if (inflight) {
+    auditStats.hits++;
+    return inflight;
   }
+
+  auditStats.misses++;
+  const promise = (async () => {
+    try {
+      const { stdout } = await execFileAsync('op', ['read', ref], {
+        encoding: 'utf-8',
+        timeout: 15000,
+        env: process.env,
+      });
+      const value = stdout.trim();
+      if (isSecretCacheable(ref)) {
+        secretsCache.set(ref, { value, resolvedAt: Date.now(), hits: 0 });
+      }
+      return { value, fromCache: false };
+    } catch (err) {
+      auditStats.errors++;
+      return { error: err.message || String(err) };
+    } finally {
+      inflightRequests.delete(ref);
+    }
+  })();
+
+  inflightRequests.set(ref, promise);
+  return promise;
 }
 
 function readJsonBody(req) {
@@ -193,6 +205,7 @@ function handleSecretsRequest(req, res) {
       .slice(0, 10);
     writeJsonDaemon(res, 200, {
       entries: secretsCache.size,
+      inflight: inflightRequests.size,
       hits: auditStats.hits,
       misses: auditStats.misses,
       errors: auditStats.errors,
@@ -200,6 +213,21 @@ function handleSecretsRequest(req, res) {
       topRefs,
       periodStart: new Date(auditStats.lastFlush).toISOString(),
     });
+    return true;
+  }
+
+  // POST /secrets/flush — clear the secrets cache
+  if (url === '/secrets/flush' && method === 'POST') {
+    const authHeader = req.headers['authorization'] || '';
+    const expectedToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    if (!expectedToken || !authHeader.startsWith('Bearer ') || authHeader.slice(7) !== expectedToken) {
+      writeJsonDaemon(res, 401, { error: 'Unauthorized' });
+      return true;
+    }
+    const flushed = secretsCache.size;
+    secretsCache.clear();
+    log(`[op-cache] Cache flushed: ${flushed} entries cleared`);
+    writeJsonDaemon(res, 200, { flushed });
     return true;
   }
 

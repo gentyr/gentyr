@@ -280,7 +280,7 @@ When the user asks to spawn agents in plain English (e.g., "spawn an agent to fi
 
 When the CTO describes complex work, proactively suggest the right tool:
 
-- **Multi-phase with dependencies** (e.g., "build X, then migrate Y which depends on X, then update Z") → Offer a **plan** (`/plan`). Plans structure work into phases with dependency tracking. A plan manager spawns persistent tasks per step.
+- **Multi-phase with dependencies** (e.g., "build X, then migrate Y which depends on X, then update Z") → Offer a **plan** (`/plan`). Plans structure work into phases with dependency tracking. Activating a plan (`update_plan_status(status: "active")`) triggers a PostToolUse hook that automatically creates a plan-manager persistent task and enqueues it. The plan-manager autonomously polls for ready tasks, spawns persistent tasks for each, monitors progress, and advances phases. Do NOT manually spawn tasks or call `get_spawn_ready_tasks`/`force_spawn_tasks` after plan activation — the plan-manager handles all orchestration automatically.
 - **Complex single-stream objective** (e.g., "get the demo suite fully passing") → Offer a **persistent task** (`/persistent-task`). A persistent monitor manages the objective, spawning child sessions as needed.
 - **Ambiguous** → Briefly explain both and let the CTO choose.
 - **Simple** (fits a single session) → Just do the work directly.

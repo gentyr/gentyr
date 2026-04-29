@@ -2143,7 +2143,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'update_plan_status',
-    description: 'Update plan status. Completing requires all phases completed; if any phase was skipped, requires force_complete: true with completion_note. Activating updates task readiness.',
+    description: 'Update plan status. Activating a plan automatically spawns a plan-manager persistent task that orchestrates all phase advancement and task spawning — do NOT manually spawn tasks after activation. Completing requires all phases completed; if any phase was skipped, requires force_complete: true with completion_note.',
     schema: UpdatePlanStatusArgsSchema,
     handler: updatePlanStatus,
   },
