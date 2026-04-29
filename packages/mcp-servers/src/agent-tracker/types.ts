@@ -137,6 +137,45 @@ export const SetLocalModeArgsSchema = z.object({
 export const GetLocalModeArgsSchema = z.object({});
 
 // ============================================================================
+// Automation Toggle Schemas
+// ============================================================================
+
+export const AUTOMATION_TOGGLE_KEYS = [
+  'userFeedbackEnabled',
+  'demoValidationEnabled',
+  'dailyFeedbackEnabled',
+  'stagingReactiveReviewEnabled',
+  'stagingHealthMonitorEnabled',
+  'productionHealthMonitorEnabled',
+  'standaloneAntipatternHunterEnabled',
+  'standaloneComplianceCheckerEnabled',
+  'lintCheckerEnabled',
+  'taskRunnerEnabled',
+  'claudeMdRefactorEnabled',
+  'productManagerEnabled',
+  'abandonedWorktreeRescueEnabled',
+  'worktreeCleanupEnabled',
+  'staleWorktreeReaperEnabled',
+  'staleTaskCleanupEnabled',
+  'orphanProcessReaperEnabled',
+  'staleWorkDetectorEnabled',
+] as const;
+
+export type AutomationToggleKey = typeof AUTOMATION_TOGGLE_KEYS[number];
+
+export const SetAutomationToggleArgsSchema = z.object({
+  feature: z.enum(AUTOMATION_TOGGLE_KEYS)
+    .describe('The automation feature key to toggle'),
+  enabled: z.boolean()
+    .describe('Enable (true) or disable (false) this automation feature'),
+});
+
+export const GetAutomationTogglesArgsSchema = z.object({});
+
+export type SetAutomationToggleArgs = z.infer<typeof SetAutomationToggleArgsSchema>;
+export type GetAutomationTogglesArgs = z.infer<typeof GetAutomationTogglesArgsSchema>;
+
+// ============================================================================
 // Session Signal Schemas
 // ============================================================================
 

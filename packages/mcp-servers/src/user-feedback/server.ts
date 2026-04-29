@@ -56,6 +56,12 @@ import {
   UpdatePrerequisiteArgsSchema,
   DeletePrerequisiteArgsSchema,
   ListPrerequisitesArgsSchema,
+  CreatePersonaProfileArgsSchema,
+  ArchivePersonaProfileArgsSchema,
+  SwitchPersonaProfileArgsSchema,
+  ListPersonaProfilesArgsSchema,
+  GetPersonaProfileArgsSchema,
+  DeletePersonaProfileArgsSchema,
   type CreatePersonaArgs,
   type UpdatePersonaArgs,
   type DeletePersonaArgs,
@@ -89,6 +95,11 @@ import {
   type UpdatePrerequisiteArgs,
   type DeletePrerequisiteArgs,
   type ListPrerequisitesArgs,
+  type CreatePersonaProfileArgs,
+  type ArchivePersonaProfileArgs,
+  type SwitchPersonaProfileArgs,
+  type GetPersonaProfileArgs,
+  type DeletePersonaProfileArgs,
   type PersonaRecord,
   type FeatureRecord,
   type PersonaFeatureRecord,
@@ -492,8 +503,11 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     return db;
   }
 
+  // DB path constant for profile system
+  const DB_PATH = path.join(config.projectDir, '.claude', 'user-feedback.db');
+
   // Use provided DB or initialize new one
-  const db = config.db ?? initializeDatabase(config.projectDir);
+  let db = config.db ?? initializeDatabase(config.projectDir);
 
   // Close DB we created (not test-provided) on process exit
   if (!config.db) {
@@ -2185,6 +2199,410 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   // ============================================================================
+  // Persona Profile System
+  // ============================================================================
+
+  const PROFILES_DIR = path.join(config.projectDir, '.claude', 'state', 'persona-profiles');
+  const ACTIVE_PROFILE_PATH = path.join(PROFILES_DIR, 'active-profile.json');
+  const PM_DB_PATH = path.join(config.projectDir, '.claude', 'state', 'product-manager.db');
+
+  function ensureProfilesDir(): void {
+    if (!fs.existsSync(PROFILES_DIR)) {
+      fs.mkdirSync(PROFILES_DIR, { recursive: true });
+    }
+  }
+
+  function getProfileDir(name: string): string {
+    return path.join(PROFILES_DIR, name);
+  }
+
+  function readActiveProfile(): { name: string; activated_at: string } | null {
+    try {
+      return JSON.parse(fs.readFileSync(ACTIVE_PROFILE_PATH, 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  function writeActiveProfile(name: string): void {
+    ensureProfilesDir();
+    fs.writeFileSync(ACTIVE_PROFILE_PATH, JSON.stringify({
+      name,
+      activated_at: new Date().toISOString(),
+    }, null, 2) + '\n');
+  }
+
+  function readProfileMeta(name: string): Record<string, unknown> | null {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(getProfileDir(name), 'profile.json'), 'utf8'));
+    } catch {
+      return null;
+    }
+  }
+
+  function snapshotDb(targetDir: string): void {
+    // Checkpoint WAL to ensure all data is in the main DB file
+    try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+    fs.copyFileSync(DB_PATH, path.join(targetDir, 'user-feedback.db'));
+
+    // Best-effort snapshot of product-manager DB
+    try {
+      if (fs.existsSync(PM_DB_PATH) && fs.statSync(PM_DB_PATH).size > 0) {
+        const pmDb = new Database(PM_DB_PATH, { readonly: false });
+        try {
+          pmDb.pragma('wal_checkpoint(TRUNCATE)');
+        } finally {
+          pmDb.close();
+        }
+        fs.copyFileSync(PM_DB_PATH, path.join(targetDir, 'product-manager.db'));
+      }
+    } catch { /* PM DB snapshot is best-effort */ }
+  }
+
+  function restoreDb(sourceDir: string): void {
+    const sourceUfDb = path.join(sourceDir, 'user-feedback.db');
+    if (!fs.existsSync(sourceUfDb)) {
+      throw new Error(`Profile DB not found at ${sourceUfDb}`);
+    }
+
+    // Close current DB, copy profile DB over active, reopen
+    db.close();
+    fs.copyFileSync(sourceUfDb, DB_PATH);
+    // Remove WAL/SHM from the active path (they belong to the old DB)
+    try { fs.unlinkSync(DB_PATH + '-wal'); } catch { /* ignore */ }
+    try { fs.unlinkSync(DB_PATH + '-shm'); } catch { /* ignore */ }
+    db = initializeDatabase(config.projectDir);
+
+    // Best-effort restore of product-manager DB
+    const sourcePmDb = path.join(sourceDir, 'product-manager.db');
+    try {
+      if (fs.existsSync(sourcePmDb)) {
+        fs.copyFileSync(sourcePmDb, PM_DB_PATH);
+        // Remove WAL/SHM for PM DB too
+        try { fs.unlinkSync(PM_DB_PATH + '-wal'); } catch { /* ignore */ }
+        try { fs.unlinkSync(PM_DB_PATH + '-shm'); } catch { /* ignore */ }
+      }
+    } catch { /* PM DB restore is best-effort */ }
+  }
+
+  function getDbCounts(dbPath: string): { personas: number; features: number; scenarios: number } {
+    try {
+      const tmpDb = new Database(dbPath, { readonly: true });
+      try {
+        const personas = (tmpDb.prepare('SELECT COUNT(*) as c FROM personas').get() as { c: number })?.c ?? 0;
+        const features = (tmpDb.prepare('SELECT COUNT(*) as c FROM features').get() as { c: number })?.c ?? 0;
+        let scenarios = 0;
+        try {
+          scenarios = (tmpDb.prepare('SELECT COUNT(*) as c FROM demo_scenarios').get() as { c: number })?.c ?? 0;
+        } catch { /* table may not exist in older snapshots */ }
+        return { personas, features, scenarios };
+      } finally {
+        tmpDb.close();
+      }
+    } catch {
+      return { personas: 0, features: 0, scenarios: 0 };
+    }
+  }
+
+  function hasPmContent(pmDbPath: string): boolean {
+    try {
+      if (!fs.existsSync(pmDbPath) || fs.statSync(pmDbPath).size === 0) return false;
+      const tmpDb = new Database(pmDbPath, { readonly: true });
+      try {
+        const row = tmpDb.prepare("SELECT content FROM sections WHERE section_number = 1").get() as { content: string | null } | undefined;
+        return !!row?.content;
+      } finally {
+        tmpDb.close();
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  function currentDbHasData(): boolean {
+    try {
+      const count = (db.prepare('SELECT COUNT(*) as c FROM personas').get() as { c: number })?.c ?? 0;
+      return count > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // --- Profile Tool Handlers ---
+
+  function archivePersonaProfile(args: ArchivePersonaProfileArgs): object {
+    ensureProfilesDir();
+    const profileDir = getProfileDir(args.name);
+
+    if (!fs.existsSync(profileDir)) {
+      fs.mkdirSync(profileDir, { recursive: true });
+    }
+
+    // Snapshot both DBs
+    snapshotDb(profileDir);
+
+    // Write profile metadata
+    const existingMeta = readProfileMeta(args.name);
+    const meta = {
+      name: args.name,
+      description: args.description ?? existingMeta?.description ?? null,
+      guiding_prompt: args.guiding_prompt ?? existingMeta?.guiding_prompt ?? null,
+      created_at: (existingMeta?.created_at as string) ?? new Date().toISOString(),
+      archived_at: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(profileDir, 'profile.json'), JSON.stringify(meta, null, 2) + '\n');
+
+    const counts = getDbCounts(path.join(profileDir, 'user-feedback.db'));
+    const hasPm = hasPmContent(path.join(profileDir, 'product-manager.db'));
+
+    return {
+      success: true,
+      profile: args.name,
+      archived_at: meta.archived_at,
+      persona_count: counts.personas,
+      feature_count: counts.features,
+      scenario_count: counts.scenarios,
+      has_market_research: hasPm,
+      message: `Profile "${args.name}" archived with ${counts.personas} personas, ${counts.features} features, ${counts.scenarios} scenarios.`,
+    };
+  }
+
+  function createPersonaProfile(args: CreatePersonaProfileArgs): object {
+    ensureProfilesDir();
+    const profileDir = getProfileDir(args.name);
+
+    if (fs.existsSync(profileDir)) {
+      return { error: `Profile "${args.name}" already exists. Use archive_persona_profile to overwrite or delete_persona_profile first.` };
+    }
+
+    // Auto-archive current state if there's data
+    const activeProfile = readActiveProfile();
+    if (activeProfile && currentDbHasData()) {
+      snapshotDb(getProfileDir(activeProfile.name));
+      const existingMeta = readProfileMeta(activeProfile.name);
+      if (existingMeta) {
+        (existingMeta as Record<string, unknown>).archived_at = new Date().toISOString();
+        fs.writeFileSync(path.join(getProfileDir(activeProfile.name), 'profile.json'), JSON.stringify(existingMeta, null, 2) + '\n');
+      }
+    } else if (!activeProfile && currentDbHasData()) {
+      // No active profile but DB has data — archive as "default"
+      const defaultDir = getProfileDir('default');
+      if (!fs.existsSync(defaultDir)) {
+        fs.mkdirSync(defaultDir, { recursive: true });
+      }
+      snapshotDb(defaultDir);
+      fs.writeFileSync(path.join(defaultDir, 'profile.json'), JSON.stringify({
+        name: 'default',
+        description: 'Auto-archived from pre-profile state',
+        guiding_prompt: null,
+        created_at: new Date().toISOString(),
+        archived_at: new Date().toISOString(),
+      }, null, 2) + '\n');
+    }
+
+    // Create new profile directory with metadata
+    fs.mkdirSync(profileDir, { recursive: true });
+    const meta = {
+      name: args.name,
+      description: args.description ?? null,
+      guiding_prompt: args.guiding_prompt ?? null,
+      created_at: new Date().toISOString(),
+      archived_at: null,
+    };
+    fs.writeFileSync(path.join(profileDir, 'profile.json'), JSON.stringify(meta, null, 2) + '\n');
+
+    // Close current DB, delete it, reinitialize empty
+    db.close();
+    try { fs.unlinkSync(DB_PATH); } catch { /* ignore */ }
+    try { fs.unlinkSync(DB_PATH + '-wal'); } catch { /* ignore */ }
+    try { fs.unlinkSync(DB_PATH + '-shm'); } catch { /* ignore */ }
+    db = initializeDatabase(config.projectDir);
+
+    // Best-effort clear product-manager DB
+    try {
+      if (fs.existsSync(PM_DB_PATH)) {
+        fs.unlinkSync(PM_DB_PATH);
+        try { fs.unlinkSync(PM_DB_PATH + '-wal'); } catch { /* ignore */ }
+        try { fs.unlinkSync(PM_DB_PATH + '-shm'); } catch { /* ignore */ }
+      }
+    } catch { /* PM DB clear is best-effort */ }
+
+    // Snapshot the fresh empty state to the new profile
+    snapshotDb(profileDir);
+
+    // Set as active
+    writeActiveProfile(args.name);
+
+    return {
+      success: true,
+      profile: args.name,
+      guiding_prompt: args.guiding_prompt ?? null,
+      auto_archived: activeProfile?.name ?? (currentDbHasData() ? 'default' : null),
+      restart_recommended: true,
+      message: `Created empty profile "${args.name}" and switched to it.`
+        + (args.guiding_prompt ? ` Guiding prompt set for market research.` : '')
+        + ` Product-manager MCP server restart recommended to pick up the cleared DB.`,
+    };
+  }
+
+  function switchPersonaProfile(args: SwitchPersonaProfileArgs): object {
+    const profileDir = getProfileDir(args.name);
+    if (!fs.existsSync(profileDir) || !readProfileMeta(args.name)) {
+      return { error: `Profile "${args.name}" not found.` };
+    }
+
+    const activeProfile = readActiveProfile();
+    if (activeProfile?.name === args.name) {
+      return { error: `Profile "${args.name}" is already active.` };
+    }
+
+    // Auto-save current state back to active profile
+    if (activeProfile) {
+      const activeDir = getProfileDir(activeProfile.name);
+      if (fs.existsSync(activeDir)) {
+        snapshotDb(activeDir);
+        const existingMeta = readProfileMeta(activeProfile.name);
+        if (existingMeta) {
+          (existingMeta as Record<string, unknown>).archived_at = new Date().toISOString();
+          fs.writeFileSync(path.join(activeDir, 'profile.json'), JSON.stringify(existingMeta, null, 2) + '\n');
+        }
+      }
+    }
+
+    // Restore target profile
+    restoreDb(profileDir);
+    writeActiveProfile(args.name);
+
+    const counts = getDbCounts(DB_PATH);
+    const meta = readProfileMeta(args.name);
+
+    return {
+      success: true,
+      profile: args.name,
+      guiding_prompt: (meta?.guiding_prompt as string) ?? null,
+      persona_count: counts.personas,
+      feature_count: counts.features,
+      scenario_count: counts.scenarios,
+      auto_saved: activeProfile?.name ?? null,
+      restart_recommended: true,
+      message: `Switched to profile "${args.name}" (${counts.personas} personas, ${counts.features} features).`
+        + (activeProfile ? ` Previous profile "${activeProfile.name}" auto-saved.` : '')
+        + ` Product-manager MCP server restart recommended.`,
+    };
+  }
+
+  function listPersonaProfiles(): object {
+    ensureProfilesDir();
+    const activeProfile = readActiveProfile();
+
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(PROFILES_DIR).filter(e => {
+        try {
+          return fs.statSync(path.join(PROFILES_DIR, e)).isDirectory();
+        } catch { return false; }
+      });
+    } catch {
+      entries = [];
+    }
+
+    const profiles = entries.map(name => {
+      const meta = readProfileMeta(name);
+      const profileDir = getProfileDir(name);
+      const ufDbPath = path.join(profileDir, 'user-feedback.db');
+      const pmDbPath = path.join(profileDir, 'product-manager.db');
+
+      const counts = fs.existsSync(ufDbPath) ? getDbCounts(ufDbPath) : { personas: 0, features: 0, scenarios: 0 };
+      const hasPm = hasPmContent(pmDbPath);
+
+      return {
+        name,
+        description: (meta?.description as string) ?? null,
+        guiding_prompt: meta?.guiding_prompt ? (meta.guiding_prompt as string).substring(0, 100) + ((meta.guiding_prompt as string).length > 100 ? '...' : '') : null,
+        persona_count: counts.personas,
+        feature_count: counts.features,
+        scenario_count: counts.scenarios,
+        has_market_research: hasPm,
+        is_active: activeProfile?.name === name,
+        created_at: (meta?.created_at as string) ?? null,
+        archived_at: (meta?.archived_at as string) ?? null,
+      };
+    });
+
+    return {
+      profiles,
+      active_profile: activeProfile?.name ?? null,
+      count: profiles.length,
+    };
+  }
+
+  function getPersonaProfile(args: GetPersonaProfileArgs): object {
+    const profileDir = getProfileDir(args.name);
+    const meta = readProfileMeta(args.name);
+    if (!meta) {
+      return { error: `Profile "${args.name}" not found.` };
+    }
+
+    const ufDbPath = path.join(profileDir, 'user-feedback.db');
+    const pmDbPath = path.join(profileDir, 'product-manager.db');
+    const counts = fs.existsSync(ufDbPath) ? getDbCounts(ufDbPath) : { personas: 0, features: 0, scenarios: 0 };
+    const hasPm = hasPmContent(pmDbPath);
+
+    // Get persona and feature names from the snapshot
+    let personaNames: string[] = [];
+    let featureNames: string[] = [];
+    try {
+      if (fs.existsSync(ufDbPath)) {
+        const tmpDb = new Database(ufDbPath, { readonly: true });
+        try {
+          personaNames = (tmpDb.prepare('SELECT name FROM personas ORDER BY name').all() as { name: string }[]).map(r => r.name);
+          featureNames = (tmpDb.prepare('SELECT name FROM features ORDER BY name').all() as { name: string }[]).map(r => r.name);
+        } finally {
+          tmpDb.close();
+        }
+      }
+    } catch { /* ignore */ }
+
+    const activeProfile = readActiveProfile();
+
+    return {
+      name: args.name,
+      description: meta.description ?? null,
+      guiding_prompt: meta.guiding_prompt ?? null,
+      persona_count: counts.personas,
+      feature_count: counts.features,
+      scenario_count: counts.scenarios,
+      has_market_research: hasPm,
+      is_active: activeProfile?.name === args.name,
+      created_at: meta.created_at ?? null,
+      archived_at: meta.archived_at ?? null,
+      persona_names: personaNames,
+      feature_names: featureNames,
+    };
+  }
+
+  function deletePersonaProfile(args: DeletePersonaProfileArgs): object {
+    const activeProfile = readActiveProfile();
+    if (activeProfile?.name === args.name) {
+      return { error: `Cannot delete the active profile "${args.name}". Switch to another profile first.` };
+    }
+
+    const profileDir = getProfileDir(args.name);
+    if (!fs.existsSync(profileDir)) {
+      return { error: `Profile "${args.name}" not found.` };
+    }
+
+    // Remove directory recursively
+    fs.rmSync(profileDir, { recursive: true, force: true });
+
+    return {
+      success: true,
+      deleted: args.name,
+      message: `Profile "${args.name}" deleted.`,
+    };
+  }
+
+  // ============================================================================
   // Server Setup
   // ============================================================================
 
@@ -2384,11 +2802,48 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       schema: PlayFeatureFeedbackArgsSchema,
       handler: playFeatureFeedback,
     },
+    // Persona Profile Tools
+    {
+      name: 'create_persona_profile',
+      description: 'Create a new empty persona profile and switch to it. Auto-archives current state first. The guiding_prompt is stored and surfaced to the product-manager agent during market research.',
+      schema: CreatePersonaProfileArgsSchema,
+      handler: createPersonaProfile,
+    },
+    {
+      name: 'archive_persona_profile',
+      description: 'Save current persona/feature/scenario/market-research state as a named profile without switching. Snapshots both user-feedback.db and product-manager.db. Overwrites if profile already exists.',
+      schema: ArchivePersonaProfileArgsSchema,
+      handler: archivePersonaProfile,
+    },
+    {
+      name: 'switch_persona_profile',
+      description: 'Switch to an existing persona profile. Auto-saves current state back to the active profile before switching. Restores both databases. Returns restart_recommended: true for the product-manager MCP server.',
+      schema: SwitchPersonaProfileArgsSchema,
+      handler: switchPersonaProfile,
+    },
+    {
+      name: 'list_persona_profiles',
+      description: 'List all persona profiles with metadata, persona/feature/scenario counts, and active status.',
+      schema: ListPersonaProfilesArgsSchema,
+      handler: listPersonaProfiles,
+    },
+    {
+      name: 'get_persona_profile',
+      description: 'Get detailed information about a specific persona profile including persona names, feature names, and market research status.',
+      schema: GetPersonaProfileArgsSchema,
+      handler: getPersonaProfile,
+    },
+    {
+      name: 'delete_persona_profile',
+      description: 'Delete a persona profile. Cannot delete the currently active profile.',
+      schema: DeletePersonaProfileArgsSchema,
+      handler: deletePersonaProfile,
+    },
   ];
 
   return new McpServer({
     name: 'user-feedback',
-    version: '1.0.0',
+    version: '2.0.0',
     tools,
   });
 }

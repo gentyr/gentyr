@@ -349,6 +349,21 @@ function getAnalysisStatus(_args: GetAnalysisStatusArgs): AnalysisStatusResult |
     return result;
   });
 
+  // Read active persona profile's guiding prompt
+  let activePersonaProfile: { name: string; guiding_prompt: string | null } | null = null;
+  try {
+    const profilesDir = path.join(PROJECT_DIR, '.claude', 'state', 'persona-profiles');
+    const activeProfilePath = path.join(profilesDir, 'active-profile.json');
+    const active = JSON.parse(fs.readFileSync(activeProfilePath, 'utf8'));
+    if (active?.name) {
+      const profileMeta = JSON.parse(fs.readFileSync(path.join(profilesDir, active.name, 'profile.json'), 'utf8'));
+      activePersonaProfile = {
+        name: active.name,
+        guiding_prompt: profileMeta?.guiding_prompt ?? null,
+      };
+    }
+  } catch { /* no active profile */ }
+
   return {
     status: meta.status as AnalysisStatusResult['status'],
     initiated_at: meta.initiated_at,
@@ -360,6 +375,7 @@ function getAnalysisStatus(_args: GetAnalysisStatusArgs): AnalysisStatusResult |
     total_sections: 6,
     sections: sectionResults,
     compliance: getComplianceStats(db),
+    active_persona_profile: activePersonaProfile,
   };
 }
 

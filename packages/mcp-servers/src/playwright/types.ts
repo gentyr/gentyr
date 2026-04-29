@@ -408,6 +408,8 @@ export interface DemoRunState {
   steel_recording_path?: string;
   /** Execution target resolved by routing */
   execution_target?: 'local' | 'remote' | 'steel';
+  /** Runtime-only — prevents double DB writes to demo_results */
+  result_persisted?: boolean;
 }
 
 export interface StopDemoResult {

@@ -206,6 +206,10 @@ export interface AnalysisStatusResult {
     unmapped: number;
     pct: number;
   } | null;
+  active_persona_profile: {
+    name: string;
+    guiding_prompt: string | null;
+  } | null;
 }
 
 export interface InitiateResult {

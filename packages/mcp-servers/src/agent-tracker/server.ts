@@ -44,6 +44,8 @@ import {
   GetLockdownModeArgsSchema,
   SetLocalModeArgsSchema,
   GetLocalModeArgsSchema,
+  SetAutomationToggleArgsSchema,
+  GetAutomationTogglesArgsSchema,
   GetUserPromptArgsSchema,
   SearchUserPromptsArgsSchema,
   ListUserPromptsArgsSchema,
@@ -102,6 +104,8 @@ import {
   type SetLockdownModeArgs,
   type GetLockdownModeArgs,
   type SetLocalModeArgs,
+  type SetAutomationToggleArgs,
+  type GetAutomationTogglesArgs,
   type SubscribeSessionSummariesArgs,
   type UnsubscribeSessionSummariesArgs,
   type ListSummarySubscriptionsArgs,
@@ -3159,6 +3163,99 @@ function getLocalMode(): object {
 }
 
 // ============================================================================
+// Automation Toggle Tool Implementations
+// ============================================================================
+
+const AUTONOMOUS_MODE_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
+
+const AUTOMATION_TOGGLE_DESCRIPTIONS: Record<string, { description: string; defaultEnabled: boolean }> = {
+  userFeedbackEnabled:                { description: 'User feedback pipeline (staging change detection -> persona spawn)', defaultEnabled: false },
+  demoValidationEnabled:              { description: '6-hour demo validation cycle', defaultEnabled: false },
+  dailyFeedbackEnabled:               { description: 'Daily feedback runs (all personas)', defaultEnabled: false },
+  stagingReactiveReviewEnabled:       { description: '4-stream staging reactive review', defaultEnabled: true },
+  stagingHealthMonitorEnabled:        { description: 'Staging health checks', defaultEnabled: true },
+  productionHealthMonitorEnabled:     { description: 'Production health checks', defaultEnabled: true },
+  standaloneAntipatternHunterEnabled: { description: 'Anti-pattern detection', defaultEnabled: true },
+  standaloneComplianceCheckerEnabled: { description: 'Compliance checking', defaultEnabled: true },
+  lintCheckerEnabled:                 { description: 'Lint checking and auto-fixing', defaultEnabled: true },
+  taskRunnerEnabled:                  { description: 'Task execution (processes pending TODO items)', defaultEnabled: true },
+  claudeMdRefactorEnabled:            { description: 'CLAUDE.md auto-refactoring when oversized', defaultEnabled: true },
+  productManagerEnabled:              { description: 'Product manager pipeline', defaultEnabled: false },
+  abandonedWorktreeRescueEnabled:     { description: 'Abandoned worktree rescue', defaultEnabled: true },
+  worktreeCleanupEnabled:             { description: 'Worktree cleanup (merged branches)', defaultEnabled: true },
+  staleWorktreeReaperEnabled:         { description: 'Stale worktree reaper', defaultEnabled: true },
+  staleTaskCleanupEnabled:            { description: 'Stale task cleanup', defaultEnabled: true },
+  orphanProcessReaperEnabled:         { description: 'Orphan process reaper', defaultEnabled: true },
+  staleWorkDetectorEnabled:           { description: 'Stale work detector', defaultEnabled: true },
+};
+
+function readAutonomousModeConfig(): Record<string, unknown> {
+  try {
+    return JSON.parse(fs.readFileSync(AUTONOMOUS_MODE_CONFIG_PATH, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeAutonomousModeConfig(config: Record<string, unknown>): void {
+  const dir = path.dirname(AUTONOMOUS_MODE_CONFIG_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(AUTONOMOUS_MODE_CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
+}
+
+function setAutomationToggle(args: SetAutomationToggleArgs): object {
+  if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    return {
+      error: 'Spawned sessions cannot modify automation toggles. Only interactive CTO sessions can toggle automation features.',
+    };
+  }
+
+  const config = readAutonomousModeConfig();
+  config[args.feature] = args.enabled;
+  writeAutonomousModeConfig(config);
+
+  const meta = AUTOMATION_TOGGLE_DESCRIPTIONS[args.feature];
+  return {
+    success: true,
+    feature: args.feature,
+    enabled: args.enabled,
+    description: meta?.description ?? args.feature,
+    default_enabled: meta?.defaultEnabled ?? true,
+    message: args.enabled
+      ? `${args.feature} is now ENABLED. Takes effect on the next hourly-automation cycle.`
+      : `${args.feature} is now DISABLED. Takes effect on the next hourly-automation cycle.`,
+  };
+}
+
+function getAutomationToggles(_args: GetAutomationTogglesArgs): object {
+  const config = readAutonomousModeConfig();
+
+  const toggles = Object.entries(AUTOMATION_TOGGLE_DESCRIPTIONS).map(([key, meta]) => {
+    const configValue = config[key];
+    const effectiveEnabled = configValue !== false;
+
+    return {
+      feature: key,
+      description: meta.description,
+      enabled: effectiveEnabled,
+      explicit_value: configValue === undefined ? null : configValue,
+      default_enabled: meta.defaultEnabled,
+    };
+  });
+
+  const enabledCount = toggles.filter(t => t.enabled).length;
+  const disabledCount = toggles.filter(t => !t.enabled).length;
+
+  return {
+    automation_master_enabled: config.enabled !== false,
+    toggles,
+    summary: `${enabledCount} enabled, ${disabledCount} disabled (of ${toggles.length} features)`,
+  };
+}
+
+// ============================================================================
 // MCP Server Staging
 // ============================================================================
 
@@ -5647,6 +5744,19 @@ const tools: AnyToolHandler[] = [
     description: 'Get the current local prototyping mode state, including which servers are excluded.',
     schema: GetLocalModeArgsSchema,
     handler: getLocalMode,
+  },
+  // Automation Toggle Tools
+  {
+    name: 'set_automation_toggle',
+    description: 'Enable or disable a specific hourly automation feature. Reads/writes .claude/autonomous-mode.json. Changes take effect on the next automation cycle. Blocked for spawned sessions.',
+    schema: SetAutomationToggleArgsSchema,
+    handler: setAutomationToggle,
+  },
+  {
+    name: 'get_automation_toggles',
+    description: 'List all automation feature toggles with their current state, default state, and descriptions.',
+    schema: GetAutomationTogglesArgsSchema,
+    handler: getAutomationToggles,
   },
   // Project-Local MCP Server Tools
   {
