@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const IS_SPAWNED = process.env.CLAUDE_SPAWNED_SESSION === 'true';
 
 /**
  * Fast-path check: returns true only if Fly.io is configured in services.json.
@@ -62,21 +63,21 @@ rl.on('close', () => {
     let additionalContext = '';
 
     // Trigger 1: After run_demo — headless local run that could have used Fly.io
-    if (toolName === 'mcp__playwright__run_demo') {
+    // NOTE: For spawned agents, demo-remote-enforcement.js handles the broader
+    // local-run detection (all local runs, not just headless). This trigger
+    // only adds the headless-specific hint for interactive (CTO) sessions.
+    if (toolName === 'mcp__playwright__run_demo' && !IS_SPAWNED) {
       if (responseParsed) {
         const ranLocally = !responseParsed.remote &&
           (responseParsed.execution_target === 'local' || !responseParsed.fly_machine_id);
         const wasHeadless = responseText.includes('"headless":true') ||
           responseText.includes('"headless": true');
-        const succeeded = responseParsed.success === true ||
-          responseParsed.status === 'passed' ||
-          responseParsed.status === 'completed';
 
-        if (ranLocally && wasHeadless && succeeded) {
+        if (ranLocally && wasHeadless) {
           additionalContext = [
-            'Tip: This headless demo ran locally. It could run on Fly.io instead to free local resources',
-            'and bypass display lock contention entirely. Pass `remote: true` (or omit it — auto-routing',
-            'picks Fly.io for headless runs when configured) to `run_demo` on the next execution.',
+            'Note: This headless demo ran locally. Fly.io is configured — pass `remote: true`',
+            '(or omit it — auto-routing picks Fly.io for headless runs) for remote execution.',
+            'For multiple scenarios, run_demo_batch runs them concurrently across Fly.io machines.',
           ].join(' ');
         }
       }
@@ -118,14 +119,23 @@ rl.on('close', () => {
           (responseParsed.resource_id === 'display' ||
            hookInput.tool_input?.resource_id === 'display')) {
         const position = responseParsed.position ?? '?';
-        additionalContext = [
-          `Display lock contended (position ${position} in queue).`,
-          'If your demo does not need video recording or ScreenCaptureKit, run it headless',
-          'on Fly.io instead — it bypasses the display queue entirely:',
-          '  run_demo({ headless: true })',
-          'Fly.io is configured and routes headless demos to remote machines automatically,',
-          'enabling parallel execution without any local display contention.',
-        ].join(' ');
+        if (IS_SPAWNED) {
+          additionalContext = [
+            `WARNING — DISPLAY LOCK CONTENDED (position ${position}).`,
+            'Spawned agents should NOT wait for the display lock for validation runs.',
+            'Use remote execution instead: run_demo({ remote: true, recorded: true }) or',
+            'run_demo_batch({ remote: true, recorded: true }) for concurrent Fly.io execution.',
+            'Remote Fly.io demos produce identical video recordings via Xvfb+ffmpeg.',
+            'Only acquire the display lock for chrome-bridge or CTO-requested headed demos.',
+          ].join(' ');
+        } else {
+          additionalContext = [
+            `Display lock contended (position ${position} in queue).`,
+            'If your demo does not need ScreenCaptureKit, run it on Fly.io instead:',
+            '  run_demo({ remote: true, recorded: true })',
+            'Remote execution produces identical video recordings and bypasses the display queue.',
+          ].join(' ');
+        }
       }
     }
 

@@ -1318,6 +1318,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | session-completion-gate.js | `summarize_work,complete_task` | Validate completion prerequisites |
 | workstream-dep-satisfier.js | `complete_task` | Cascade workstream dependency satisfaction |
 | demo-failure-spawner.js | `check_demo_result,check_demo_batch_result,run_demo` | Auto-spawn repair agents on demo failure |
+| demo-remote-enforcement.js | `run_demo` | Enforce remote+batch execution for spawned agents; detect sequential local anti-pattern |
 | long-command-warning.js | `secret_run_command` | Warn about MCP transport timeout |
 | persistent-task-spawner.js | `activate/resume/amend/pause/cancel_persistent_task` | Spawn/stop persistent monitors |
 | plan-persistent-sync.js | `complete_persistent_task` | Sync completion to plan tasks |
