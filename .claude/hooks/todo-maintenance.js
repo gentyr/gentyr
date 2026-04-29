@@ -112,13 +112,16 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
     return null;
   }
 
+  let db;
   try {
-    const db = new Database(dbPath);
+    db = new Database(dbPath);
     const nowTimestamp = Math.floor(now.getTime() / 1000);
     const changes = {
       staleStartsCleared: 0,
       completedRemoved: 0,
-      completedCapped: 0
+      completedCapped: 0,
+      stalePendingArchived: 0,
+      followupCapped: 0,
     };
 
     // Clear stale starts (>30 min without completion)
@@ -155,13 +158,92 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
       changes.completedCapped = capResult.changes;
     }
 
-    db.close();
+    // Archive stale pending tasks older than 7 days
+    const STALE_PENDING_SECONDS = 7 * 24 * 60 * 60;
+    const nowIso = now.toISOString();
+    const archiveStmt = db.prepare(`
+      INSERT OR IGNORE INTO archived_tasks
+        (id, section, category_id, title, description, assigned_by, priority,
+         created_at, started_at, completed_at, created_timestamp, completed_timestamp,
+         followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const stalePending = db.prepare(`
+      SELECT id, section, category_id, title, description, assigned_by, priority,
+             created_at, started_at, completed_at, created_timestamp, completed_timestamp,
+             followup_enabled, followup_section, followup_prompt
+      FROM tasks
+      WHERE status = 'pending'
+        AND created_timestamp IS NOT NULL
+        AND (? - created_timestamp) > ?
+    `).all(nowTimestamp, STALE_PENDING_SECONDS);
+
+    for (const task of stalePending) {
+      archiveStmt.run(
+        task.id, task.section, task.category_id, task.title, task.description,
+        task.assigned_by, task.priority, task.created_at, task.started_at,
+        task.completed_at, task.created_timestamp, task.completed_timestamp,
+        task.followup_enabled, task.followup_section, task.followup_prompt,
+        nowIso, nowTimestamp
+      );
+    }
+    if (stalePending.length > 0) {
+      const stalePendingResult = db.prepare(`
+        DELETE FROM tasks
+        WHERE status = 'pending'
+          AND created_timestamp IS NOT NULL
+          AND (? - created_timestamp) > ?
+      `).run(nowTimestamp, STALE_PENDING_SECONDS);
+      changes.stalePendingArchived = stalePendingResult.changes;
+    }
+
+    // Cap system-followup pending tasks at 20 (archive + delete oldest excess)
+    const MAX_FOLLOWUP_TASKS = 20;
+    const followupCount = db.prepare(
+      "SELECT COUNT(*) as count FROM tasks WHERE assigned_by = 'system-followup' AND status = 'pending'"
+    ).get().count;
+
+    if (followupCount > MAX_FOLLOWUP_TASKS) {
+      const toRemove = followupCount - MAX_FOLLOWUP_TASKS;
+      const excessFollowups = db.prepare(`
+        SELECT id, section, category_id, title, description, assigned_by, priority,
+               created_at, started_at, completed_at, created_timestamp, completed_timestamp,
+               followup_enabled, followup_section, followup_prompt
+        FROM tasks
+        WHERE assigned_by = 'system-followup' AND status = 'pending'
+        ORDER BY created_timestamp ASC
+        LIMIT ?
+      `).all(toRemove);
+
+      for (const task of excessFollowups) {
+        archiveStmt.run(
+          task.id, task.section, task.category_id, task.title, task.description,
+          task.assigned_by, task.priority, task.created_at, task.started_at,
+          task.completed_at, task.created_timestamp, task.completed_timestamp,
+          task.followup_enabled, task.followup_section, task.followup_prompt,
+          nowIso, nowTimestamp
+        );
+      }
+
+      const followupCapResult = db.prepare(`
+        DELETE FROM tasks WHERE id IN (
+          SELECT id FROM tasks
+          WHERE assigned_by = 'system-followup' AND status = 'pending'
+          ORDER BY created_timestamp ASC
+          LIMIT ?
+        )
+      `).run(toRemove);
+      changes.followupCapped = followupCapResult.changes;
+    }
 
     debugLog('Database cleanup complete', changes);
     return changes;
   } catch (err) {
     debugLog('Database cleanup error', { error: err.message });
     return null;
+  } finally {
+    try { db?.close(); } catch (_) { /* non-fatal */ }
   }
 }
 
@@ -446,6 +528,12 @@ async function main() {
     }
     if (dbChanges.completedCapped > 0) {
       changesSummary.push(`${dbChanges.completedCapped} completed capped`);
+    }
+    if (dbChanges.stalePendingArchived > 0) {
+      changesSummary.push(`${dbChanges.stalePendingArchived} stale pending archived`);
+    }
+    if (dbChanges.followupCapped > 0) {
+      changesSummary.push(`${dbChanges.followupCapped} followup tasks capped`);
     }
   }
 

@@ -1510,6 +1510,16 @@ export function drainQueue() {
 
   debugLog('session-queue', 'drain_complete', { spawned: result.spawned, queued: result.queued, atCapacity: result.atCapacity, failed: result.failed });
 
+  // Drain summary: proves the queue system is alive even when nothing spawns.
+  try {
+    auditEvent('queue_drain_summary', {
+      spawned: result.spawned,
+      queued: result.queued,
+      at_capacity: result.atCapacity,
+      memory_blocked: result.memoryBlocked,
+    });
+  } catch (_) { /* non-fatal */ }
+
   return result;
 }
 

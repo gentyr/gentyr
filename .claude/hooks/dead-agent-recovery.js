@@ -163,10 +163,24 @@ async function main() {
     releaseLock();
   }
 
+  // Trigger automatic revival: drainQueue() Step 1d picks up the now-pending tasks,
+  // finds their session files, and enqueues --resume revival sessions.
+  // Dynamic import: session-queue.js has heavy deps; only load when recovery is needed.
+  // suppressStderr: transitive deps (session-reaper, memory-pressure) have console.error
+  // in error catch blocks — SessionStart hooks must never write to stderr.
+  if (recoveredCount > 0) {
+    try {
+      const { suppressStderr } = await import('./lib/suppress-stderr.js');
+      suppressStderr();
+      const { drainQueue } = await import('./lib/session-queue.js');
+      drainQueue();
+    } catch (_) { /* non-fatal — hourly automation will catch these tasks */ }
+  }
+
   if (recoveredCount > 0) {
     console.log(JSON.stringify({
       continue: true,
-      systemMessage: `[dead-agent-recovery] Detected ${recoveredCount} dead agent(s), reset tasks to pending for re-spawn.`,
+      systemMessage: `[dead-agent-recovery] Detected ${recoveredCount} dead agent(s), reset tasks to pending and triggered automatic revival.`,
     }));
   } else {
     console.log(JSON.stringify({ continue: true }));
