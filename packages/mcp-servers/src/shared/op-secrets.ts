@@ -25,21 +25,58 @@ export const INFRA_CRED_KEYS = new Set([
   'FLY_API_TOKEN',
 ]);
 
+// ============================================================================
+// Process-scoped credential cache (TTL 5 min, excludes OTP/TOTP/MFA)
+// ============================================================================
+
+const opCache = new Map<string, { value: string; resolvedAt: number }>();
+const OP_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const NO_CACHE_PATTERNS = [
+  /one-time.password/i,
+  /\/otp$/i,
+  /\/totp$/i,
+  /\/mfa/i,
+];
+
+function isCacheable(reference: string): boolean {
+  return !NO_CACHE_PATTERNS.some(p => p.test(reference));
+}
+
+/** Clear the credential cache. Use for tests or to force re-resolution. */
+export function clearOpCache(): void {
+  opCache.clear();
+}
+
 /**
- * Read a secret from 1Password (value stays in-process, never returned to agent)
+ * Read a secret from 1Password (value stays in-process, never returned to agent).
+ * Results are cached in-memory for 5 minutes to reduce op CLI calls.
+ * OTP/TOTP/MFA references are never cached.
  */
-export function opRead(reference: string): string {
+export function opRead(reference: string, opts?: { skipCache?: boolean }): string {
+  if (!opts?.skipCache && isCacheable(reference)) {
+    const cached = opCache.get(reference);
+    if (cached && Date.now() - cached.resolvedAt < OP_CACHE_TTL_MS) {
+      return cached.value;
+    }
+  }
+
   const token = getOpToken();
   if (!token) {
     throw new Error('OP_SERVICE_ACCOUNT_TOKEN not set');
   }
 
   try {
-    return execFileSync('op', ['read', reference], {
+    const value = execFileSync('op', ['read', reference], {
       encoding: 'utf-8',
       timeout: 15000,
       env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: token },
     }).trim();
+
+    if (isCacheable(reference)) {
+      opCache.set(reference, { value, resolvedAt: Date.now() });
+    }
+    return value;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to read ${reference}: ${message}`);
