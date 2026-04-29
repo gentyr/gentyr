@@ -19,6 +19,8 @@ export interface SharedHttpServerOptions {
   host?: string;
   servers: Map<string, McpServer>;
   isReady?: () => boolean;
+  /** Optional pre-handler. Return true if the request was handled (short-circuits MCP routing). */
+  onRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => boolean | Promise<boolean>;
 }
 
 export interface SharedHttpServer {
@@ -91,6 +93,14 @@ export function startSharedHttpServer(options: SharedHttpServerOptions): SharedH
     // No CORS headers — this server is consumed by Claude Code (not a browser).
     // Omitting Access-Control-Allow-Origin prevents browser-based exfiltration
     // of sensitive tool responses (1Password secrets, GitHub tokens, etc.).
+
+    // Pre-handler hook (daemon-level routes like /secrets/resolve)
+    if (options.onRequest) {
+      try {
+        const handled = await options.onRequest(req, res);
+        if (handled) return;
+      } catch { /* non-fatal — fall through to normal routing */ }
+    }
 
     // Health check
     if (url === '/health' && method === 'GET') {
