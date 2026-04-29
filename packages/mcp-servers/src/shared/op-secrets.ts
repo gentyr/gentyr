@@ -48,12 +48,52 @@ export function clearOpCache(): void {
   opCache.clear();
 }
 
+// ============================================================================
+// L2: Shared daemon cache (cross-process, HTTP)
+// ============================================================================
+
+const DAEMON_URL = `http://127.0.0.1:${process.env.MCP_DAEMON_PORT || '18090'}`;
+
+/**
+ * Try to resolve a secret via the shared MCP daemon cache.
+ * Returns the value on success, null if daemon is unavailable or ref not resolved.
+ */
+function tryDaemonResolve(reference: string): string | null {
+  // Don't call daemon from within the daemon itself
+  if (process.env.MCP_SHARED_DAEMON === '1') return null;
+
+  const token = getOpToken();
+  if (!token) return null;
+
+  try {
+    const body = JSON.stringify({ refs: [reference] });
+    const result = execFileSync('curl', [
+      '-sf', '--max-time', '2',
+      '-X', 'POST',
+      '-H', 'Content-Type: application/json',
+      '-H', `Authorization: Bearer ${token}`,
+      '-d', body,
+      `${DAEMON_URL}/secrets/resolve`,
+    ], { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] });
+    const parsed = JSON.parse(result);
+    return parsed.resolved?.[reference] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Read a secret from 1Password (value stays in-process, never returned to agent).
- * Results are cached in-memory for 5 minutes to reduce op CLI calls.
- * OTP/TOTP/MFA references are never cached.
+ *
+ * Three-level resolution:
+ *   L1: Per-process in-memory cache (instant, no I/O)
+ *   L2: Shared MCP daemon cache (one op read per unique ref across all processes)
+ *   L3: Direct op CLI call (fallback when daemon is unavailable)
+ *
+ * OTP/TOTP/MFA references are never cached at any level.
  */
 export function opRead(reference: string, opts?: { skipCache?: boolean }): string {
+  // L1: Per-process cache
   if (!opts?.skipCache && isCacheable(reference)) {
     const cached = opCache.get(reference);
     if (cached && Date.now() - cached.resolvedAt < OP_CACHE_TTL_MS) {
@@ -61,6 +101,18 @@ export function opRead(reference: string, opts?: { skipCache?: boolean }): strin
     }
   }
 
+  // L2: Shared daemon cache
+  if (!opts?.skipCache) {
+    const daemonResult = tryDaemonResolve(reference);
+    if (daemonResult !== null) {
+      if (isCacheable(reference)) {
+        opCache.set(reference, { value: daemonResult, resolvedAt: Date.now() });
+      }
+      return daemonResult;
+    }
+  }
+
+  // L3: Direct op read (fallback)
   const token = getOpToken();
   if (!token) {
     throw new Error('OP_SERVICE_ACCOUNT_TOKEN not set');

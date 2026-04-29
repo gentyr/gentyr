@@ -76,10 +76,192 @@ const { startSharedHttpServer } = await import(
   path.join(DIST_DIR, 'shared', 'http-transport.js')
 );
 
+// ---------------------------------------------------------------------------
+// Shared Secrets Cache + Audit Logging
+// ---------------------------------------------------------------------------
+
+const secretsCache = new Map(); // ref → { value, resolvedAt, hits }
+const SECRETS_CACHE_TTL_MS = 5 * 60 * 1000;
+const NO_CACHE_PATTERNS = [/one-time.password/i, /\/otp$/i, /\/totp$/i, /\/mfa/i];
+
+function isSecretCacheable(ref) {
+  return !NO_CACHE_PATTERNS.some(p => p.test(ref));
+}
+
+const auditStats = {
+  hits: 0, misses: 0, errors: 0,
+  uniqueRefs: new Set(),
+  lastFlush: Date.now(),
+};
+
+const AUDIT_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
+const AUDIT_FILE = path.join(stateDir, 'op-cache-audit.jsonl');
+
+function flushAuditStats() {
+  const now = Date.now();
+  const total = auditStats.hits + auditStats.misses;
+  const hitRate = total > 0 ? ((auditStats.hits / total) * 100).toFixed(1) + '%' : 'n/a';
+  const entry = {
+    ts: new Date().toISOString(),
+    hits: auditStats.hits,
+    misses: auditStats.misses,
+    errors: auditStats.errors,
+    uniqueRefs: auditStats.uniqueRefs.size,
+    hitRate,
+    period: Math.round((now - auditStats.lastFlush) / 1000) + 's',
+  };
+  if (total > 0) {
+    log(`[op-cache] ${entry.period} stats: ${entry.hits} hits, ${entry.misses} misses, ${entry.errors} errors (${hitRate} hit rate, ${entry.uniqueRefs} unique refs)`);
+    try { fs.appendFileSync(AUDIT_FILE, JSON.stringify(entry) + '\n'); } catch { /* non-fatal */ }
+  }
+  auditStats.hits = 0;
+  auditStats.misses = 0;
+  auditStats.errors = 0;
+  auditStats.uniqueRefs.clear();
+  auditStats.lastFlush = now;
+}
+
+const auditFlushTimer = setInterval(flushAuditStats, AUDIT_FLUSH_INTERVAL_MS);
+auditFlushTimer.unref();
+
+async function resolveSecretRef(ref) {
+  auditStats.uniqueRefs.add(ref);
+
+  // Check cache
+  if (isSecretCacheable(ref)) {
+    const cached = secretsCache.get(ref);
+    if (cached && Date.now() - cached.resolvedAt < SECRETS_CACHE_TTL_MS) {
+      cached.hits++;
+      auditStats.hits++;
+      return { value: cached.value, fromCache: true };
+    }
+  }
+
+  // Cache miss — call op read
+  auditStats.misses++;
+  try {
+    const { stdout } = await execFileAsync('op', ['read', ref], {
+      encoding: 'utf-8',
+      timeout: 15000,
+      env: process.env,
+    });
+    const value = stdout.trim();
+    if (isSecretCacheable(ref)) {
+      secretsCache.set(ref, { value, resolvedAt: Date.now(), hits: 0 });
+    }
+    return { value, fromCache: false };
+  } catch (err) {
+    auditStats.errors++;
+    return { error: err.message || String(err) };
+  }
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > 64 * 1024) { reject(new Error('Body too large')); req.destroy(); return; }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+      catch (e) { reject(e); }
+    });
+    req.on('error', reject);
+  });
+}
+
+function writeJsonDaemon(res, status, body) {
+  const json = JSON.stringify(body);
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(json) });
+  res.end(json);
+}
+
+function handleSecretsRequest(req, res) {
+  const url = req.url ?? '/';
+  const method = req.method ?? 'GET';
+
+  // GET /secrets/stats — audit stats
+  if (url === '/secrets/stats' && method === 'GET') {
+    const total = auditStats.hits + auditStats.misses;
+    const hitRate = total > 0 ? ((auditStats.hits / total) * 100).toFixed(1) + '%' : 'n/a';
+    const topRefs = [...secretsCache.entries()]
+      .map(([ref, entry]) => ({ ref: ref.replace(/op:\/\/[^/]+\//, 'op://****/'), hits: entry.hits, lastAccess: new Date(entry.resolvedAt).toISOString() }))
+      .sort((a, b) => b.hits - a.hits)
+      .slice(0, 10);
+    writeJsonDaemon(res, 200, {
+      entries: secretsCache.size,
+      hits: auditStats.hits,
+      misses: auditStats.misses,
+      errors: auditStats.errors,
+      hitRate,
+      topRefs,
+      periodStart: new Date(auditStats.lastFlush).toISOString(),
+    });
+    return true;
+  }
+
+  // POST /secrets/resolve — resolve op:// refs via shared cache
+  if (url === '/secrets/resolve' && method === 'POST') {
+    // Auth check: require OP_SERVICE_ACCOUNT_TOKEN as bearer
+    const authHeader = req.headers['authorization'] || '';
+    const expectedToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+    if (!expectedToken || !authHeader.startsWith('Bearer ') || authHeader.slice(7) !== expectedToken) {
+      writeJsonDaemon(res, 401, { error: 'Unauthorized' });
+      return true;
+    }
+
+    readJsonBody(req).then(async (body) => {
+      const refs = body.refs;
+      if (!Array.isArray(refs) || refs.length === 0) {
+        writeJsonDaemon(res, 400, { error: 'refs must be a non-empty array' });
+        return;
+      }
+      if (refs.length > 50) {
+        writeJsonDaemon(res, 400, { error: 'Max 50 refs per request' });
+        return;
+      }
+
+      const resolved = {};
+      const failed = [];
+      let cacheHits = 0;
+      let cacheMisses = 0;
+
+      // Resolve all refs (parallel for cache misses)
+      const results = await Promise.allSettled(refs.map(ref => resolveSecretRef(ref)));
+
+      for (let i = 0; i < refs.length; i++) {
+        const ref = refs[i];
+        const result = results[i];
+        if (result.status === 'fulfilled' && result.value.value !== undefined) {
+          resolved[ref] = result.value.value;
+          if (result.value.fromCache) cacheHits++;
+          else cacheMisses++;
+        } else {
+          const errMsg = result.status === 'rejected' ? result.reason?.message : result.value?.error;
+          failed.push(ref);
+          log(`[op-cache] Failed to resolve ${ref}: ${errMsg || 'unknown'}`);
+        }
+      }
+
+      writeJsonDaemon(res, 200, { resolved, failed, cache_hits: cacheHits, cache_misses: cacheMisses });
+    }).catch(err => {
+      writeJsonDaemon(res, 400, { error: 'Invalid JSON body: ' + (err.message || '') });
+    });
+
+    return true;
+  }
+
+  return false;
+}
+
 const { httpServer, close } = startSharedHttpServer({
   port: PORT,
   servers,
   isReady: () => daemonReady,
+  onRequest: handleSecretsRequest,
 });
 
 log(`HTTP server listening on port ${PORT} (status: starting)`);
@@ -239,6 +421,8 @@ function cleanup() {
 }
 
 process.on('SIGINT', async () => {
+  flushAuditStats();
+  clearInterval(auditFlushTimer);
   cleanup();
   try {
     await Promise.race([close(), new Promise(r => setTimeout(r, 5000))]);
@@ -247,6 +431,8 @@ process.on('SIGINT', async () => {
 });
 
 process.on('SIGTERM', async () => {
+  flushAuditStats();
+  clearInterval(auditFlushTimer);
   cleanup();
   try {
     await Promise.race([close(), new Promise(r => setTimeout(r, 5000))]);
