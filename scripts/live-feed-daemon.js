@@ -23,6 +23,9 @@ import os from 'os';
 import { spawn } from 'child_process';
 import Database from 'better-sqlite3';
 
+// Track the active child process so we can kill it on shutdown
+let activeChild = null;
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -382,7 +385,7 @@ function generateEntry(prompt, feedDb) {
   return new Promise((resolve) => {
     writeStreamingState('', true);
 
-    const child = spawn('claude', [
+    const child = activeChild = spawn('claude', [
       '-p', prompt,
       '--system-prompt', SYSTEM_PROMPT,
       '--output-format', 'stream-json',
@@ -448,6 +451,7 @@ function generateEntry(prompt, feedDb) {
     });
 
     child.on('close', (code) => {
+      activeChild = null;
       // Fallback: if result handler didn't fire, finalize whatever we have
       if (!entryWritten && accumulatedText.trim() && code === 0) {
         try {
@@ -459,9 +463,9 @@ function generateEntry(prompt, feedDb) {
       resolve();
     });
 
-    // Safety timeout: kill after 2 minutes
+    // Safety timeout: SIGKILL after 2 minutes (SIGTERM insufficient — claude -p ignores it)
     setTimeout(() => {
-      try { child.kill(); } catch { /* */ }
+      try { child.kill('SIGKILL'); } catch { /* */ }
     }, 120_000);
   });
 }
@@ -540,9 +544,18 @@ setInterval(() => {
   pollCycle(feedDb).catch(err => log(`Poll error: ${err.message}`));
 }, POLL_INTERVAL_MS);
 
-// Graceful shutdown
+// Kill active child process before exit to prevent orphans
+function killActiveChild() {
+  if (activeChild && activeChild.pid) {
+    try { process.kill(activeChild.pid, 'SIGKILL'); } catch { /* ESRCH */ }
+    activeChild = null;
+  }
+}
+
+// Graceful shutdown — kill child BEFORE exit
 process.on('SIGTERM', () => {
   log('Shutting down (SIGTERM)');
+  killActiveChild();
   clearStreamingState();
   closeDb(feedDb);
   process.exit(0);
@@ -550,6 +563,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   log('Shutting down (SIGINT)');
+  killActiveChild();
   clearStreamingState();
   closeDb(feedDb);
   process.exit(0);
