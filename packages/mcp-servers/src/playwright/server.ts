@@ -856,6 +856,24 @@ function autoKillDemo(pid: number): void {
     try { fs.unlinkSync(entry.progress_file); } catch { /* Non-fatal */ }
   }
 
+  // Persist demo result to user-feedback.db (dedup guard: only once per demo)
+  if (entry.scenario_id && !entry.result_persisted && (entry.status === 'passed' || entry.status === 'failed')) {
+    persistDemoResult({
+      scenarioId: entry.scenario_id,
+      status: entry.status,
+      executionMode: entry.remote ? 'remote' : 'local',
+      startedAt: entry.started_at,
+      completedAt: entry.ended_at ?? new Date().toISOString(),
+      durationMs: entry.ended_at
+        ? new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()
+        : Date.now() - new Date(entry.started_at).getTime(),
+      flyMachineId: entry.fly_machine_id,
+      branch: getDemoBranch() ?? undefined,
+      failureReason: entry.failure_summary,
+    });
+    entry.result_persisted = true;
+  }
+
   persistDemoRuns();
 
   // Release display lock if this demo auto-acquired it
@@ -1191,6 +1209,81 @@ function persistScenarioRecording(scenarioId: string, videoPath: string): void {
     }
   } catch {
     // Non-fatal — recording persistence is best-effort
+  }
+}
+
+/**
+ * Persist a demo result row to user-feedback.db demo_results table.
+ * Mirrors the CTO Dashboard's recordDemoResult() so agent-initiated demo runs
+ * are tracked in the same table as dashboard-initiated runs.
+ * Non-fatal: never blocks demo execution.
+ */
+function persistDemoResult(opts: {
+  scenarioId: string;
+  status: 'passed' | 'failed';
+  executionMode: 'local' | 'remote';
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  flyMachineId?: string;
+  branch?: string;
+  failureReason?: string;
+  recordingPath?: string;
+}): void {
+  try {
+    const dbPath = getUserFeedbackDbPath();
+    if (!fs.existsSync(dbPath)) return;
+    const db = new Database(dbPath);
+    try {
+      // Defensive column auto-migration (same pattern as CTO Dashboard process-runner.ts)
+      try { db.prepare('SELECT branch FROM demo_results LIMIT 0').run(); } catch { db.exec('ALTER TABLE demo_results ADD COLUMN branch TEXT'); }
+      try { db.prepare('SELECT failure_reason FROM demo_results LIMIT 0').run(); } catch { db.exec('ALTER TABLE demo_results ADD COLUMN failure_reason TEXT'); }
+      try { db.prepare('SELECT recording_path FROM demo_results LIMIT 0').run(); } catch { db.exec('ALTER TABLE demo_results ADD COLUMN recording_path TEXT'); }
+
+      // Look up recording path from scenario if passed and not explicitly provided
+      let recordingPath = opts.recordingPath ?? null;
+      if (opts.status === 'passed' && !recordingPath) {
+        const row = db.prepare('SELECT recording_path FROM demo_scenarios WHERE id = ?').get(opts.scenarioId) as { recording_path?: string } | undefined;
+        if (row?.recording_path && fs.existsSync(row.recording_path)) {
+          recordingPath = row.recording_path;
+        }
+      }
+
+      db.prepare(
+        `INSERT INTO demo_results (id, scenario_id, execution_mode, status, started_at, completed_at, duration_ms, fly_machine_id, branch, failure_reason, recording_path)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        crypto.randomUUID(),
+        opts.scenarioId,
+        opts.executionMode,
+        opts.status,
+        opts.startedAt,
+        opts.completedAt,
+        opts.durationMs,
+        opts.flyMachineId ?? null,
+        opts.branch ?? null,
+        opts.failureReason ?? null,
+        recordingPath,
+      );
+    } finally {
+      db.close();
+    }
+  } catch {
+    // Non-fatal — result persistence must never block demo execution
+  }
+}
+
+/**
+ * Get the current git branch name. Returns null on detached HEAD or error.
+ */
+function getDemoBranch(): string | null {
+  try {
+    const ref = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000,
+    }).trim();
+    return ref === 'HEAD' ? null : ref;
+  } catch {
+    return null;
   }
 }
 
@@ -3440,6 +3533,24 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         try { fs.unlinkSync(entry.progress_file); } catch { /* Non-fatal */ }
       }
 
+      // Persist demo result to user-feedback.db (dedup guard: only once per demo)
+      if (entry.scenario_id && !entry.result_persisted && (entry.status === 'passed' || entry.status === 'failed')) {
+        persistDemoResult({
+          scenarioId: entry.scenario_id,
+          status: entry.status,
+          executionMode: entry.remote ? 'remote' : 'local',
+          startedAt: entry.started_at,
+          completedAt: entry.ended_at ?? new Date().toISOString(),
+          durationMs: entry.ended_at
+            ? new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()
+            : Date.now() - new Date(entry.started_at).getTime(),
+          flyMachineId: entry.fly_machine_id,
+          branch: getDemoBranch() ?? undefined,
+          failureReason: entry.failure_summary,
+        });
+        entry.result_persisted = true;
+      }
+
       persistDemoRuns();
 
       // Release display lock on process exit (covers all paths: normal, failed, killed)
@@ -3898,6 +4009,27 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
 
       const remoteStatus: DemoRunStatus = remoteExitCode === 0 ? 'passed' : remoteExitCode === -1 ? 'unknown' : 'failed';
       entry.status = remoteStatus;
+
+      // Persist demo result to user-feedback.db (dedup guard: only once per demo)
+      if (entry.scenario_id && !entry.result_persisted && (remoteStatus === 'passed' || remoteStatus === 'failed')) {
+        const remoteCompletedAt = new Date().toISOString();
+        const remoteFailureSummaryEarly = remoteProgress?.has_failures
+          ? `${remoteProgress.tests_failed} test(s) failed out of ${remoteProgress.tests_completed}`
+          : remoteStderrTail?.slice(-500) || undefined;
+        persistDemoResult({
+          scenarioId: entry.scenario_id,
+          status: remoteStatus as 'passed' | 'failed',
+          executionMode: 'remote',
+          startedAt: entry.started_at,
+          completedAt: remoteCompletedAt,
+          durationMs: new Date(remoteCompletedAt).getTime() - new Date(entry.started_at).getTime(),
+          flyMachineId: entry.fly_machine_id,
+          branch: getDemoBranch() ?? undefined,
+          failureReason: remoteFailureSummaryEarly,
+        });
+        entry.result_persisted = true;
+      }
+
       demoRuns.delete(pid);
       persistDemoRuns();
 
@@ -4143,6 +4275,24 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           }
         } catch { /* non-fatal */ }
 
+        // Persist demo result to user-feedback.db (dedup guard: only once per demo)
+        if (entry.scenario_id && !entry.result_persisted && (entry.status === 'passed' || entry.status === 'failed')) {
+          persistDemoResult({
+            scenarioId: entry.scenario_id,
+            status: entry.status,
+            executionMode: entry.remote ? 'remote' : 'local',
+            startedAt: entry.started_at,
+            completedAt: entry.ended_at ?? new Date().toISOString(),
+            durationMs: entry.ended_at
+              ? new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()
+              : Date.now() - new Date(entry.started_at).getTime(),
+            flyMachineId: entry.fly_machine_id,
+            branch: getDemoBranch() ?? undefined,
+            failureReason: entry.failure_summary,
+          });
+          entry.result_persisted = true;
+        }
+
         persistDemoRuns();
 
         const durationSec = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
@@ -4267,6 +4417,24 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           if (summary) entry.trace_summary = summary;
         }
       } catch { /* non-fatal */ }
+
+      // Persist demo result to user-feedback.db (dedup guard: only once per demo)
+      if (entry.scenario_id && !entry.result_persisted && (entry.status === 'passed' || entry.status === 'failed')) {
+        persistDemoResult({
+          scenarioId: entry.scenario_id,
+          status: entry.status as 'passed' | 'failed',
+          executionMode: entry.remote ? 'remote' : 'local',
+          startedAt: entry.started_at,
+          completedAt: entry.ended_at ?? new Date().toISOString(),
+          durationMs: entry.ended_at
+            ? new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()
+            : Date.now() - new Date(entry.started_at).getTime(),
+          flyMachineId: entry.fly_machine_id,
+          branch: getDemoBranch() ?? undefined,
+          failureReason: entry.failure_summary,
+        });
+        entry.result_persisted = true;
+      }
 
       persistDemoRuns();
 
@@ -4528,6 +4696,23 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
     }
     const entryWithInterval = entry as DemoRunState & { _remotePollInterval?: ReturnType<typeof setInterval> };
     if (entryWithInterval._remotePollInterval) clearInterval(entryWithInterval._remotePollInterval);
+
+    // Persist demo result to user-feedback.db (remote stop is always 'failed' with 'stopped' reason)
+    if (entry.scenario_id && !entry.result_persisted) {
+      persistDemoResult({
+        scenarioId: entry.scenario_id,
+        status: 'failed',
+        executionMode: 'remote',
+        startedAt: entry.started_at,
+        completedAt: new Date().toISOString(),
+        durationMs: Date.now() - new Date(entry.started_at).getTime(),
+        flyMachineId: entry.fly_machine_id,
+        branch: getDemoBranch() ?? undefined,
+        failureReason: 'stopped',
+      });
+      entry.result_persisted = true;
+    }
+
     demoRuns.delete(pid);
     persistDemoRuns();
     const stopMsg = entry.steel_session_id
@@ -4635,6 +4820,24 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
   // Clean up progress file
   if (entry.progress_file) {
     try { fs.unlinkSync(entry.progress_file); } catch { /* Non-fatal */ }
+  }
+
+  // Persist demo result to user-feedback.db (dedup guard: only once per demo)
+  if (entry.scenario_id && !entry.result_persisted && (entry.status === 'passed' || entry.status === 'failed')) {
+    persistDemoResult({
+      scenarioId: entry.scenario_id,
+      status: entry.status,
+      executionMode: entry.remote ? 'remote' : 'local',
+      startedAt: entry.started_at,
+      completedAt: entry.ended_at ?? new Date().toISOString(),
+      durationMs: entry.ended_at
+        ? new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()
+        : Date.now() - new Date(entry.started_at).getTime(),
+      flyMachineId: entry.fly_machine_id,
+      branch: getDemoBranch() ?? undefined,
+      failureReason: entry.failure_summary,
+    });
+    entry.result_persisted = true;
   }
 
   persistDemoRuns();

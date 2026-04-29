@@ -105,6 +105,7 @@ const ALLOWED_MCP_PREFIXES = [
   'mcp__workstream__',         // Workstream management
   'mcp__chrome-bridge__',      // Chrome automation
   'mcp__release-ledger__',     // Production release management (sign-off, listing)
+  'mcp__claude-sessions__',    // Session search/read (read-only introspection)
 ];
 
 /**
