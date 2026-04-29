@@ -1588,9 +1588,10 @@ function spawnQueueItem(db, item) {
   if (item.agent) {
     spawnArgs.push('--agent', item.agent);
   }
-  if (item.model) {
-    spawnArgs.push('--model', item.model);
-  }
+  // Default automated sessions to sonnet; agent definitions with model: frontmatter
+  // (e.g., code-writer/code-reviewer with opus) override this via --agent.
+  const sessionModel = item.model || 'sonnet';
+  spawnArgs.push('--model', sessionModel);
   const mcpConfig = item.mcp_config || path.join(item.worktree_path || item.project_dir, '.mcp.json');
   spawnArgs.push('--mcp-config', mcpConfig);
   spawnArgs.push('--output-format', 'json');
