@@ -700,19 +700,19 @@ export const ArchivePersonaProfileArgsSchema = z.object({
 });
 
 export const SwitchPersonaProfileArgsSchema = z.object({
-  name: z.string().min(1).max(64)
+  name: z.string().min(1).max(64).regex(profileNameRegex, 'Profile name must be lowercase alphanumeric with hyphens')
     .describe('Name of the profile to switch to'),
 });
 
 export const ListPersonaProfilesArgsSchema = z.object({});
 
 export const GetPersonaProfileArgsSchema = z.object({
-  name: z.string().min(1).max(64)
+  name: z.string().min(1).max(64).regex(profileNameRegex, 'Profile name must be lowercase alphanumeric with hyphens')
     .describe('Name of the profile to inspect'),
 });
 
 export const DeletePersonaProfileArgsSchema = z.object({
-  name: z.string().min(1).max(64)
+  name: z.string().min(1).max(64).regex(profileNameRegex, 'Profile name must be lowercase alphanumeric with hyphens')
     .describe('Name of the profile to delete'),
 });
 

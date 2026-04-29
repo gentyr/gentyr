@@ -2330,7 +2330,16 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
   // --- Profile Tool Handlers ---
 
+  function checkSpawnedSessionGuard(): object | null {
+    if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+      return { error: 'Spawned sessions cannot modify persona profiles. Only interactive CTO sessions can archive, create, switch, or delete profiles.' };
+    }
+    return null;
+  }
+
   function archivePersonaProfile(args: ArchivePersonaProfileArgs): object {
+    const guard = checkSpawnedSessionGuard();
+    if (guard) return guard;
     ensureProfilesDir();
     const profileDir = getProfileDir(args.name);
 
@@ -2368,6 +2377,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   function createPersonaProfile(args: CreatePersonaProfileArgs): object {
+    const guard = checkSpawnedSessionGuard();
+    if (guard) return guard;
     ensureProfilesDir();
     const profileDir = getProfileDir(args.name);
 
@@ -2446,6 +2457,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   function switchPersonaProfile(args: SwitchPersonaProfileArgs): object {
+    const guard = checkSpawnedSessionGuard();
+    if (guard) return guard;
     const profileDir = getProfileDir(args.name);
     if (!fs.existsSync(profileDir) || !readProfileMeta(args.name)) {
       return { error: `Profile "${args.name}" not found.` };
@@ -2582,6 +2595,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   function deletePersonaProfile(args: DeletePersonaProfileArgs): object {
+    const guard = checkSpawnedSessionGuard();
+    if (guard) return guard;
     const activeProfile = readActiveProfile();
     if (activeProfile?.name === args.name) {
       return { error: `Cannot delete the active profile "${args.name}". Switch to another profile first.` };
