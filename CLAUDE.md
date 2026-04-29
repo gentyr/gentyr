@@ -618,6 +618,10 @@ Agent-tracker session introspection tools detect and recover context lost when C
 
 **`CompactionContext` shape**: `{ boundaryCount, mostRecentSummary, mostRecentTimestamp, preTokensTotal }`. The `mostRecentSummary` field contains the compaction summary text (up to `maxSummaryChars`), which persistent monitors use to reconstruct context after revival into a fresh session.
 
+**Agent-initiated compaction** (`request_self_compact` tool on `agent-tracker` server): Allows a spawned agent to request context compaction when its context window is growing large. The tool records the request to `.claude/state/compact-tracker.json` (keyed by session ID), captures the current token count from the session JSONL tail, and returns instructions telling the agent to call `summarize_work` and exit. After the session dies, `spawnQueueItem` in `session-queue.js` detects `spawn_type === 'resume'` and calls `compactSessionIfNeeded()` from `compact-session.js` before re-spawning — this runs `claude --resume <sessionId> -p /compact` in the worktree directory, compressing the dead session's context window before the revived session inherits it. Configurable thresholds: `revival_compact_min_tokens` (default 200K), `revival_compact_max_minutes` (default 30 min since last compaction), `revival_compact_timeout_ms` (default 120s).
+
+**Context pressure monitoring** (`context-pressure-hook.js` PostToolUse): Fires on every tool call in spawned sessions. Monitors two dimensions simultaneously: context window token count (read from JSONL tail) and wall-clock session age. Three configurable tiers per dimension — `suggestion`, `warning`, and `critical` — with per-tier cooldowns (default 5 min) to prevent nudge spam. At the critical tier the hook calls `mcp__agent-tracker__request_self_compact` automatically. All thresholds are configurable in `automation-config.json`: `context_pressure_suggestion_tokens` (200K), `context_pressure_warning_tokens` (300K), `context_pressure_critical_tokens` (400K), `context_pressure_suggestion_minutes` (15), `context_pressure_warning_minutes` (30), `context_pressure_critical_minutes` (60), `context_pressure_nudge_cooldown_minutes` (5). The CTO notification hook gains a live context-window display line showing current token count and percentage bar.
+
 ## User Prompt References System
 
 Traceability chain from user prompts through tasks, specs, and implementations. Every task and spec can carry references to the original user prompts that motivated them, allowing the `user-alignment` agent to verify delivered code matches user intent before it ships.
@@ -906,6 +910,8 @@ Curated product walkthroughs mapped to personas. Managed by product-manager agen
 
 **`dual_instance` flag on scenarios** (`demo_scenarios.dual_instance` column in `user-feedback.db`): Boolean field (default `false`). When `true`, the scenario requires parallel execution across two compute tiers: Fly.io runs the Playwright orchestration process while Steel.dev provides the stealth cloud browser connected via bridge. Implies `stealth_required` semantics — also routes through Tier 0 and is fail-closed on both Steel and Fly availability. `check_demo_result` returns both `steel_recording_path` (user-facing view from the Steel browser) and `fly_recording_path` (test orchestration view). Auto-migrated on DB open.
 
+**`verify_demo_completeness` tool** (on `user-feedback` server): Machine-checkable gate for the production promotion pipeline. Queries all enabled scenarios and returns whether each has a `passed` result and a fresh recording since a given `since` ISO timestamp (and optional `branch` filter, applied only when the `branch` column exists). Returns `{ complete: boolean, total_scenarios: number, scenarios_missing_pass: DemoCompletenessScenarioStatus[], scenarios_missing_recording: DemoCompletenessScenarioStatus[] }`. Each `DemoCompletenessScenarioStatus` includes `scenario_id`, `title`, `persona_name`, `latest_result_status` (`passed`/`failed`/`none`), `latest_result_at`, `has_fresh_recording`, `recording_path`, and `last_recorded_at`. Used by the Phase 4 plan-auditor during production promotion to confirm `complete: true` before marking the task done.
+
 > Full details: [Demo Scenario System](docs/CLAUDE-REFERENCE.md#demo-scenario-system)
 
 ### Demo Command Decision Tree
@@ -1165,7 +1171,7 @@ The ONLY path to production. Replaces the former automated midnight-window promo
 | 1 | Per-PR Quality Review | Yes | Persistent task per PR: antipattern, code-review, user-alignment, spec-enforcement |
 | 2 | Initial Triage | No | Deputy-CTO triages Phase 1 findings |
 | 3 | Meta-Review | Yes | Cross-PR consistency check across all changes |
-| 4 | Test & Demo Execution | Yes | All unit/integration/playwright tests + all demo scenarios via Fly.io |
+| 4 | Test & Demo Execution | Yes | All unit/integration/playwright tests + all demo scenarios via Fly.io; `verify_demo_completeness` must return `complete: true` |
 | 5 | Demo Coverage Audit | Yes | Verify every new feature has demo coverage with screenshot proof |
 | 6 | Final Triage | No | Pre-release readiness check |
 | 7 | CTO Sign-off | Yes | CTO reviews and explicitly approves the release |
@@ -1319,7 +1325,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | staging-lock-guard.js | `Bash` | Block staging merges (gh pr merge, git push, git merge) when staging is locked for a production release |
 | worktree-sync-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block `gentyr sync` when CWD is inside a worktree (sync destroys the worktree directory) |
 
-#### PostToolUse (29 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (30 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1351,6 +1357,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | plan-activation-spawner.js | `update_plan_status` | Spawn plan manager on plan activation |
 | plan-audit-spawner.js | `update_task_progress` | Spawn independent auditor on pending_audit |
 | screenshot-reminder.js | `""` (all) | Remind agents to Read screenshot paths in tool responses |
+| context-pressure-hook.js | `""` (all) | Monitor spawned-agent context window size and session age; nudge at configurable tiers; call `request_self_compact` at critical threshold |
 | release-artifact-collector.js | `complete_task,summarize_work` | Archive session transcripts to release artifact directory when GENTYR_RELEASE_ID is set |
 | release-completion-hook.js | `complete_persistent_task` | On release plan-manager completion: unlock staging, generate report, emit audit event, broadcast signal |
 
@@ -1391,7 +1398,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 |------|---------|
 | stop-continue-hook.js | Gate session stop, check unfinished work, trigger revival |
 
-### Shared Hook Libraries (hooks/lib/ — 34 modules)
+### Shared Hook Libraries (hooks/lib/ — 35 modules)
 
 Key modules consumed by hooks:
 - `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
@@ -1422,6 +1429,7 @@ Key modules consumed by hooks:
 - `staging-lock.js` — Staging lock state management (`lockStaging`, `unlockStaging`, `isStagingLocked`, `getStagingLockState`); persists lock to `.claude/state/staging-lock.json`; best-effort GitHub branch protection via `gh api`
 - `release-orchestrator.js` — Production release artifact collection: `enumerateReleasePRs` (gh pr list with git fallback), `getArtifactDir` (create `.claude/releases/{id}/prs|sessions|reports/`), `collectSessionArtifact` (copy JSONL by agent marker), `collectDemoArtifacts` (copy screenshots/recordings + demo-results.json), `collectTriageArtifacts` (query cto-reports.db + deputy-cto.db)
 - `release-report-generator.js` — Structured release report pipeline: `generateStructuredReport` reads release-ledger.db + artifacts, fills `templates/release-report-template.md` with 16 placeholders, writes `report.md` to artifact dir; `convertToPdf` placeholder for future PDF output
+- `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
 
 ### Agent Definitions (20 shared)
 
@@ -1458,7 +1466,7 @@ Key modules consumed by hooks:
 | persistent-task | create/activate/amend/pause/resume/cancel/complete_persistent_task, inspect_persistent_task | Persistent task lifecycle |
 | plan-orchestrator | create_plan, add_phase, add_plan_task, get_spawn_ready_tasks, plan_dashboard | Plans, phases, tasks, dependencies |
 | agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, list/resolve_blocking_item, get_blocking_summary, peek_session, browse_session, set_automation_toggle, get_automation_toggles | Session queue, signals, locks, bypass, blocking queue, automation toggles |
-| user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature, create/archive/switch/list/get/delete_persona_profile | Personas, features, scenarios, prerequisites, persona profiles |
+| user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature, create/archive/switch/list/get/delete_persona_profile, verify_demo_completeness | Personas, features, scenarios, prerequisites, persona profiles, demo completeness gate |
 | product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
 | deputy-cto | create_report, list_reports, acknowledge_report | Reports, triage, delegation |
 | release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report | Production release evidence chain (staging lock → CTO sign-off) |
