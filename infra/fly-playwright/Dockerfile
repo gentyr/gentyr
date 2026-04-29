@@ -1,4 +1,4 @@
-FROM node:20-bookworm
+FROM node:22-bookworm
 
 # Install system dependencies needed by Playwright browsers + recording
 # Based on https://playwright.dev/docs/browsers#linux-system-requirements
