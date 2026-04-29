@@ -326,6 +326,7 @@ async function resolveAllCredentials() {
   }
 
   // Resolve all op:// references in parallel
+  const failedRefs = [];
   if (opReads.length > 0) {
     const startTime = Date.now();
     const results = await Promise.allSettled(
@@ -346,6 +347,7 @@ async function resolveAllCredentials() {
       } else {
         const reason = result.status === 'rejected' ? result.reason?.message : 'empty value';
         log(`Failed to resolve ${opReads[i].key}: ${reason || 'unknown error'}`);
+        failedRefs.push(opReads[i]);
         failed++;
       }
     }
@@ -354,9 +356,66 @@ async function resolveAllCredentials() {
   }
 
   log(`Credentials: resolved=${resolved} skipped(from-env)=${skipped} failed=${failed} total=${allKeys.size}`);
+  return failedRefs;
 }
 
-await resolveAllCredentials();
+const failedStartupRefs = await resolveAllCredentials();
+
+// ---------------------------------------------------------------------------
+// Phase 2b: Retry failed credentials with exponential backoff
+// ---------------------------------------------------------------------------
+
+if (failedStartupRefs.length > 0) {
+  const MAX_RETRIES = 5;
+  const BACKOFF_DELAYS = [30_000, 60_000, 120_000, 240_000, 300_000]; // 30s, 1m, 2m, 4m, 5m
+  let pending = [...failedStartupRefs];
+
+  (async () => {
+    for (let attempt = 1; attempt <= MAX_RETRIES && pending.length > 0; attempt++) {
+      const delay = BACKOFF_DELAYS[attempt - 1];
+      log(`[op-retry] ${pending.length} failed ref(s) — retry ${attempt}/${MAX_RETRIES} in ${delay / 1000}s`);
+      await new Promise(r => setTimeout(r, delay));
+
+      const results = await Promise.allSettled(
+        pending.map(({ key, ref }) =>
+          execFileAsync('op', ['read', ref], {
+            encoding: 'utf-8',
+            timeout: 15000,
+            env: process.env,
+          }).then(({ stdout }) => ({ key, value: stdout.trim() }))
+        )
+      );
+
+      const stillFailed = [];
+      for (let i = 0; i < pending.length; i++) {
+        const result = results[i];
+        if (result.status === 'fulfilled' && result.value.value) {
+          process.env[result.value.key] = result.value.value;
+          // Also populate the shared secrets cache so Tier 2 servers benefit
+          const ref = pending[i].ref;
+          if (isSecretCacheable(ref)) {
+            secretsCache.set(ref, { value: result.value.value, resolvedAt: Date.now(), hits: 0 });
+          }
+          log(`[op-retry] Resolved ${pending[i].key} on attempt ${attempt}`);
+        } else {
+          const reason = result.status === 'rejected' ? result.reason?.message : 'empty value';
+          log(`[op-retry] Still failed ${pending[i].key} (attempt ${attempt}): ${reason || 'unknown'}`);
+          stillFailed.push(pending[i]);
+        }
+      }
+
+      pending = stillFailed;
+      if (pending.length === 0) {
+        log(`[op-retry] All startup failures resolved after ${attempt} retries`);
+      }
+    }
+
+    if (pending.length > 0) {
+      log(`[op-retry] GAVE UP on ${pending.length} ref(s) after ${MAX_RETRIES} retries: ${pending.map(r => r.key).join(', ')}`);
+    }
+  })();
+  // Fire-and-forget — don't block server loading on retries
+}
 
 // ---------------------------------------------------------------------------
 // Load Tier 1 Server Modules
