@@ -1,7 +1,7 @@
 ---
 name: investigator
 description: Any time you're asked to investigate any problem.
-model: opus
+model: sonnet
 color: green
 ---
 

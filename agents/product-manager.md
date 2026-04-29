@@ -1,7 +1,7 @@
 ---
 name: product-manager
 description: Product-market-fit analyst. Researches market, competitors, personas, pricing, and user sentiment.
-model: opus
+model: sonnet
 color: orange
 allowedTools:
   - Read

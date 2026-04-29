@@ -1,7 +1,7 @@
 ---
 name: icon-finder
 description: Finds, extracts, converts, and formats brand/vendor icons into proper square SVG icons. Handles research, download, processing, and quality selection.
-model: opus
+model: sonnet
 color: cyan
 allowedTools:
   - Read

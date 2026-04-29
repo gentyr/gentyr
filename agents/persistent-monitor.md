@@ -1,7 +1,7 @@
 ---
 name: persistent-monitor
 description: Long-running monitor session that orchestrates sub-agents to complete a delegated CTO objective. Runs until the outcome criteria are met.
-model: opus
+model: sonnet
 color: orange
 allowedTools:
   - Read
