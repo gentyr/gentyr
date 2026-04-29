@@ -868,7 +868,7 @@ async function presentReleaseSummary(args: PresentReleaseSummaryArgs): Promise<s
     const genModule = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'release-report-generator.js'));
     reportResult = await genModule.generateStructuredReport(args.release_id, PROJECT_DIR);
   } catch (err: unknown) {
-    return JSON.stringify({ error: `Report generation failed: ${(err as Error).message}` });
+    return JSON.stringify({ error: `Report generation failed: ${err instanceof Error ? err.message : String(err)}` });
   }
 
   // Update report_path in DB
@@ -931,6 +931,11 @@ async function presentReleaseSummary(args: PresentReleaseSummaryArgs): Promise<s
  * Must call present_release_summary first.
  */
 async function recordCtoApproval(args: RecordCtoApprovalArgs): Promise<string> {
+  // Security: only interactive CTO sessions can record approvals
+  if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    return JSON.stringify({ error: 'Only interactive CTO sessions can record release approvals. Spawned agents cannot call this tool.' });
+  }
+
   const db = getDb();
   const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(args.release_id) as ReleaseRecord | undefined;
   if (!release) return JSON.stringify({ error: `Release not found: ${args.release_id}` });
@@ -950,7 +955,7 @@ async function recordCtoApproval(args: RecordCtoApprovalArgs): Promise<string> {
   try {
     proofModule = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'cto-approval-proof.js'));
   } catch (err: unknown) {
-    return JSON.stringify({ error: `Failed to load cto-approval-proof module: ${(err as Error).message}` });
+    return JSON.stringify({ error: `Failed to load cto-approval-proof module: ${err instanceof Error ? err.message : String(err)}` });
   }
 
   // Find the current interactive session JSONL
@@ -962,9 +967,22 @@ async function recordCtoApproval(args: RecordCtoApprovalArgs): Promise<string> {
     });
   }
 
-  // Verify the quote exists verbatim in the session
-  const quoteResult = await proofModule.verifyQuoteInJsonl(session.jsonlPath, args.approval_text);
+  // TOCTOU defense: copy JSONL first (snapshot), then verify quote and hash the copy.
+  // The live JSONL is actively written by Claude Code on every tool call, so we must
+  // work from a stable snapshot to ensure the hash matches the verified content.
+  const archivedJsonlName = 'cto-approval-session.jsonl';
+  const archivedJsonlPath = path.join(artifactDir, archivedJsonlName);
+  try {
+    fs.copyFileSync(session.jsonlPath, archivedJsonlPath);
+  } catch (err: unknown) {
+    return JSON.stringify({ error: `Failed to archive session JSONL: ${err instanceof Error ? err.message : String(err)}` });
+  }
+
+  // Verify the quote exists verbatim in the ARCHIVED copy (not the live file)
+  const quoteResult = await proofModule.verifyQuoteInJsonl(archivedJsonlPath, args.approval_text);
   if (!quoteResult.found) {
+    // Clean up the archived copy since verification failed
+    try { fs.unlinkSync(archivedJsonlPath); } catch { /* non-fatal */ }
     return JSON.stringify({
       error: 'The approval text was not found verbatim in the current session transcript.',
       hint: 'The CTO must type their approval in this session before calling this tool. Type a clear approval message (e.g., "Approved for production"), then call this tool with that exact text.',
@@ -972,8 +990,8 @@ async function recordCtoApproval(args: RecordCtoApprovalArgs): Promise<string> {
     });
   }
 
-  // Compute file hash
-  const fileHash = proofModule.computeFileHash(session.jsonlPath);
+  // Compute file hash of the ARCHIVED copy (stable snapshot)
+  const fileHash = proofModule.computeFileHash(archivedJsonlPath);
 
   // Load protection key (G001 fail-closed)
   const keyBase64 = proofModule.loadProtectionKey(PROJECT_DIR);
@@ -981,18 +999,9 @@ async function recordCtoApproval(args: RecordCtoApprovalArgs): Promise<string> {
     return JSON.stringify({ error: 'Protection key not found at .claude/protection-key. Cannot compute cryptographic proof (G001 fail-closed).' });
   }
 
-  // Compute HMAC proof
+  // Compute HMAC proof — binds to the archived copy's hash, not the live file
   const hmac = proofModule.computeApprovalHmac(keyBase64, args.release_id, session.sessionId, args.approval_text, fileHash);
   const approvedAt = new Date().toISOString();
-
-  // Copy session JSONL to artifacts
-  const archivedJsonlName = 'cto-approval-session.jsonl';
-  const archivedJsonlPath = path.join(artifactDir, archivedJsonlName);
-  try {
-    fs.copyFileSync(session.jsonlPath, archivedJsonlPath);
-  } catch (err: unknown) {
-    return JSON.stringify({ error: `Failed to archive session JSONL: ${(err as Error).message}` });
-  }
 
   // Write proof file
   const proofData = {
@@ -1073,7 +1082,7 @@ async function recordCtoApproval(args: RecordCtoApprovalArgs): Promise<string> {
       'UPDATE releases SET status = ?, signed_off_at = ?, signed_off_by = ? WHERE id = ? AND status = ?'
     ).run('signed_off', approvedAt, 'cto', args.release_id, 'in_progress');
   } catch (err: unknown) {
-    return JSON.stringify({ error: `Failed to sign off release: ${(err as Error).message}` });
+    return JSON.stringify({ error: `Failed to sign off release: ${err instanceof Error ? err.message : String(err)}` });
   }
 
   return JSON.stringify({

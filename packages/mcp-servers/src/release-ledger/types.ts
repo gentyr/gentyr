@@ -135,7 +135,7 @@ export const PresentReleaseSummaryArgsSchema = z.object({
 
 export const RecordCtoApprovalArgsSchema = z.object({
   release_id: z.string().min(1).describe('Release ID'),
-  approval_text: z.string().min(3).describe('Verbatim CTO approval quote from the interactive session'),
+  approval_text: z.string().min(10).describe('Verbatim CTO approval quote from the interactive session (e.g., "Approved for production")'),
 });
 
 // ============================================================================
