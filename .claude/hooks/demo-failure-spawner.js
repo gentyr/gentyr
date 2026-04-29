@@ -223,7 +223,7 @@ function spawnRepairAgent(scenario) {
           ``,
           `## Instructions`,
           ``,
-          `**IMPORTANT: Always use remote+recorded execution (the defaults).** Run demos via \`run_demo\` with \`recorded: true, remote: true\` (both are defaults). Remote execution runs on Fly.io, avoids display lock contention, and produces identical video recordings. Only use \`remote: false\` if the scenario requires chrome-bridge or local extension interaction.`,
+          `**MANDATORY: Always use remote+recorded execution (the defaults).** Run demos via \`run_demo\` with \`recorded: true, remote: true\` (both are defaults). Remote execution runs on Fly.io, avoids display lock contention, and produces identical video recordings. NEVER use \`remote: false\` unless the scenario requires chrome-bridge or has \`remote_eligible=false\`. Do NOT run demos locally "to debug" — remote execution produces the same output with better diagnostics. If you need to re-run multiple scenarios, use \`run_demo_batch({ scenario_ids: [...], remote: true, recorded: true })\` for concurrent Fly.io execution across multiple machines.`,
           ``,
           `Follow the repair protocol in your agent definition:`,
           `1. Check registered prerequisites via \`list_prerequisites\` — verify all pass via \`run_prerequisites\``,

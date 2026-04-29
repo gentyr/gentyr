@@ -75,8 +75,9 @@ Headless demos do NOT need the display lock. Only acquire when you need:
 
 Specific patterns:
 - **All validation and repair runs**: Use `run_demo` with defaults (remote+recorded). No display lock needed.
-- **Batch runs**: `run_demo_batch` with `remote: true` (default) runs scenarios in parallel across multiple Fly machines.
+- **Multi-scenario validation (2+ scenarios)**: ALWAYS use `run_demo_batch` instead of sequential `run_demo` calls. `run_demo_batch({ scenario_ids: [...], remote: true, recorded: true })` runs scenarios CONCURRENTLY across multiple Fly.io machines (up to 3 at a time). Sequential single `run_demo` calls are an anti-pattern.
 - **Contention bypass**: Remote execution eliminates display lock contention entirely — no waiting in the display queue.
+- **Never debug locally**: Do NOT use `remote: false` "to debug" or "to see what happens". Remote execution produces identical output with better diagnostics. The only valid reasons for local are chrome-bridge and CTO live-viewing.
 
 The `remote` parameter on `run_demo` controls routing explicitly:
 

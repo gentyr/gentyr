@@ -188,11 +188,15 @@ When Fly.io is configured (`fly` section in `services.json`), headless demos aut
 
 **Image deployment requirement**: After `/setup-fly`, the Fly.io provisioning script must run to build and push the Docker image to `registry.fly.io/<appName>:latest`. Without this, `spawnRemoteMachine` fails and demos fall back to local execution. The `run_demo` response includes `remote_routing_warning` when this fallback occurs, and `check_demo_result` surfaces it in the result.
 
+**Remote-First Execution Rule (MANDATORY for spawned agents)**:
+Spawned agents MUST use remote execution for all demo runs unless the scenario requires chrome-bridge or has `remote_eligible=false`. Sequential local `run_demo` calls are an anti-pattern. For 2+ scenarios, use `run_demo_batch({ scenario_ids: [...], remote: true, recorded: true })` — this runs scenarios CONCURRENTLY across multiple Fly.io machines. Do NOT run demos locally "to debug" — remote produces identical output. The only valid reasons for `remote: false` are: (1) CTO explicitly requests live viewing, (2) chrome-bridge/extension interaction required.
+
 **Agent decision tree**:
-- Need video recording? → `headless: false` (local, display lock required)
-- Need real Chrome/extension? → local only
-- Validation/repair run? → `headless: true` → auto-routes to Fly.io
-- Batch validation? → `run_demo_batch` (headless by default) → parallel remote
+- 2+ scenarios to validate? → `run_demo_batch({ remote: true, recorded: true })` → concurrent Fly.io
+- Single validation/repair run? → `run_demo` with defaults (remote: true, recorded: true)
+- Need real Chrome/extension? → local only (`remote: false`)
+- CTO watching live? → local headed (`remote: false`, slash command sets this)
+- Never: sequential local `run_demo` calls for multiple scenarios
 
 ### Shared Resource Registry (Headed Mode and Infrastructure Coordination)
 

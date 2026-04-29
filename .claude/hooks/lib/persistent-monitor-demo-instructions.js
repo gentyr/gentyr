@@ -19,8 +19,21 @@ export function buildPersistentMonitorDemoInstructions() {
 
 This persistent task involves demo scenarios. You MUST follow these rules:
 
-### 1. Run Demos Remote + Recorded (Default)
+### 1. Run Demos Remote + Recorded (MANDATORY for Spawned Agents)
 Always instruct child sessions to use \`mcp__playwright__run_demo\` with the defaults (\`recorded: true, remote: true\`). Remote execution runs on Fly.io with Xvfb+ffmpeg video recording, avoids display lock contention, and produces identical recordings. Only use \`remote: false\` when the CTO explicitly requests to watch live, or when chrome-bridge/extension interaction is required. Never pass \`recorded: false\` unless the CTO specifically asks for headless-only validation.
+
+**For multi-scenario validation (2+ scenarios), ALWAYS use \`run_demo_batch\` instead of sequential \`run_demo\` calls:**
+
+\`\`\`
+run_demo_batch({
+  project: "demo",
+  scenario_ids: ["id1", "id2", ...],
+  remote: true,
+  recorded: true
+})
+\`\`\`
+
+\`run_demo_batch\` with \`remote: true\` runs scenarios CONCURRENTLY across multiple Fly.io machines (up to 3 at a time). This is dramatically faster than sequential single \`run_demo\` calls. Sequential local runs are an anti-pattern — never do this unless a specific scenario requires chrome-bridge or has \`remote_eligible=false\`.
 
 ### 2. Screenshot-First Diagnosis (MANDATORY -- Before ANY Code Investigation)
 
