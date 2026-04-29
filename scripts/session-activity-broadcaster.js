@@ -20,13 +20,11 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
+import { callLLM, callLLMStructured, killActiveChildren } from '../.claude/hooks/lib/llm-client.js';
 
-const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 
 // ============================================================================
@@ -43,7 +41,6 @@ const ACTIVITY_DB_PATH = path.join(STATE_DIR, 'session-activity.db');
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-const LLM_TIMEOUT_MS = 60000;
 const TAIL_BYTES = 16384; // 16KB tail per session
 const LLM_MODEL = 'haiku';
 
@@ -243,64 +240,6 @@ function extractActivityText(entries) {
   }
   // Return last entries (most recent activity first for the LLM)
   return lines.slice(-60).join('\n').slice(0, 4000);
-}
-
-// ============================================================================
-// LLM Calls
-// ============================================================================
-
-async function callLLM(prompt, systemPrompt) {
-  // Pass prompt as -p argument, not stdin. execFile does NOT support the `input` option
-  // (only exec/execSync do). Passing via stdin silently drops the data.
-  const args = ['-p', prompt, '--model', LLM_MODEL, '--output-format', 'json'];
-  if (systemPrompt) args.push('--system-prompt', systemPrompt);
-
-  try {
-    const { stdout } = await execFileAsync('claude', args, {
-      cwd: PROJECT_DIR,
-      encoding: 'utf8',
-      timeout: LLM_TIMEOUT_MS,
-      // Fix 1: mark as spawned session so interactive-lockdown-guard allows all tools
-      // and the broadcaster's LLM invocations don't trigger security blocks.
-      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
-    });
-    const data = JSON.parse(stdout);
-    return {
-      text: data.result || '',
-      tokens: (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
-    };
-  } catch (err) {
-    log(`LLM call failed: ${err.message}`);
-    return null;
-  }
-}
-
-/**
- * Call LLM with structured JSON output via --json-schema.
- * Returns the parsed result object directly, or null on failure.
- */
-async function callLLMStructured(prompt, systemPrompt, jsonSchema) {
-  const args = ['-p', prompt, '--model', LLM_MODEL, '--output-format', 'json', '--json-schema', jsonSchema];
-  if (systemPrompt) args.push('--system-prompt', systemPrompt);
-
-  try {
-    const { stdout } = await execFileAsync('claude', args, {
-      cwd: PROJECT_DIR,
-      encoding: 'utf8',
-      timeout: LLM_TIMEOUT_MS,
-      // Fix 1: mark as spawned session (same reason as callLLM above)
-      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
-    });
-    const data = JSON.parse(stdout);
-    // --json-schema output wraps the structured result in data.result (as a JSON string)
-    if (typeof data.result === 'string') {
-      return JSON.parse(data.result);
-    }
-    return data.result || data;
-  } catch (err) {
-    log(`Structured LLM call failed: ${err.message}`);
-    return null;
-  }
 }
 
 // ============================================================================
@@ -658,23 +597,38 @@ log('Session activity broadcaster daemon starting');
 log(`Project: ${PROJECT_DIR}`);
 log(`Poll interval: ${POLL_INTERVAL_MS / 1000}s`);
 
+// Concurrent poll guard — prevent overlapping cycles from spawning parallel children
+let pollRunning = false;
+
 // Initial poll
-pollCycle().catch(err => log(`Initial poll error: ${err.message}`));
+pollRunning = true;
+pollCycle()
+  .catch(err => log(`Initial poll error: ${err.message}`))
+  .finally(() => { pollRunning = false; });
 
 // Recurring poll
 setInterval(() => {
-  pollCycle().catch(err => log(`Poll error: ${err.message}`));
+  if (pollRunning) {
+    log('Skipping poll cycle — previous cycle still running');
+    return;
+  }
+  pollRunning = true;
+  pollCycle()
+    .catch(err => log(`Poll error: ${err.message}`))
+    .finally(() => { pollRunning = false; });
 }, POLL_INTERVAL_MS);
 
-// Graceful shutdown
+// Graceful shutdown — kill children BEFORE exit to prevent orphans
 process.on('SIGTERM', () => {
   log('Session activity broadcaster shutting down (SIGTERM)');
+  killActiveChildren();
   try { activityDb.close(); } catch { /* */ }
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   log('Session activity broadcaster shutting down (SIGINT)');
+  killActiveChildren();
   try { activityDb.close(); } catch { /* */ }
   process.exit(0);
 });
