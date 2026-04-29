@@ -470,14 +470,10 @@ describe('interactive-lockdown-guard.js', () => {
       assert.strictEqual(output?.decision, 'approve');
     });
 
-    it('blocks mcp__onepassword__read_secret (secret values must never reach interactive sessions)', async () => {
+    it('allows mcp__onepassword__read_secret (default include_value:false only confirms existence)', async () => {
       const result = await runHook({ tool_name: 'mcp__onepassword__read_secret', tool_input: {} });
       const output = parseOutput(result.stdout);
-      assert.strictEqual(
-        output?.hookSpecificOutput?.permissionDecision,
-        'deny',
-        'mcp__onepassword__read_secret must be blocked — it exposes secret values'
-      );
+      assert.strictEqual(output?.decision, 'approve');
     });
 
     it('blocks arbitrary mcp__onepassword__ tools not in the individual allowlist', async () => {
