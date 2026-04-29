@@ -275,6 +275,8 @@ See [docs/AUTOMATION-SYSTEMS.md](docs/AUTOMATION-SYSTEMS.md) for implementation 
 
 AI personas test the product as real users. Five modes: GUI, CLI, API, SDK, ADK. No source code access. Personas interact with the running application and report findings. Those findings go to the deputy-CTO triage pipeline. SDK agents test the SDK in a scratch workspace with browser-based docs access; ADK agents do the same programmatically via the docs-feedback MCP server. Not testing code. Testing product.
 
+Persona profiles let the CTO snapshot an entire persona configuration — personas, features, and a strategic guiding prompt — and switch between named market-research configurations instantly. The active profile's guiding prompt surfaces in the session briefing and in the product-manager's analysis context.
+
 ## secret management
 
 Zero secrets on disk. Zero secrets in agent context. 1Password is the single source of truth. Agents request secrets by name. The server resolves `op://` references internally. Output is sanitized to replace accidentally leaked values with `[REDACTED]`. The executable allowlist prevents arbitrary command injection.

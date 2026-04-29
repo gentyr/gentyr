@@ -372,6 +372,24 @@ Shows an overview of all personas and recent feedback runs, lets you pick a pers
 
 The `product-manager` agent also creates fully-functional personas automatically as a post-analysis step. After Section 6 is completed, the agent receives a persona evaluation task where it first asks the user to choose between **Fill gaps only** (idempotent — backfill missing data without replacing existing) or **Full rebuild** (create everything fresh). It then reads `package.json` to detect the dev server URL and framework, scans for route/feature directories, registers them as features, creates or backfills personas with all required fields (`name`, `display_name`, `endpoints`, `behavior_traits`, `consumption_mode`), maps personas to features, maps pain points to personas, and reports compliance to the deputy-CTO. For SDK/ADK personas, the agent sets `endpoints[1]` to the project's docs path/URL when auto-detectable (e.g., `docs/` directory or `docs` script in `package.json`). This is the primary automated path; `/configure-personas` is the interactive manual path for user-driven setup.
 
+### Persona Profile System
+
+Named snapshots of an entire persona/market-research configuration. Profiles let the CTO archive the current set of personas, features, and a guiding strategic prompt, then switch between them instantly — useful for A/B testing different target markets or pivoting to a new ICP without losing prior research.
+
+**State**: `persona_profiles` table in `user-feedback.db` (auto-migrated). Fields: `id`, `name`, `description`, `guiding_prompt`, `persona_ids` (JSON array of persona IDs included in the profile), `is_active` (boolean, at most one active at a time), `archived_at`, `created_at`.
+
+**6 MCP tools** (on `user-feedback` server):
+- `create_persona_profile` — create a named profile with a `guiding_prompt` and optional list of `persona_ids`; auto-activates if no other profile is active
+- `archive_persona_profile` — archive a profile (soft-delete); deactivates it if it was active
+- `switch_persona_profile` — make a profile active, deactivating any currently active profile; updates `is_active` atomically
+- `list_persona_profiles` — list all profiles (active, inactive, and optionally archived); returns `is_active`, `persona_count`, and truncated `guiding_prompt`
+- `get_persona_profile` — retrieve full profile detail including the complete `guiding_prompt` and all linked persona IDs
+- `delete_persona_profile` — permanently delete a profile (irreversible; use `archive_persona_profile` for soft-delete)
+
+**Product-manager integration**: `get_analysis_status` surfaces the active profile's `name` and `guiding_prompt` so the product-manager agent orients its research within the correct market context.
+
+**Session briefing integration**: When a persona profile is active, `session-briefing.js` displays the profile name and guiding prompt at the top of the interactive session briefing, giving the CTO immediate context about the current research focus.
+
 ## Product Manager MCP Server
 
 The product-manager MCP server (`packages/mcp-servers/src/product-manager/`) manages a 6-section PMF analysis pipeline. State is in `.claude/state/product-manager.db`. Access via `/product-manager` slash command. Scope: all 6 sections are external market research (never reference local project). Sequential lock enforces section ordering. Analysis lifecycle: `not_started` → `pending_approval` → `approved` → `in_progress` → `completed`.
@@ -388,6 +406,14 @@ scripts/setup-automation-service.sh setup --path /project --op-token TOKEN  # In
 ```
 
 By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts. Provide `--op-token` with a 1Password service account token to enable headless credential resolution for infrastructure MCP servers. **OP token preservation**: When regenerating an existing plist (macOS) or systemd unit (Linux) without explicitly passing `--op-token`, the setup script reads the token from the existing service file and carries it forward automatically. This prevents token loss during sync/update cycles.
+
+### Automation Toggle Tools
+
+**2 MCP tools** (on `agent-tracker` server):
+- `set_automation_toggle` — enable or disable any of 18 hourly automation features by name (e.g., `worktree_cleanup`, `staging_reactive_review`, `demo_validation`). Persists to `automation-config.json`. Accepts `{ toggle: string, enabled: boolean }`.
+- `get_automation_toggles` — returns the current enabled/disabled state of all 18 automation features alongside their configured cooldown values. CTO-facing — eliminates the need to manually edit `automation-config.json` to control automation behavior.
+
+These tools replace manual JSON editing for all automation on/off decisions. The underlying `automation-config.json` file remains the source of truth; both tools read and write it atomically.
 
 ### On-Demand Task Spawning
 
@@ -1340,7 +1366,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | credential-health-check.js | Verify 1Password connectivity |
 | playwright-health-check.js | Verify Playwright and browser availability |
 | plan-briefing.js | Brief agent on active plan state |
-| session-briefing.js | Comprehensive context dump: queue, tasks, deferred actions, bypass requests, focus mode |
+| session-briefing.js | Comprehensive context dump: queue, tasks, deferred actions, bypass requests, focus mode, active persona profile |
 
 #### UserPromptSubmit (12 hooks — process user/CTO input)
 
@@ -1431,8 +1457,8 @@ Key modules consumed by hooks:
 | todo-db | create_task, list_tasks, complete_task, summarize_work, gate_approve_task, list_categories | Task CRUD, categories, gate approval |
 | persistent-task | create/activate/amend/pause/resume/cancel/complete_persistent_task, inspect_persistent_task | Persistent task lifecycle |
 | plan-orchestrator | create_plan, add_phase, add_plan_task, get_spawn_ready_tasks, plan_dashboard | Plans, phases, tasks, dependencies |
-| agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, list/resolve_blocking_item, get_blocking_summary, peek_session, browse_session | Session queue, signals, locks, bypass, blocking queue |
-| user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature | Personas, features, scenarios, prerequisites |
+| agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, list/resolve_blocking_item, get_blocking_summary, peek_session, browse_session, set_automation_toggle, get_automation_toggles | Session queue, signals, locks, bypass, blocking queue, automation toggles |
+| user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature, create/archive/switch/list/get/delete_persona_profile | Personas, features, scenarios, prerequisites, persona profiles |
 | product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
 | deputy-cto | create_report, list_reports, acknowledge_report | Reports, triage, delegation |
 | release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report | Production release evidence chain (staging lock → CTO sign-off) |
