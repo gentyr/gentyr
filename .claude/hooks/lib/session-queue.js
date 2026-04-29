@@ -17,7 +17,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import Database from 'better-sqlite3';
 import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tracker.js';
 import { buildSpawnEnv } from './spawn-env.js';
@@ -25,6 +25,7 @@ import { shouldAllowSpawn } from './memory-pressure.js';
 import { reapSyncPass, diagnoseSessionFailure } from './session-reaper.js';
 import { getCooldown } from '../config-reader.js';
 import { killProcessGroup, isClaudeProcess } from './process-tree.js';
+import { compactSessionIfNeeded } from './compact-session.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
@@ -1550,6 +1551,23 @@ function spawnQueueItem(db, item) {
 
   // Update agent-tracker with final prompt
   updateAgent(agentId, { prompt });
+
+  // Revival-time compaction: compact the dead session before resuming if context is high
+  if (item.spawn_type === 'resume' && item.resume_session_id) {
+    try {
+      const effectiveCwd = item.worktree_path || item.project_dir || PROJECT_DIR;
+      const compactResult = compactSessionIfNeeded(item.resume_session_id, effectiveCwd, {
+        timeoutMs: getCooldown('revival_compact_timeout_ms', 120000),
+        minTokens: getCooldown('revival_compact_min_tokens', 200000),
+        maxMinutesSinceCompact: getCooldown('revival_compact_max_minutes', 30),
+      });
+      if (compactResult) {
+        log(`Compacted session ${item.resume_session_id} before revival (${compactResult.preTokens} tokens)`);
+      }
+    } catch (err) {
+      log(`Revival compaction failed for ${item.resume_session_id} (non-fatal): ${err.message}`);
+    }
+  }
 
   // Build spawn args
   const spawnArgs = [];

@@ -597,6 +597,70 @@ function progressBar(percent, width = 10) {
 
 
 /**
+ * Get the current interactive session's context window token count.
+ * Reads the last 16KB of the most recently modified JSONL file and extracts
+ * the last assistant entry's usage data.
+ *
+ * @returns {number | null} Current context tokens or null if unavailable
+ */
+function getCurrentSessionContextTokens() {
+  try {
+    const sessionDir = getSessionDir();
+    if (!fs.existsSync(sessionDir)) return null;
+
+    // Find the most recently modified JSONL (the current session)
+    const files = fs.readdirSync(sessionDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => {
+        try {
+          const stat = fs.statSync(path.join(sessionDir, f));
+          return { name: f, mtime: stat.mtimeMs };
+        } catch { return null; }
+      })
+      .filter(Boolean);
+    if (files.length === 0) return null;
+
+    files.sort((a, b) => b.mtime - a.mtime);
+    const filePath = path.join(sessionDir, files[0].name);
+
+    // Read last 16KB efficiently
+    const stat = fs.statSync(filePath);
+    if (stat.size === 0) return null;
+    const readSize = Math.min(16384, stat.size);
+    const fd = fs.openSync(filePath, 'r');
+    let tail;
+    try {
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+      tail = buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    // Parse backward to find the last assistant entry with usage
+    const lines = tail.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line);
+        const usage = entry.message?.usage;
+        if (usage && entry.type === 'assistant') {
+          return (usage.input_tokens || 0) +
+                 (usage.cache_read_input_tokens || 0) +
+                 (usage.cache_creation_input_tokens || 0);
+        }
+      } catch {
+        // Partial line at tail boundary — skip
+      }
+    }
+  } catch {
+    // Non-fatal
+  }
+  return null;
+}
+
+/**
  * Resolve OAuth access token from multiple sources (matching dashboard resolution order).
  * 1. CLAUDE_CODE_OAUTH_TOKEN env var
  * 2. macOS Keychain
@@ -820,6 +884,10 @@ async function main() {
     parts.push(`${itemCount} pending item(s)`);
     if (quotaPart) parts.push(quotaPart);
     parts.push(`${formatTokens(tokenUsage)} tokens`);
+    const criticalContextTokens = getCurrentSessionContextTokens();
+    if (criticalContextTokens !== null) {
+      parts.push(`${formatTokens(criticalContextTokens)} ctx`);
+    }
     parts.push(autonomousPart);
     message = `${gitLabel ? gitLabel + ' ' : ''}MAIN BLOCKED: ${parts.join(' | ')}. Use /deputy-cto to address.`;
   } else {
@@ -839,6 +907,13 @@ async function main() {
     // Line 1: Quota status (reuse quotaPart built above)
     if (quotaPart) {
       lines.push(quotaPart);
+    }
+
+    // Line 1b: Context window usage
+    const contextTokens = getCurrentSessionContextTokens();
+    if (contextTokens !== null) {
+      const contextPct = Math.round((contextTokens / 1000000) * 100);
+      lines.push(`Context: ${formatTokens(contextTokens)} / 1M ${progressBar(contextPct, 8)} ${contextPct}%`);
     }
 
     // Line 2: Token usage, sessions, and TODOs

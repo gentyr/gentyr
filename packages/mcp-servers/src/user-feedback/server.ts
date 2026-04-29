@@ -123,6 +123,10 @@ import {
   type GetRecordingResult,
   type DemoRecordingEntry,
   type FeedbackRecordingEntry,
+  VerifyDemoCompletenessArgsSchema,
+  type VerifyDemoCompletenessArgs,
+  type DemoCompletenessScenarioStatus,
+  type VerifyDemoCompletenessResult,
 } from './types.js';
 
 // ============================================================================
@@ -1639,6 +1643,89 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   // ============================================================================
+  // Demo Completeness Verification
+  // ============================================================================
+
+  function verifyDemoCompleteness(args: VerifyDemoCompletenessArgs): VerifyDemoCompletenessResult {
+    // Query all enabled scenarios with persona names
+    const scenarios = db.prepare(`
+      SELECT ds.id, ds.title, ds.persona_id, ds.last_recorded_at, ds.recording_path,
+             p.name as persona_name
+      FROM demo_scenarios ds
+      LEFT JOIN personas p ON p.id = ds.persona_id
+      WHERE ds.enabled = 1
+      ORDER BY ds.sort_order, ds.title
+    `).all() as Array<{
+      id: string; title: string; persona_id: string;
+      last_recorded_at: string | null; recording_path: string | null;
+      persona_name: string;
+    }>;
+
+    // Check if demo_results table has the branch column (auto-migrated)
+    let hasBranchColumn = true;
+    try { db.prepare('SELECT branch FROM demo_results LIMIT 0').run(); } catch { hasBranchColumn = false; }
+
+    const results: DemoCompletenessScenarioStatus[] = scenarios.map(s => {
+      // Find the latest result since the given timestamp (pass or fail)
+      let query = `
+        SELECT status, completed_at
+        FROM demo_results
+        WHERE scenario_id = ? AND completed_at >= ?
+      `;
+      const params: unknown[] = [s.id, args.since];
+
+      if (args.branch && hasBranchColumn) {
+        query += ' AND branch = ?';
+        params.push(args.branch);
+      }
+
+      query += ' ORDER BY completed_at DESC LIMIT 1';
+
+      const latestResult = db.prepare(query).get(...params) as {
+        status: string; completed_at: string;
+      } | undefined;
+
+      const hasFreshRecording = !!(
+        s.last_recorded_at && s.last_recorded_at >= args.since
+      );
+
+      return {
+        scenario_id: s.id,
+        title: s.title,
+        persona_name: s.persona_name ?? 'unknown',
+        latest_result_status: (latestResult?.status as 'passed' | 'failed') ?? 'none',
+        latest_result_at: latestResult?.completed_at ?? null,
+        has_fresh_recording: hasFreshRecording,
+        recording_path: s.recording_path,
+        last_recorded_at: s.last_recorded_at,
+      };
+    });
+
+    const scenariosWithPass = results.filter(r => r.latest_result_status === 'passed');
+    const scenariosWithRecording = results.filter(r => r.has_fresh_recording);
+    const missingPass = results.filter(r => r.latest_result_status !== 'passed');
+    const missingRecording = args.require_recording !== false
+      ? results.filter(r => !r.has_fresh_recording)
+      : [];
+
+    const complete = missingPass.length === 0 &&
+      (args.require_recording !== false ? missingRecording.length === 0 : true);
+
+    return {
+      complete,
+      total_enabled_scenarios: scenarios.length,
+      scenarios_with_passing_result: scenariosWithPass.length,
+      scenarios_with_fresh_recording: scenariosWithRecording.length,
+      scenarios_missing_pass: missingPass,
+      scenarios_missing_recording: missingRecording,
+      all_scenarios: results,
+      since: args.since,
+      branch: args.branch ?? null,
+      checked_at: new Date().toISOString(),
+    };
+  }
+
+  // ============================================================================
   // Demo Prerequisite CRUD
   // ============================================================================
 
@@ -2759,6 +2846,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       description: 'Get full details of a demo scenario including its persona name.',
       schema: GetScenarioArgsSchema,
       handler: getScenario,
+    },
+    // Demo Completeness Verification
+    {
+      name: 'verify_demo_completeness',
+      description: 'Verify that ALL enabled demo scenarios have a passing result (and optionally a fresh recording) since a given timestamp. Returns structured completeness data. Use to gate release pipelines — the auditor checks complete:true before allowing the phase to pass.',
+      schema: VerifyDemoCompletenessArgsSchema,
+      handler: (args: VerifyDemoCompletenessArgs) => JSON.stringify(verifyDemoCompleteness(args)),
     },
     // Demo Prerequisites CRUD
     {

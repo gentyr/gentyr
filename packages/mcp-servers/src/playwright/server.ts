@@ -857,10 +857,10 @@ function autoKillDemo(pid: number): void {
   }
 
   // Persist demo result to user-feedback.db (dedup guard: only once per demo)
-  if (entry.scenario_id && !entry.result_persisted && (entry.status === 'passed' || entry.status === 'failed')) {
+  if (entry.scenario_id && !entry.result_persisted && entry.status === 'failed') {
     persistDemoResult({
       scenarioId: entry.scenario_id,
-      status: entry.status,
+      status: 'failed',
       executionMode: entry.remote ? 'remote' : 'local',
       startedAt: entry.started_at,
       completedAt: entry.ended_at ?? new Date().toISOString(),
@@ -4823,10 +4823,10 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
   }
 
   // Persist demo result to user-feedback.db (dedup guard: only once per demo)
-  if (entry.scenario_id && !entry.result_persisted && (entry.status === 'passed' || entry.status === 'failed')) {
+  if (entry.scenario_id && !entry.result_persisted && entry.status === 'failed') {
     persistDemoResult({
       scenarioId: entry.scenario_id,
-      status: entry.status,
+      status: 'failed',
       executionMode: entry.remote ? 'remote' : 'local',
       startedAt: entry.started_at,
       completedAt: entry.ended_at ?? new Date().toISOString(),
@@ -6942,9 +6942,37 @@ async function runRemoteBatchSequence(
 
         await flyRunnerMod.stopRemoteMachine(handle, machineConfig).catch(() => {});
 
+        // Persist demo result to user-feedback.db for each remote batch scenario (success path)
+        if (batchScenario.status === 'passed' || batchScenario.status === 'failed') {
+          const remoteBatchCompletedAt = new Date().toISOString();
+          persistDemoResult({
+            scenarioId: batchScenario.scenario_id,
+            status: batchScenario.status,
+            executionMode: 'remote',
+            startedAt: state.started_at,
+            completedAt: remoteBatchCompletedAt,
+            durationMs: new Date(remoteBatchCompletedAt).getTime() - new Date(state.started_at).getTime(),
+            flyMachineId: handle.machineId,
+            branch: getDemoBranch() ?? undefined,
+            failureReason: batchScenario.failure_summary,
+          });
+        }
+
       } catch (err) {
         batchScenario.status = 'failed';
         batchScenario.failure_summary = err instanceof Error ? err.message : String(err);
+        // Persist demo result to user-feedback.db for each remote batch scenario (error path)
+        const remoteBatchErrorCompletedAt = new Date().toISOString();
+        persistDemoResult({
+          scenarioId: batchScenario.scenario_id,
+          status: 'failed',
+          executionMode: 'remote',
+          startedAt: state.started_at,
+          completedAt: remoteBatchErrorCompletedAt,
+          durationMs: new Date(remoteBatchErrorCompletedAt).getTime() - new Date(state.started_at).getTime(),
+          branch: getDemoBranch() ?? undefined,
+          failureReason: batchScenario.failure_summary,
+        });
       }
 
       // Update aggregate counters
@@ -7103,6 +7131,21 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
 
         if (s.status === 'failed') {
           s.failure_summary = progress?.recent_errors?.[0]?.slice(0, 500) ?? `Exit code: ${exitResult.code}`;
+        }
+
+        // Persist demo result to user-feedback.db for each local batch scenario
+        if (s.status === 'passed' || s.status === 'failed') {
+          const localBatchCompletedAt = new Date().toISOString();
+          persistDemoResult({
+            scenarioId: s.scenario_id,
+            status: s.status,
+            executionMode: 'local',
+            startedAt: state.started_at,
+            completedAt: localBatchCompletedAt,
+            durationMs: new Date(localBatchCompletedAt).getTime() - new Date(state.started_at).getTime(),
+            branch: getDemoBranch() ?? undefined,
+            failureReason: s.failure_summary,
+          });
         }
 
         // Update progress counters
