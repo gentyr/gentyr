@@ -587,15 +587,29 @@ function buildInteractiveBriefing() {
   // Active production release (high-priority — shown before queue)
   const activeRelease = getActiveRelease();
   if (activeRelease) {
-    lines.push('=== ACTIVE PRODUCTION RELEASE ===');
-    lines.push(`Release: ${activeRelease.id} (v${activeRelease.version})`);
-    lines.push(`Status: Phase ${activeRelease.currentPhase} of ${activeRelease.totalPhases}`);
-    if (activeRelease.stagingLockAt) {
-      lines.push(`Staging: LOCKED since ${activeRelease.stagingLockAt}`);
+    const phaseNum = parseInt(activeRelease.currentPhase, 10);
+    if (phaseNum >= 7) {
+      // CTO sign-off required — prominent action block
+      lines.push('=== CTO SIGN-OFF REQUIRED ===');
+      lines.push(`Release ${activeRelease.id} (v${activeRelease.version}) is ready for your approval.`);
+      lines.push('');
+      lines.push('To review and approve:');
+      lines.push(`  1. mcp__release-ledger__present_release_summary({ release_id: "${activeRelease.id}" })`);
+      lines.push('  2. Review the report and artifacts (open the artifact directory)');
+      lines.push('  3. State your approval (e.g., "Approved for production")');
+      lines.push(`  4. mcp__release-ledger__record_cto_approval({ release_id: "${activeRelease.id}", approval_text: "<your exact approval text>" })`);
+      lines.push('');
+    } else {
+      lines.push('=== ACTIVE PRODUCTION RELEASE ===');
+      lines.push(`Release: ${activeRelease.id} (v${activeRelease.version})`);
+      lines.push(`Status: Phase ${activeRelease.currentPhase} of ${activeRelease.totalPhases}`);
+      if (activeRelease.stagingLockAt) {
+        lines.push(`Staging: LOCKED since ${activeRelease.stagingLockAt}`);
+      }
+      lines.push(`PRs: ${activeRelease.prCount}`);
+      lines.push('Monitor: /plan-progress or /monitor');
+      lines.push('');
     }
-    lines.push(`PRs: ${activeRelease.prCount}`);
-    lines.push('Monitor: /plan-progress or /monitor');
-    lines.push('');
   }
 
   // Queue state

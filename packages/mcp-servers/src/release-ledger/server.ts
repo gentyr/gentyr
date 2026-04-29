@@ -48,6 +48,10 @@ import {
   type GenerateReleaseReportArgs,
   OpenReleaseReportArgsSchema,
   GetReleaseReportSectionArgsSchema,
+  PresentReleaseSummaryArgsSchema,
+  type PresentReleaseSummaryArgs,
+  RecordCtoApprovalArgsSchema,
+  type RecordCtoApprovalArgs,
   type OpenReleaseReportArgs,
   type GetReleaseReportSectionArgs,
   type ReleaseRecord,
@@ -849,6 +853,240 @@ function getReleaseReportSection(args: GetReleaseReportSectionArgs): object {
   };
 }
 
+/**
+ * Generate the release report, zip all artifacts, and return a summary for CTO review.
+ * Call this BEFORE record_cto_approval.
+ */
+async function presentReleaseSummary(args: PresentReleaseSummaryArgs): Promise<string> {
+  const db = getDb();
+  const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(args.release_id) as ReleaseRecord | undefined;
+  if (!release) return JSON.stringify({ error: `Release not found: ${args.release_id}` });
+
+  // Generate/regenerate the report
+  let reportResult;
+  try {
+    const genModule = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'release-report-generator.js'));
+    reportResult = await genModule.generateStructuredReport(args.release_id, PROJECT_DIR);
+  } catch (err: unknown) {
+    return JSON.stringify({ error: `Report generation failed: ${(err as Error).message}` });
+  }
+
+  // Update report_path in DB
+  if (reportResult.mdPath) {
+    db.prepare('UPDATE releases SET report_path = ? WHERE id = ?').run(reportResult.mdPath, args.release_id);
+  }
+
+  // Zip the artifact directory
+  const artifactDir = release.artifact_dir || path.join(PROJECT_DIR, '.claude', 'releases', args.release_id);
+  const zipPath = path.join(artifactDir, `release-${args.release_id}-artifacts.zip`);
+  let zipOk = false;
+  try {
+    // Remove old zip first
+    if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+    execSync(`/usr/bin/zip -r "${zipPath}" . -x "*.zip"`, { cwd: artifactDir, timeout: 30000, stdio: 'pipe' });
+    zipOk = fs.existsSync(zipPath);
+  } catch {
+    // Non-fatal — zip is a convenience
+  }
+
+  // Build summary from report content
+  let summary = '';
+  try {
+    const reportContent = fs.readFileSync(reportResult.mdPath, 'utf8');
+    // Extract key metrics from the report
+    const prMatch = reportContent.match(/(\d+)\s+PR/i);
+    const testMatch = reportContent.match(/(\d+)\s+passed.*?(\d+)\s+failed/i);
+    const demoMatch = reportContent.match(/demo.*?(\d+).*?pass/i);
+    const issueMatch = reportContent.match(/## 5\. Issues.*?\n([\s\S]*?)(?=## 6|$)/);
+
+    const parts = [];
+    parts.push(`Release ${release.version || args.release_id}`);
+    if (prMatch) parts.push(`${prMatch[1]} PRs included`);
+    if (testMatch) parts.push(`Tests: ${testMatch[1]} passed, ${testMatch[2]} failed`);
+    if (demoMatch) parts.push(`Demos: ${demoMatch[0].slice(0, 80)}`);
+    const issueCount = issueMatch ? (issueMatch[1].match(/\|/g) || []).length / 4 : 0;
+    if (issueCount > 0) parts.push(`${Math.floor(issueCount)} issues resolved`);
+    summary = parts.join(' | ');
+  } catch {
+    summary = `Release ${release.version || args.release_id} — report generated`;
+  }
+
+  return JSON.stringify({
+    release_id: args.release_id,
+    version: release.version,
+    status: release.status,
+    summary,
+    report_path: reportResult.mdPath,
+    pdf_path: reportResult.pdfPath || null,
+    zip_path: zipOk ? zipPath : null,
+    artifact_dir: artifactDir,
+  });
+}
+
+/**
+ * Record the CTO verbal approval with cryptographic proof.
+ * Verifies the approval quote exists verbatim in the current session JSONL,
+ * computes HMAC-SHA256 proof chain, archives the session transcript,
+ * updates the release report with Section 9, and signs off the release.
+ * Must call present_release_summary first.
+ */
+async function recordCtoApproval(args: RecordCtoApprovalArgs): Promise<string> {
+  const db = getDb();
+  const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(args.release_id) as ReleaseRecord | undefined;
+  if (!release) return JSON.stringify({ error: `Release not found: ${args.release_id}` });
+  if (release.status !== 'in_progress') {
+    return JSON.stringify({ error: `Release is already '${release.status}'. CTO approval can only be recorded on in_progress releases.` });
+  }
+
+  // Verify report exists (present_release_summary must be called first)
+  const artifactDir = release.artifact_dir || path.join(PROJECT_DIR, '.claude', 'releases', args.release_id);
+  const reportPath = path.join(artifactDir, 'report.md');
+  if (!fs.existsSync(reportPath)) {
+    return JSON.stringify({ error: 'No release report found. Call present_release_summary first to generate the report for CTO review.' });
+  }
+
+  // Import the crypto module
+  let proofModule;
+  try {
+    proofModule = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'cto-approval-proof.js'));
+  } catch (err: unknown) {
+    return JSON.stringify({ error: `Failed to load cto-approval-proof module: ${(err as Error).message}` });
+  }
+
+  // Find the current interactive session JSONL
+  const session = proofModule.findCurrentSessionJsonl(PROJECT_DIR);
+  if (!session) {
+    return JSON.stringify({
+      error: 'Cannot locate the current session JSONL file. Ensure you are running this from the interactive CTO session.',
+      hint: `CLAUDE_SESSION_ID: ${process.env.CLAUDE_SESSION_ID || 'not set'}`,
+    });
+  }
+
+  // Verify the quote exists verbatim in the session
+  const quoteResult = await proofModule.verifyQuoteInJsonl(session.jsonlPath, args.approval_text);
+  if (!quoteResult.found) {
+    return JSON.stringify({
+      error: 'The approval text was not found verbatim in the current session transcript.',
+      hint: 'The CTO must type their approval in this session before calling this tool. Type a clear approval message (e.g., "Approved for production"), then call this tool with that exact text.',
+      session_id: session.sessionId,
+    });
+  }
+
+  // Compute file hash
+  const fileHash = proofModule.computeFileHash(session.jsonlPath);
+
+  // Load protection key (G001 fail-closed)
+  const keyBase64 = proofModule.loadProtectionKey(PROJECT_DIR);
+  if (!keyBase64) {
+    return JSON.stringify({ error: 'Protection key not found at .claude/protection-key. Cannot compute cryptographic proof (G001 fail-closed).' });
+  }
+
+  // Compute HMAC proof
+  const hmac = proofModule.computeApprovalHmac(keyBase64, args.release_id, session.sessionId, args.approval_text, fileHash);
+  const approvedAt = new Date().toISOString();
+
+  // Copy session JSONL to artifacts
+  const archivedJsonlName = 'cto-approval-session.jsonl';
+  const archivedJsonlPath = path.join(artifactDir, archivedJsonlName);
+  try {
+    fs.copyFileSync(session.jsonlPath, archivedJsonlPath);
+  } catch (err: unknown) {
+    return JSON.stringify({ error: `Failed to archive session JSONL: ${(err as Error).message}` });
+  }
+
+  // Write proof file
+  const proofData = {
+    release_id: args.release_id,
+    session_id: session.sessionId,
+    approval_text: args.approval_text,
+    line_number: quoteResult.lineNumber,
+    session_file_hash: fileHash,
+    hmac,
+    approved_at: approvedAt,
+    domain_separator: 'cto-release-approval',
+    session_jsonl_archived: archivedJsonlName,
+  };
+  const proofPath = path.join(artifactDir, 'cto-approval.json');
+  fs.writeFileSync(proofPath, JSON.stringify(proofData, null, 2));
+
+  // Update report.md with Section 9
+  try {
+    let report = fs.readFileSync(reportPath, 'utf8');
+    const approvalSection = [
+      `**Approved by**: CTO`,
+      `**Timestamp**: ${approvedAt}`,
+      '',
+      '**Verbatim approval**:',
+      `> ${args.approval_text}`,
+      '',
+      '**Evidence chain**:',
+      `- Session transcript: \`${archivedJsonlName}\``,
+      `- Session file SHA-256: \`${fileHash}\``,
+      `- Approval HMAC proof: \`${hmac.slice(0, 16)}...\``,
+      `- HMAC domain: \`cto-release-approval\``,
+      '',
+      'Full cryptographic proof chain stored in `cto-approval.json`.',
+    ].join('\n');
+
+    // Replace the pending placeholder or insert before footer
+    if (report.includes('_Pending CTO approval._')) {
+      report = report.replace('_Pending CTO approval._', approvalSection);
+    } else if (report.includes('{cto_approval}')) {
+      report = report.replace('{cto_approval}', approvalSection);
+    } else {
+      // Insert before the footer
+      const footerIdx = report.lastIndexOf('---\n\n*Generated by GENTYR');
+      if (footerIdx > 0) {
+        report = report.slice(0, footerIdx) + '## 9. CTO Approval\n\n' + approvalSection + '\n\n' + report.slice(footerIdx);
+      } else {
+        report += '\n\n## 9. CTO Approval\n\n' + approvalSection + '\n';
+      }
+    }
+    fs.writeFileSync(reportPath, report, 'utf8');
+  } catch {
+    // Non-fatal — proof file is the authoritative record
+  }
+
+  // Regenerate PDF
+  try {
+    const genModule = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'release-report-generator.js'));
+    if (genModule.convertToPdf) {
+      const pdfPath = path.join(artifactDir, 'report.pdf');
+      await genModule.convertToPdf(reportPath, pdfPath);
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  // Re-zip artifacts
+  try {
+    const zipPath = path.join(artifactDir, `release-${args.release_id}-artifacts.zip`);
+    if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+    execSync(`/usr/bin/zip -r "${zipPath}" . -x "*.zip"`, { cwd: artifactDir, timeout: 30000, stdio: 'pipe' });
+  } catch {
+    // Non-fatal
+  }
+
+  // Sign off the release internally
+  try {
+    db.prepare(
+      'UPDATE releases SET status = ?, signed_off_at = ?, signed_off_by = ? WHERE id = ? AND status = ?'
+    ).run('signed_off', approvedAt, 'cto', args.release_id, 'in_progress');
+  } catch (err: unknown) {
+    return JSON.stringify({ error: `Failed to sign off release: ${(err as Error).message}` });
+  }
+
+  return JSON.stringify({
+    success: true,
+    release_id: args.release_id,
+    status: 'signed_off',
+    approved_at: approvedAt,
+    proof_path: proofPath,
+    session_archived: archivedJsonlPath,
+    hmac_preview: hmac.slice(0, 16) + '...',
+  });
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -940,9 +1178,21 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'get_release_report_section',
-    description: 'Get a specific section (1-8) from a release report. Parses the report.md and extracts the content for the requested section number. Call generate_release_report first if the report does not exist.',
+    description: 'Get a specific section (1-9) from a release report. Parses the report.md and extracts the content for the requested section number. Call generate_release_report first if the report does not exist.',
     schema: GetReleaseReportSectionArgsSchema,
     handler: getReleaseReportSection,
+  },
+  {
+    name: 'present_release_summary',
+    description: 'Generate the release report, zip all artifacts, and return a summary for CTO review. Call this BEFORE record_cto_approval. Returns report paths, artifact zip path, and a concise summary.',
+    schema: PresentReleaseSummaryArgsSchema,
+    handler: async (args: PresentReleaseSummaryArgs) => await presentReleaseSummary(args),
+  },
+  {
+    name: 'record_cto_approval',
+    description: 'Record the CTO verbal approval with cryptographic proof. Verifies the approval quote exists verbatim in the current session JSONL, computes HMAC-SHA256 proof chain, archives the session transcript, updates the release report with Section 9, and signs off the release. Must call present_release_summary first.',
+    schema: RecordCtoApprovalArgsSchema,
+    handler: async (args: RecordCtoApprovalArgs) => await recordCtoApproval(args),
   },
 ];
 

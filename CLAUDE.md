@@ -1428,7 +1428,8 @@ Key modules consumed by hooks:
 - `deferred-action-executor.js` — MCP HTTP execution, HMAC verification with timing-safe comparison, full execution pipeline for deferred actions
 - `staging-lock.js` — Staging lock state management (`lockStaging`, `unlockStaging`, `isStagingLocked`, `getStagingLockState`); persists lock to `.claude/state/staging-lock.json`; best-effort GitHub branch protection via `gh api`
 - `release-orchestrator.js` — Production release artifact collection: `enumerateReleasePRs` (gh pr list with git fallback), `getArtifactDir` (create `.claude/releases/{id}/prs|sessions|reports/`), `collectSessionArtifact` (copy JSONL by agent marker), `collectDemoArtifacts` (copy screenshots/recordings + demo-results.json), `collectTriageArtifacts` (query cto-reports.db + deputy-cto.db)
-- `release-report-generator.js` — Structured release report pipeline: `generateStructuredReport` reads release-ledger.db + artifacts, fills `templates/release-report-template.md` with 16 placeholders, writes `report.md` to artifact dir; `convertToPdf` placeholder for future PDF output
+- `release-report-generator.js` — Structured release report pipeline: `generateStructuredReport` reads release-ledger.db + artifacts, fills `templates/release-report-template.md` with 17 placeholders (including `{cto_approval}`), writes `report.md` to artifact dir; `convertToPdf` converts to PDF via headless Chromium; `generateCtoApproval` reads `cto-approval.json` to fill Section 9
+- `cto-approval-proof.js` — CTO release approval cryptographic proof: `verifyQuoteInJsonl` (line-by-line JSONL scan for verbatim quote), `computeApprovalHmac` (HMAC-SHA256 with `cto-release-approval` domain separator), `verifyApprovalHmac` (constant-time verification), `computeFileHash` (SHA-256), `findCurrentSessionJsonl` (session discovery). Consumed by `record_cto_approval` tool on release-ledger server
 - `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
 
 ### Agent Definitions (20 shared)
@@ -1469,7 +1470,7 @@ Key modules consumed by hooks:
 | user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature, create/archive/switch/list/get/delete_persona_profile, verify_demo_completeness | Personas, features, scenarios, prerequisites, persona profiles, demo completeness gate |
 | product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
 | deputy-cto | create_report, list_reports, acknowledge_report | Reports, triage, delegation |
-| release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report | Production release evidence chain (staging lock → CTO sign-off) |
+| release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report, present_release_summary, record_cto_approval | Production release evidence chain (staging lock → CTO sign-off with cryptographic proof) |
 
 #### Infrastructure Servers (Tier 1 — shared daemon)
 

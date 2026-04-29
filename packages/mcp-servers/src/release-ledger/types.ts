@@ -125,7 +125,17 @@ export const OpenReleaseReportArgsSchema = z.object({
 
 export const GetReleaseReportSectionArgsSchema = z.object({
   release_id: z.string().min(1).describe('Release ID'),
-  section: z.coerce.number().min(1).max(8).describe('Section number (1-8) to extract from the report'),
+  section: z.coerce.number().min(1).max(9).describe('Section number (1-9) to extract from the report'),
+});
+
+// CTO Approval Gate
+export const PresentReleaseSummaryArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID'),
+});
+
+export const RecordCtoApprovalArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID'),
+  approval_text: z.string().min(3).describe('Verbatim CTO approval quote from the interactive session'),
 });
 
 // ============================================================================
@@ -147,6 +157,8 @@ export type GetReleaseEvidenceArgs = z.infer<typeof GetReleaseEvidenceArgsSchema
 export type GenerateReleaseReportArgs = z.infer<typeof GenerateReleaseReportArgsSchema>;
 export type OpenReleaseReportArgs = z.infer<typeof OpenReleaseReportArgsSchema>;
 export type GetReleaseReportSectionArgs = z.infer<typeof GetReleaseReportSectionArgsSchema>;
+export type PresentReleaseSummaryArgs = z.infer<typeof PresentReleaseSummaryArgsSchema>;
+export type RecordCtoApprovalArgs = z.infer<typeof RecordCtoApprovalArgsSchema>;
 
 // ============================================================================
 // Record Types (SQLite rows)

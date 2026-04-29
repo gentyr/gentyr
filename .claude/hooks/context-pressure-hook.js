@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getCooldown } from './config-reader.js';
+import { getSessionContextTokens } from './lib/compact-session.js';
 
 // ============================================================================
 // Fast-exit: only runs in spawned sessions
@@ -156,50 +157,11 @@ function findAgentSessionFile() {
 }
 
 /**
- * Read the last N bytes of a file using fd-based seeking.
- */
-function readFileTail(filePath, bytes = 16384) {
-  try {
-    const stat = fs.statSync(filePath);
-    if (stat.size === 0) return '';
-    const readSize = Math.min(bytes, stat.size);
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      const buf = Buffer.alloc(readSize);
-      fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
-      return buf.toString('utf8');
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return '';
-  }
-}
-
-/**
- * Extract context token count from session JSONL tail.
+ * Extract context token count from session JSONL using shared module.
  */
 function getContextTokens(sessionFilePath) {
-  const tail = readFileTail(sessionFilePath);
-  if (!tail) return null;
-
-  const lines = tail.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    try {
-      const entry = JSON.parse(line);
-      const usage = entry.message?.usage;
-      if (usage && entry.type === 'assistant') {
-        return (usage.input_tokens || 0) +
-               (usage.cache_read_input_tokens || 0) +
-               (usage.cache_creation_input_tokens || 0);
-      }
-    } catch {
-      // Partial line — skip
-    }
-  }
-  return null;
+  const result = getSessionContextTokens(sessionFilePath);
+  return result?.totalContextTokens ?? null;
 }
 
 // ============================================================================
@@ -207,14 +169,22 @@ function getContextTokens(sessionFilePath) {
 // ============================================================================
 
 function determineTier(contextTokens, minutesSinceCompact) {
+  // Token-based triggers: fire on token count alone
+  // Time-based triggers: require at least half the suggestion token threshold
+  //   (prevents nudging brand-new sessions with trivial context)
+  const minForTimeTrigger = Math.floor(SUGGESTION_TOKENS / 2);
+
   // Check critical first (highest priority)
-  if (contextTokens >= CRITICAL_TOKENS || minutesSinceCompact >= CRITICAL_MINUTES) {
+  if (contextTokens >= CRITICAL_TOKENS ||
+      (minutesSinceCompact >= CRITICAL_MINUTES && contextTokens >= minForTimeTrigger)) {
     return 'critical';
   }
-  if (contextTokens >= WARNING_TOKENS || minutesSinceCompact >= WARNING_MINUTES) {
+  if (contextTokens >= WARNING_TOKENS ||
+      (minutesSinceCompact >= WARNING_MINUTES && contextTokens >= minForTimeTrigger)) {
     return 'warning';
   }
-  if (contextTokens >= SUGGESTION_TOKENS || minutesSinceCompact >= SUGGESTION_MINUTES) {
+  if (contextTokens >= SUGGESTION_TOKENS ||
+      (minutesSinceCompact >= SUGGESTION_MINUTES && contextTokens >= minForTimeTrigger)) {
     return 'suggestion';
   }
   return null;
