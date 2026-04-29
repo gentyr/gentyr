@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pnpm globally
-RUN npm install -g pnpm@9
+RUN npm install -g pnpm@10
 
 # Create working directories
 WORKDIR /app
