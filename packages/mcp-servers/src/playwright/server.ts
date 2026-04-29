@@ -2411,6 +2411,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   // All dynamic imports use .js extension for ESM. Both modules may not exist
   // in all environments — all errors fall through to local execution.
   let remoteRoutingWarning = '';
+  let executionTargetResult: { target: 'local' | 'remote' | 'steel'; reason: string } | null = null;
   let steelOnlySessionId: string | undefined; // Set when stealth-only Steel session created (for cleanup in local path)
   remoteRoutingBlock: {
     // Resolve Fly.io config (may be absent — Steel-only scenarios don't need it)
@@ -2432,7 +2433,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
 
     // If neither Fly.io nor Steel is configured, skip remote routing entirely
-    if (!flyAvailable && !resolvedFlyToken && !steelAvailable) break remoteRoutingBlock;
+    if (!flyAvailable && !resolvedFlyToken && !steelAvailable) {
+      executionTargetResult = { target: 'local', reason: 'Neither Fly.io nor Steel is configured' };
+      break remoteRoutingBlock;
+    }
 
     let scenarioHeaded = false;
     let usesChromeBridge = false;
@@ -2651,6 +2655,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
             // Store the Steel session ID so cleanup paths can release it
             steelOnlySessionId = session.sessionId;
             // Fall through to local execution path
+            executionTargetResult = { target: 'steel', reason: 'Steel-only scenario: local Playwright connecting to Steel cloud browser via CDP' };
             break remoteRoutingBlock;
           }
         } catch (steelErr) {
@@ -2665,9 +2670,15 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         }
       }
 
-      if (target.target !== 'remote') break remoteRoutingBlock;
+      if (target.target !== 'remote') {
+        executionTargetResult = { target: target.target, reason: target.reason };
+        break remoteRoutingBlock;
+      }
       // Fly.io is guaranteed available when target === 'remote'
-      if (!machineConfig) break remoteRoutingBlock;
+      if (!machineConfig) {
+        executionTargetResult = { target: 'local', reason: 'Fly.io machine config unavailable despite remote routing decision' };
+        break remoteRoutingBlock;
+      }
 
       // ── REMOTE EXECUTION PATH (Fly.io) ──
       const remoteEnv: Record<string, string> = {};
@@ -3022,6 +3033,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       // Auto-routed: fall back to local but record a warning for check_demo_result to surface
       process.stderr.write(`[fly-runner] Falling back to local execution\n`);
       remoteRoutingWarning = `Remote execution attempted but failed (falling back to local): ${errMsg}${imageFixHint}`;
+      executionTargetResult = { target: 'local', reason: `Auto-routed remote execution failed, falling back to local: ${errMsg}` };
     }
   }
 
@@ -3589,6 +3601,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           pid: demoPid,
           slow_mo,
           test_file: effectiveTestFile,
+          execution_target: executionTargetResult?.target ?? 'local',
+          execution_target_reason: executionTargetResult?.reason ?? 'Local execution (no remote routing attempted)',
         };
       }
 
@@ -3596,6 +3610,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         success: false,
         project,
         message: `Playwright process crashed during startup (exit code: ${earlyExit.code}, signal: ${earlyExit.signal})${stdout ? `\nstdout: ${stdout.slice(0, 2000)}` : ''}${snippet ? `\nstderr: ${snippet}` : ''}`,
+        execution_target: executionTargetResult?.target ?? 'local',
+        execution_target_reason: executionTargetResult?.reason ?? 'Local execution (no remote routing attempted)',
       };
     }
 
@@ -3680,6 +3696,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       slow_mo,
       test_file: effectiveTestFile,
       ...(recordingPermissionError ? { recording_permission_error: recordingPermissionError } : {}),
+      execution_target: executionTargetResult?.target ?? 'local',
+      execution_target_reason: executionTargetResult?.reason ?? 'Local execution (no remote routing attempted)',
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -3687,6 +3705,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       success: false,
       project,
       message: `Failed to launch headed demo: ${message}`,
+      execution_target: executionTargetResult?.target ?? 'local',
+      execution_target_reason: executionTargetResult?.reason ?? 'Local execution (no remote routing attempted)',
     };
   }
 }

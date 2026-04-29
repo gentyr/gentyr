@@ -19,25 +19,30 @@ import { execFileSync } from 'child_process';
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const TRACKER_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'compact-tracker.json');
 const LOCK_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'compaction-in-progress.lock');
+const TRACKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // ============================================================================
 // Session Directory Resolution
 // ============================================================================
 
 /**
- * Encode a project directory path into the Claude Code session directory name.
- * Matches the encoding used by Claude Code for ~/.claude/projects/<encoded>/.
- */
-export function encodeProjectDir(projectDir) {
-  return '-' + projectDir.replace(/[^a-zA-Z0-9]/g, '-').replace(/^-/, '');
-}
-
-/**
  * Get the session directory for a given project.
+ * Tries both encoding conventions (with and without leading dash).
  */
 export function getSessionDir(projectDir = PROJECT_DIR) {
-  const encoded = encodeProjectDir(projectDir);
-  return path.join(os.homedir(), '.claude', 'projects', encoded);
+  const projectsBase = path.join(os.homedir(), '.claude', 'projects');
+  const encoded = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
+
+  // Try with leading dash first (most common)
+  const withDash = path.join(projectsBase, encoded);
+  try { if (fs.existsSync(withDash)) return withDash; } catch { /* fallthrough */ }
+
+  // Try without leading dash
+  const withoutDash = path.join(projectsBase, encoded.replace(/^-/, ''));
+  try { if (fs.existsSync(withoutDash)) return withoutDash; } catch { /* fallthrough */ }
+
+  // Default to the with-dash convention
+  return withDash;
 }
 
 /**
@@ -61,7 +66,7 @@ export function findSessionJsonl(sessionId, projectDir = PROJECT_DIR) {
  * Read the last N bytes of a file efficiently using fd-based seeking.
  * Returns the string content of the tail.
  */
-function readFileTail(filePath, bytes = 8192) {
+function readFileTail(filePath, bytes = 16384) {
   try {
     const stat = fs.statSync(filePath);
     if (stat.size === 0) return '';
@@ -82,7 +87,7 @@ function readFileTail(filePath, bytes = 8192) {
 /**
  * Extract the current context window token count from a session JSONL file.
  *
- * Reads the last 8KB of the file, finds the most recent assistant entry
+ * Reads the last 16KB of the file, finds the most recent assistant entry
  * with a `message.usage` object, and calculates context tokens as:
  *   input_tokens + cache_read_input_tokens + cache_creation_input_tokens
  *
@@ -95,7 +100,6 @@ export function getSessionContextTokens(sessionFilePath) {
   const tail = readFileTail(sessionFilePath, 16384);
   if (!tail) return null;
 
-  // Split into lines and parse backward to find the last usage entry
   const lines = tail.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
@@ -169,9 +173,18 @@ export function readCompactTracker() {
 
 /**
  * Write the compact tracker state file atomically.
+ * Prunes entries older than 7 days.
  */
 export function writeCompactTracker(data) {
   try {
+    // Prune old entries
+    const now = Date.now();
+    for (const [key, entry] of Object.entries(data)) {
+      if (entry?.lastCompactAt && (now - new Date(entry.lastCompactAt).getTime()) > TRACKER_MAX_AGE_MS) {
+        delete data[key];
+      }
+    }
+
     const dir = path.dirname(TRACKER_PATH);
     fs.mkdirSync(dir, { recursive: true });
     const tmpPath = TRACKER_PATH + '.tmp';
@@ -218,6 +231,9 @@ export function getTimeSinceLastCompact(sessionId) {
  * Runs `claude --resume <sessionId> -p "/compact"` from the project directory.
  * Only safe on DEAD sessions — running sessions will be killed.
  *
+ * Trigger logic: token threshold OR (time threshold AND tokens above half the minimum).
+ * This prevents compacting brand-new sessions with trivial context.
+ *
  * @param {string} sessionId - The session UUID
  * @param {string} projectDir - Project directory to run from (determines session scope)
  * @param {object} [options]
@@ -245,45 +261,54 @@ export function compactSessionIfNeeded(sessionId, projectDir, options = {}) {
   const msSinceCompact = getTimeSinceLastCompact(sessionId);
   const minutesSinceCompact = msSinceCompact / (60 * 1000);
 
-  // Decide whether to compact
+  // Decide whether to compact:
+  // - Token threshold alone: always compact if above minTokens
+  // - Time threshold: only compact if ALSO above half the token minimum
+  //   (prevents compacting brand-new sessions with trivial context)
   const tokenTriggered = currentTokens >= minTokens;
-  const timeTriggered = minutesSinceCompact >= maxMinutesSinceCompact;
+  const timeTriggered = minutesSinceCompact >= maxMinutesSinceCompact && currentTokens >= Math.floor(minTokens / 2);
 
   if (!tokenTriggered && !timeTriggered) return null;
 
-  // Concurrency guard: check lockfile
-  try {
-    if (fs.existsSync(LOCK_PATH)) {
-      const lockData = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf8'));
-      // Check if the lock holder is still alive
-      if (lockData.pid) {
-        try {
-          process.kill(lockData.pid, 0);
-          // Lock holder alive — skip
-          return null;
-        } catch {
-          // Lock holder dead — break stale lock
-        }
-      }
-      // Check age — break locks older than 5 minutes
-      if (lockData.createdAt && (Date.now() - new Date(lockData.createdAt).getTime()) < 5 * 60 * 1000) {
-        return null;
-      }
-    }
-  } catch {
-    // Lock check failed — proceed (fail-open for the lock check)
-  }
-
-  // Acquire lock
+  // Concurrency guard: atomic lock acquisition via O_EXCL
+  let lockFd = -1;
   try {
     fs.mkdirSync(path.dirname(LOCK_PATH), { recursive: true });
-    fs.writeFileSync(LOCK_PATH, JSON.stringify({
+    lockFd = fs.openSync(LOCK_PATH, 'wx'); // O_CREAT | O_EXCL — fails if exists
+    fs.writeSync(lockFd, JSON.stringify({
       pid: process.pid,
       sessionId,
       createdAt: new Date().toISOString(),
     }));
-  } catch {
-    // Non-fatal — proceed without lock
+    fs.closeSync(lockFd);
+    lockFd = -1;
+  } catch (err) {
+    if (lockFd >= 0) { try { fs.closeSync(lockFd); } catch { /* */ } }
+
+    if (err.code === 'EEXIST') {
+      // Lock exists — check if stale (holder dead or lock > 5 min old)
+      try {
+        const lockData = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf8'));
+        let stale = false;
+        if (lockData.pid) {
+          try { process.kill(lockData.pid, 0); } catch { stale = true; }
+        }
+        if (!stale && lockData.createdAt) {
+          stale = (Date.now() - new Date(lockData.createdAt).getTime()) > 5 * 60 * 1000;
+        }
+        if (!stale) return null; // Lock held by live process — skip
+
+        // Break stale lock and retry
+        fs.unlinkSync(LOCK_PATH);
+        fs.writeFileSync(LOCK_PATH, JSON.stringify({
+          pid: process.pid, sessionId, createdAt: new Date().toISOString(),
+        }));
+      } catch {
+        return null; // Can't break lock — skip
+      }
+    } else {
+      // Other error — proceed without lock (fail-open)
+    }
   }
 
   try {
@@ -305,10 +330,6 @@ export function compactSessionIfNeeded(sessionId, projectDir, options = {}) {
     return { preTokens: currentTokens, compactedAt };
   } finally {
     // Release lock
-    try {
-      fs.unlinkSync(LOCK_PATH);
-    } catch {
-      // Non-fatal
-    }
+    try { fs.unlinkSync(LOCK_PATH); } catch { /* non-fatal */ }
   }
 }

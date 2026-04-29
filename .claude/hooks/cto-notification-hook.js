@@ -15,6 +15,7 @@ import path from 'path';
 import os from 'os';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { findMostRecentSession, getSessionContextTokens as getSharedContextTokens } from './lib/compact-session.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -516,7 +517,12 @@ function getReleaseStatus() {
     }
 
     db.close();
-    return { label: awaitingSignOff ? 'RELEASE AWAITING SIGN-OFF' : 'RELEASE IN PROGRESS' };
+    if (awaitingSignOff) {
+      return {
+        label: `RELEASE SIGN-OFF — present_release_summary({ release_id: "${release.id}" }) to review`,
+      };
+    }
+    return { label: 'RELEASE IN PROGRESS' };
   } catch (_) {
     return null;
   }
@@ -598,66 +604,19 @@ function progressBar(percent, width = 10) {
 
 /**
  * Get the current interactive session's context window token count.
- * Reads the last 16KB of the most recently modified JSONL file and extracts
- * the last assistant entry's usage data.
+ * Uses the shared compact-session module for consistent token calculation.
  *
  * @returns {number | null} Current context tokens or null if unavailable
  */
 function getCurrentSessionContextTokens() {
   try {
-    const sessionDir = getSessionDir();
-    if (!fs.existsSync(sessionDir)) return null;
-
-    // Find the most recently modified JSONL (the current session)
-    const files = fs.readdirSync(sessionDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => {
-        try {
-          const stat = fs.statSync(path.join(sessionDir, f));
-          return { name: f, mtime: stat.mtimeMs };
-        } catch { return null; }
-      })
-      .filter(Boolean);
-    if (files.length === 0) return null;
-
-    files.sort((a, b) => b.mtime - a.mtime);
-    const filePath = path.join(sessionDir, files[0].name);
-
-    // Read last 16KB efficiently
-    const stat = fs.statSync(filePath);
-    if (stat.size === 0) return null;
-    const readSize = Math.min(16384, stat.size);
-    const fd = fs.openSync(filePath, 'r');
-    let tail;
-    try {
-      const buf = Buffer.alloc(readSize);
-      fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
-      tail = buf.toString('utf8');
-    } finally {
-      fs.closeSync(fd);
-    }
-
-    // Parse backward to find the last assistant entry with usage
-    const lines = tail.split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      try {
-        const entry = JSON.parse(line);
-        const usage = entry.message?.usage;
-        if (usage && entry.type === 'assistant') {
-          return (usage.input_tokens || 0) +
-                 (usage.cache_read_input_tokens || 0) +
-                 (usage.cache_creation_input_tokens || 0);
-        }
-      } catch {
-        // Partial line at tail boundary — skip
-      }
-    }
+    const sessionFile = findMostRecentSession(PROJECT_DIR);
+    if (!sessionFile) return null;
+    const result = getSharedContextTokens(sessionFile);
+    return result?.totalContextTokens ?? null;
   } catch {
-    // Non-fatal
+    return null;
   }
-  return null;
 }
 
 /**

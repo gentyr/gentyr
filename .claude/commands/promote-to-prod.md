@@ -221,8 +221,8 @@ Add one task per phase:
 - Description: "Deputy-CTO reviews all test/demo results, outstanding issues, and Phase 3 meta-review findings. Makes go/no-go recommendation."
 
 **Phase 7 task**: "CTO Sign-off"
-- Description: "CTO reviews the release report, confirms all quality gates have passed, and authorizes the release. This is a manual sign-off — the CTO must explicitly approve."
-- verification_strategy: "CTO has explicitly approved the release via sign_off_release"
+- Description: "Awaiting CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Submit a bypass request to the CTO: 'Production release ready — review report and artifacts, then state your approval.' (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'. The CTO's interactive session agent handles the approval flow: calls present_release_summary to show the report, waits for verbal CTO approval, then calls record_cto_approval with the verbatim quote."
+- verification_strategy: "Release status is 'signed_off' AND cto-approval.json exists in the release artifact directory with a valid HMAC proof chain (verified by checking the file exists and contains release_id, session_id, approval_text, session_file_hash, hmac, and domain_separator fields)"
 
 **Phase 8 task**: "Generate Release Report"
 - Description: "Collect all artifacts, generate the structured release report, and persist to the release ledger."

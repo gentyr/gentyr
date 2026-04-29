@@ -1,0 +1,247 @@
+/**
+ * Shared module: CTO release approval cryptographic proof.
+ *
+ * Verifies that a CTO's verbatim approval quote exists in a session JSONL,
+ * computes HMAC-SHA256 proof binding the quote to the release and session,
+ * and provides verification utilities for the proof chain.
+ *
+ * Security model:
+ *  - HMAC signed with `.claude/protection-key` (same key as bypass approval)
+ *  - Domain separator `cto-release-approval` prevents cross-context replay
+ *  - SHA-256 file hash binds the proof to the exact JSONL file contents
+ *  - Constant-time comparison prevents timing attacks
+ *  - G001 fail-closed: missing protection-key blocks proof creation
+ *
+ * @module cto-approval-proof
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import readline from 'node:readline';
+
+const DOMAIN_SEPARATOR = 'cto-release-approval';
+
+// ============================================================================
+// Protection Key
+// ============================================================================
+
+/**
+ * Load the protection key from .claude/protection-key.
+ * @param {string} projectDir
+ * @returns {string|null} Base64-encoded key, or null if missing/empty.
+ */
+export function loadProtectionKey(projectDir) {
+  try {
+    const keyPath = path.join(projectDir, '.claude', 'protection-key');
+    if (!fs.existsSync(keyPath)) return null;
+    const key = fs.readFileSync(keyPath, 'utf8').trim();
+    return key || null;
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
+// File Hashing
+// ============================================================================
+
+/**
+ * Compute SHA-256 hex hash of a file's contents.
+ * @param {string} filePath
+ * @returns {string} Hex-encoded SHA-256 hash.
+ */
+export function computeFileHash(filePath) {
+  const content = fs.readFileSync(filePath);
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+// ============================================================================
+// HMAC Proof
+// ============================================================================
+
+/**
+ * Compute HMAC-SHA256 approval proof.
+ * Fields are pipe-delimited with domain separator to prevent cross-context replay.
+ *
+ * @param {string} keyBase64 - Base64-encoded protection key.
+ * @param {string} releaseId
+ * @param {string} sessionId
+ * @param {string} approvalText - Verbatim CTO quote.
+ * @param {string} fileHash - SHA-256 of the session JSONL.
+ * @returns {string} Hex-encoded HMAC.
+ */
+export function computeApprovalHmac(keyBase64, releaseId, sessionId, approvalText, fileHash) {
+  const keyBuffer = Buffer.from(keyBase64, 'base64');
+  return crypto
+    .createHmac('sha256', keyBuffer)
+    .update([releaseId, sessionId, approvalText, fileHash, DOMAIN_SEPARATOR].join('|'))
+    .digest('hex');
+}
+
+/**
+ * Verify an HMAC approval proof using constant-time comparison.
+ *
+ * @param {string} keyBase64 - Base64-encoded protection key.
+ * @param {{ release_id: string, session_id: string, approval_text: string, session_file_hash: string, hmac: string }} proof
+ * @returns {{ valid: boolean, reason?: string }}
+ */
+export function verifyApprovalHmac(keyBase64, proof) {
+  if (!proof || !proof.release_id || !proof.session_id || !proof.approval_text || !proof.session_file_hash || !proof.hmac) {
+    return { valid: false, reason: 'Proof object missing required fields' };
+  }
+
+  const expected = computeApprovalHmac(
+    keyBase64, proof.release_id, proof.session_id, proof.approval_text, proof.session_file_hash,
+  );
+
+  const expectedBuf = Buffer.from(expected, 'hex');
+  const actualBuf = Buffer.from(proof.hmac, 'hex');
+
+  if (expectedBuf.length !== actualBuf.length) {
+    return { valid: false, reason: 'HMAC length mismatch' };
+  }
+
+  if (!crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+    return { valid: false, reason: 'HMAC verification failed — proof is invalid or tampered' };
+  }
+
+  return { valid: true };
+}
+
+// ============================================================================
+// Quote Verification in JSONL
+// ============================================================================
+
+/**
+ * Verify that a verbatim quote exists in a human/user message within a JSONL session file.
+ * Reads the file line by line for memory efficiency.
+ *
+ * @param {string} jsonlPath - Path to the session JSONL file.
+ * @param {string} quote - The exact text to find (substring match within a human message).
+ * @returns {Promise<{ found: boolean, lineNumber?: number, timestamp?: string, lineContent?: string }>}
+ */
+export async function verifyQuoteInJsonl(jsonlPath, quote) {
+  if (!fs.existsSync(jsonlPath)) {
+    return { found: false };
+  }
+
+  const fileStream = fs.createReadStream(jsonlPath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+  let lineNumber = 0;
+  for await (const line of rl) {
+    lineNumber++;
+    if (!line.trim()) continue;
+
+    try {
+      const entry = JSON.parse(line);
+
+      // Check human/user message types (Claude Code JSONL format)
+      const type = entry.type || entry.role;
+      if (type !== 'human' && type !== 'user') continue;
+
+      // Extract text content — handle both string and structured content
+      let text = '';
+      if (typeof entry.message?.content === 'string') {
+        text = entry.message.content;
+      } else if (typeof entry.content === 'string') {
+        text = entry.content;
+      } else if (Array.isArray(entry.message?.content)) {
+        text = entry.message.content
+          .filter(b => b.type === 'text')
+          .map(b => b.text)
+          .join('\n');
+      } else if (Array.isArray(entry.content)) {
+        text = entry.content
+          .filter(b => b.type === 'text')
+          .map(b => b.text)
+          .join('\n');
+      }
+
+      if (text.includes(quote)) {
+        rl.close();
+        fileStream.destroy();
+        return {
+          found: true,
+          lineNumber,
+          timestamp: entry.timestamp || entry.created_at || null,
+          lineContent: line.slice(0, 2000), // Cap for storage
+        };
+      }
+    } catch {
+      // Skip malformed lines
+    }
+  }
+
+  return { found: false };
+}
+
+// ============================================================================
+// Session JSONL Discovery
+// ============================================================================
+
+/**
+ * Find the current interactive CTO session's JSONL file.
+ *
+ * Strategy:
+ *  1. Check CLAUDE_SESSION_ID env var for direct lookup
+ *  2. Fall back to most-recently-modified JSONL in the project's session directory
+ *
+ * @param {string} projectDir
+ * @returns {{ sessionId: string, jsonlPath: string } | null}
+ */
+export function findCurrentSessionJsonl(projectDir) {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+
+  // Derive the encoded project path for Claude's session directory
+  const encodedPath = projectDir.replace(/\//g, '-');
+  const sessionDir = path.join(homeDir, '.claude', 'projects', encodedPath);
+
+  // Strategy 1: Direct lookup via CLAUDE_SESSION_ID
+  const sessionId = process.env.CLAUDE_SESSION_ID;
+  if (sessionId) {
+    const directPath = path.join(sessionDir, `${sessionId}.jsonl`);
+    if (fs.existsSync(directPath)) {
+      return { sessionId, jsonlPath: directPath };
+    }
+  }
+
+  // Strategy 2: Most recently modified JSONL (interactive CTO session)
+  if (!fs.existsSync(sessionDir)) return null;
+
+  let bestFile = null;
+  let bestMtime = 0;
+
+  try {
+    for (const file of fs.readdirSync(sessionDir)) {
+      if (!file.endsWith('.jsonl')) continue;
+      const filePath = path.join(sessionDir, file);
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs > bestMtime) {
+          // Skip very small files (likely empty/aborted sessions)
+          if (stat.size < 100) continue;
+
+          // Check first 2KB for automation markers — skip non-CTO sessions
+          const head = fs.readFileSync(filePath, { encoding: 'utf8', flag: 'r' }).slice(0, 2048);
+          if (head.includes('[Automation]') || head.includes('[Task]') || head.includes('[AGENT:')) {
+            continue;
+          }
+
+          bestMtime = stat.mtimeMs;
+          bestFile = filePath;
+        }
+      } catch {
+        // Skip unreadable files
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  if (!bestFile) return null;
+
+  const id = path.basename(bestFile, '.jsonl');
+  return { sessionId: id, jsonlPath: bestFile };
+}

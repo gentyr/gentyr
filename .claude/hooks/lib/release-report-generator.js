@@ -490,6 +490,38 @@ function generateScreenshots(artifactDir) {
   return `${allScreenshots.length} screenshot(s) captured:\n\n${allScreenshots.join('\n')}`;
 }
 
+/**
+ * Generate the CTO Approval section.
+ * Reads cto-approval.json from the artifact directory if it exists.
+ */
+function generateCtoApproval(artifactDir) {
+  const proofPath = path.join(artifactDir, 'cto-approval.json');
+  if (!fs.existsSync(proofPath)) {
+    return '_Pending CTO approval._';
+  }
+
+  try {
+    const proof = JSON.parse(fs.readFileSync(proofPath, 'utf8'));
+    const lines = [];
+    lines.push(`**Approved by**: CTO`);
+    lines.push(`**Timestamp**: ${proof.approved_at || 'unknown'}`);
+    lines.push('');
+    lines.push('**Verbatim approval**:');
+    lines.push(`> ${proof.approval_text}`);
+    lines.push('');
+    lines.push('**Evidence chain**:');
+    lines.push(`- Session transcript: \`${proof.session_jsonl_archived || 'cto-approval-session.jsonl'}\``);
+    lines.push(`- Session file SHA-256: \`${proof.session_file_hash || 'unknown'}\``);
+    lines.push(`- Approval HMAC proof: \`${(proof.hmac || '').slice(0, 16)}...\``);
+    lines.push(`- HMAC domain: \`${proof.domain_separator || 'cto-release-approval'}\``);
+    lines.push('');
+    lines.push('Full cryptographic proof chain stored in `cto-approval.json`.');
+    return lines.join('\n');
+  } catch {
+    return '_CTO approval recorded but proof file could not be parsed._';
+  }
+}
+
 // ============================================================================
 // Main Export
 // ============================================================================
@@ -599,7 +631,8 @@ export async function generateStructuredReport(releaseId, projectDir = PROJECT_D
     .replace('{evidence_sessions}', evidenceSessions)
     .replace('{evidence_tasks}', evidenceTasks)
     .replace('{evidence_reports}', evidenceReports)
-    .replace('{screenshots}', screenshots);
+    .replace('{screenshots}', screenshots)
+    .replace('{cto_approval}', generateCtoApproval(artifactDir));
 
   // Write report
   const mdPath = path.join(artifactDir, 'report.md');
