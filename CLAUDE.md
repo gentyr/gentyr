@@ -1172,6 +1172,8 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 
 **`pending-sync-notifier.js` UserPromptSubmit hook**: In interactive (CTO) sessions only, warns when any pending configuration files exist that require `npx gentyr sync` to apply. Checks all 4 pending file types: `secrets-local-pending.json`, `services-config-pending.json`, `mcp-servers-pending.json`, and `fly-config-pending.json`. Shows a `systemMessage` in the terminal listing each pending file and its contents — does NOT inject into model context. 10-minute cooldown. Skipped for spawned sessions.
 
+**`elastic` section in `ServicesConfigSchema`**: Optional section in `services.json` enabling centralized Elastic Cloud log shipping from all project components. Fields: `apiKey` (op:// ref, required), `cloudId` (op:// ref, Elastic Cloud), `endpoint` (op:// ref, Serverless — mutually exclusive with cloudId at runtime), `queryApiKey` (op:// ref, optional read-only key for querying), `enabled` (boolean, default true), `indexPrefix` (string, default `'logs'`; produces indices named `{prefix}-{service}-{date}`). Configured via `mcp__secret-sync__update_services_config`. Credentials for local dev and demos are added to `secrets.local` via `mcp__secret-sync__populate_secrets_local`. Deployment credentials (renderProduction, renderStaging, vercel) must be configured separately and synced via `/push-secrets`. Session briefing shows a one-line logging health status at login. Use `mcp__elastic-logs__verify_logging_config` to check configuration completeness across all environments.
+
 > Full details: [Secret Management](docs/CLAUDE-REFERENCE.md#secret-management)
 
 ## Icon Processor MCP Server
@@ -1533,7 +1535,7 @@ Key modules consumed by hooks:
 | render | Service management |
 | codecov | Coverage tracking |
 | resend | Email sending |
-| elastic-logs | Log querying |
+| elastic-logs | Log querying, logging config verification (`query_logs`, `get_log_stats`, `verify_logging_config`) |
 
 #### Browser Automation Servers
 
