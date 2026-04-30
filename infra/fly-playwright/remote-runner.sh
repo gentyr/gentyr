@@ -572,6 +572,68 @@ if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
     kill -9 "$FFMPEG_PID" 2>/dev/null || true
   fi
   log "Recording stopped"
+
+  # ── Post-process: trim dead frames from start and end ──
+  # Start: the signal file timestamp tells us when automation began.
+  #   ffmpeg started when the signal was detected, but Chrome was already
+  #   showing about:blank/dashboard from the fixture. The first automation
+  #   action happens ~2s after the signal (page.goto fires). Skip the first
+  #   few seconds of fixture UI.
+  # End: use blackdetect to find when Chrome closed (black screen).
+  if [[ -f "$RECORDING_FILE" ]]; then
+    RECORDING_SIZE=$(stat -c%s "$RECORDING_FILE" 2>/dev/null || stat -f%z "$RECORDING_FILE" 2>/dev/null || echo 0)
+    if [[ "$RECORDING_SIZE" -gt 100000 ]]; then
+      log "Trimming recording..."
+
+      # Find the last black frame start (= Chrome closed)
+      TRIM_END=""
+      BLACK_DETECT=$(ffmpeg -i "$RECORDING_FILE" -vf "blackdetect=d=0.5:pix_th=0.1" -f null - 2>&1 | grep "black_start" | tail -1 || true)
+      if [[ -n "$BLACK_DETECT" ]]; then
+        TRIM_END=$(echo "$BLACK_DETECT" | grep -oP 'black_start:\K[0-9.]+' || true)
+        # GNU grep -P not available on all systems, try sed fallback
+        if [[ -z "$TRIM_END" ]]; then
+          TRIM_END=$(echo "$BLACK_DETECT" | sed -n 's/.*black_start:\([0-9.]*\).*/\1/p' || true)
+        fi
+      fi
+
+      # Find the first non-blank content by detecting when the page navigates
+      # away from about:blank. Use freezedetect: the first frame change after
+      # the initial static blank page marks the dashboard appearing.
+      TRIM_START=""
+      FREEZE_DETECT=$(ffmpeg -i "$RECORDING_FILE" -vf "freezedetect=n=0.003:d=1" -f null - 2>&1 | grep "freeze_end" | head -1 || true)
+      if [[ -n "$FREEZE_DETECT" ]]; then
+        TRIM_START=$(echo "$FREEZE_DETECT" | grep -oP 'freeze_end:\K[0-9.]+' || true)
+        if [[ -z "$TRIM_START" ]]; then
+          TRIM_START=$(echo "$FREEZE_DETECT" | sed -n 's/.*freeze_end:\([0-9.]*\).*/\1/p' || true)
+        fi
+      fi
+
+      # Apply trim if we found valid points
+      FFMPEG_TRIM_ARGS=""
+      if [[ -n "$TRIM_START" ]]; then
+        log "Trim start: ${TRIM_START}s (first content change)"
+        FFMPEG_TRIM_ARGS="-ss $TRIM_START"
+      fi
+      if [[ -n "$TRIM_END" ]]; then
+        log "Trim end: ${TRIM_END}s (black screen detected)"
+        FFMPEG_TRIM_ARGS="$FFMPEG_TRIM_ARGS -to $TRIM_END"
+      fi
+
+      if [[ -n "$FFMPEG_TRIM_ARGS" ]]; then
+        TRIMMED_FILE="${RECORDING_FILE%.mp4}-trimmed.mp4"
+        if ffmpeg -i "$RECORDING_FILE" $FFMPEG_TRIM_ARGS -c copy -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
+          mv "$TRIMMED_FILE" "$RECORDING_FILE"
+          NEW_SIZE=$(stat -c%s "$RECORDING_FILE" 2>/dev/null || stat -f%z "$RECORDING_FILE" 2>/dev/null || echo "?")
+          log "Trimmed recording: ${RECORDING_SIZE} -> ${NEW_SIZE} bytes"
+        else
+          log "WARNING: Trim failed — keeping original recording"
+          rm -f "$TRIMMED_FILE"
+        fi
+      else
+        log "No trim points detected — keeping original recording"
+      fi
+    fi
+  fi
 fi
 
 # The EXIT trap (cleanup) handles: writing exit code, stopping Xvfb,
