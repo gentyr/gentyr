@@ -485,6 +485,18 @@ function getBlockingQueueCount() {
 }
 
 /**
+ * Read preview → staging drift count from automation state file.
+ * Fast: file read only, no git subprocess.
+ */
+function getPreviewDriftFromState() {
+  try {
+    const statePath = path.join(PROJECT_DIR, '.claude', 'state', 'hourly-automation-state.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    return state.previewStagingDriftCount || 0;
+  } catch { return 0; }
+}
+
+/**
  * Get active release status for the CTO status line.
  * Returns null if no active release, or { label } with the display string.
  */
@@ -840,6 +852,10 @@ async function main() {
     if (blockingCount > 0) {
       parts.push(`${blockingCount} BLOCKING`);
     }
+    const criticalDrift = getPreviewDriftFromState();
+    if (criticalDrift > 0) {
+      parts.push(`STAGING: ${criticalDrift} behind`);
+    }
     parts.push(`${itemCount} pending item(s)`);
     if (quotaPart) parts.push(quotaPart);
     parts.push(`${formatTokens(tokenUsage)} tokens`);
@@ -891,6 +907,12 @@ async function main() {
     if (ptCounts) {
       const deadStr = ptCounts.dead > 0 ? ` (${ptCounts.dead} dead monitor${ptCounts.dead > 1 ? 's' : ''})` : '';
       lines.push(`Persistent: ${ptCounts.active} active${deadStr}`);
+    }
+
+    // Line 3c: Preview → Staging drift
+    const previewDrift = getPreviewDriftFromState();
+    if (previewDrift > 0) {
+      lines.push(`Staging: ${previewDrift} commit${previewDrift === 1 ? '' : 's'} behind preview`);
     }
 
     // Line 4: Blocking queue (work-stopping items — shown above pending)
