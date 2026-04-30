@@ -71,6 +71,10 @@ export interface RemoteDemoRequest {
   headless?: boolean;
   /** For tracking */
   scenarioId?: string;
+  /** Unique run ID for Tigris artifact key prefix (format: dr-{scenarioId}-{ts}-{hex}) */
+  runId?: string;
+  /** Path to services.json for Tigris config discovery */
+  servicesJsonPath?: string;
 }
 
 export interface RemoteDemoHandle {
@@ -80,6 +84,10 @@ export interface RemoteDemoHandle {
   /** Date.now() when machine was created */
   startedAt: number;
   scenarioId?: string;
+  /** Run ID for Tigris artifact key prefix */
+  runId?: string;
+  /** Path to services.json for Tigris config discovery */
+  servicesJsonPath?: string;
 }
 
 export interface RemoteProgressEvent {
@@ -391,6 +399,28 @@ export async function spawnRemoteMachine(
   // GIT_AUTH_TOKEN is passed through from pre-resolved env if present —
   // it is already in mergedEnv via the spread of request.env above.
 
+  // Tigris presigned upload URLs — non-fatal, additive only.
+  // If Tigris is configured and a runId is provided, generate presigned PUT URLs
+  // and inject them as ARTIFACT_UPLOAD_URLS for the remote runner's EXIT trap.
+  if (request.runId && request.servicesJsonPath) {
+    try {
+      const { isTigrisConfigured, resolveTigrisConfig, generateArtifactUploadUrls } = await import('./artifact-storage.js');
+      if (isTigrisConfigured(request.servicesJsonPath)) {
+        const { opRead: opReadFn } = await import('../shared/op-secrets.js');
+        const tigrisConfig = resolveTigrisConfig(opReadFn, request.servicesJsonPath);
+        if (tigrisConfig) {
+          const uploadUrls = await generateArtifactUploadUrls(tigrisConfig, request.runId);
+          mergedEnv['ARTIFACT_UPLOAD_URLS'] = JSON.stringify(uploadUrls);
+          process.stderr.write(`[fly-runner] Tigris presigned upload URLs injected for run ${request.runId} (bucket: ${tigrisConfig.bucket})\n`);
+        }
+      }
+    } catch (tigrisErr: unknown) {
+      const msg = tigrisErr instanceof Error ? tigrisErr.message : String(tigrisErr);
+      process.stderr.write(`[fly-runner] Tigris presigned URL generation failed (non-fatal): ${msg}\n`);
+      // Non-fatal — machine will still work, artifacts retrieved via exec API
+    }
+  }
+
   const machineName = buildMachineName(request.scenarioId);
 
   const mounts = config.volumeId
@@ -442,6 +472,8 @@ export async function spawnRemoteMachine(
     region: config.region,
     startedAt: Date.now(),
     scenarioId: request.scenarioId,
+    runId: request.runId,
+    servicesJsonPath: request.servicesJsonPath,
   };
 }
 
@@ -758,6 +790,37 @@ export async function pullRemoteArtifacts(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[fly-runner] failed to write ${localName}: ${message}\n`);
+    }
+  }
+
+  // --- Step 3: Tigris fallback for recording.mp4 ---
+  // If recording.mp4 was not pulled via exec (missing, zero bytes, or exceeded size limit),
+  // attempt to download it from Tigris object storage. This handles the common case where
+  // the MP4 is too large for the exec API's 15MB UTF-8 response limit.
+  if (handle.runId && handle.servicesJsonPath) {
+    const recordingLocalPath = path.join(destDir, 'recording.mp4');
+    const recordingExists = fsSync.existsSync(recordingLocalPath) && fsSync.statSync(recordingLocalPath).size > 0;
+
+    if (!recordingExists) {
+      try {
+        const { isTigrisConfigured, resolveTigrisConfig, downloadArtifact: downloadFromTigris } = await import('./artifact-storage.js');
+        if (isTigrisConfigured(handle.servicesJsonPath)) {
+          const { opRead: opReadFn } = await import('../shared/op-secrets.js');
+          const tigrisConfig = resolveTigrisConfig(opReadFn, handle.servicesJsonPath);
+          if (tigrisConfig) {
+            process.stderr.write(`[fly-runner] Attempting Tigris download for recording.mp4 (run: ${handle.runId})\n`);
+            const ok = await downloadFromTigris(tigrisConfig, handle.runId, 'recording.mp4', recordingLocalPath);
+            if (ok) {
+              artifacts.push({ localPath: recordingLocalPath, type: 'video' });
+              process.stderr.write(`[fly-runner] Tigris download succeeded for recording.mp4\n`);
+            }
+          }
+        }
+      } catch (tigrisErr: unknown) {
+        const msg = tigrisErr instanceof Error ? tigrisErr.message : String(tigrisErr);
+        process.stderr.write(`[fly-runner] Tigris recording download failed (non-fatal): ${msg}\n`);
+        // Non-fatal — the recording is a nice-to-have, not critical for pass/fail
+      }
     }
   }
 

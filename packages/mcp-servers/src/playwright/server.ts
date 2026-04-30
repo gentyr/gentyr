@@ -2601,6 +2601,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               slowMo: args.slow_mo ?? 0,
               headless: args.headless,
               scenarioId: args.scenario_id,
+              runId,
+              servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
             });
 
             // Synthetic PID in the Steel range (-1_000_001 to -2_000_000)
@@ -2806,6 +2808,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         devServerHealthCheck,
         buildCmd: undefined,
         scenarioId: args.scenario_id,
+        runId,
+        servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
       });
 
       const syntheticPid = -(Math.abs(hashCode(handle.machineId)) % 1_000_000 + 1);
@@ -2819,6 +2823,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         remote: true,
         fly_machine_id: handle.machineId,
         fly_app_name: handle.appName,
+        run_id: runId,
       };
       demoRuns.set(syntheticPid, remoteDemoState);
       persistDemoRuns();
@@ -4106,6 +4111,29 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
             process.stderr.write(`[playwright] Remote fallback: using CDP video from artifacts: ${remoteWebm}\n`);
           }
         } catch { /* Non-fatal */ }
+      }
+
+      // Tigris fallback: if recording.mp4 was not pulled via exec or found as .webm,
+      // attempt download from Tigris object storage (handles large MP4s that exceed exec API limit)
+      if (!videoToUseRemote && entry.run_id) {
+        try {
+          const tigrisServicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+          const { isTigrisConfigured, resolveTigrisConfig, downloadArtifact: downloadFromTigris } = await import('./artifact-storage.js');
+          if (isTigrisConfigured(tigrisServicesPath)) {
+            const tigrisConfig = resolveTigrisConfig(opRead, tigrisServicesPath);
+            if (tigrisConfig) {
+              process.stderr.write(`[playwright] Attempting Tigris download for recording.mp4 (run: ${entry.run_id})\n`);
+              const tigrisRecordingDest = path.join(destDir, 'recording.mp4');
+              const ok = await downloadFromTigris(tigrisConfig, entry.run_id, 'recording.mp4', tigrisRecordingDest);
+              if (ok) {
+                videoToUseRemote = tigrisRecordingDest;
+                process.stderr.write(`[playwright] Tigris download succeeded for recording.mp4\n`);
+              }
+            }
+          }
+        } catch (tigrisErr) {
+          process.stderr.write(`[playwright] Tigris recording download failed (non-fatal): ${tigrisErr instanceof Error ? tigrisErr.message : String(tigrisErr)}\n`);
+        }
       }
 
       if (videoToUseRemote) {
@@ -6962,6 +6990,10 @@ async function runRemoteBatchSequence(
           }
         } catch { /* non-fatal */ }
 
+        // Generate unique run ID for Tigris correlation (same format as run_demo)
+        const batchScenarioSlug = (batchScenario.scenario_id || 'adhoc').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 30);
+        const batchRunId = `dr-${batchScenarioSlug}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+
         const handle = await flyRunnerMod.spawnRemoteMachine(machineConfig, {
           gitRemote,
           gitRef,
@@ -6974,6 +7006,8 @@ async function runRemoteBatchSequence(
           devServerPort,
           devServerHealthCheck,
           scenarioId: batchScenario.scenario_id,
+          runId: batchRunId,
+          servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
         });
 
         // Poll until machine stops — pull artifacts proactively when exit code is written
@@ -8214,6 +8248,22 @@ const tools: AnyToolHandler[] = [
           imageMessage = 'Could not verify image deployment (registry API unreachable or timed out)';
         }
 
+        // Check Tigris object storage configuration (best-effort, non-fatal)
+        let tigrisConfigured = false;
+        let tigrisBucket: string | undefined;
+        try {
+          const tigrisServicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+          const { isTigrisConfigured: checkTigris } = await import('./artifact-storage.js');
+          tigrisConfigured = checkTigris(tigrisServicesPath);
+          if (tigrisConfigured) {
+            // Read bucket name from services.json without resolving credentials
+            const raw = JSON.parse(fs.readFileSync(tigrisServicesPath, 'utf-8'));
+            tigrisBucket = raw?.fly?.tigrisBucket;
+          }
+        } catch {
+          // Non-fatal — Tigris is optional
+        }
+
         return JSON.stringify({
           configured: true,
           enabled: true,
@@ -8228,6 +8278,8 @@ const tools: AnyToolHandler[] = [
           maxConcurrentMachines: flyConfig.maxConcurrentMachines,
           activeMachines: activeMachines.length,
           machines: activeMachines,
+          tigrisConfigured,
+          ...(tigrisBucket ? { tigrisBucket } : {}),
           ...(imageMessage ? { imageMessage } : {}),
         });
       } catch (err) {

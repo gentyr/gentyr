@@ -91,7 +91,45 @@ cleanup() {
   #    where artifacts haven't been copied yet when exit-code appears.
   touch /app/.artifacts-ready
 
-  # 6. Grace period: keep the machine alive so the MCP server can pull artifacts
+  # 6. Upload binary artifacts to Tigris (if presigned URLs provided)
+  if [[ -n "${ARTIFACT_UPLOAD_URLS:-}" ]]; then
+    log "Uploading artifacts to Tigris..."
+
+    upload_artifact() {
+      local file="$1" url="$2" content_type="$3"
+      if [[ -f "$file" && -n "$url" ]]; then
+        local size
+        size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null || echo "?")
+        if curl -sf --max-time 120 -X PUT -T "$file" -H "Content-Type: $content_type" "$url"; then
+          log "Uploaded $(basename "$file") to Tigris (${size} bytes)"
+        else
+          log "WARNING: Failed to upload $(basename "$file") to Tigris"
+        fi
+      fi
+    }
+
+    # Extract URLs from JSON using jq (available in the Docker image)
+    extract_url() { echo "$ARTIFACT_UPLOAD_URLS" | jq -r ".urls[\"$1\"] // empty" 2>/dev/null; }
+
+    upload_artifact "$RECORDING_FILE" "$(extract_url 'recording.mp4')" "video/mp4"
+    upload_artifact "/app/.stdout.log" "$(extract_url 'stdout.log')" "text/plain"
+    upload_artifact "/app/.stderr.log" "$(extract_url 'stderr.log')" "text/plain"
+    upload_artifact "/app/.exit-code" "$(extract_url 'exit-code')" "text/plain"
+    upload_artifact "/app/.progress.jsonl" "$(extract_url 'progress.jsonl')" "application/x-ndjson"
+    upload_artifact "/app/.error.log" "$(extract_url 'error.log')" "text/plain"
+    upload_artifact "/app/.ffmpeg.log" "$(extract_url 'ffmpeg.log')" "text/plain"
+    upload_artifact "/app/.devserver.log" "$(extract_url 'devserver.log')" "text/plain"
+
+    # Upload any trace.zip files
+    for trace_file in /app/project/playwright-results/*/trace.zip; do
+      if [[ -f "$trace_file" ]]; then
+        upload_artifact "$trace_file" "$(extract_url 'trace.zip')" "application/zip"
+        break  # Only upload the first trace
+      fi
+    done
+  fi
+
+  # 7. Grace period: keep the machine alive so the MCP server can pull artifacts
   #    via the /exec API. Without this, auto_destroy kills the machine immediately.
   log "Sleeping 60s for artifact retrieval..."
   sleep 60
