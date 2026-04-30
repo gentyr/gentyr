@@ -135,7 +135,11 @@ export const PresentReleaseSummaryArgsSchema = z.object({
 
 export const RecordCtoApprovalArgsSchema = z.object({
   release_id: z.string().min(1).describe('Release ID'),
-  approval_text: z.string().min(10).describe('Verbatim CTO approval quote from the interactive session (e.g., "Approved for production")'),
+  approval_text: z.string().optional().describe(
+    'Verbatim CTO approval quote from the interactive session (e.g., "Approved for production"). ' +
+    'Required for "cto" and "deputy" approval tiers (must be at least 10 characters). ' +
+    'Optional for "automated" tier — defaults to "Automated sign-off: all quality gates passed".'
+  ),
 });
 
 // ============================================================================

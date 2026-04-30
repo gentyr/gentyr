@@ -213,6 +213,51 @@ Add one task per phase:
 - Description: "Execute unit tests, integration tests, and all registered demo scenarios. ALL demos MUST run remotely on Fly.io with video recording (use run_demo_batch — recorded: true and remote: true are the defaults, meaning headed + Xvfb + ffmpeg on Fly.io). Use run_demo_batch for concurrent execution across multiple Fly.io machines. Collect test-results.json and demo-results.json in the release artifact directory. After all demos complete, call mcp__user-feedback__verify_demo_completeness({ since: '<release_created_at>', branch: '<current_branch>' }) and confirm complete: true before marking this task done."
 - verification_strategy: "All tests pass AND mcp__user-feedback__verify_demo_completeness({ since: '<release_created_at>' }) returns complete: true with 0 scenarios_missing_pass and 0 scenarios_missing_recording"
 
+### 5d-canary. Conditional Canary Phase (only when `canary.enabled: true` in services.json)
+
+Before adding Phase 5 and beyond, check services.json for canary configuration:
+
+```bash
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })"
+node -e "
+import fs from 'fs';
+import path from 'path';
+const configPath = path.join(process.cwd(), '.claude', 'config', 'services.json');
+if (fs.existsSync(configPath)) {
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  console.log(JSON.stringify({
+    canaryEnabled: !!config.canary?.enabled,
+    trafficPercentage: config.canary?.trafficPercentage || 10,
+    monitoringWindowMinutes: config.canary?.monitoringWindowMinutes || 15,
+    errorRateThreshold: config.canary?.errorRateThreshold || 5,
+    releaseApprovalTier: config.releaseApprovalTier || 'cto'
+  }));
+} else { console.log(JSON.stringify({ canaryEnabled: false, releaseApprovalTier: 'cto' })); }
+" --input-type=module
+```
+
+**If `canaryEnabled` is `true`**: Insert an additional phase between Phase 4 and Phase 5.
+
+Add a new phase: `title: "Canary Verification"`, `gate: true`, `required: true`
+
+Add a task to that phase:
+
+```
+mcp__plan-orchestrator__add_plan_task({
+  plan_id: "<plan_id>",
+  phase_id: "<canary_phase_id>",
+  title: "Deploy canary and monitor error rate",
+  description: "Deploy the staging build to production at <trafficPercentage>% traffic. Monitor error rates for <monitoringWindowMinutes> minutes using the canary-deploy module. If error rate exceeds <errorRateThreshold>%, auto-rollback and fail the phase. Use deployCanary(), monitorCanary(), and rollbackCanary() from .claude/hooks/lib/canary-deploy.js.",
+  verification_strategy: "Error rate below <errorRateThreshold>% for <monitoringWindowMinutes> minutes. Canary monitoring report shows healthy: true."
+})
+```
+
+Substitute the actual values from the canary config into the description and verification_strategy.
+
+Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo Coverage Audit) depends on the canary phase.
+
+**If `canaryEnabled` is `false`**: Skip this step entirely. Do not add the canary phase to the plan.
+
 **Phase 5 task**: "Demo Coverage Audit"
 - Description: "Review all PRs in this release and verify every user-facing feature has a demo scenario. Create missing demos via demo-manager. Run all new demos remotely on Fly.io with recording (run_demo with recorded: true, remote: true). Gate: screenshot proof from demos covering new features — use get_demo_screenshot and extract_video_frames to collect visual evidence."
 - verification_strategy: "All changed features have passing demo scenarios with screenshot evidence in the release artifact directory"
@@ -221,8 +266,11 @@ Add one task per phase:
 - Description: "Deputy-CTO reviews all test/demo results, outstanding issues, and Phase 3 meta-review findings. Makes go/no-go recommendation."
 
 **Phase 7 task**: "CTO Sign-off"
-- Description: "Awaiting CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Submit a bypass request to the CTO: 'Production release ready — review report and artifacts, then state your approval.' (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'. The CTO's interactive session agent handles the approval flow: calls present_release_summary to show the report, waits for verbal CTO approval, then calls record_cto_approval with the verbatim quote."
-- verification_strategy: "Release status is 'signed_off' AND cto-approval.json exists in the release artifact directory with a valid HMAC proof chain (verified by checking the file exists and contains release_id, session_id, approval_text, session_file_hash, hmac, and domain_separator fields)"
+- Description depends on `releaseApprovalTier` from the canary config check above:
+  - **If `releaseApprovalTier` is `"automated"`**: "All gate phases have passed. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Call mcp__release-ledger__record_cto_approval({ release_id }) — the automated tier allows the plan-manager to sign off directly without CTO intervention. (3) Verify release status is 'signed_off'."
+  - **If `releaseApprovalTier` is `"deputy"`**: "Awaiting CTO or deputy-CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Submit a bypass request to the CTO or deputy-CTO: 'Production release ready — review report and artifacts, then state your approval.' (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'."
+  - **Otherwise (default `"cto"`)**: "Awaiting CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Submit a bypass request to the CTO: 'Production release ready — review report and artifacts, then state your approval.' (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'. The CTO's interactive session agent handles the approval flow: calls present_release_summary to show the report, waits for verbal CTO approval, then calls record_cto_approval with the verbatim quote."
+- verification_strategy: "Release status is 'signed_off' AND cto-approval.json exists in the release artifact directory"
 
 **Phase 8 task**: "Generate Release Report"
 - Description: "Collect all artifacts, generate the structured release report, and persist to the release ledger."

@@ -346,11 +346,28 @@ export const ServicesConfigSchema = z.object({
     label: z.string().optional().describe('Human-readable label shown in the dashboard (defaults to the key name)'),
     branch: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/).optional().describe('Git branch to auto-pull before running demos locally (e.g., "staging", "main"). When set, the dashboard auto-pulls this branch into the main tree before starting the dev server.'),
     healthEndpoint: z.string().optional().describe(
-      'Health check endpoint path for post-deploy verification (e.g., "/api/health"). ' +
-      'Used by the preview-promoter agent and deploy-event-monitor to verify deployments after promotion.'
+      'Health check endpoint path for post-deploy verification and canary monitoring (e.g., "/api/health"). ' +
+      'Used by the preview-promoter agent, deploy-event-monitor, and canary rollout to verify deployments.'
     ),
   })).optional()
     .describe('Named environments for demo targeting. Keys are environment names (e.g., "staging", "production"). The CTO Dashboard uses these to run demos against deployed URLs instead of localhost.'),
+  canary: z.object({
+    enabled: z.boolean().default(false).describe('Enable canary/progressive rollout for production deployments'),
+    platform: z.enum(['vercel', 'render']).default('vercel').describe('Deployment platform for canary releases'),
+    trafficPercentage: z.number().min(1).max(50).default(10).describe('Percentage of traffic to route to canary'),
+    monitoringWindowMinutes: z.number().min(1).max(120).default(15).describe('Minutes to monitor canary before promoting'),
+    errorRateThreshold: z.number().min(0).max(100).default(5).describe('Error rate percentage that triggers rollback'),
+    rollbackOnFailure: z.boolean().default(true).describe('Auto-rollback when error rate exceeds threshold'),
+  }).optional().describe(
+    'Canary deployment configuration. When enabled, production releases deploy to a small traffic percentage first, ' +
+    'monitor error rates, and auto-rollback on degradation. Requires environments.production.baseUrl to be configured.'
+  ),
+  releaseApprovalTier: z.enum(['cto', 'deputy', 'automated']).default('cto').optional().describe(
+    'Who can sign off production releases. ' +
+    '"cto" (default) = only interactive CTO sessions. ' +
+    '"deputy" = CTO or deputy-CTO sessions. ' +
+    '"automated" = plan-manager auto-signs-off when all gate phases pass (requires canary.enabled for safety).'
+  ),
   secretProfiles: z.record(z.string(), SecretProfileSchema).optional(),
   secrets: z.object({
     renderProduction: z.record(z.string(), z.string()).optional(),
