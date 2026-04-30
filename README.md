@@ -32,13 +32,13 @@ See [docs/STACK.md](docs/STACK.md) for technical details and MCP server mappings
 
 ### agents
 
-Sixteen specialized roles. Fixed sequence: investigate, plan, write, test, review, align, analyze. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. The user-alignment agent cannot modify files. The product manager cannot modify code. No general-purpose fallback exists.
+Twenty-one specialized roles. Fixed sequence: investigate, plan, write, test, review, align, analyze. Each agent has restricted tool access and a single responsibility. The investigator cannot edit files. The code writer cannot deploy. The test writer cannot approve commits. The user-alignment agent cannot modify files. The product manager cannot modify code. No general-purpose fallback exists.
 
 The persistent monitor is a long-running Opus session that the CTO delegates complex multi-step objectives to. It oversees sub-agents and drives work to completion without supervision. Create one with `/persistent-task`, manage all active monitors with `/persistent-tasks`.
 
 ### hooks
 
-Eighty automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing. Hooks govern what agents can and cannot do.
+Eighty-six automation hooks triggered by session events, commits, timers, and failures. They run without being asked. Credential sync, test failure response, stale work detection, merge chain enforcement, compliance checking, antipattern scanning, secret leak detection, long-running command routing, audit gate enforcement, signal compliance validation. Hooks govern what agents can and cannot do.
 
 ### servers
 
@@ -233,7 +233,7 @@ npm run generate:readme
 
 ## the automation layer
 
-Eighty hooks and background timers keep the system running without human triggers.
+Eighty-six hooks and background timers keep the system running without human triggers.
 
 ### credentials
 
@@ -249,7 +249,9 @@ A background timer spawns agents for pending tasks every cycle. Urgent tasks dis
 
 Structured multi-phase work is managed by the plan orchestrator (`plan-orchestrator` MCP server). Plans contain phases, tasks, substeps, and dependency graphs with cycle detection. Progress rolls up automatically from substep to plan. PR merges auto-advance linked plan tasks via the plan-merge-tracker hook. Four dashboard views (`/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`) show live execution state. Plans are executed by a dedicated `plan-manager` agent — itself a specialized persistent task monitor — which spawns a separate persistent task per plan step and tracks them to completion. **Activating a plan (`update_plan_status(status: "active")`) automatically spawns the plan-manager** via the `plan-activation-spawner` PostToolUse hook — do NOT manually spawn tasks or call `get_spawn_ready_tasks`/`force_spawn_tasks` after activation; the plan-manager handles all orchestration automatically. The `plan-persistent-sync.js` hook auto-completes linked plan tasks when their persistent task finishes, cascading phase and plan completion automatically. A multi-layer completion gate prevents plans from being marked complete when verification phases were skipped: gate phases block task skipping entirely, skipped phases do not count as complete, and plans with any skipped required phase require explicit `force_complete` with a justification note. Plan tasks with a `verification_strategy` field go through an additional audit gate: when the task is marked complete, it enters `pending_audit` status and `plan-audit-spawner.js` enqueues an independent Haiku auditor in the `audit` session lane. The auditor verifies the completion evidence matches the strategy, then calls `verification_audit_pass` (advances to `completed`, cascades) or `verification_audit_fail` (resets to `in_progress`) — preventing plan managers from accepting unverified success claims.
 
-Complex delegated objectives run through the persistent task system. The CTO creates a persistent task via `/persistent-task`, which refines the intent into a high-specificity prompt and spawns a dedicated Opus monitor session. The monitor runs in its own session queue lane (not counted against the global concurrency cap), creates and tracks sub-tasks, acknowledges amendments as the CTO steers the objective, and drives work to completion without interruption. Manage all active monitors with `/persistent-tasks`.
+Individual todo-db tasks and persistent tasks with a `gate_success_criteria` field go through the Universal Audit Gate. On completion, `universal-audit-spawner.js` transitions the task to `pending_audit` and enqueues an independent `universal-auditor` agent in the `audit` session lane. The auditor verifies actual artifacts against the stated criteria, then passes or fails the gate — preventing agents from claiming completion without evidence. The `gate-confirmation-enforcer.js` PreToolUse hook blocks any re-completion attempt while the audit is in progress. The `signal-compliance-gate.js` hook validates all inter-agent signals before delivery, and directive signals must be acknowledged before an agent can complete its task.
+
+Complex delegated objectives run through the persistent task system. The CTO creates a persistent task via `/persistent-task`, which refines the intent into a high-specificity prompt and spawns a dedicated Opus monitor session. The monitor runs in its own session queue lane (not counted against the global concurrency cap), creates and tracks sub-tasks, acknowledges amendments as the CTO steers the objective, and drives work to completion without interruption. Manage all active monitors with `/persistent-tasks`. An optional Global Deputy-CTO Monitor (persistent task with `GENTYR_DEPUTY_CTO_MONITOR=true`) continuously checks active tasks for alignment with CTO intent, dispatching user-alignment sub-agents before code is written and escalating significant drift.
 
 Task routing is driven by a category system stored in `todo.db`. Each category defines an agent pipeline (sequence of sub-agent types), model tier, creator restrictions, and urgency authorization. Five categories are seeded by default: Standard Development (6-step pipeline), Deep Investigation, Test Suite Work, Triage & Delegation, and Demo Design. Categories replace the legacy hardcoded section routing and can be created or modified at runtime via MCP tools without code changes.
 
@@ -289,7 +291,7 @@ The Notion plugin (`plugins/notion/`) syncs four GENTYR data sources to Notion d
 
 ## components
 
-39 MCP servers. 19 agents. 80 hooks. 42 commands. CLI dashboard. Plugin system with extensible local MCP servers.
+39 MCP servers. 21 agents. 86 hooks. 42 commands. CLI dashboard. Plugin system with extensible local MCP servers.
 
 ## documentation
 
