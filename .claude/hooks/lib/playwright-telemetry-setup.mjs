@@ -147,10 +147,10 @@ if (process.env.DEMO_TELEMETRY === '1' && process.env.DEMO_TELEMETRY_DIR) {
           tab_index: tabIndex,
           headers: Object.fromEntries(
             Object.entries(request.headers()).filter(([k]) =>
-              ['content-type', 'accept', 'authorization', 'cookie', 'referer', 'user-agent'].includes(k.toLowerCase())
-            ).map(([k, v]) => [k, k.toLowerCase() === 'authorization' ? '[REDACTED]' : (typeof v === 'string' ? v.slice(0, 500) : v)])
+              ['content-type', 'accept', 'referer', 'user-agent'].includes(k.toLowerCase())
+            ).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 500) : v])
           ),
-          post_data: request.postData()?.slice(0, 1024) || null,
+          has_post_data: !!request.postData(),
         };
         networkStream.write(JSON.stringify(entry) + '\n');
       } catch { /* non-fatal */ }

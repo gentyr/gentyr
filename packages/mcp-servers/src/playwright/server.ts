@@ -3111,6 +3111,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   let screenshotCapture: { interval: ReturnType<typeof setInterval>; dir: string; startTime: number } | null = null;
   const shouldRecord = !args.headless && !args.skip_recording;
 
+  // Start system metrics poller sidecar when telemetry is enabled
+  let metricsPollerHandle: { stop: () => void } | null = null;
+
   try {
     const child = spawn('npx', cmdArgs, {
       detached: true,
@@ -3118,6 +3121,18 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       cwd: EFFECTIVE_CWD,
       env,
     });
+
+    // Launch system metrics poller after child process is spawned (needs child PID)
+    if (telemetryEnabled && telemetryDir && child.pid) {
+      import('./telemetry-capture.js').then(mod => {
+        metricsPollerHandle = mod.startSystemMetricsPoller({
+          outputPath: path.join(telemetryDir!, 'system-metrics.jsonl'),
+          intervalMs: 2000,
+          playwrightPid: child.pid!,
+          runId,
+        });
+      }).catch(() => {}); // Non-fatal — module may not be built yet
+    }
 
     // Collect stderr for crash diagnostics and track progress
     let stderrChunks: Buffer[] = [];
@@ -3422,6 +3437,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     child.on('exit', (code) => {
       clearInterval(bgMonitorInterval);
       clearAutoKillTimer(demoPid);
+      if (metricsPollerHandle) { metricsPollerHandle.stop(); metricsPollerHandle = null; }
       const entry = demoRuns.get(demoPid);
       if (!entry) return;
 
@@ -4727,12 +4743,36 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
     run_id: entry.run_id,
     telemetry_dir: entry.telemetry_dir,
-    telemetry_summary: entry.telemetry_dir ? readTelemetrySummaryLocal(entry.telemetry_dir) : undefined,
+    telemetry_summary: entry.telemetry_dir ? readTelemetrySummaryInline(entry.telemetry_dir) : undefined,
     message,
   };
+
+  // Fire-and-forget Elastic shipping when demo is complete with telemetry
+  const finalEntry = entry!; // Guaranteed non-null at this point (early returns above)
+  if (finalEntry.telemetry_dir && finalEntry.run_id && finalEntry.status !== 'running') {
+    const tDir = finalEntry.telemetry_dir!;
+    const tRunId = finalEntry.run_id!;
+    const tStatus = finalEntry.status;
+    const tScenarioId = finalEntry.scenario_id || 'unknown';
+    const tEndedAt = finalEntry.ended_at;
+    const tStartedAt = finalEntry.started_at;
+    const tExecTarget = finalEntry.execution_target || 'local';
+    import('./telemetry-capture.js').then(mod => {
+      mod.shipTelemetryToElastic({
+        runId: tRunId,
+        scenarioId: tScenarioId,
+        telemetryDir: tDir,
+        status: tStatus,
+        durationMs: tEndedAt && tStartedAt
+          ? new Date(tEndedAt).getTime() - new Date(tStartedAt).getTime()
+          : 0,
+        executionTarget: tExecTarget,
+      }).catch(() => {});
+    }).catch(() => {}); // Non-fatal — module may not be built yet
+  }
 }
 
-function readTelemetrySummaryLocal(dir: string): { console_count: number; network_count: number; error_count: number; perf_entries: number; metric_samples: number } | undefined {
+function readTelemetrySummaryInline(dir: string): { console_count: number; network_count: number; error_count: number; perf_entries: number; metric_samples: number } | undefined {
   try {
     if (!fs.existsSync(dir)) return undefined;
     const countLines = (file: string): number => {
