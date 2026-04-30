@@ -4200,6 +4200,106 @@ async function main() {
   }
 
   // =========================================================================
+  // PREVIEW → STAGING PROMOTION (30min cooldown, gate-exempt)
+  // Fully autonomous — runs regardless of CTO gate status.
+  // Auto-promotes preview→staging when quality gates pass.
+  // =========================================================================
+  await runIfDue('preview_promotion', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastPreviewPromotionCheck',
+    configToggle: 'previewPromotionEnabled',
+    config,
+    localModeSkip: localMode,
+    label: 'Preview promotion',
+    fn: async () => {
+      // 1. Check staging lock (don't promote during prod release)
+      if (isStagingLocked(PROJECT_DIR)) {
+        log('Preview promotion: staging locked for production release, skipping.');
+        return;
+      }
+
+      // 2. Check branches exist
+      if (!remoteBranchExists('preview') || !remoteBranchExists('staging')) {
+        log('Preview promotion: preview or staging branch missing.');
+        return;
+      }
+
+      // 3. Check for commits to promote
+      const newCommits = getNewCommits('preview', 'staging');
+      if (newCommits.length === 0) {
+        log('Preview promotion: no commits to promote.');
+        return;
+      }
+
+      // 4. SHA dedup — don't re-evaluate same preview HEAD
+      let currentSha;
+      try {
+        currentSha = execSync('git rev-parse origin/preview', {
+          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        }).trim();
+      } catch { return; }
+
+      if (state.lastPreviewPromotionSha === currentSha) {
+        log('Preview promotion: SHA unchanged since last attempt.');
+        return;
+      }
+
+      log(`Preview promotion: ${newCommits.length} commits to evaluate. Spawning preview-promoter.`);
+      ensureCredentials();
+
+      const promotionId = `prom-${Date.now()}-${currentSha.slice(0, 8)}`;
+      const wt = getPromotionWorktree('preview-promotion');
+      const commitList = newCommits.join('\n');
+
+      try {
+        enqueueSession({
+          title: `[Preview → Staging] ${newCommits.length} commits`,
+          agentType: 'preview-promoter',
+          hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+          tagContext: 'preview-promotion',
+          source: 'hourly-automation',
+          priority: 'normal',
+          agent: 'preview-promoter',
+          buildPrompt: (agentId) => [
+            `[Automation][preview-promoter][AGENT:${agentId}]`,
+            `## Preview → Staging Promotion`,
+            ``,
+            `**Promotion ID**: ${promotionId}`,
+            `**Commits to promote** (${newCommits.length}):`,
+            '```',
+            commitList,
+            '```',
+            getTestScopePromptContext(),
+            ``,
+            `Follow your agent instructions to evaluate quality, run tests/demos,`,
+            `and promote if all gates pass.`,
+            ``,
+            `Artifact directory: .claude/promotions/${promotionId}/`,
+          ].join('\n'),
+          extraEnv: {
+            ...resolvedCredentials,
+            CLAUDE_PROJECT_DIR: PROJECT_DIR,
+            GENTYR_PROMOTION_ID: promotionId,
+          },
+          metadata: {
+            promotionId,
+            commitCount: newCommits.length,
+            previewSha: currentSha,
+          },
+          cwd: wt.cwd,
+          mcpConfig: wt.mcpConfig,
+          projectDir: PROJECT_DIR,
+        });
+      } catch (err) {
+        log(`Preview promotion: failed to enqueue: ${err.message}`);
+      }
+
+      state.lastPreviewPromotionSha = currentSha;
+      saveState(state);
+    },
+  });
+
+  // =========================================================================
   // PERSISTENT ALERT CHECK (every cycle, gate-exempt)
   // GAP 2: Re-escalate unresolved alerts past their threshold and GC old ones
   // =========================================================================
@@ -5410,105 +5510,7 @@ Then exit.`,
     },
   });
 
-  // =========================================================================
-  // PREVIEW → STAGING PROMOTION (30min cooldown, gate-required)
-  // Auto-promotes preview→staging when quality gates pass
-  // Replaces removed spawnPreviewPromotion() / spawnStagingPromotion()
-  // =========================================================================
-  await runIfDue('preview_promotion', {
-    state, now, intervals: config.intervals,
-    stateKey: 'lastPreviewPromotionCheck',
-    configToggle: 'previewPromotionEnabled',
-    config,
-    localModeSkip: localMode,
-    label: 'Preview promotion',
-    fn: async () => {
-      // 1. Check staging lock (don't promote during prod release)
-      if (isStagingLocked(PROJECT_DIR)) {
-        log('Preview promotion: staging locked for production release, skipping.');
-        return;
-      }
-
-      // 2. Check branches exist
-      if (!remoteBranchExists('preview') || !remoteBranchExists('staging')) {
-        log('Preview promotion: preview or staging branch missing.');
-        return;
-      }
-
-      // 3. Check for commits to promote
-      const newCommits = getNewCommits('preview', 'staging');
-      if (newCommits.length === 0) {
-        log('Preview promotion: no commits to promote.');
-        return;
-      }
-
-      // 4. SHA dedup — don't re-evaluate same preview HEAD
-      let currentSha;
-      try {
-        currentSha = execSync('git rev-parse origin/preview', {
-          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
-        }).trim();
-      } catch { return; }
-
-      if (state.lastPreviewPromotionSha === currentSha) {
-        log('Preview promotion: SHA unchanged since last attempt.');
-        return;
-      }
-
-      log(`Preview promotion: ${newCommits.length} commits to evaluate. Spawning preview-promoter.`);
-      ensureCredentials();
-
-      const promotionId = `prom-${Date.now()}-${currentSha.slice(0, 8)}`;
-      const wt = getPromotionWorktree('preview-promotion');
-      const commitList = newCommits.join('\n');
-
-      try {
-        enqueueSession({
-          title: `[Preview → Staging] ${newCommits.length} commits`,
-          agentType: 'preview-promoter',
-          hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-          tagContext: 'preview-promotion',
-          source: 'hourly-automation',
-          priority: 'normal',
-          agent: 'preview-promoter',
-          buildPrompt: (agentId) => [
-            `[Automation][preview-promoter][AGENT:${agentId}]`,
-            `## Preview → Staging Promotion`,
-            ``,
-            `**Promotion ID**: ${promotionId}`,
-            `**Commits to promote** (${newCommits.length}):`,
-            '```',
-            commitList,
-            '```',
-            getTestScopePromptContext(),
-            ``,
-            `Follow your agent instructions to evaluate quality, run tests/demos,`,
-            `and promote if all gates pass.`,
-            ``,
-            `Artifact directory: .claude/promotions/${promotionId}/`,
-          ].join('\n'),
-          extraEnv: {
-            ...resolvedCredentials,
-            CLAUDE_PROJECT_DIR: PROJECT_DIR,
-            GENTYR_PROMOTION_ID: promotionId,
-          },
-          metadata: {
-            promotionId,
-            commitCount: newCommits.length,
-            previewSha: currentSha,
-          },
-          cwd: wt.cwd,
-          mcpConfig: wt.mcpConfig,
-          projectDir: PROJECT_DIR,
-        });
-      } catch (err) {
-        log(`Preview promotion: failed to enqueue: ${err.message}`);
-      }
-
-      state.lastPreviewPromotionSha = currentSha;
-      saveState(state);
-    },
-  });
+  // (Preview promotion block moved to gate-exempt section — see line ~4202)
 
   // =========================================================================
   // DAILY FEEDBACK PIPELINE (24h cooldown, disabled by default)
