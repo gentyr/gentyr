@@ -1460,10 +1460,10 @@ describe('checkDemoResult dead-process status determination', () => {
 });
 
 // ============================================================================
-// checkDemoResult auto-kill on suite_completed
+// checkDemoResult suite_completed process termination
 //
 // When checkDemoResult is called and the process is still alive but
-// progress.suite_completed is true, it immediately kills the process and
+// progress.suite_completed is true, it immediately terminates the process and
 // resolves the status from progress data. This mirrors the branch in server.ts:
 //
 //   if (progress?.suite_completed) {
@@ -1472,14 +1472,14 @@ describe('checkDemoResult dead-process status determination', () => {
 //     return { status: entry.status, ... }
 //   }
 //
-// The auto-kill status determination is identical to determineDeadProcessStatus
+// The status determination is identical to determineDeadProcessStatus
 // but checks suite_completed (not tests_completed) as its trigger, so it can
 // correctly report 'passed'/'failed' based on has_failures.
 // ============================================================================
 
 /**
- * Mirrors the suite_completed auto-kill status-determination branch in
- * checkDemoResult() that fires when process.kill(pid, 0) succeeds but
+ * Mirrors the suite_completed process-termination status-determination branch
+ * in checkDemoResult() that fires when process.kill(pid, 0) succeeds but
  * progress.suite_completed is true.
  */
 function determineSuiteCompletedStatus(progress: DemoProgress): {
@@ -1495,7 +1495,7 @@ function determineSuiteCompletedStatus(progress: DemoProgress): {
   return { status: 'passed', failure_summary: undefined };
 }
 
-describe('checkDemoResult — suite_completed auto-kill status determination', () => {
+describe('checkDemoResult — suite_completed process termination status determination', () => {
   describe('when suite completed with no failures', () => {
     it('should return passed when has_failures is false', () => {
       const progress: DemoProgress = {

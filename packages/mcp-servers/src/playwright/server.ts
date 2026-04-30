@@ -506,12 +506,13 @@ function checkAndSyncWorktree(): { fresh: boolean; message?: string } {
 
 const DEMO_RUNS_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-runs.json');
 const demoRuns = new Map<number, DemoRunState>();
-const demoAutoKillTimers = new Map<number, ReturnType<typeof setTimeout>>();
-const DEMO_AUTO_KILL_MS = 60_000;
+// Threshold (ms) after which a running demo without polling triggers a stale warning.
+// Demos are NEVER auto-killed — warnings are emitted through check_demo_result and hooks instead.
+const DEMO_STALE_WARNING_MS = 60_000;
 // Milliseconds to wait after detecting suite_end before sending SIGTERM (technical flush buffer).
 // success_pause_ms is additive on top of this.
 const SUITE_END_KILL_DELAY_MS = 5_000;
-// PIDs that were auto-killed after a suite_end event — treated as 'passed' by the exit handler.
+// PIDs whose process was terminated after suite_end — treated as 'passed' by the exit handler.
 const suiteEndAutoKilledPids = new Set<number>();
 // PIDs for which run_demo auto-acquired the display lock — release on demo completion.
 const displayLockAutoAcquiredPids = new Set<number>();
@@ -544,7 +545,7 @@ function persistDemoRuns(): void {
     const entries = [...demoRuns.values()]
       .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
       .slice(0, 20)
-      .map(({ trace_summary, screenshot_interval, suite_end_detected_at, interrupt_detected_at, ...rest }) => rest);
+      .map(({ trace_summary, screenshot_interval, suite_end_detected_at, interrupt_detected_at, last_polled_at, ...rest }) => rest);
     fs.writeFileSync(DEMO_RUNS_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal — state will be lost on MCP restart
@@ -709,7 +710,7 @@ function pauseTaskForDemoInteraction(demoPid: number, scenarioId?: string): stri
 
 /**
  * Resume the task associated with an interrupted demo after the CTO finishes interacting.
- * Called from stopDemo and autoKillDemo when cleaning up an interrupted demo.
+ * Called from stopDemo when cleaning up an interrupted demo.
  */
 function resumeTaskAfterDemoInteraction(entry: DemoRunState): void {
   if (!entry.bypass_request_id) return;
@@ -808,102 +809,42 @@ function resumeTaskAfterDemoInteraction(entry: DemoRunState): void {
 }
 
 /**
- * Auto-kill a demo process that hasn't been polled within DEMO_AUTO_KILL_MS.
- * Prevents orphaned browser processes when the polling agent stops.
- */
-function autoKillDemo(pid: number): void {
-  demoAutoKillTimers.delete(pid);
-  const entry = demoRuns.get(pid);
-  if (!entry || (entry.status !== 'running' && entry.status !== 'interrupted')) return;
-
-  const wasInterrupted = entry.status === 'interrupted';
-
-  // Stop window recorder — skip persistence for interrupted demos (discard recording)
-  if (entry.window_recorder_pid && entry.window_recording_path) {
-    const recOk = stopWindowRecorderSync(entry.window_recorder_pid, entry.window_recording_path);
-    if (recOk && entry.scenario_id && !wasInterrupted) {
-      try { persistScenarioRecording(entry.scenario_id, entry.window_recording_path); } catch { /* Non-fatal */ }
-    }
-    try { fs.unlinkSync(entry.window_recording_path); } catch { /* Non-fatal */ }
-    entry.window_recorder_pid = undefined;
-    entry.window_recording_path = undefined;
-  }
-
-  // Stop screenshot capture
-  if (entry.screenshot_interval) {
-    stopScreenshotCapture(entry.screenshot_interval);
-    entry.screenshot_interval = undefined;
-  }
-
-  // Kill the process group
-  try {
-    process.kill(-pid, 'SIGTERM');
-  } catch {
-    // Process may have already exited
-  }
-
-  if (!wasInterrupted) {
-    entry.status = 'failed';
-    entry.failure_summary = 'Auto-killed: no poll received within 60s';
-  }
-  entry.ended_at = new Date().toISOString();
-
-  // Resume task if this was an interrupted demo with a bypass request
-  if (wasInterrupted) {
-    resumeTaskAfterDemoInteraction(entry);
-  }
-
-  // Clean up progress file
-  if (entry.progress_file) {
-    try { fs.unlinkSync(entry.progress_file); } catch { /* Non-fatal */ }
-  }
-
-  // Persist demo result to user-feedback.db (dedup guard: only once per demo)
-  if (entry.scenario_id && !entry.result_persisted && entry.status === 'failed') {
-    persistDemoResult({
-      scenarioId: entry.scenario_id,
-      status: 'failed',
-      executionMode: entry.remote ? 'remote' : 'local',
-      startedAt: entry.started_at,
-      completedAt: entry.ended_at ?? new Date().toISOString(),
-      durationMs: entry.ended_at
-        ? new Date(entry.ended_at).getTime() - new Date(entry.started_at).getTime()
-        : Date.now() - new Date(entry.started_at).getTime(),
-      flyMachineId: entry.fly_machine_id,
-      branch: getDemoBranch() ?? undefined,
-      failureReason: entry.failure_summary,
-    });
-    entry.result_persisted = true;
-  }
-
-  persistDemoRuns();
-
-  // Release display lock if this demo auto-acquired it
-  autoReleaseDisplayLockForPid(pid);
-}
-
-/**
- * Reset (or start) the auto-kill countdown for a demo process.
+ * Record the current time as the last poll for a demo process.
  * Called on run_demo launch and on each check_demo_result poll.
+ * Used to compute stale demo warnings — demos are NEVER auto-killed.
  */
-function resetAutoKillTimer(pid: number): void {
-  const existing = demoAutoKillTimers.get(pid);
-  if (existing) clearTimeout(existing);
-
-  const timer = setTimeout(() => autoKillDemo(pid), DEMO_AUTO_KILL_MS);
-  timer.unref(); // Don't prevent MCP process exit
-  demoAutoKillTimers.set(pid, timer);
+function recordPollTime(pid: number): void {
+  const entry = demoRuns.get(pid);
+  if (entry) {
+    entry.last_polled_at = Date.now();
+  }
 }
 
 /**
- * Clear the auto-kill timer for a demo process (natural exit or manual stop).
+ * Clear poll tracking for a demo process (natural exit or manual stop).
  */
-function clearAutoKillTimer(pid: number): void {
-  const existing = demoAutoKillTimers.get(pid);
-  if (existing) {
-    clearTimeout(existing);
-    demoAutoKillTimers.delete(pid);
+function clearPollTracking(pid: number): void {
+  const entry = demoRuns.get(pid);
+  if (entry) {
+    entry.last_polled_at = undefined;
   }
+}
+
+/**
+ * Compute a stale warning message for a running demo that hasn't been polled recently.
+ * Returns undefined if the demo is not stale.
+ */
+function computeStaleWarning(pid: number): string | undefined {
+  const entry = demoRuns.get(pid);
+  if (!entry || (entry.status !== 'running' && entry.status !== 'interrupted')) return undefined;
+  const lastPoll = entry.last_polled_at;
+  if (!lastPoll) return undefined;
+  const elapsed = Date.now() - lastPoll;
+  if (elapsed < DEMO_STALE_WARNING_MS) return undefined;
+  const staleSec = Math.round(elapsed / 1000);
+  return `WARNING: This demo process (PID ${pid}) has not been polled for ${staleSec}s. ` +
+    `The demo will NOT be auto-killed, but an unpolled demo wastes resources (browser, display lock, dev server). ` +
+    `Call check_demo_result to continue monitoring, or stop_demo to terminate.`;
 }
 
 // Load persisted state on startup
@@ -3436,12 +3377,12 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     // ── Permanent exit handler (single source of truth for cleanup) ──
     child.on('exit', (code) => {
       clearInterval(bgMonitorInterval);
-      clearAutoKillTimer(demoPid);
+      clearPollTracking(demoPid);
       if (metricsPollerHandle) { metricsPollerHandle.stop(); metricsPollerHandle = null; }
       const entry = demoRuns.get(demoPid);
       if (!entry) return;
 
-      // If already finalized (suite_end_killed via check_demo_result, autoKillDemo, interrupt, etc.), skip
+      // If already finalized (suite_end_killed via check_demo_result, interrupt, etc.), skip
       if (entry.status !== 'running') return;
 
       // Interrupt detected but process exited before background monitor handled it (race condition)
@@ -3718,7 +3659,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       child.stderr.resume();
     }
     child.unref();
-    resetAutoKillTimer(demoPid);
+    recordPollTime(demoPid);
 
     const warningText = preflight.warnings.length > 0
       ? `\nWarnings:\n${preflight.warnings.map(w => `  - ${w}`).join('\n')}`
@@ -4261,7 +4202,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
 
   // Interrupted demos: browser is alive for user interaction
   if (entry.status === 'interrupted') {
-    resetAutoKillTimer(pid);
+    recordPollTime(pid);
     const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;
     return {
       status: 'interrupted',
@@ -4287,7 +4228,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           const elapsed = Date.now() - entry.suite_end_detected_at;
           const totalDelay = SUITE_END_KILL_DELAY_MS + entry.success_pause_ms;
           if (elapsed < totalDelay) {
-            resetAutoKillTimer(pid);
+            recordPollTime(pid);
             const remainingSec = Math.ceil((totalDelay - elapsed) / 1000);
             return {
               status: 'running',
@@ -4306,7 +4247,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           entry.window_recorder_pid = undefined;
         }
 
-        clearAutoKillTimer(pid);
+        clearPollTracking(pid);
         try { process.kill(-pid, 'SIGTERM'); } catch {}
         suiteEndAutoKilledPids.add(pid);
         entry.status = progress.has_failures ? 'failed' : 'passed';
@@ -4460,16 +4401,16 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           analysis_guidance: analysisGuidance1,
           ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
           message: entry.status === 'passed'
-            ? `Demo completed successfully in ${durationSec}s (auto-killed after suite completion).${degradedSuffix}`
-            : `Demo failed in ${durationSec}s — ${entry.failure_summary}. Auto-killed after suite completion.`,
+            ? `Demo completed successfully in ${durationSec}s (process terminated after suite completion).${degradedSuffix}`
+            : `Demo failed in ${durationSec}s — ${entry.failure_summary}. Process terminated after suite completion.`,
         };
       }
 
-      // Suite still running — reset auto-kill countdown
-      resetAutoKillTimer(pid);
+      // Suite still running — record poll time for stale tracking
+      recordPollTime(pid);
     } catch {
       // Process no longer exists but we didn't get the exit event (e.g., MCP restarted, user closed browser)
-      clearAutoKillTimer(pid);
+      clearPollTracking(pid);
       entry.ended_at = new Date().toISOString();
 
       // Stop window recorder and persist video before returning
@@ -4717,6 +4658,13 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     }
   }
 
+  // Compute stale warning — computeStaleWarning() internally checks status === 'running'/'interrupted'
+  // and returns undefined for terminal statuses, so it's safe to call unconditionally.
+  const staleWarning = computeStaleWarning(pid);
+  if (staleWarning) {
+    message += ` ${staleWarning}`;
+  }
+
   return {
     status: entry.status,
     pid,
@@ -4744,6 +4692,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     run_id: entry.run_id,
     telemetry_dir: entry.telemetry_dir,
     telemetry_summary: entry.telemetry_dir ? readTelemetrySummaryInline(entry.telemetry_dir) : undefined,
+    stale_warning: staleWarning,
     message,
   };
 
@@ -4922,8 +4871,8 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
     };
   }
 
-  // Cancel auto-kill — manual stop takes over
-  clearAutoKillTimer(pid);
+  // Clear poll tracking — manual stop takes over
+  clearPollTracking(pid);
 
   // Read final progress snapshot before killing
   const progress = entry.progress_file ? readDemoProgress(entry.progress_file) : null;

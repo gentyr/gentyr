@@ -2255,59 +2255,58 @@ describe('Playwright MCP Server - Type Safety', () => {
     });
   });
 
-  describe('DemoRunState - auto-kill state shape', () => {
-    it('should accept DemoRunState with auto-kill failure summary', () => {
+  describe('DemoRunState - state shape and exit handler guard', () => {
+    it('should accept DemoRunState with failure summary', () => {
       const state: DemoRunState = {
         pid: 42000,
         project: 'vendor-owner',
         started_at: '2026-03-02T00:00:00.000Z',
         status: 'failed',
         ended_at: '2026-03-02T00:01:00.000Z',
-        failure_summary: 'Auto-killed: no poll received within 60s',
+        failure_summary: 'Stalled: no progress for 45s after 30s grace period.',
       };
 
       expect(state.status).toBe('failed');
-      expect(state.failure_summary).toBe('Auto-killed: no poll received within 60s');
+      expect(state.failure_summary).toBe('Stalled: no progress for 45s after 30s grace period.');
     });
 
-    it('auto-killed DemoRunState round-trips through JSON serialization', () => {
+    it('DemoRunState with last_polled_at round-trips through JSON serialization', () => {
       const original: DemoRunState = {
         pid: 42001,
         project: 'demo',
         test_file: 'e2e/demo/onboarding.demo.ts',
         started_at: '2026-03-02T00:00:00.000Z',
-        status: 'failed',
-        ended_at: '2026-03-02T00:01:00.000Z',
-        failure_summary: 'Auto-killed: no poll received within 60s',
+        status: 'running',
+        last_polled_at: 1735776000000,
       };
 
       const deserialized: DemoRunState = JSON.parse(JSON.stringify(original));
 
-      expect(deserialized.failure_summary).toBe('Auto-killed: no poll received within 60s');
-      expect(deserialized.status).toBe('failed');
+      expect(deserialized.last_polled_at).toBe(1735776000000);
+      expect(deserialized.status).toBe('running');
       expect(deserialized.pid).toBe(42001);
     });
 
     it('exit handler guard: should not overwrite a non-running entry', () => {
       // Simulates the guard logic in child.on('exit'):
       //   if (entry.status !== 'running') return;
-      // After autoKillDemo sets status to 'failed', the exit handler must not overwrite.
+      // After suite_end kill sets status to 'passed'/'failed', the exit handler must not overwrite.
       const entry: DemoRunState = {
         pid: 42002,
         project: 'vendor-owner',
         started_at: '2026-03-02T00:00:00.000Z',
         status: 'failed',
         ended_at: '2026-03-02T00:01:00.000Z',
-        failure_summary: 'Auto-killed: no poll received within 60s',
+        failure_summary: '1 test(s) failed out of 3',
       };
 
       // Simulate the exit handler guard
       if (entry.status !== 'running') {
         // Guard fires — entry is preserved as-is
-        expect(entry.failure_summary).toBe('Auto-killed: no poll received within 60s');
+        expect(entry.failure_summary).toBe('1 test(s) failed out of 3');
         expect(entry.status).toBe('failed');
       } else {
-        // This path should NOT be taken for auto-killed entries
+        // This path should NOT be taken for already-finalized entries
         throw new Error('Guard should have fired — entry.status is not running');
       }
     });
