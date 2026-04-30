@@ -402,7 +402,8 @@ export async function spawnRemoteMachine(
   // Tigris presigned upload URLs — non-fatal, additive only.
   // If Tigris is configured and a runId is provided, generate presigned PUT URLs
   // and inject them as ARTIFACT_UPLOAD_URLS for the remote runner's EXIT trap.
-  if (request.runId && request.servicesJsonPath) {
+  // Checks services.json first, falls back to env vars (BUCKET_NAME, AWS_ACCESS_KEY_ID, etc.)
+  if (request.runId) {
     try {
       const { isTigrisConfigured, resolveTigrisConfig, generateArtifactUploadUrls } = await import('./artifact-storage.js');
       if (isTigrisConfigured(request.servicesJsonPath)) {
