@@ -26,13 +26,8 @@ export interface LogContext {
 
 const storage = new AsyncLocalStorage<LogContext>();
 
-/** Run a function within a logging context. */
+/** Run a function within a logging context. Works for both sync and async functions. */
 export function withContext<T>(context: LogContext, fn: () => T): T {
-  return storage.run(context, fn);
-}
-
-/** Run an async function within a logging context. */
-export async function withContextAsync<T>(context: LogContext, fn: () => Promise<T>): Promise<T> {
   return storage.run(context, fn);
 }
 
