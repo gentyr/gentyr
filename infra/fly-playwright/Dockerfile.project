@@ -1,0 +1,55 @@
+# Project-tier Dockerfile for Fly.io demo execution
+#
+# Built on top of the base image (Dockerfile). Includes the project's
+# dependencies pre-installed so demo runs skip the 9-minute install phase.
+#
+# Build args:
+#   BASE_IMAGE  - registry.fly.io/{appName}:{baseTag} (required)
+#   GIT_REMOTE  - HTTPS git URL for the project repo (required)
+#   GIT_REF     - Branch/tag/SHA to clone (default: preview)
+#   GIT_TOKEN   - GitHub token for private repos (optional)
+#
+# Usage:
+#   fly deploy --app $APP_NAME \
+#     --dockerfile infra/fly-playwright/Dockerfile.project \
+#     --build-arg BASE_IMAGE=registry.fly.io/$APP_NAME:deployment-xxx \
+#     --build-arg GIT_REMOTE=https://github.com/$ORG/$REPO.git \
+#     --build-arg GIT_REF=preview \
+#     --build-arg GIT_TOKEN=$GITHUB_TOKEN \
+#     --remote-only
+
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG GIT_REMOTE
+ARG GIT_REF=preview
+ARG GIT_TOKEN
+
+WORKDIR /app/project
+
+# Clone the project (depth=1 for speed)
+RUN if [ -n "$GIT_TOKEN" ]; then \
+      git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password='$GIT_TOKEN'"; }; f'; \
+    fi && \
+    git clone --depth=1 --branch "$GIT_REF" "$GIT_REMOTE" . && \
+    git config --global --unset credential.helper || true
+
+# Install dependencies (frozen lockfile, includes postinstall scripts)
+ENV PNPM_STORE_DIR=/tmp/pnpm-store
+RUN NODE_ENV=development pnpm install --frozen-lockfile
+
+# Install Playwright browsers matching the project's @playwright/test version
+RUN npx playwright install chromium
+
+# Build shared packages (wildcards cover all workspace packages)
+# Build shared workspace packages if a build command is provided
+ARG BUILD_CMD=""
+RUN if [ -n "$BUILD_CMD" ]; then eval "$BUILD_CMD"; fi
+
+# Clean up pnpm store to reduce image size (deps are already in node_modules)
+RUN rm -rf /tmp/pnpm-store
+
+# Mark that this is a project image (remote-runner.sh checks this)
+RUN touch /app/.project-image
+
+WORKDIR /app

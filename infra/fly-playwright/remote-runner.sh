@@ -104,34 +104,54 @@ if [[ -n "${GIT_AUTH_TOKEN:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Clone repository
+# Clone repository (skip if project image already has the code)
 # ---------------------------------------------------------------------------
-log "Cloning $GIT_REMOTE at ref $GIT_REF ..."
-echo '{"type":"setup","phase":"clone_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
-git clone --depth=1 --branch "$GIT_REF" "$GIT_REMOTE" /app/project 2>&1 | tee -a /app/.error.log
+if [[ -f /app/.project-image && -d /app/project/node_modules ]]; then
+  log "Project image detected — skipping clone and install"
+  echo '{"type":"setup","phase":"clone_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+  cd /app/project
+  # Pull latest changes on the branch (project image may be slightly behind)
+  if [[ -n "${GIT_AUTH_TOKEN:-}" ]]; then
+    git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=$GIT_AUTH_TOKEN"; }; f'
+  fi
+  git fetch origin "$GIT_REF" --depth=1 2>&1 | tee -a /app/.error.log || true
+  git checkout FETCH_HEAD 2>&1 | tee -a /app/.error.log || true
+  echo '{"type":"setup","phase":"clone_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+  echo '{"type":"setup","phase":"install_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+  echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+  INSTALL_HEARTBEAT_PID=""
+else
+  log "Cloning $GIT_REMOTE at ref $GIT_REF ..."
+  echo '{"type":"setup","phase":"clone_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+  git clone --depth=1 --branch "$GIT_REF" "$GIT_REMOTE" /app/project 2>&1 | tee -a /app/.error.log
 
-cd /app/project
-echo '{"type":"setup","phase":"clone_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+  cd /app/project
+  echo '{"type":"setup","phase":"clone_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 
-# ---------------------------------------------------------------------------
-# Install dependencies
-# ---------------------------------------------------------------------------
-log "Running pnpm install (store: ${PNPM_STORE_DIR:-/cache/pnpm-store}) ..."
-echo '{"type":"setup","phase":"install_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
-# Heartbeat during install — write progress events every 30s to prevent stall detector timeout
-(while true; do sleep 30; echo '{"type":"setup","phase":"install_progress","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true; done) &
-INSTALL_HEARTBEAT_PID=$!
-NODE_ENV=development PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
-  pnpm install --frozen-lockfile 2>&1 | tee -a /app/.error.log
-kill "$INSTALL_HEARTBEAT_PID" 2>/dev/null || true
+  # ---------------------------------------------------------------------------
+  # Install dependencies
+  # ---------------------------------------------------------------------------
+  log "Running pnpm install (store: ${PNPM_STORE_DIR:-/cache/pnpm-store}) ..."
+  echo '{"type":"setup","phase":"install_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+  # Heartbeat during install — write progress events every 30s to prevent stall detector timeout
+  (while true; do sleep 30; echo '{"type":"setup","phase":"install_progress","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true; done) &
+  INSTALL_HEARTBEAT_PID=$!
+  NODE_ENV=development PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
+    pnpm install --frozen-lockfile 2>&1 | tee -a /app/.error.log
+fi
+if [[ -n "$INSTALL_HEARTBEAT_PID" ]]; then
+  kill "$INSTALL_HEARTBEAT_PID" 2>/dev/null || true
+fi
 
 # Install the correct browser version for the project's Playwright version.
-# The Docker base image bundles browsers for its own Playwright version, but the
-# project may use a different version. This is a no-op if versions already match.
-log "Installing Playwright browsers (matching project's @playwright/test version)..."
-npx playwright install chromium 2>&1 | tee -a /app/.error.log || true
-
-echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+# Skip if this is a project image (browsers already installed during image build).
+if [[ ! -f /app/.project-image ]]; then
+  log "Installing Playwright browsers (matching project's @playwright/test version)..."
+  npx playwright install chromium 2>&1 | tee -a /app/.error.log || true
+  echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+else
+  log "Project image — Playwright browsers already installed"
+fi
 export NODE_ENV=production
 
 # ---------------------------------------------------------------------------
