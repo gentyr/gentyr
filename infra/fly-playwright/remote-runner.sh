@@ -33,6 +33,7 @@ RECORDING_RESOLUTION="${GENTYR_RECORDING_RESOLUTION:-1920x1080}"
 RECORDING_FPS="${GENTYR_RECORDING_FPS:-25}"
 XVFB_PID=""
 FFMPEG_PID=""
+UNCLUTTER_PID=""
 
 # Create progress file early so setup phases can write to it
 PROGRESS_FILE="/app/.progress.jsonl"
@@ -54,7 +55,10 @@ cleanup() {
     kill -9 "$FFMPEG_PID" 2>/dev/null || true
   fi
 
-  # 2. Stop Xvfb
+  # 2. Stop unclutter and Xvfb
+  if [[ -n "$UNCLUTTER_PID" ]]; then
+    kill "$UNCLUTTER_PID" 2>/dev/null || true
+  fi
   if [[ -n "$XVFB_PID" ]]; then
     kill "$XVFB_PID" 2>/dev/null || true
   fi
@@ -363,21 +367,20 @@ if [[ "${DEMO_HEADLESS:-1}" != "1" ]]; then
   else
     export DEMO_MAXIMIZE=1
 
-    log "Starting ffmpeg display recording (${RECORDING_RESOLUTION} @ ${RECORDING_FPS}fps)..."
-    ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
-      -framerate "${RECORDING_FPS}" -i :99 \
-      -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
-      -movflags +faststart -y "$RECORDING_FILE" \
-      < /dev/null > /app/.ffmpeg.log 2>&1 &
-    FFMPEG_PID=$!
-    sleep 0.5
-
-    if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
-      error "ffmpeg failed to start — continuing without recording"
-      FFMPEG_PID=""
+    # Hide the system cursor — only the CSS cursor-highlight red dot should
+    # be visible in the recording.  unclutter -idle 0 hides the X11 cursor
+    # immediately and keeps it hidden for the lifetime of the process.
+    if command -v unclutter &>/dev/null; then
+      unclutter -idle 0 -root &
+      UNCLUTTER_PID=$!
+      log "System cursor hidden via unclutter (PID: $UNCLUTTER_PID)"
     else
-      log "Recording started (PID: $FFMPEG_PID)"
+      log "WARNING: unclutter not found — system cursor will be visible in recording"
     fi
+
+    # NOTE: ffmpeg recording is started later, just before the Playwright test,
+    # so the recording does not include minutes of blank Xvfb desktop during
+    # install, build, prerequisites, and dev server startup.
   fi
 else
   log "Running headless — skipping Xvfb and recording"
@@ -415,6 +418,28 @@ echo '{"type":"setup","phase":"test_start","timestamp":"'$(date -u +%Y-%m-%dT%H:
 PLAYWRIGHT_EXIT=0
 STALL_TIMEOUT=${GENTYR_STALL_TIMEOUT_S:-600}
 GRACE_PERIOD=${GENTYR_STALL_GRACE_S:-60}
+
+# ---------------------------------------------------------------------------
+# Start ffmpeg recording now — right before the test, so the recording does
+# not include minutes of blank Xvfb desktop during setup.
+# ---------------------------------------------------------------------------
+if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID" ]]; then
+  log "Starting ffmpeg display recording (${RECORDING_RESOLUTION} @ ${RECORDING_FPS}fps)..."
+  ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
+    -framerate "${RECORDING_FPS}" -i :99 \
+    -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
+    -movflags +faststart -y "$RECORDING_FILE" \
+    < /dev/null > /app/.ffmpeg.log 2>&1 &
+  FFMPEG_PID=$!
+  sleep 0.5
+
+  if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
+    error "ffmpeg failed to start — continuing without recording"
+    FFMPEG_PID=""
+  else
+    log "Recording started (PID: $FFMPEG_PID)"
+  fi
+fi
 
 # Launch Playwright in the background; tee stdout/stderr to log files while
 # still streaming them to the terminal so container logs capture output.
@@ -471,7 +496,26 @@ wait "$WATCHDOG_PID" 2>/dev/null || true
 
 log "Playwright exited with code: $PLAYWRIGHT_EXIT"
 
-# The EXIT trap (cleanup) handles: writing exit code, stopping ffmpeg/Xvfb,
+# ---------------------------------------------------------------------------
+# Stop ffmpeg immediately so the recording ends cleanly when the test ends,
+# not minutes later when the EXIT trap fires after artifact copy + sleep.
+# SIGINT allows ffmpeg to write the moov atom (required for a playable MP4).
+# The EXIT trap is a safety net — it will no-op if FFMPEG_PID is already dead.
+# ---------------------------------------------------------------------------
+if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
+  log "Stopping ffmpeg recording..."
+  kill -INT "$FFMPEG_PID" 2>/dev/null || true
+  local_count=0
+  while kill -0 "$FFMPEG_PID" 2>/dev/null && [[ $local_count -lt 20 ]]; do
+    sleep 0.5; local_count=$((local_count + 1))
+  done
+  if kill -0 "$FFMPEG_PID" 2>/dev/null; then
+    kill -9 "$FFMPEG_PID" 2>/dev/null || true
+  fi
+  log "Recording stopped"
+fi
+
+# The EXIT trap (cleanup) handles: writing exit code, stopping Xvfb,
 # copying artifacts, and the 60s grace period for artifact retrieval.
 log "Remote runner complete (exit: ${PLAYWRIGHT_EXIT:-$?})"
 exit ${PLAYWRIGHT_EXIT:-1}
