@@ -136,8 +136,9 @@ function detectDrift() {
     `CRITICAL BRANCH DRIFT: Main tree is on '${currentBranch}' (PROTECTED — commits blocked here).`,
     `Switch to '${expectedBranch}' immediately. The merge chain is: feature/* -> ${expectedBranch} -> staging -> main.`,
   ] : [
-    `BRANCH DRIFT: Main working tree is on '${currentBranch}' instead of '${expectedBranch}'.`,
-    'This may cause incorrect preflight checks, stale worktree bases, and promotion failures.',
+    `BRANCH DRIFT: Main tree is on '${currentBranch}' instead of '${expectedBranch}'.`,
+    `Risk: dev server may serve wrong code if demos/tests run from the main tree.`,
+    `Worktrees are unaffected (they use remote refs). To fix: git checkout ${expectedBranch}`,
   ];
 
   // Auto-switch when on protected branch with no uncommitted changes

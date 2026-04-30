@@ -143,7 +143,7 @@ function atomicWriteJson(filePath, data) {
  * @param {string} [opts.projectDir]
  * @returns {object} The created signal
  */
-export function sendSignal({ fromAgentId, fromAgentType, fromTaskTitle, toAgentId, toAgentType, tier, message, projectDir }) {
+export function sendSignal({ fromAgentId, fromAgentType, fromTaskTitle, toAgentId, toAgentType, tier, message, projectDir, type }) {
   if (!fromAgentId) throw new Error('sendSignal: fromAgentId is required');
   if (!toAgentId) throw new Error('sendSignal: toAgentId is required');
   if (!tier) throw new Error('sendSignal: tier is required');
@@ -165,6 +165,7 @@ export function sendSignal({ fromAgentId, fromAgentType, fromTaskTitle, toAgentI
     to_agent_id: toAgentId,
     to_agent_type: toAgentType || 'unknown',
     tier,
+    type: type || null,
     message,
     created_at: now,
     read_at: null,
@@ -387,6 +388,35 @@ export function getUnreadCount(agentId, projectDir) {
   }
 
   return unread;
+}
+
+/**
+ * Get unacknowledged directive-tier signals for an agent.
+ * Used by the signal compliance gate to block completion.
+ *
+ * @param {string} agentId
+ * @param {string} [projectDir]
+ * @returns {{ id: string, message: string }[]}
+ */
+export function getUnacknowledgedDirectives(agentId, projectDir) {
+  if (!agentId) return [];
+  const signalDir = getSignalDir(projectDir);
+  if (!fs.existsSync(signalDir)) return [];
+
+  let files;
+  try { files = fs.readdirSync(signalDir); } catch { return []; }
+
+  const agentFiles = files.filter(f => f.startsWith(`${agentId}-`) && f.endsWith('.json'));
+  const directives = [];
+  for (const filename of agentFiles) {
+    try {
+      const signal = JSON.parse(fs.readFileSync(path.join(signalDir, filename), 'utf8'));
+      if (signal.tier === 'directive' && signal.acknowledged_at === null) {
+        directives.push({ id: signal.id, message: signal.message });
+      }
+    } catch { /* skip */ }
+  }
+  return directives;
 }
 
 /**

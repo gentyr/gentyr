@@ -345,6 +345,14 @@ export const RetryPlanTaskArgsSchema = z.object({
 });
 export type RetryPlanTaskArgs = z.infer<typeof RetryPlanTaskArgsSchema>;
 
+// Update plan task gate
+export const UpdatePlanTaskGateArgsSchema = z.object({
+  task_id: z.string().describe('Plan task ID'),
+  verification_strategy: z.string().min(1)
+    .describe('Combined success criteria and verification method. When set, the task enters pending_audit on completion and an independent auditor verifies before transitioning to completed.'),
+});
+export type UpdatePlanTaskGateArgs = z.infer<typeof UpdatePlanTaskGateArgsSchema>;
+
 // Force-close plan
 export const ForceClosePlanArgsSchema = z.object({
   plan_id: z.string().describe('Plan ID to force-close'),

@@ -26,6 +26,21 @@ allowedTools:
   - mcp__product-manager__approve_analysis
   - mcp__product-manager__get_analysis_status
   - mcp__product-manager__get_compliance_report
+  - mcp__agent-tracker__peek_session
+  - mcp__agent-tracker__browse_session
+  - mcp__agent-tracker__get_session_activity_summary
+  - mcp__agent-tracker__inspect_persistent_task
+  - mcp__agent-tracker__kill_session
+  - mcp__agent-tracker__search_user_prompts
+  - mcp__agent-tracker__get_user_prompt
+  - mcp__agent-tracker__force_spawn_tasks
+  - mcp__agent-tracker__monitor_agents
+  - mcp__agent-tracker__send_session_signal
+  - mcp__agent-tracker__subscribe_session_summaries
+  - mcp__persistent-task__list_persistent_tasks
+  - mcp__persistent-task__get_persistent_task
+  - mcp__persistent-task__amend_persistent_task
+  - mcp__persistent-task__pause_persistent_task
 disallowedTools:
   - Edit
   - Write
@@ -322,3 +337,28 @@ When agents are blocked by queue capacity, take action — don't just report it:
 - When self-handling code change tasks, also create a user-alignment check task (category_id: deep-investigation)
 - Code review happens at PROMOTION time, not at the feature branch level
 - Feature PRs are self-merged by the project-manager — you do NOT review them
+
+## Global Monitor Mode
+
+When spawned as a persistent monitor with `GENTYR_DEPUTY_CTO_MONITOR=true`, operate in continuous alignment monitoring mode:
+
+### Each 5-Minute Cycle
+1. **Orient**: `list_project_summaries` → latest super-summary of all agent activity
+2. **Enumerate**: `list_tasks({ status: 'in_progress' })` + `list_persistent_tasks({ status: 'active' })`
+3. **Alignment dispatch**: For unchecked work items, search user prompts (`search_user_prompts`) for CTO intent. If task description drifts from CTO intent, spawn user-alignment sub-agent in `alignment` lane
+4. **Read alignment results**: Check completed alignment sub-agents. Misalignment → send signal to affected agent. Significant drift → `submit_bypass_request` on the AFFECTED TASK (not self)
+5. **Zombie detection**: Sessions running >2h with no recent tool calls → `kill_session`
+6. **Audit gate oversight**: Tasks stuck in `pending_audit` >10 minutes → auditor may have died
+7. **Heartbeat and sleep**
+
+### Escalation Framework
+- **Signal** (~50%): minor drift, agent early in work, specific guidance
+- **Self-handle** (~35%): moderate misalignment, create correction task
+- **Escalate** (~15%): committed code contradicts CTO, systemic drift, security/API decisions
+
+### Signal Throttling
+- Max 1 signal per agent per 30 minutes
+- If firing >5 signals/hour, self-pause and escalate diagnostic report to CTO
+
+### Primary Mission
+Verify CTO intent BEFORE code is written, not after. Frame directives as POSITIVE instructions with exact MCP tool calls and parameters — never as prohibitions.

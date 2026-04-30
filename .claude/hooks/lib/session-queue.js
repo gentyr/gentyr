@@ -54,6 +54,7 @@ const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.j
 // Lane sub-limits
 const GATE_LANE_LIMIT = 5;
 const AUDIT_LANE_LIMIT = 5;
+const ALIGNMENT_LANE_LIMIT = 3;
 
 /**
  * Parse a SQLite datetime string as UTC.
@@ -492,7 +493,7 @@ export function enqueueSession(spec) {
   if (isFocusModeEnabled()) {
     const allowed =
       spec.priority === 'cto' || spec.priority === 'critical' ||
-      spec.lane === 'persistent' || spec.lane === 'gate' || spec.lane === 'audit' || spec.lane === 'revival' ||
+      spec.lane === 'persistent' || spec.lane === 'gate' || spec.lane === 'audit' || spec.lane === 'alignment' || spec.lane === 'revival' ||
       spec.source === 'force-spawn-tasks' ||
       spec.source === 'persistent-task-spawner' ||
       spec.source === 'stop-continue-hook' ||
@@ -1342,6 +1343,7 @@ export function drainQueue() {
   let standardSpawnedThisDrain = 0;
   let gateSpawnedThisDrain = 0;
   let auditSpawnedThisDrain = 0;
+  let alignmentSpawnedThisDrain = 0;
   let persistentSpawnedThisDrain = 0;
 
   for (const item of queued) {
@@ -1356,6 +1358,12 @@ export function drainQueue() {
       // Audit lane has its own sub-limit (independent auditors, signal-excluded)
       if (auditRunning + auditSpawnedThisDrain >= AUDIT_LANE_LIMIT) {
         continue; // Skip, audit full
+      }
+    } else if (item.lane === 'alignment') {
+      // Alignment lane for user-alignment spot-checks (spawned by global deputy-CTO monitor)
+      const alignmentRunning = db.prepare("SELECT COUNT(*) as c FROM queue_items WHERE status IN ('running','spawning') AND lane = 'alignment'").get().c;
+      if (alignmentRunning + alignmentSpawnedThisDrain >= ALIGNMENT_LANE_LIMIT) {
+        continue; // Skip, alignment full
       }
     } else {
       // Standard + revival lanes share the main limit (gate and persistent spawns don't consume it)
@@ -1442,6 +1450,8 @@ export function drainQueue() {
         gateSpawnedThisDrain++;
       } else if (item.lane === 'audit') {
         auditSpawnedThisDrain++;
+      } else if (item.lane === 'alignment') {
+        alignmentSpawnedThisDrain++;
       } else if (item.lane === 'persistent') {
         persistentSpawnedThisDrain++;
       } else {
@@ -1670,6 +1680,22 @@ function spawnQueueItem(db, item) {
         ptDb.prepare("UPDATE persistent_tasks SET monitor_pid = ?, monitor_agent_id = ? WHERE id = ?")
           .run(claude.pid, agentId, metadata.persistentTaskId);
         ptDb.close();
+      }
+    }
+  } catch (_) { /* non-fatal */ }
+
+  // Sync todo.db task to in_progress at actual spawn time (fixes started_at:null desync)
+  try {
+    const spawnMeta = item.metadata ? (typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata) : {};
+    if (spawnMeta.taskId) {
+      const todoDbPath = path.join(item.project_dir || PROJECT_DIR, '.claude', 'todo.db');
+      if (fs.existsSync(todoDbPath)) {
+        const todoDb = new Database(todoDbPath);
+        todoDb.pragma('busy_timeout = 3000');
+        todoDb.prepare(
+          "UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ? AND status = 'pending'"
+        ).run(new Date().toISOString(), Math.floor(Date.now() / 1000), spawnMeta.taskId);
+        todoDb.close();
       }
     }
   } catch (_) { /* non-fatal */ }

@@ -58,3 +58,14 @@ You do NOT commit, push, merge, or create PRs. The project-manager handles all g
 Your work is on a feature branch. The merge target is determined by your project context (see CLAUDE.md).
 
 **NEVER run `git checkout` or `git switch` to change branches** -- the main working tree must stay on its base branch to prevent drift.
+
+## Decision Alignment Mode
+
+When your prompt contains "DECISION ALIGNMENT CHECK:", evaluate task descriptions against user prompts instead of git diff:
+
+1. Read the task description via `mcp__todo-db__get_task`
+2. Search user prompts matching the task's feature area via `search_user_prompts`
+3. Compare: does the planned approach match what the CTO asked for?
+4. Report: aligned (with evidence) or misaligned (with specific drift description)
+
+This mode runs BEFORE code is written. Focus on task scope, approach, and intent — not implementation details.

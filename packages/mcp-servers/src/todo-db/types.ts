@@ -58,6 +58,10 @@ export const CreateTaskArgsSchema = z.object({
     .describe('When true, the spawned agent receives strict MCP-only infrastructure instructions (use secret_run_command for builds, MCP tools for demos, no Bash for infrastructure operations).'),
   demo_involved: z.boolean().optional().default(false)
     .describe('Task involves demo scenarios — spawned agent receives demo validation instructions.'),
+  gate_success_criteria: z.string().optional()
+    .describe('MEASURABLE outcome that defines task success. Example: "All 14 ALLOW demo scenarios return status: passed in run_demo_batch"'),
+  gate_verification_method: z.string().optional()
+    .describe('EXECUTABLE verification steps. Must cite specific MCP tool calls, file paths, or commands with expected output. Example: "Call run_demo_batch({headless:true}) and verify every result.status === passed"'),
 });
 
 export const StartTaskArgsSchema = z.object({
@@ -66,6 +70,8 @@ export const StartTaskArgsSchema = z.object({
 
 export const CompleteTaskArgsSchema = z.object({
   id: z.string().describe('Task UUID'),
+  force_complete: z.boolean().optional().default(false)
+    .describe('CTO bypass: skip audit gate and complete directly. Only honored in interactive (non-spawned) sessions.'),
 });
 
 export const DeleteTaskArgsSchema = z.object({
@@ -84,6 +90,45 @@ export const GateKillTaskArgsSchema = z.object({
 export const GateEscalateTaskArgsSchema = z.object({
   id: z.string().describe('Task UUID to escalate (must be in pending_review status)'),
   reason: z.string().describe('Reason for escalation — task is approved AND a deputy-CTO report is created'),
+});
+
+// ============================================================================
+// Audit Gate Schemas
+// ============================================================================
+
+export const UpdateTaskGateArgsSchema = z.object({
+  task_id: z.string().describe('Task UUID'),
+  success_criteria: z.string().optional()
+    .describe('New success criteria — what must be true when the task is done'),
+  verification_method: z.string().optional()
+    .describe('New verification method — how an auditor can verify the criteria'),
+  reset_to_draft: z.boolean().optional().default(false)
+    .describe('Reset gate_status to draft, requiring re-confirmation. Use when criteria change substantially.'),
+});
+
+export const ConfirmTaskGateArgsSchema = z.object({
+  task_id: z.string().describe('Task UUID whose gate to confirm'),
+  alignment_session_id: z.string().optional()
+    .describe('Session ID of the user-alignment sub-agent that reviewed this gate'),
+  refined_success_criteria: z.string().optional()
+    .describe('Refined success criteria from user-alignment review'),
+  refined_verification_method: z.string().optional()
+    .describe('Refined verification method from user-alignment review'),
+});
+
+export const CheckTaskAuditArgsSchema = z.object({
+  task_id: z.string().describe('Task UUID to check audit status'),
+});
+
+export const TaskAuditPassArgsSchema = z.object({
+  task_id: z.string().describe('Task UUID'),
+  evidence: z.string().describe('Concrete evidence supporting the pass verdict'),
+});
+
+export const TaskAuditFailArgsSchema = z.object({
+  task_id: z.string().describe('Task UUID'),
+  failure_reason: z.string().describe('Specific reason verification failed'),
+  evidence: z.string().describe('What was actually found vs what was expected'),
 });
 
 export const GetSummaryArgsSchema = z.object({});
@@ -225,6 +270,11 @@ export type GetCategoryArgs = z.infer<typeof GetCategoryArgsSchema>;
 export type CreateCategoryArgs = z.infer<typeof CreateCategoryArgsSchema>;
 export type UpdateCategoryArgs = z.infer<typeof UpdateCategoryArgsSchema>;
 export type DeleteCategoryArgs = z.infer<typeof DeleteCategoryArgsSchema>;
+export type UpdateTaskGateArgs = z.infer<typeof UpdateTaskGateArgsSchema>;
+export type ConfirmTaskGateArgs = z.infer<typeof ConfirmTaskGateArgsSchema>;
+export type CheckTaskAuditArgs = z.infer<typeof CheckTaskAuditArgsSchema>;
+export type TaskAuditPassArgs = z.infer<typeof TaskAuditPassArgsSchema>;
+export type TaskAuditFailArgs = z.infer<typeof TaskAuditFailArgsSchema>;
 
 export interface TaskRecord {
   id: string;
@@ -249,6 +299,11 @@ export interface TaskRecord {
   strict_infra_guidance: number;    // 0 or 1 (SQLite boolean)
   demo_involved: number;            // 0 or 1 (SQLite boolean)
   category_id: string | null;
+  gate_success_criteria: string | null;
+  gate_verification_method: string | null;
+  gate_status: string | null;       // null | 'draft' | 'active'
+  gate_confirmed_at: string | null;
+  gate_confirmed_by: string | null;
 }
 
 export interface TaskResponse {
@@ -278,6 +333,9 @@ export interface ListTasksResult {
 
 export interface CreateTaskResult extends TaskResponse {
   warning?: string;
+  gate_status?: string | null;
+  gate_success_criteria?: string | null;
+  gate_verification_method?: string | null;
 }
 
 export interface StartTaskResult {
@@ -288,9 +346,12 @@ export interface StartTaskResult {
 
 export interface CompleteTaskResult {
   id: string;
-  status: 'completed';
-  completed_at: string;
+  status: 'completed' | 'pending_audit';
+  completed_at?: string;
   followup_task_id?: string;
+  gate_success_criteria?: string;
+  gate_verification_method?: string;
+  gate_warning?: string;
 }
 
 export interface DeleteTaskResult {

@@ -11,7 +11,7 @@ import { z } from 'zod';
 // Constants
 // ============================================================================
 
-export const PERSISTENT_TASK_STATUS = ['draft', 'active', 'paused', 'completed', 'cancelled', 'failed'] as const;
+export const PERSISTENT_TASK_STATUS = ['draft', 'active', 'paused', 'pending_audit', 'completed', 'cancelled', 'failed'] as const;
 export type PersistentTaskStatus = (typeof PERSISTENT_TASK_STATUS)[number];
 
 export const AMENDMENT_TYPES = ['addendum', 'correction', 'scope_change', 'priority_shift'] as const;
@@ -32,6 +32,10 @@ export const CreatePersistentTaskArgsSchema = z.object({
   plan_task_id: z.string().optional().describe('Plan task UUID — links this persistent task to a plan task. When set, plan-persistent-sync.js auto-cascades completion back to the plan.'),
   plan_id: z.string().optional().describe('Plan UUID — the plan this persistent task belongs to. Used by persistent-task-briefing.js to inject plan context.'),
   is_plan_manager: z.boolean().optional().default(false).describe('When true, this persistent task is a plan manager — it spawns persistent tasks for plan steps instead of standalone child sessions.'),
+  gate_success_criteria: z.string().optional()
+    .describe('MEASURABLE outcome for audit gate. Falls back to outcome_criteria if not set. Example: "All demo scenarios pass with video recording"'),
+  gate_verification_method: z.string().optional()
+    .describe('EXECUTABLE verification steps for the auditor. Example: "Call verify_demo_completeness and assert complete: true"'),
 });
 
 export const ActivatePersistentTaskArgsSchema = z.object({
@@ -76,6 +80,8 @@ export const CancelPersistentTaskArgsSchema = z.object({
 export const CompletePersistentTaskArgsSchema = z.object({
   id: z.string().describe('Persistent task UUID'),
   summary: z.string().optional().describe('Summary of what was accomplished'),
+  force_complete: z.boolean().optional().default(false)
+    .describe('CTO bypass: skip audit gate. Only honored in interactive (non-spawned) sessions.'),
 });
 
 export const LinkSubtaskArgsSchema = z.object({
@@ -85,6 +91,39 @@ export const LinkSubtaskArgsSchema = z.object({
 
 export const GetPersistentTaskSummaryArgsSchema = z.object({
   id: z.string().describe('Persistent task UUID'),
+});
+
+// ============================================================================
+// Audit Gate Schemas
+// ============================================================================
+
+export const UpdatePtGateArgsSchema = z.object({
+  id: z.string().describe('Persistent task UUID'),
+  success_criteria: z.string().optional().describe('New success criteria'),
+  verification_method: z.string().optional().describe('New verification method'),
+  reset_to_draft: z.boolean().optional().default(false).describe('Reset gate to draft, requiring re-confirmation'),
+});
+
+export const ConfirmPtGateArgsSchema = z.object({
+  id: z.string().describe('Persistent task UUID'),
+  alignment_session_id: z.string().optional().describe('Session ID of the user-alignment sub-agent that reviewed this gate'),
+  refined_success_criteria: z.string().optional().describe('Refined criteria from alignment review'),
+  refined_verification_method: z.string().optional().describe('Refined method from alignment review'),
+});
+
+export const CheckPtAuditArgsSchema = z.object({
+  id: z.string().describe('Persistent task UUID'),
+});
+
+export const PtAuditPassArgsSchema = z.object({
+  id: z.string().describe('Persistent task UUID'),
+  evidence: z.string().describe('Concrete evidence supporting the pass verdict'),
+});
+
+export const PtAuditFailArgsSchema = z.object({
+  id: z.string().describe('Persistent task UUID'),
+  failure_reason: z.string().describe('Specific reason verification failed'),
+  evidence: z.string().describe('What was actually found vs what was expected'),
 });
 
 // ============================================================================
@@ -103,6 +142,11 @@ export type CancelPersistentTaskArgs = z.infer<typeof CancelPersistentTaskArgsSc
 export type CompletePersistentTaskArgs = z.infer<typeof CompletePersistentTaskArgsSchema>;
 export type LinkSubtaskArgs = z.infer<typeof LinkSubtaskArgsSchema>;
 export type GetPersistentTaskSummaryArgs = z.infer<typeof GetPersistentTaskSummaryArgsSchema>;
+export type UpdatePtGateArgs = z.infer<typeof UpdatePtGateArgsSchema>;
+export type ConfirmPtGateArgs = z.infer<typeof ConfirmPtGateArgsSchema>;
+export type CheckPtAuditArgs = z.infer<typeof CheckPtAuditArgsSchema>;
+export type PtAuditPassArgs = z.infer<typeof PtAuditPassArgsSchema>;
+export type PtAuditFailArgs = z.infer<typeof PtAuditFailArgsSchema>;
 
 // ============================================================================
 // Record Types (SQLite rows)
@@ -129,6 +173,10 @@ export interface PersistentTaskRecord {
   user_prompt_uuids: string | null;
   metadata: string | null;
   last_summary: string | null;
+  gate_success_criteria: string | null;
+  gate_verification_method: string | null;
+  gate_status: string | null;
+  gate_confirmed_at: string | null;
 }
 
 export interface AmendmentRecord {

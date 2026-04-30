@@ -289,6 +289,24 @@ When the CTO describes complex work, proactively suggest the right tool:
 
 Long-running objectives use persistent tasks (`/persistent-task` to create, `/persistent-tasks` to manage). `activate_persistent_task`, `resume_persistent_task`, and `amend_persistent_task` (auto-resume) all trigger a PostToolUse hook that automatically enqueues a monitor session. Do NOT manually create tasks or call `force_spawn_tasks` after these calls — the monitor is spawned by the hook.
 
+### Universal Audit Gate System
+
+Non-exempt task completions are independently audited. Before `complete_task`, agents call `update_task_gate` with measurable `gate_success_criteria` and executable `gate_verification_method`. Completion routes through `pending_audit`; an independent auditor verifies artifacts before transitioning to `completed`. Failed audits return the task to `in_progress` with the failure reason injected into the next spawn prompt.
+
+**Two-step gate definition**: `create_task` with gate fields → gate is DRAFT → agent spawns user-alignment sub-agent to review criteria against user prompts → calls `confirm_task_gate` → gate becomes ACTIVE → task is spawnable.
+
+**Gate-exempt categories**: Triage, Project Management, Workstream Management — these complete directly without audit.
+
+**Persistent tasks**: `complete_persistent_task` routes through `pending_audit` when `gate_success_criteria` is set (falls back to `outcome_criteria`). Same auditor, same flow.
+
+**Directive signals MUST be acknowledged** before task completion (enforced by `signal-compliance-gate.js` PreToolUse hook).
+
+### Global Deputy-CTO Monitor
+
+A persistent deputy-CTO session continuously monitors all agents with user alignment as its primary lens. Spawns user-alignment sub-agents in the `alignment` queue lane (limit 3) to verify work matches CTO intent BEFORE code is written. Detects zombies via `kill_session`, oversees stuck audit gates, and escalates significant drift via `submit_bypass_request` on the affected task.
+
+Bootstrap: create persistent task with metadata `{ "task_type": "global_monitor", "do_not_complete": true }` and env `GENTYR_DEPUTY_CTO_MONITOR=true`.
+
 ### Session Activity Broadcasting
 
 A background daemon broadcasts activity summaries every 5 minutes. Each running agent receives a digest of what all other agents are working on, with UUIDs to access detailed per-session summaries. Use `session-activity` MCP tools to review historical summaries:
