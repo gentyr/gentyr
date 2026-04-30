@@ -46,6 +46,10 @@ cleanup() {
   log "Exit trap fired (exit code: $exit_code)"
 
   # 1. Stop ffmpeg recording gracefully (SIGINT → moov atom)
+  # Pick up FFMPEG_PID from file (set by the Chrome-detection subshell)
+  if [[ -z "$FFMPEG_PID" && -f /tmp/.ffmpeg_pid ]]; then
+    FFMPEG_PID=$(cat /tmp/.ffmpeg_pid 2>/dev/null || echo "")
+  fi
   if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
     kill -INT "$FFMPEG_PID" 2>/dev/null || true
     local count=0
@@ -419,36 +423,68 @@ PLAYWRIGHT_EXIT=0
 STALL_TIMEOUT=${GENTYR_STALL_TIMEOUT_S:-600}
 GRACE_PERIOD=${GENTYR_STALL_GRACE_S:-60}
 
-# ---------------------------------------------------------------------------
-# Start ffmpeg recording now — right before the test, so the recording does
-# not include minutes of blank Xvfb desktop during setup.
-# ---------------------------------------------------------------------------
-if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID" ]]; then
-  log "Starting ffmpeg display recording (${RECORDING_RESOLUTION} @ ${RECORDING_FPS}fps)..."
-  ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
-    -framerate "${RECORDING_FPS}" -i :99 \
-    -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
-    -movflags +faststart -y "$RECORDING_FILE" \
-    < /dev/null > /app/.ffmpeg.log 2>&1 &
-  FFMPEG_PID=$!
-  sleep 0.5
-
-  if ! kill -0 "$FFMPEG_PID" 2>/dev/null; then
-    error "ffmpeg failed to start — continuing without recording"
-    FFMPEG_PID=""
-  else
-    log "Recording started (PID: $FFMPEG_PID)"
-  fi
-fi
-
 # Launch Playwright in the background; tee stdout/stderr to log files while
 # still streaming them to the terminal so container logs capture output.
+# ffmpeg recording starts AFTER Chrome appears on the display (see below).
 npx playwright test "$TEST_FILE" \
   --reporter=json,line \
   --trace=on \
   > >(tee /app/.stdout.log) \
   2> >(tee /app/.stderr.log >&2) &
 PLAYWRIGHT_PID=$!
+
+# ---------------------------------------------------------------------------
+# Start ffmpeg recording when Chrome appears on Xvfb (not before).
+# Playwright's webServer config compiles packages and starts dev servers for
+# 2-3 minutes before Chrome launches. Polling for the Chrome window avoids
+# recording minutes of blank Xvfb desktop.
+# ---------------------------------------------------------------------------
+if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID" ]]; then
+  (
+    # Poll for Chrome window (up to 5 minutes)
+    WAIT_START=$(date +%s)
+    while kill -0 "$PLAYWRIGHT_PID" 2>/dev/null; do
+      # xdotool search returns 0 when a matching window is found
+      if xdotool search --name "Chrom" >/dev/null 2>&1; then
+        sleep 1  # Give Chrome a moment to render its first frame
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Chrome window detected — starting ffmpeg recording" >&2
+        ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
+          -framerate "${RECORDING_FPS}" -i :99 \
+          -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
+          -movflags +faststart -y "$RECORDING_FILE" \
+          < /dev/null > /app/.ffmpeg.log 2>&1 &
+        echo $! > /tmp/.ffmpeg_pid
+        break
+      fi
+      ELAPSED=$(( $(date +%s) - WAIT_START ))
+      if [[ "$ELAPSED" -ge 300 ]]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARNING: Chrome not detected after 5 min — starting ffmpeg anyway" >&2
+        ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
+          -framerate "${RECORDING_FPS}" -i :99 \
+          -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
+          -movflags +faststart -y "$RECORDING_FILE" \
+          < /dev/null > /app/.ffmpeg.log 2>&1 &
+        echo $! > /tmp/.ffmpeg_pid
+        break
+      fi
+      sleep 2
+    done
+  ) &
+  CHROME_DETECT_PID=$!
+
+  # The main script picks up FFMPEG_PID from the file once available
+  (
+    while [[ ! -f /tmp/.ffmpeg_pid ]] && kill -0 "$PLAYWRIGHT_PID" 2>/dev/null; do
+      sleep 1
+    done
+    if [[ -f /tmp/.ffmpeg_pid ]]; then
+      FPID=$(cat /tmp/.ffmpeg_pid)
+      if kill -0 "$FPID" 2>/dev/null; then
+        log "Recording started (PID: $FPID)"
+      fi
+    fi
+  ) &
+fi
 
 # Start watchdog subshell: after the grace period, poll file sizes every 10s.
 # If no file growth is observed for STALL_TIMEOUT seconds, kill Playwright.
@@ -502,6 +538,10 @@ log "Playwright exited with code: $PLAYWRIGHT_EXIT"
 # SIGINT allows ffmpeg to write the moov atom (required for a playable MP4).
 # The EXIT trap is a safety net — it will no-op if FFMPEG_PID is already dead.
 # ---------------------------------------------------------------------------
+# Pick up FFMPEG_PID from file (set by the Chrome-detection subshell)
+if [[ -z "$FFMPEG_PID" && -f /tmp/.ffmpeg_pid ]]; then
+  FFMPEG_PID=$(cat /tmp/.ffmpeg_pid 2>/dev/null || echo "")
+fi
 if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
   log "Stopping ffmpeg recording..."
   kill -INT "$FFMPEG_PID" 2>/dev/null || true
