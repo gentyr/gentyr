@@ -94,6 +94,31 @@ export interface GetLogStatsResult {
 }
 
 /**
+ * Arguments for verifying logging configuration
+ */
+export const VerifyLoggingConfigArgsSchema = z.object({});
+
+export type VerifyLoggingConfigArgs = z.infer<typeof VerifyLoggingConfigArgsSchema>;
+
+/**
+ * Result from verify_logging_config tool
+ */
+export interface VerifyLoggingConfigResult {
+  elastic_configured: boolean;
+  elastic_enabled: boolean;
+  index_prefix: string;
+  credentials: {
+    local: boolean;
+    render_production: boolean;
+    render_staging: boolean;
+    vercel: boolean;
+  };
+  cluster_reachable: boolean;
+  cluster_status?: string;
+  recommendations: string[];
+}
+
+/**
  * Error result
  */
 export interface ErrorResult {

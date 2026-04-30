@@ -4,11 +4,33 @@
   "type": "module",
   "main": "dist/logger.js",
   "types": "dist/logger.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/logger.d.ts",
+      "import": "./dist/logger.js"
+    },
+    "./elastic": {
+      "types": "./dist/elastic-logger.d.ts",
+      "import": "./dist/elastic-logger.js"
+    },
+    "./context": {
+      "types": "./dist/context.d.ts",
+      "import": "./dist/context.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@elastic/elasticsearch": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@elastic/elasticsearch": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "typescript": "^5.3.0",
