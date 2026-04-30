@@ -113,31 +113,22 @@ mcp__release-ledger__add_release_pr({
 
 Lock staging to prevent new merges from contaminating the release candidate.
 
-```bash
-GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })"
-node -e "
-import { lockStaging } from './${GENTYR_DIR}/.claude/hooks/lib/staging-lock.js';
-const result = await lockStaging('RELEASE_ID');
-console.log(JSON.stringify({ locked: true }));
-" --input-type=module
+```
+mcp__release-ledger__lock_staging({
+  release_id: "<release_id from Step 3>"
+})
 ```
 
-Replace `RELEASE_ID` with the actual release ID from Step 3.
+The tool writes `.claude/state/staging-lock.json` and sets GitHub branch protection (best-effort).
 
-Verify the lock by reading the state file:
+**CRITICAL**: Verify the response shows `locked: true`. If the lock fails, DO NOT proceed — stop and report the error to the CTO. The staging lock is a prerequisite for the release plan.
 
-```bash
-cat .claude/state/staging-lock.json
-```
-
-Confirm it shows `"locked": true` and the correct `release_id`.
-
-Then update the release record with the lock timestamp:
+Then update the release record with the lock timestamp from the response:
 
 ```
 mcp__release-ledger__update_release({
   release_id: "<release_id>",
-  staging_lock_at: "<ISO timestamp>"
+  staging_lock_at: "<locked_at from lock response>"
 })
 ```
 
@@ -351,6 +342,8 @@ You will be notified to review and approve. Use:
 |------|---------|
 | `mcp__release-ledger__create_release` | Create a release record |
 | `mcp__release-ledger__add_release_pr` | Register a PR in the release |
+| `mcp__release-ledger__lock_staging` | Lock staging branch for the release |
+| `mcp__release-ledger__unlock_staging` | Unlock staging branch after release |
 | `mcp__release-ledger__update_release` | Link plan, set artifact dir, update timestamps |
 | `mcp__release-ledger__list_releases` | List releases by status |
 | `mcp__release-ledger__sign_off_release` | CTO sign-off on the release |

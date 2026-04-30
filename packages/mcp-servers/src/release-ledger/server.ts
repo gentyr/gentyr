@@ -46,6 +46,10 @@ import {
   type AddReleaseTaskArgs,
   type GetReleaseEvidenceArgs,
   type GenerateReleaseReportArgs,
+  LockStagingArgsSchema,
+  UnlockStagingArgsSchema,
+  type LockStagingArgs,
+  type UnlockStagingArgs,
   OpenReleaseReportArgsSchema,
   GetReleaseReportSectionArgsSchema,
   PresentReleaseSummaryArgsSchema,
@@ -1203,6 +1207,111 @@ async function recordCtoApproval(args: RecordCtoApprovalArgs): Promise<string> {
   });
 }
 
+/**
+ * Lock the staging branch to prevent new merges during a production release.
+ * Writes the staging lock state file and optionally sets GitHub branch protection.
+ */
+function lockStagingTool(args: LockStagingArgs): object {
+  const lockPath = path.join(PROJECT_DIR, '.claude', 'state', 'staging-lock.json');
+
+  // Check if already locked by a different release
+  try {
+    if (fs.existsSync(lockPath)) {
+      const existing = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+      if (existing.locked && existing.release_id !== args.release_id) {
+        return { error: `Staging is already locked by release ${existing.release_id}. Unlock it first or cancel that release.` };
+      }
+    }
+  } catch { /* file doesn't exist or is corrupt, proceed */ }
+
+  // Ensure state directory exists
+  const stateDir = path.join(PROJECT_DIR, '.claude', 'state');
+  if (!fs.existsSync(stateDir)) {
+    fs.mkdirSync(stateDir, { recursive: true });
+  }
+
+  // Write lock file
+  const lockedAt = now();
+  const lockState = {
+    locked: true,
+    locked_at: lockedAt,
+    locked_by: 'release-ledger',
+    release_id: args.release_id,
+    reason: 'Production release in progress',
+  };
+  fs.writeFileSync(lockPath, JSON.stringify(lockState, null, 2));
+
+  // Best-effort GitHub branch protection
+  let githubResult = 'skipped';
+  try {
+    execSync(
+      'gh api repos/{owner}/{repo}/branches/staging/protection -X PUT -f required_pull_request_reviews.required_approving_review_count=6 2>/dev/null || true',
+      { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 15000, stdio: 'pipe' },
+    );
+    githubResult = 'set';
+  } catch { githubResult = 'failed (non-fatal)'; }
+
+  // Verify the lock was actually written correctly
+  try {
+    const verify = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    if (!verify.locked) {
+      return { error: 'Lock file written but verification failed — locked is not true' };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Lock file verification failed: ${message}` };
+  }
+
+  return {
+    locked: true,
+    release_id: args.release_id,
+    locked_at: lockedAt,
+    github_protection: githubResult,
+    lock_path: lockPath,
+  };
+}
+
+/**
+ * Unlock the staging branch after a production release completes or is cancelled.
+ * Removes the staging lock state and GitHub branch protection.
+ */
+function unlockStagingTool(args: UnlockStagingArgs): object {
+  const lockPath = path.join(PROJECT_DIR, '.claude', 'state', 'staging-lock.json');
+
+  // Check current lock state — refuse to unlock a different release's lock
+  try {
+    if (fs.existsSync(lockPath)) {
+      const existing = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+      if (existing.locked && existing.release_id && existing.release_id !== args.release_id) {
+        return { error: `Staging is locked by release ${existing.release_id}, not ${args.release_id}. Cannot unlock with a different release ID.` };
+      }
+    }
+  } catch { /* proceed with unlock */ }
+
+  // Write unlock state
+  const unlockedAt = now();
+  const unlockState = {
+    locked: false,
+    unlocked_at: unlockedAt,
+    release_id: args.release_id,
+  };
+  fs.writeFileSync(lockPath, JSON.stringify(unlockState, null, 2));
+
+  // Best-effort remove GitHub branch protection
+  try {
+    execSync(
+      'gh api repos/{owner}/{repo}/branches/staging/protection -X DELETE 2>/dev/null || true',
+      { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 15000, stdio: 'pipe' },
+    );
+  } catch { /* non-fatal */ }
+
+  return {
+    locked: false,
+    release_id: args.release_id,
+    unlocked_at: unlockedAt,
+  };
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -1297,6 +1406,18 @@ const tools: AnyToolHandler[] = [
     description: 'Get a specific section (1-9) from a release report. Parses the report.md and extracts the content for the requested section number. Call generate_release_report first if the report does not exist.',
     schema: GetReleaseReportSectionArgsSchema,
     handler: getReleaseReportSection,
+  },
+  {
+    name: 'lock_staging',
+    description: 'Lock the staging branch to prevent new merges during a production release. Creates the staging lock state file and optionally sets GitHub branch protection. Must be called before activating a release plan.',
+    schema: LockStagingArgsSchema,
+    handler: lockStagingTool,
+  },
+  {
+    name: 'unlock_staging',
+    description: 'Unlock the staging branch after a production release completes or is cancelled. Removes the staging lock state and GitHub branch protection.',
+    schema: UnlockStagingArgsSchema,
+    handler: unlockStagingTool,
   },
   {
     name: 'present_release_summary',

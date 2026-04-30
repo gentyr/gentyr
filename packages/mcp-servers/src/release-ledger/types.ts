@@ -128,6 +128,15 @@ export const GetReleaseReportSectionArgsSchema = z.object({
   section: z.coerce.number().min(1).max(9).describe('Section number (1-9) to extract from the report'),
 });
 
+// Staging Lock
+export const LockStagingArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID to associate with the staging lock'),
+});
+
+export const UnlockStagingArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID that locked staging (must match)'),
+});
+
 // CTO Approval Gate
 export const PresentReleaseSummaryArgsSchema = z.object({
   release_id: z.string().min(1).describe('Release ID'),
@@ -161,6 +170,8 @@ export type GetReleaseEvidenceArgs = z.infer<typeof GetReleaseEvidenceArgsSchema
 export type GenerateReleaseReportArgs = z.infer<typeof GenerateReleaseReportArgsSchema>;
 export type OpenReleaseReportArgs = z.infer<typeof OpenReleaseReportArgsSchema>;
 export type GetReleaseReportSectionArgs = z.infer<typeof GetReleaseReportSectionArgsSchema>;
+export type LockStagingArgs = z.infer<typeof LockStagingArgsSchema>;
+export type UnlockStagingArgs = z.infer<typeof UnlockStagingArgsSchema>;
 export type PresentReleaseSummaryArgs = z.infer<typeof PresentReleaseSummaryArgsSchema>;
 export type RecordCtoApprovalArgs = z.infer<typeof RecordCtoApprovalArgsSchema>;
 

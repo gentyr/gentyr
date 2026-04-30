@@ -148,6 +148,27 @@ async function main() {
     return;
   }
 
+  // Verify staging is locked for production release plans
+  let stagingLockWarning = '';
+  if (planTitle && (planTitle.includes('Production Release') || planTitle.includes('production release'))) {
+    try {
+      const lockPath = path.join(PROJECT_DIR, '.claude', 'state', 'staging-lock.json');
+      if (fs.existsSync(lockPath)) {
+        const lockState = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        if (!lockState.locked) {
+          stagingLockWarning = `[STAGING LOCK WARNING] Production release plan "${planTitle}" activated but staging is NOT locked. Call mcp__release-ledger__lock_staging first to prevent staging contamination.`;
+          log(`WARNING: ${stagingLockWarning}`);
+        }
+      } else {
+        stagingLockWarning = `[STAGING LOCK WARNING] No staging lock state file found. Production release plans should lock staging first via mcp__release-ledger__lock_staging.`;
+        log(`WARNING: ${stagingLockWarning}`);
+      }
+    } catch (err) {
+      log(`Warning: could not check staging lock state: ${err.message}`);
+      // Non-fatal — do not block plan activation
+    }
+  }
+
   // Create persistent task for plan-manager
   const ptId = randomUUID();
   const now = new Date().toISOString();
@@ -296,9 +317,10 @@ async function main() {
 
     if (result.blocked) {
       log(`Plan-manager enqueue blocked: ${result.blocked}`);
-      process.stdout.write(JSON.stringify({
-        additionalContext: `[PLAN ACTIVATION] Plan "${planTitle}" activated. Persistent task ${ptId} created but monitor enqueue was blocked (${result.blocked}). The plan-manager will start when the block clears.`,
-      }));
+      const ctx = stagingLockWarning
+        ? `${stagingLockWarning}\n\n[PLAN ACTIVATION] Plan "${planTitle}" activated. Persistent task ${ptId} created but monitor enqueue was blocked (${result.blocked}). The plan-manager will start when the block clears.`
+        : `[PLAN ACTIVATION] Plan "${planTitle}" activated. Persistent task ${ptId} created but monitor enqueue was blocked (${result.blocked}). The plan-manager will start when the block clears.`;
+      process.stdout.write(JSON.stringify({ additionalContext: ctx }));
       return;
     }
 
@@ -309,14 +331,16 @@ async function main() {
       auditEvent('plan_manager_spawned', { plan_id: planId, persistent_task_id: ptId, queue_id: result.queueId, plan_title: planTitle });
     } catch (_) { /* non-fatal */ }
 
-    process.stdout.write(JSON.stringify({
-      additionalContext: `[PLAN ACTIVATION] Plan "${planTitle}" activated with plan-manager persistent task ${ptId}. Monitor enqueued (queueId: ${result.queueId}). The plan-manager will automatically advance phases as they complete.`,
-    }));
+    const successCtx = stagingLockWarning
+      ? `${stagingLockWarning}\n\n[PLAN ACTIVATION] Plan "${planTitle}" activated with plan-manager persistent task ${ptId}. Monitor enqueued (queueId: ${result.queueId}). The plan-manager will automatically advance phases as they complete.`
+      : `[PLAN ACTIVATION] Plan "${planTitle}" activated with plan-manager persistent task ${ptId}. Monitor enqueued (queueId: ${result.queueId}). The plan-manager will automatically advance phases as they complete.`;
+    process.stdout.write(JSON.stringify({ additionalContext: successCtx }));
   } catch (err) {
     log(`Error enqueuing plan-manager: ${err.message}`);
-    process.stdout.write(JSON.stringify({
-      additionalContext: `[PLAN ACTIVATION] Persistent task ${ptId} created for plan "${planTitle}" but failed to enqueue monitor: ${err.message}. Resume manually with: mcp__persistent-task__resume_persistent_task({ id: "${ptId}" })`,
-    }));
+    const errCtx = stagingLockWarning
+      ? `${stagingLockWarning}\n\n[PLAN ACTIVATION] Persistent task ${ptId} created for plan "${planTitle}" but failed to enqueue monitor: ${err.message}. Resume manually with: mcp__persistent-task__resume_persistent_task({ id: "${ptId}" })`
+      : `[PLAN ACTIVATION] Persistent task ${ptId} created for plan "${planTitle}" but failed to enqueue monitor: ${err.message}. Resume manually with: mcp__persistent-task__resume_persistent_task({ id: "${ptId}" })`;
+    process.stdout.write(JSON.stringify({ additionalContext: errCtx }));
   }
 }
 
