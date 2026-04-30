@@ -62,6 +62,10 @@ export const SignOffReleaseArgsSchema = z.object({
 export const CancelReleaseArgsSchema = z.object({
   release_id: z.string().min(1).describe('Release ID'),
   reason: z.string().optional().describe('Reason for cancellation'),
+  cleanup: z.boolean().default(true).describe(
+    'Perform full cleanup: unlock staging, cancel linked plan, cancel persistent tasks, ' +
+    'cancel pending todo-db tasks, and kill running sessions. Set false to only cancel the release record.'
+  ),
 });
 
 // Release PRs

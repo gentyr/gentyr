@@ -599,8 +599,17 @@ function signOffRelease(args: SignOffReleaseArgs): object | ErrorResult {
 }
 
 /**
- * Cancel a release.
- * Sets status to 'cancelled'. Optionally stores reason in metadata.
+ * Cancel a release with optional comprehensive cleanup.
+ *
+ * When cleanup is true (default), performs:
+ * 1. Cancel the release record
+ * 2. Unlock staging
+ * 3. Cancel the linked plan
+ * 4. Cancel linked persistent tasks
+ * 5. Cancel pending todo-db tasks
+ * 6. Cancel running sessions linked to the release's tasks
+ *
+ * Each cleanup step is wrapped in try/catch so one failure does not block the others.
  */
 function cancelRelease(args: CancelReleaseArgs): object | ErrorResult {
   const db = getDb();
@@ -613,7 +622,9 @@ function cancelRelease(args: CancelReleaseArgs): object | ErrorResult {
     return { error: `Cannot cancel release in status '${release.status}' - must be 'in_progress'` } as ErrorResult;
   }
 
-  // Merge cancellation reason into metadata
+  const cleanupErrors: string[] = [];
+
+  // Step 1: Cancel the release record
   let metadataObj: Record<string, unknown> = {};
   try {
     if (release.metadata) metadataObj = JSON.parse(release.metadata);
@@ -628,11 +639,250 @@ function cancelRelease(args: CancelReleaseArgs): object | ErrorResult {
     "UPDATE releases SET status = 'cancelled', metadata = ? WHERE id = ?"
   ).run(JSON.stringify(metadataObj), args.release_id);
 
+  // If cleanup is disabled, return immediately
+  if (args.cleanup === false) {
+    return {
+      release_id: args.release_id,
+      version: release.version,
+      status: 'cancelled',
+      reason: args.reason ?? null,
+      cleanup: false,
+    };
+  }
+
+  // Step 2: Unlock staging
+  let stagingUnlocked = false;
+  try {
+    const stagingLockPath = path.join(PROJECT_DIR, '.claude', 'state', 'staging-lock.json');
+    if (fs.existsSync(stagingLockPath)) {
+      const lockState = {
+        locked: false,
+        release_id: args.release_id,
+        unlocked_at: now(),
+        unlocked_by: 'cancel_release',
+      };
+      fs.writeFileSync(stagingLockPath, JSON.stringify(lockState, null, 2));
+      stagingUnlocked = true;
+
+      // Update staging_unlock_at on the release record
+      db.prepare('UPDATE releases SET staging_unlock_at = ? WHERE id = ?').run(now(), args.release_id);
+    } else {
+      stagingUnlocked = true; // No lock file means staging is already unlocked
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    cleanupErrors.push(`staging_unlock: ${message}`);
+  }
+
+  // Step 3: Cancel the linked plan
+  let planCancelled = false;
+  if (release.plan_id) {
+    try {
+      const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+      if (fs.existsSync(plansDbPath)) {
+        const plansDb = new Database(plansDbPath);
+        plansDb.pragma('journal_mode = WAL');
+        plansDb.pragma('busy_timeout = 5000');
+        const result = plansDb.prepare(
+          "UPDATE plans SET status = 'cancelled', completed_at = ? WHERE id = ? AND status != 'cancelled'"
+        ).run(now(), release.plan_id);
+        planCancelled = result.changes > 0;
+        plansDb.close();
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      cleanupErrors.push(`plan_cancel: ${message}`);
+    }
+  }
+
+  // Step 4: Cancel linked persistent tasks
+  let persistentTasksCancelled = 0;
+  if (release.plan_id) {
+    try {
+      const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(plansDbPath) && fs.existsSync(ptDbPath)) {
+        const plansDb = new Database(plansDbPath);
+        plansDb.pragma('journal_mode = WAL');
+        plansDb.pragma('busy_timeout = 5000');
+
+        // Get all persistent_task_ids from plan_tasks AND the plan itself
+        const planTaskPtIds = plansDb.prepare(
+          'SELECT DISTINCT persistent_task_id FROM plan_tasks WHERE plan_id = ? AND persistent_task_id IS NOT NULL'
+        ).all(release.plan_id) as Array<{ persistent_task_id: string }>;
+
+        const planRecord = plansDb.prepare(
+          'SELECT persistent_task_id FROM plans WHERE id = ?'
+        ).get(release.plan_id) as { persistent_task_id: string | null } | undefined;
+
+        plansDb.close();
+
+        const ptIds = planTaskPtIds.map(r => r.persistent_task_id);
+        if (planRecord?.persistent_task_id) {
+          ptIds.push(planRecord.persistent_task_id);
+        }
+
+        if (ptIds.length > 0) {
+          const ptDb = new Database(ptDbPath);
+          ptDb.pragma('journal_mode = WAL');
+          ptDb.pragma('busy_timeout = 5000');
+          const cancelPt = ptDb.prepare(
+            "UPDATE persistent_tasks SET status = 'cancelled' WHERE id = ? AND status NOT IN ('completed', 'cancelled')"
+          );
+          const cancelTx = ptDb.transaction(() => {
+            for (const ptId of ptIds) {
+              const r = cancelPt.run(ptId);
+              persistentTasksCancelled += r.changes;
+            }
+          });
+          cancelTx();
+          ptDb.close();
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      cleanupErrors.push(`persistent_tasks_cancel: ${message}`);
+    }
+  }
+
+  // Step 5: Cancel pending todo-db tasks
+  let todoTasksCancelled = 0;
+  if (release.plan_id) {
+    try {
+      const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+      if (fs.existsSync(plansDbPath) && fs.existsSync(todoDbPath)) {
+        const plansDb = new Database(plansDbPath);
+        plansDb.pragma('journal_mode = WAL');
+        plansDb.pragma('busy_timeout = 5000');
+
+        const todoTaskIds = plansDb.prepare(
+          'SELECT DISTINCT todo_task_id FROM plan_tasks WHERE plan_id = ? AND todo_task_id IS NOT NULL'
+        ).all(release.plan_id) as Array<{ todo_task_id: string }>;
+
+        plansDb.close();
+
+        if (todoTaskIds.length > 0) {
+          const todoDb = new Database(todoDbPath);
+          todoDb.pragma('journal_mode = WAL');
+          todoDb.pragma('busy_timeout = 5000');
+          // Mark incomplete tasks as completed with cancellation note rather than deleting them
+          const cancelTodo = todoDb.prepare(
+            "UPDATE tasks SET status = 'completed' WHERE id = ? AND status NOT IN ('completed')"
+          );
+          const cancelTx = todoDb.transaction(() => {
+            for (const row of todoTaskIds) {
+              const r = cancelTodo.run(row.todo_task_id);
+              todoTasksCancelled += r.changes;
+            }
+          });
+          cancelTx();
+          todoDb.close();
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      cleanupErrors.push(`todo_tasks_cancel: ${message}`);
+    }
+  }
+
+  // Step 6: Cancel running sessions linked to the release's tasks
+  let sessionsCancelled = 0;
+  try {
+    const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+    if (fs.existsSync(queueDbPath)) {
+      const queueDb = new Database(queueDbPath);
+      queueDb.pragma('journal_mode = WAL');
+      queueDb.pragma('busy_timeout = 5000');
+
+      // Find running/queued/spawning sessions whose metadata references the release's plan
+      // The metadata column stores JSON with taskId, persistentTaskId, planId, etc.
+      const runningSessions = queueDb.prepare(
+        "SELECT id, pid, metadata FROM queue_items WHERE status IN ('queued', 'spawning', 'running') AND metadata IS NOT NULL"
+      ).all() as Array<{ id: string; pid: number | null; metadata: string }>;
+
+      // Collect all known task IDs associated with this release
+      const releaseTaskIds = new Set<string>();
+      const releasePtIds = new Set<string>();
+
+      if (release.plan_id) {
+        try {
+          const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+          if (fs.existsSync(plansDbPath)) {
+            const plansDb = new Database(plansDbPath);
+            plansDb.pragma('journal_mode = WAL');
+            plansDb.pragma('busy_timeout = 5000');
+
+            const todoIds = plansDb.prepare(
+              'SELECT todo_task_id FROM plan_tasks WHERE plan_id = ? AND todo_task_id IS NOT NULL'
+            ).all(release.plan_id) as Array<{ todo_task_id: string }>;
+            for (const r of todoIds) releaseTaskIds.add(r.todo_task_id);
+
+            const ptIds = plansDb.prepare(
+              'SELECT persistent_task_id FROM plan_tasks WHERE plan_id = ? AND persistent_task_id IS NOT NULL'
+            ).all(release.plan_id) as Array<{ persistent_task_id: string }>;
+            for (const r of ptIds) releasePtIds.add(r.persistent_task_id);
+
+            const planRecord = plansDb.prepare(
+              'SELECT persistent_task_id FROM plans WHERE id = ?'
+            ).get(release.plan_id) as { persistent_task_id: string | null } | undefined;
+            if (planRecord?.persistent_task_id) releasePtIds.add(planRecord.persistent_task_id);
+
+            plansDb.close();
+          }
+        } catch {
+          // Non-fatal: if we can't read plan data, we'll still cancel sessions by other identifiers
+        }
+      }
+
+      const cancelSession = queueDb.prepare(
+        "UPDATE queue_items SET status = 'cancelled', completed_at = ? WHERE id = ? AND status IN ('queued', 'spawning', 'running')"
+      );
+
+      const cancelTx = queueDb.transaction(() => {
+        for (const session of runningSessions) {
+          try {
+            const meta = JSON.parse(session.metadata);
+            const isReleasePlan = meta.planId === release.plan_id;
+            const isReleaseTask = meta.taskId && releaseTaskIds.has(meta.taskId);
+            const isReleasePt = meta.persistentTaskId && releasePtIds.has(meta.persistentTaskId);
+
+            if (isReleasePlan || isReleaseTask || isReleasePt) {
+              const r = cancelSession.run(now(), session.id);
+              sessionsCancelled += r.changes;
+
+              // Best-effort SIGTERM to the process
+              if (session.pid) {
+                try {
+                  process.kill(session.pid, 'SIGTERM');
+                } catch {
+                  // Process may already be dead
+                }
+              }
+            }
+          } catch {
+            // Skip sessions with unparseable metadata
+          }
+        }
+      });
+
+      cancelTx();
+      queueDb.close();
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    cleanupErrors.push(`sessions_cancel: ${message}`);
+  }
+
   return {
-    id: args.release_id,
-    version: release.version,
+    release_id: args.release_id,
     status: 'cancelled',
-    reason: args.reason ?? null,
+    staging_unlocked: stagingUnlocked,
+    plan_cancelled: planCancelled,
+    persistent_tasks_cancelled: persistentTasksCancelled,
+    todo_tasks_cancelled: todoTasksCancelled,
+    sessions_cancelled: sessionsCancelled,
+    cleanup_errors: cleanupErrors,
   };
 }
 
@@ -1379,7 +1629,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'cancel_release',
-    description: 'Cancel a release. Sets status to cancelled and records reason. Only valid when status is in_progress.',
+    description: 'Cancel a release and perform full cleanup: unlocks staging, cancels the linked plan and all associated persistent tasks, todo-db tasks, and running sessions. Use cleanup: false to only cancel the release record without side effects.',
     schema: CancelReleaseArgsSchema,
     handler: cancelRelease,
   },

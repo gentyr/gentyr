@@ -618,6 +618,16 @@ function createPlan(args: CreatePlanArgs) {
   const planId = randomUUID();
   const ts = now();
 
+  // Collect inline tasks that need linked todo-db tasks (created AFTER transaction)
+  const pendingTodoTasks: Array<{
+    planTaskId: string;
+    title: string;
+    description: string | null;
+    todoSection: string;
+    verificationStrategy: string | null;
+    categoryId: string | null;
+  }> = [];
+
   const createPlanTx = db.transaction(() => {
     db.prepare(
       'INSERT INTO plans (id, title, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
@@ -636,8 +646,8 @@ function createPlan(args: CreatePlanArgs) {
             const task = phase.tasks[ti];
             const taskId = randomUUID();
             db.prepare(
-              'INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order, agent_type, verification_strategy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            ).run(taskId, phaseId, planId, task.title, task.description ?? null, 'pending', ti + 1, task.agent_type ?? null, task.verification_strategy ?? null, ts, ts);
+              'INSERT INTO plan_tasks (id, phase_id, plan_id, title, description, status, task_order, agent_type, category_id, verification_strategy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            ).run(taskId, phaseId, planId, task.title, task.description ?? null, 'pending', ti + 1, task.agent_type ?? null, task.category_id ?? null, task.verification_strategy ?? null, ts, ts);
 
             if (task.substeps) {
               for (let si = 0; si < task.substeps.length; si++) {
@@ -645,6 +655,18 @@ function createPlan(args: CreatePlanArgs) {
                   'INSERT INTO substeps (id, task_id, title, completed, step_order, created_at) VALUES (?, ?, ?, 0, ?, ?)'
                 ).run(randomUUID(), taskId, task.substeps[si].title, si + 1, ts);
               }
+            }
+
+            // Queue todo-db task creation for after transaction commits
+            if (task.create_todo) {
+              pendingTodoTasks.push({
+                planTaskId: taskId,
+                title: task.title,
+                description: task.description ?? null,
+                todoSection: task.todo_section ?? 'GENERAL',
+                verificationStrategy: task.verification_strategy ?? null,
+                categoryId: task.category_id ?? null,
+              });
             }
           }
         }
@@ -656,14 +678,48 @@ function createPlan(args: CreatePlanArgs) {
 
   createPlanTx();
 
+  // Create linked todo-db tasks AFTER plans.db transaction succeeds
+  // (prevents orphaned todo tasks if the transaction rolls back)
+  if (pendingTodoTasks.length > 0 && fs.existsSync(TODO_DB_PATH)) {
+    try {
+      const todoDb = new Database(TODO_DB_PATH);
+      todoDb.pragma('journal_mode = WAL');
+      for (const pending of pendingTodoTasks) {
+        try {
+          const todoTaskId = randomUUID();
+          const metadata = JSON.stringify({ plan_task_id: pending.planTaskId, plan_id: planId });
+          // Propagate verification_strategy to gate_success_criteria + gate_verification_method
+          const gateSuccessCriteria = pending.verificationStrategy;
+          const gateVerificationMethod = pending.verificationStrategy ? 'automated' : null;
+          const gateStatus = gateSuccessCriteria ? 'armed' : null;
+          todoDb.prepare(
+            "INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, metadata, followup_enabled, gate_success_criteria, gate_verification_method, gate_status) VALUES (?, ?, ?, 'pending', ?, ?, 'plan-orchestrator', ?, ?, ?, 0, ?, ?, ?)"
+          ).run(todoTaskId, pending.todoSection, pending.categoryId, pending.title, pending.description, ts, ts, metadata, gateSuccessCriteria, gateVerificationMethod, gateStatus);
+
+          // Store linkage on plan_tasks
+          db.prepare('UPDATE plan_tasks SET todo_task_id = ? WHERE id = ?').run(todoTaskId, pending.planTaskId);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`[plan-orchestrator] Warning: Could not create inline todo task for "${pending.title}": ${message}\n`);
+        }
+      }
+      todoDb.close();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[plan-orchestrator] Warning: Could not open todo.db for inline task creation: ${message}\n`);
+    }
+  }
+
   const phaseCount = args.phases?.length ?? 0;
   const taskCount = args.phases?.reduce((sum, p) => sum + (p.tasks?.length ?? 0), 0) ?? 0;
+  const todoTasksCreated = pendingTodoTasks.length;
 
   return {
     plan_id: planId,
     title: args.title,
     phases_created: phaseCount,
     tasks_created: taskCount,
+    todo_tasks_created: todoTasksCreated,
     status: 'draft',
     created_at: ts,
   };
@@ -958,9 +1014,14 @@ function addPlanTask(args: AddPlanTaskArgs) {
       todoDb.pragma('journal_mode = WAL');
       const todoTaskId = randomUUID();
       const metadata = JSON.stringify({ plan_task_id: taskId, plan_id: phase.plan_id });
+      // Propagate verification_strategy to gate_success_criteria + gate_verification_method
+      // so the universal-audit-spawner can find gate criteria on the todo-db task
+      const gateSuccessCriteria = args.verification_strategy ?? null;
+      const gateVerificationMethod = args.verification_strategy ? 'automated' : null;
+      const gateStatus = gateSuccessCriteria ? 'armed' : null;
       todoDb.prepare(
-        "INSERT INTO tasks (id, section, status, title, description, assigned_by, created_at, created_timestamp, metadata, followup_enabled) VALUES (?, ?, 'pending', ?, ?, 'plan-orchestrator', ?, ?, ?, 0)"
-      ).run(todoTaskId, args.todo_section ?? 'GENERAL', args.title, args.description ?? null, ts, ts, metadata);
+        "INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, metadata, followup_enabled, gate_success_criteria, gate_verification_method, gate_status) VALUES (?, ?, ?, 'pending', ?, ?, 'plan-orchestrator', ?, ?, ?, 0, ?, ?, ?)"
+      ).run(todoTaskId, args.todo_section ?? 'GENERAL', args.category_id ?? null, args.title, args.description ?? null, ts, ts, metadata, gateSuccessCriteria, gateVerificationMethod, gateStatus);
       todoDb.close();
 
       // Store linkage on plan_tasks

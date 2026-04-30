@@ -145,6 +145,12 @@ mcp__plan-orchestrator__create_plan({
 
 Record the returned `plan_id`.
 
+> **IMPORTANT**: All plan tasks MUST be created with `create_todo: true` so the plan-manager
+> can spawn agents automatically via `get_spawn_ready_tasks`. If using inline task creation in
+> `create_plan`, include `"create_todo": true` in each task object. Without this, the plan-manager
+> will find no spawnable tasks and the pipeline will stall. When a task has a `verification_strategy`,
+> the `gate_success_criteria` is automatically propagated to the linked todo-db task.
+
 ### 5b. Add 8 phases
 
 Create each phase in order using `mcp__plan-orchestrator__add_phase`:
@@ -185,24 +191,29 @@ mcp__plan-orchestrator__add_plan_task({
   phase_id: "<phase_1_id>",
   title: "Review PR #<number>: <title>",
   description: "Run antipattern-hunter, code-reviewer, user-alignment, and spec-compliance checks on PR #<number>.",
-  verification_strategy: "All 4 review agents completed with no unresolved critical findings"
+  verification_strategy: "All 4 review agents completed with no unresolved critical findings",
+  create_todo: true,
+  todo_section: "CODE-REVIEWER"
 })
 ```
 
 ### 5d. Add tasks to Phases 2-8
 
-Add one task per phase:
+Add one task per phase. ALL tasks MUST include `create_todo: true` and the appropriate `todo_section`:
 
 **Phase 2 task**: "Initial Triage — Review Phase 1 findings"
 - Description: "Deputy-CTO triages all Phase 1 findings. Creates fix tasks for critical issues. Escalates blockers to CTO."
+- create_todo: true, todo_section: "DEPUTY-CTO"
 
 **Phase 3 task**: "Meta-Review — Cross-PR consistency check"
 - Description: "Holistic review across all PRs for API consistency, cross-cutting concerns, migration safety, and dependency conflicts."
 - verification_strategy: "Meta-review report generated with no unresolved cross-cutting issues"
+- create_todo: true, todo_section: "CODE-REVIEWER"
 
 **Phase 4 task**: "Run full test suite and all demo scenarios"
 - Description: "Execute unit tests, integration tests, and all registered demo scenarios. ALL demos MUST run remotely on Fly.io with video recording (use run_demo_batch — recorded: true and remote: true are the defaults, meaning headed + Xvfb + ffmpeg on Fly.io). Use run_demo_batch for concurrent execution across multiple Fly.io machines. Collect test-results.json and demo-results.json in the release artifact directory. After all demos complete, call mcp__user-feedback__verify_demo_completeness({ since: '<release_created_at>', branch: '<current_branch>' }) and confirm complete: true before marking this task done."
 - verification_strategy: "All tests pass AND mcp__user-feedback__verify_demo_completeness({ since: '<release_created_at>' }) returns complete: true with 0 scenarios_missing_pass and 0 scenarios_missing_recording"
+- create_todo: true, todo_section: "TEST-WRITER"
 
 ### 5d-canary. Conditional Canary Phase (only when `canary.enabled: true` in services.json)
 
@@ -239,7 +250,9 @@ mcp__plan-orchestrator__add_plan_task({
   phase_id: "<canary_phase_id>",
   title: "Deploy canary and monitor error rate",
   description: "Deploy the staging build to production at <trafficPercentage>% traffic. Monitor error rates for <monitoringWindowMinutes> minutes using the canary-deploy module. If error rate exceeds <errorRateThreshold>%, auto-rollback and fail the phase. Use deployCanary(), monitorCanary(), and rollbackCanary() from .claude/hooks/lib/canary-deploy.js.",
-  verification_strategy: "Error rate below <errorRateThreshold>% for <monitoringWindowMinutes> minutes. Canary monitoring report shows healthy: true."
+  verification_strategy: "Error rate below <errorRateThreshold>% for <monitoringWindowMinutes> minutes. Canary monitoring report shows healthy: true.",
+  create_todo: true,
+  todo_section: "GENERAL"
 })
 ```
 
@@ -252,9 +265,11 @@ Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo
 **Phase 5 task**: "Demo Coverage Audit"
 - Description: "Review all PRs in this release and verify every user-facing feature has a demo scenario. Create missing demos via demo-manager. Run all new demos remotely on Fly.io with recording (run_demo with recorded: true, remote: true). Gate: screenshot proof from demos covering new features — use get_demo_screenshot and extract_video_frames to collect visual evidence."
 - verification_strategy: "All changed features have passing demo scenarios with screenshot evidence in the release artifact directory"
+- create_todo: true, todo_section: "CODE-REVIEWER"
 
 **Phase 6 task**: "Final Triage — Pre-release readiness check"
 - Description: "Deputy-CTO reviews all test/demo results, outstanding issues, and Phase 3 meta-review findings. Makes go/no-go recommendation."
+- create_todo: true, todo_section: "DEPUTY-CTO"
 
 **Phase 7 task**: "CTO Sign-off"
 - Description depends on `releaseApprovalTier` from the canary config check above:
@@ -262,9 +277,11 @@ Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo
   - **If `releaseApprovalTier` is `"deputy"`**: "Awaiting CTO or deputy-CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Submit a bypass request to the CTO or deputy-CTO: 'Production release ready — review report and artifacts, then state your approval.' (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'."
   - **Otherwise (default `"cto"`)**: "Awaiting CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Submit a bypass request to the CTO: 'Production release ready — review report and artifacts, then state your approval.' (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'. The CTO's interactive session agent handles the approval flow: calls present_release_summary to show the report, waits for verbal CTO approval, then calls record_cto_approval with the verbatim quote."
 - verification_strategy: "Release status is 'signed_off' AND cto-approval.json exists in the release artifact directory"
+- create_todo: true, todo_section: "DEPUTY-CTO"
 
 **Phase 8 task**: "Generate Release Report"
 - Description: "Collect all artifacts, generate the structured release report, and persist to the release ledger."
+- create_todo: true, todo_section: "PROJECT-MANAGER"
 
 ### 5e. Add phase dependencies
 
