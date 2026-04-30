@@ -2144,6 +2144,27 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
   }
 
+  // ── Spawned-session remote enforcement ──
+  // Spawned agents (non-interactive sessions) MUST use remote Fly.io execution.
+  // Local demos are reserved for the CTO dashboard and interactive CTO sessions.
+  const isSpawnedSession = process.env.CLAUDE_SPAWNED_SESSION === 'true';
+  if (isSpawnedSession) {
+    const flyConfig = getFlyConfigFromServices();
+    const flyAvailableForEnforcement = flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
+    if (flyAvailableForEnforcement) {
+      // Force remote execution — override whatever the caller passed
+      args.remote = true;
+    } else {
+      // Fly.io not configured — fail-closed, spawned agents cannot run local demos
+      return {
+        success: false,
+        project,
+        message: 'Spawned agents are not allowed to run demos locally. Fly.io remote execution is required but not configured. ' +
+          'Configure Fly.io via /setup-fly, or ask the CTO to run this demo from the live dashboard or an interactive session.',
+      };
+    }
+  }
+
   // Derive headless and skip_recording from the high-level "recorded" flag.
   // Agents set recorded (default true) and remote (default true) — GENTYR handles the rest.
   // Low-level overrides (headless, skip_recording) take precedence when explicitly set.
@@ -7343,6 +7364,24 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
  * Discovers scenarios, partitions into batches, and runs them sequentially in the background.
  */
 async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
+  // ── Spawned-session remote enforcement ──
+  // Spawned agents MUST use remote Fly.io execution for batch demos too.
+  const isBatchSpawnedSession = process.env.CLAUDE_SPAWNED_SESSION === 'true';
+  if (isBatchSpawnedSession) {
+    const flyConfig = getFlyConfigFromServices();
+    const flyAvailableForBatch = flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
+    if (flyAvailableForBatch) {
+      // Force remote execution — override whatever the caller passed
+      args.remote = true;
+    } else {
+      // Fly.io not configured — fail-closed
+      return JSON.stringify({
+        error: 'Spawned agents are not allowed to run demos locally. Fly.io remote execution is required but not configured. ' +
+          'Configure Fly.io via /setup-fly, or ask the CTO to run this demo from the live dashboard or an interactive session.',
+      });
+    }
+  }
+
   const batchWebPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
   const devServerUrl = args.base_url || `http://localhost:${batchWebPort}`;
 
@@ -7888,6 +7927,7 @@ const tools: AnyToolHandler[] = [
       'When recorded=false, runs headless without video. ' +
       'REMOTE: When remote=true (default), runs on Fly.io with auto-push of worktree branches. ' +
       'When remote=false, runs locally — only use this when the CTO asks to watch live, or when chrome-bridge/extension interaction is required. ' +
+      'Spawned agents must use remote execution (Fly.io). Local demos are reserved for the CTO dashboard and interactive sessions. ' +
       'Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`. ' +
       'Prerequisites execute automatically if registered via register_prerequisite. ' +
       'If this tool fails on prerequisites, run preflight_check to diagnose.',
@@ -8052,6 +8092,7 @@ const tools: AnyToolHandler[] = [
     description:
       'Run multiple demo scenarios in sequential batches. ' +
       'Defaults: headless=true, batch_size=5, remote=true. Runs on Fly.io by default — prefer remote execution to avoid local resource contention. ' +
+      'Spawned agents must use remote execution (Fly.io). Local batch demos are reserved for the CTO dashboard and interactive sessions. ' +
       'Discovers scenarios from user-feedback.db — filter by scenario_ids, persona_ids, or category. ' +
       'Returns a batch_id for polling via check_demo_batch_result. ' +
       'Dev server is auto-started if not running.',

@@ -178,13 +178,19 @@ rl.on('close', () => {
     // --- Layer 1: Local execution when remote is available ---
     if (ranLocally) {
       if (IS_SPAWNED) {
-        // STRONG enforcement for spawned agents
+        // CRITICAL enforcement for spawned agents — this should not happen since
+        // the server-side check in run_demo forces remote: true for spawned sessions.
+        // If we see a local run from a spawned agent, the server-side guard was bypassed.
         parts.push(
-          'WARNING — REMOTE EXECUTION REQUIRED: You ran this demo locally, but Fly.io is configured and this scenario is remote-eligible.',
-          'Spawned agents MUST use remote execution unless the scenario requires chrome-bridge or has remote_eligible=false.',
-          'Re-run with `run_demo({ ..., remote: true })` or (preferred) use `run_demo_batch` for concurrent execution.',
-          'Remote execution runs on Fly.io, avoids local resource contention, produces identical video recordings,',
-          'and runs multiple scenarios concurrently across separate machines.',
+          'CRITICAL — LOCAL DEMO BY SPAWNED AGENT DETECTED: This demo ran locally from a spawned session.',
+          'This should NOT happen — the run_demo server enforces remote execution for all spawned agents.',
+          'Spawned agents are NEVER allowed to run demos locally. Local demos are reserved for the CTO dashboard and interactive CTO sessions.',
+          'If Fly.io is configured, the server should have forced remote: true automatically.',
+          'If Fly.io is NOT configured, the server should have returned an error.',
+          'Do NOT attempt to run demos locally again. Either:',
+          '  1. Use run_demo_batch with remote: true for concurrent remote execution, or',
+          '  2. Report this as a bug — the server-side enforcement was bypassed.',
+          'This result should not be trusted. Re-run with remote: true explicitly.',
         );
       } else {
         // Soft guidance for interactive (CTO) sessions
