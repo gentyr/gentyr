@@ -306,6 +306,14 @@ export const ServicesConfigSchema = z.object({
       .describe('Fly volume ID for dependency caching'),
     enabled: z.boolean().default(true)
       .describe('Enable/disable remote Playwright execution'),
+    tigrisBucket: z.string().optional()
+      .describe('Tigris bucket name for demo artifact storage'),
+    tigrisAccessKey: z.string().optional()
+      .describe('op:// ref for Tigris access key (auto-injected by fly storage create)'),
+    tigrisSecretKey: z.string().optional()
+      .describe('op:// ref for Tigris secret key (auto-injected by fly storage create)'),
+    tigrisEndpoint: z.string().optional()
+      .describe('Tigris S3 endpoint URL (default: https://fly.storage.tigris.dev)'),
   }).optional().describe('Fly.io remote Playwright execution configuration. When configured, headless demos auto-route to ephemeral Fly machines.'),
   steel: z.object({
     apiKey: z.string().regex(/^op:\/\//, 'Must be an op:// reference')
