@@ -379,7 +379,7 @@ ${worktreeNote}
 ## Constraints
 
 - Focus only on this specific task
-- Do NOT create new tasks. Report findings in your summarize_work summary instead
+- Do NOT create new tasks unless scope clearly exceeds single-task capacity. If overwhelmed (4+ independent sub-problems remaining), report via mcp__agent-reports__report_to_deputy_cto with what you completed, what remains, and a recommendation to split
 - Report any issues via mcp__agent-reports__report_to_deputy_cto`;
 
   // Section-specific workflow instructions
