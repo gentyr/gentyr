@@ -584,6 +584,27 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
+  // Logging health (one-line status)
+  if (!localMode) {
+    try {
+      const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+      if (fs.existsSync(servicesPath)) {
+        const svcConfig = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+        const elastic = svcConfig?.elastic;
+        const hasLocalCreds = svcConfig?.secrets?.local?.ELASTIC_API_KEY && (svcConfig?.secrets?.local?.ELASTIC_CLOUD_ID || svcConfig?.secrets?.local?.ELASTIC_ENDPOINT);
+        if (elastic && elastic.enabled !== false) {
+          const prefix = elastic.indexPrefix || 'logs';
+          lines.push(`Logging: Elastic Cloud enabled | Index: ${prefix}-{service}-{date} | Local creds: ${hasLocalCreds ? 'configured' : 'MISSING — run populate_secrets_local'}`);
+        } else if (!elastic) {
+          lines.push('Logging: Elastic Cloud not configured (add elastic section via update_services_config)');
+        } else {
+          lines.push('Logging: Elastic Cloud disabled');
+        }
+        lines.push('');
+      }
+    } catch { /* non-fatal */ }
+  }
+
   // Active production release (high-priority — shown before queue)
   const activeRelease = getActiveRelease();
   if (activeRelease) {
@@ -826,12 +847,17 @@ function buildInteractiveBriefing() {
     }
   }
 
-  // Plan vs persistent task decision guidance
+  // Work orchestration decision guidance
   lines.push('');
-  lines.push('WORK STRUCTURING: When the CTO describes complex work, suggest the right tool:');
-  lines.push('  Multi-phase with dependencies → /plan (structured phases, dependency tracking, plan manager)');
-  lines.push('  Complex single-stream objective → /persistent-task (sustained multi-session monitoring)');
-  lines.push('  Simple request (single session) → just do it directly');
+  lines.push('WORK ORCHESTRATION (MANDATORY): Before creating work items, present orchestration analysis to the CTO:');
+  lines.push('  1. Scope: how many independent sub-problems? Sequential or parallelizable?');
+  lines.push('  2. Tool choice + reasoning (2-3 sentences)');
+  lines.push('  3. Parallelization: splitting or bundling, and why');
+  lines.push('  Decision matrix:');
+  lines.push('    3+ independent items → parallel tasks (separate create_task for each, force_spawn_tasks all at once)');
+  lines.push('    Multi-phase with dependencies → /plan (structured phases, plan manager auto-spawns)');
+  lines.push('    Complex multi-session objective → /persistent-task (sustained monitoring, child sessions)');
+  lines.push('    Single focused problem → single task or just do it directly');
 
   lines.push('');
   lines.push('Hint: Use mcp__agent-tracker__peek_session to drill into any session.');

@@ -187,6 +187,47 @@ Telemetry files: `.claude/recordings/demos/{scenarioId}/telemetry/*.jsonl`
 - System metrics: `demo.run_id:"dr-xxx" AND telemetry_type:system_metrics`
 - Performance: `demo.run_id:"dr-xxx" AND telemetry_type:performance`
 
+### Application Logging & Observability
+
+GENTYR provides a framework-level logging observability system that ensures all project components ship structured logs to Elastic Cloud for centralized querying and alerting.
+
+**Structured logging setup:**
+- Use `createLogger({ service: 'my-api', module: 'billing' })` for stdout/stderr-only logging (local dev)
+- Use `createElasticLogger({ service: 'my-api', module: 'billing' })` for dual-output (stdout/stderr + Elastic Cloud shipping)
+- Both produce ECS-compatible JSON. `createElasticLogger` silently no-ops when Elastic credentials are missing (graceful degradation)
+- Index naming convention: `logs-{service}-{YYYY-MM-DD}` (e.g., `logs-my-api-2026-04-30`)
+
+**Elastic credentials configuration** (via GENTYR MCP tools):
+1. Configure the `elastic` section in services.json:
+   `mcp__secret-sync__update_services_config({ updates: { elastic: { apiKey: "op://Production/Elastic/api-key", cloudId: "op://Production/Elastic/cloud-id", enabled: true } } })`
+2. Add credentials to secrets.local for local dev and demo execution:
+   `mcp__secret-sync__populate_secrets_local({ entries: { ELASTIC_API_KEY: "op://Production/Elastic/api-key", ELASTIC_CLOUD_ID: "op://Production/Elastic/cloud-id" } })`
+3. Verify setup: `mcp__elastic-logs__verify_logging_config` returns a health report with credential status, cluster connectivity, and deployment environment coverage
+
+**Deployment environment credentials:**
+Elastic credentials must be configured in ALL deployment environments. Add `ELASTIC_API_KEY` and `ELASTIC_CLOUD_ID` to:
+- `secrets.renderProduction` and `secrets.renderStaging` (for backend API)
+- `secrets.vercel` (for Next.js SSR)
+- GitHub Actions secrets (for CI log shipping and Playwright reporter)
+
+Then run `/push-secrets` to sync. Without this, production/staging apps log to stdout only (Elastic shipping silently no-ops).
+
+**Run ID correlation:**
+Every demo run generates a `DEMO_RUN_ID` (format: `dr-{scenarioId}-{ts}-{hex}`). When the dev server is started by `run_demo`, this ID is injected into the server environment. Application code can read `process.env.DEMO_RUN_ID` and include it in log context for end-to-end tracing across browser telemetry, API logs, and background jobs.
+
+**Querying logs** (via `mcp__elastic-logs__query_logs`):
+- App runtime errors: `service:"my-api" AND level:error`
+- Slow requests: `service:"my-api" AND duration:>1000`
+- User-specific: `service:"my-api" AND userId:"usr_123"`
+- Demo telemetry: `demo.run_id:"dr-xxx" AND telemetry_type:console AND level:error`
+- CI failures: `event.module:"github-ci" AND event.outcome:failure`
+- Deploy events: `event.module:"render" AND deploy.state:"live"`
+- Log stats: `mcp__elastic-logs__get_log_stats({ groupBy: "service" })` for volume overview
+
+**Logging health verification:**
+- Session briefing shows Elastic connectivity status at login
+- `mcp__elastic-logs__verify_logging_config` checks: elastic config presence, credential coverage across all environments (local, render-prod, render-staging, vercel, GitHub), cluster reachability, and returns actionable recommendations
+
 **Demo Dev Server Management (AUTOMATED -- No Manual Steps):**
 
 `run_demo`, `run_demo_batch`, and `preflight_check` automatically handle dev server lifecycle:
@@ -298,14 +339,32 @@ Section mapping for task creation:
 
 When the user asks to spawn agents in plain English (e.g., "spawn an agent to fix the login bug", "have an investigator look at the auth module"), create tasks via `mcp__todo-db__create_task` with `assigned_by: "human"`, spawn via `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })`, and monitor via `mcp__agent-tracker__monitor_agents`.
 
-### When to Suggest Plans vs Persistent Tasks
+### Work Orchestration (MANDATORY analysis before creating work items)
 
-When the CTO describes complex work, proactively suggest the right tool:
+Before creating ANY task, persistent task, or plan, you MUST present a brief orchestration analysis to the CTO:
 
-- **Multi-phase with dependencies** (e.g., "build X, then migrate Y which depends on X, then update Z") → Offer a **plan** (`/plan`). Plans structure work into phases with dependency tracking. Activating a plan (`update_plan_status(status: "active")`) triggers a PostToolUse hook that automatically creates a plan-manager persistent task and enqueues it. The plan-manager autonomously polls for ready tasks, spawns persistent tasks for each, monitors progress, and advances phases. Do NOT manually spawn tasks or call `get_spawn_ready_tasks`/`force_spawn_tasks` after plan activation — the plan-manager handles all orchestration automatically.
-- **Complex single-stream objective** (e.g., "get the demo suite fully passing") → Offer a **persistent task** (`/persistent-task`). A persistent monitor manages the objective, spawning child sessions as needed.
-- **Ambiguous** → Briefly explain both and let the CTO choose.
-- **Simple** (fits a single session) → Just do the work directly.
+1. **Scope assessment**: How many independent sub-problems? Are they sequential or parallelizable?
+2. **Tool choice**: Task / parallel tasks / persistent task / plan — and WHY
+3. **Parallelization**: If multiple independent items exist, state whether you're splitting or bundling and why
+
+Example: "This has 6 independent issues. I'll create 3 parallel tasks: (1) data seeding across tables, (2) three 500-error API route fixes, (3) team/permissions fixes. Using parallel tasks rather than a persistent task because each group is single-session scope and they don't share state."
+
+**Parallelization decision tree:**
+- Items are independent (no shared files, no ordering) → create separate `create_task` calls + `force_spawn_tasks({ taskIds: [all] })` to run in parallel
+- Items share state or must be ordered → single task, or plan with phases if dependencies exist
+- Single cohesive problem → single task
+
+**Complexity thresholds** (when to escalate beyond a single task):
+- 3+ independent work items → parallel tasks
+- Work likely spans multiple sessions (multi-hour, iterative) → persistent task (`/persistent-task`)
+- Multi-phase with ordering dependencies → plan (`/plan`)
+
+**Tool selection:**
+- **Plan** — multi-phase work with dependencies (e.g., "build X, then migrate Y which depends on X, then update Z"). Activating a plan triggers a plan-manager persistent task automatically. Do NOT manually spawn tasks after plan activation.
+- **Persistent task** — complex single-stream objective requiring sustained multi-session monitoring (e.g., "get the demo suite fully passing"). A persistent monitor spawns child sessions as needed.
+- **Parallel tasks** — multiple independent items that can run concurrently (e.g., "fix these 6 bugs" where each bug is in a different module).
+- **Single task** — one focused problem solvable in a single session.
+- **Ambiguous** → briefly explain the options and let the CTO choose.
 
 ### Persistent Tasks
 

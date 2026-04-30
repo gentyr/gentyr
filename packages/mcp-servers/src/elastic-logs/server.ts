@@ -17,15 +17,19 @@
 
 import { Client } from '@elastic/elasticsearch';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   QueryLogsArgsSchema,
   GetLogStatsArgsSchema,
+  VerifyLoggingConfigArgsSchema,
   type QueryLogsArgs,
   type GetLogStatsArgs,
   type QueryLogsResult,
   type GetLogStatsResult,
   type ErrorResult,
   type LogEntry,
+  type VerifyLoggingConfigResult,
 } from './types.js';
 
 // ============================================================================
@@ -266,6 +270,103 @@ async function getLogStats(args: GetLogStatsArgs): Promise<GetLogStatsResult | E
 }
 
 // ============================================================================
+// Logging Config Verification
+// ============================================================================
+
+const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+function readServicesJson(): Record<string, unknown> | null {
+  try {
+    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (!fs.existsSync(configPath)) return null;
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch { return null; }
+}
+
+function hasSecretKey(secrets: Record<string, unknown> | undefined, key: string): boolean {
+  if (!secrets || typeof secrets !== 'object') return false;
+  return key in secrets;
+}
+
+async function verifyLoggingConfig(): Promise<VerifyLoggingConfigResult | ErrorResult> {
+  const config = readServicesJson();
+  const recommendations: string[] = [];
+
+  // Check elastic section
+  const elastic = config?.elastic as { enabled?: boolean; apiKey?: string; cloudId?: string; endpoint?: string; indexPrefix?: string } | undefined;
+  const elasticConfigured = !!elastic;
+  const elasticEnabled = elastic?.enabled !== false;
+  const indexPrefix = (elastic?.indexPrefix as string) || 'logs';
+
+  if (!elasticConfigured) {
+    recommendations.push('Add elastic section to services.json: mcp__secret-sync__update_services_config({ updates: { elastic: { apiKey: "op://Production/Elastic/api-key", cloudId: "op://Production/Elastic/cloud-id", enabled: true } } })');
+  }
+
+  // Check secrets.local
+  const secrets = config?.secrets as Record<string, unknown> | undefined;
+  const localSecrets = secrets?.local as Record<string, string> | undefined;
+  const hasLocalApiKey = hasSecretKey(localSecrets, 'ELASTIC_API_KEY');
+  const hasLocalCloudId = hasSecretKey(localSecrets, 'ELASTIC_CLOUD_ID') || hasSecretKey(localSecrets, 'ELASTIC_ENDPOINT');
+
+  if (!hasLocalApiKey || !hasLocalCloudId) {
+    recommendations.push('Add Elastic credentials to secrets.local: mcp__secret-sync__populate_secrets_local({ entries: { ELASTIC_API_KEY: "op://...", ELASTIC_CLOUD_ID: "op://..." } })');
+  }
+
+  // Check deployment secrets
+  const renderProd = secrets?.renderProduction as Record<string, string> | undefined;
+  const renderStag = secrets?.renderStaging as Record<string, string> | undefined;
+  const vercelSecrets = secrets?.vercel as Record<string, unknown> | undefined;
+
+  const hasRenderProd = hasSecretKey(renderProd, 'ELASTIC_API_KEY') && (hasSecretKey(renderProd, 'ELASTIC_CLOUD_ID') || hasSecretKey(renderProd, 'ELASTIC_ENDPOINT'));
+  const hasRenderStag = hasSecretKey(renderStag, 'ELASTIC_API_KEY') && (hasSecretKey(renderStag, 'ELASTIC_CLOUD_ID') || hasSecretKey(renderStag, 'ELASTIC_ENDPOINT'));
+  const hasVercel = hasSecretKey(vercelSecrets, 'ELASTIC_API_KEY') && (hasSecretKey(vercelSecrets, 'ELASTIC_CLOUD_ID') || hasSecretKey(vercelSecrets, 'ELASTIC_ENDPOINT'));
+
+  if (!hasRenderProd) {
+    recommendations.push('Add ELASTIC_API_KEY + ELASTIC_CLOUD_ID to secrets.renderProduction for production backend logging');
+  }
+  if (!hasRenderStag) {
+    recommendations.push('Add ELASTIC_API_KEY + ELASTIC_CLOUD_ID to secrets.renderStaging for staging backend logging');
+  }
+  if (!hasVercel) {
+    recommendations.push('Add ELASTIC_API_KEY + ELASTIC_CLOUD_ID to secrets.vercel for frontend SSR logging');
+  }
+
+  // Check cluster connectivity
+  let clusterReachable = false;
+  let clusterStatus: string | undefined;
+
+  try {
+    const client = getClient();
+    const health = await client.cluster.health({ timeout: '3s' });
+    clusterReachable = true;
+    clusterStatus = health.status;
+  } catch {
+    if (hasLocalApiKey && hasLocalCloudId) {
+      recommendations.push('Elastic cluster unreachable — verify credentials are correct and cluster is running');
+    }
+  }
+
+  if (recommendations.length === 0) {
+    recommendations.push('Logging configuration is complete across all environments');
+  }
+
+  return {
+    elastic_configured: elasticConfigured,
+    elastic_enabled: elasticEnabled,
+    index_prefix: indexPrefix,
+    credentials: {
+      local: hasLocalApiKey && hasLocalCloudId,
+      render_production: hasRenderProd,
+      render_staging: hasRenderStag,
+      vercel: hasVercel,
+    },
+    cluster_reachable: clusterReachable,
+    cluster_status: clusterStatus,
+    recommendations,
+  };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -307,6 +408,21 @@ Useful for:
 Example: Find which service has the most errors in the last 24 hours.`,
     schema: GetLogStatsArgsSchema,
     handler: getLogStats,
+  },
+  {
+    name: 'verify_logging_config',
+    description: `Verify logging configuration across all environments.
+
+Checks:
+- Elastic section presence in services.json
+- Credential coverage: secrets.local (local dev/demos), renderProduction, renderStaging, vercel
+- Cluster connectivity (attempts health check with configured credentials)
+- Returns actionable recommendations for missing configuration
+
+Use this after setting up Elastic credentials to verify end-to-end readiness.
+Returns a structured health report with per-environment credential status and cluster health.`,
+    schema: VerifyLoggingConfigArgsSchema,
+    handler: verifyLoggingConfig,
   },
 ];
 
