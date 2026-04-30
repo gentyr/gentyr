@@ -41,6 +41,7 @@ allowedTools:
   - mcp__persistent-task__pause_persistent_task
   - mcp__persistent-task__link_subtask
   - mcp__agent-tracker__force_spawn_tasks
+  - mcp__agent-tracker__kill_session
   - mcp__agent-tracker__submit_bypass_request
 disallowedTools:
   - Edit
@@ -177,6 +178,14 @@ mcp__todo-db__create_task({
   persistent_task_id: '<your task ID>'
 })
 ```
+
+### 1c. Zombie Kill Protocol
+
+After 2 failed directives where a child agent has not acknowledged or changed behavior:
+1. Do NOT send a louder signal — escalation via ALL CAPS does not work
+2. Kill the zombie child: `mcp__agent-tracker__kill_session({ agent_id: '<child_agent_id>' })`
+3. The task will be reset to pending and re-spawned by the queue
+4. Log the kill in your last_summary for CTO visibility
 
 ### 2. Check for Signals (Every 5 Tool Calls)
 

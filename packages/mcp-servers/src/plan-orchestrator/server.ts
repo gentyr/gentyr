@@ -42,6 +42,7 @@ import {
   VerificationAuditFailArgsSchema,
   GetPlanBlockingStatusArgsSchema,
   RetryPlanTaskArgsSchema,
+  UpdatePlanTaskGateArgsSchema,
   type CreatePlanArgs,
   type GetPlanArgs,
   type ListPlansArgs,
@@ -65,6 +66,7 @@ import {
   type VerificationAuditFailArgs,
   type GetPlanBlockingStatusArgs,
   type RetryPlanTaskArgs,
+  type UpdatePlanTaskGateArgs,
   type PlanRecord,
   type PhaseRecord,
   type PlanTaskRecord,
@@ -484,13 +486,20 @@ function recordStateChange(
 }
 
 function getTaskProgress(db: Database.Database, taskId: string): number {
-  const total = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ?').get(taskId) as { c: number }).c;
-  if (total === 0) {
-    const task = db.prepare('SELECT status FROM plan_tasks WHERE id = ?').get(taskId) as { status: string } | undefined;
-    if (task?.status === 'completed' || task?.status === 'skipped') return 100;
-    if (task?.status === 'pending_audit') return 95;
-    return 0;
+  // Task status is authoritative — if completed/skipped, return 100% regardless of substep state
+  const task = db.prepare('SELECT status FROM plan_tasks WHERE id = ?').get(taskId) as { status: string } | undefined;
+  if (task?.status === 'completed' || task?.status === 'skipped') {
+    // Auto-complete any remaining incomplete substeps (cleanup for display consistency)
+    try {
+      db.prepare("UPDATE substeps SET completed = 1, completed_at = ? WHERE task_id = ? AND completed = 0")
+        .run(new Date().toISOString(), taskId);
+    } catch { /* non-fatal */ }
+    return 100;
   }
+  if (task?.status === 'pending_audit') return 95;
+
+  const total = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ?').get(taskId) as { c: number }).c;
+  if (total === 0) return 0;
   const completed = (db.prepare('SELECT COUNT(*) as c FROM substeps WHERE task_id = ? AND completed = 1').get(taskId) as { c: number }).c;
   return Math.round((completed / total) * 100);
 }
@@ -2122,6 +2131,19 @@ async function getPlanBlockingStatus(args: GetPlanBlockingStatusArgs): Promise<o
 // Server Setup
 // ============================================================================
 
+function updatePlanTaskGate(args: UpdatePlanTaskGateArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT id, status, verification_strategy FROM plan_tasks WHERE id = ?').get(args.task_id) as { id: string; status: string; verification_strategy: string | null } | undefined;
+  if (!task) return { error: `Plan task not found: ${args.task_id}` };
+  if (['completed', 'pending_audit', 'skipped'].includes(task.status)) {
+    return { error: `Cannot update gate on a task with status '${task.status}'` };
+  }
+  const ts = now();
+  db.prepare('UPDATE plan_tasks SET verification_strategy = ?, updated_at = ? WHERE id = ?')
+    .run(args.verification_strategy, ts, args.task_id);
+  return { task_id: args.task_id, verification_strategy: args.verification_strategy, updated_at: ts };
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'create_plan',
@@ -2260,6 +2282,12 @@ const tools: AnyToolHandler[] = [
     description: 'Reset a completed, pending_audit, skipped, or paused plan task back to pending for re-attempt. Clears persistent_task_id so a fresh persistent task can be spawned. Use after adding precursor tasks via add_plan_task + add_dependency to address the root cause before retrying.',
     schema: RetryPlanTaskArgsSchema,
     handler: retryPlanTask,
+  },
+  {
+    name: 'update_plan_task_gate',
+    description: 'Update the verification strategy (audit gate) on a plan task without resubmitting the full task. When set, the task enters pending_audit on completion and an independent auditor verifies before transitioning to completed.',
+    schema: UpdatePlanTaskGateArgsSchema,
+    handler: updatePlanTaskGate,
   },
 ];
 

@@ -44,6 +44,11 @@ import {
   GateApproveTaskArgsSchema,
   GateKillTaskArgsSchema,
   GateEscalateTaskArgsSchema,
+  UpdateTaskGateArgsSchema,
+  ConfirmTaskGateArgsSchema,
+  CheckTaskAuditArgsSchema,
+  TaskAuditPassArgsSchema,
+  TaskAuditFailArgsSchema,
   type ListTasksArgs,
   type GetTaskArgs,
   type CreateTaskArgs,
@@ -87,7 +92,13 @@ import {
   type ListCategoriesResult,
   type CategoryResponse,
   type CategoryRecord,
+  type UpdateTaskGateArgs,
+  type ConfirmTaskGateArgs,
+  type CheckTaskAuditArgs,
+  type TaskAuditPassArgs,
+  type TaskAuditFailArgs,
 } from './types.js';
+import { GATE_EXEMPT_CATEGORIES } from '../shared/constants.js';
 
 // ============================================================================
 // Configuration
@@ -121,7 +132,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     followup_section TEXT,
     followup_prompt TEXT,
     priority TEXT NOT NULL DEFAULT 'normal',
-    CONSTRAINT valid_status CHECK (status IN ('pending', 'pending_review', 'in_progress', 'completed')),
+    CONSTRAINT valid_status CHECK (status IN ('pending', 'pending_review', 'in_progress', 'pending_audit', 'completed')),
     CONSTRAINT valid_priority CHECK (priority IN ('normal', 'urgent'))
 );
 
@@ -409,6 +420,50 @@ function initializeDatabase(): Database.Database {
       FROM archived_tasks_old`);
     db.exec("DROP TABLE archived_tasks_old");
   }
+
+  // Auto-migration: add audit gate columns if missing
+  try {
+    db.prepare("SELECT gate_success_criteria FROM tasks LIMIT 0").get();
+  } catch {
+    db.exec("ALTER TABLE tasks ADD COLUMN gate_success_criteria TEXT");
+    db.exec("ALTER TABLE tasks ADD COLUMN gate_verification_method TEXT");
+    db.exec("ALTER TABLE tasks ADD COLUMN gate_status TEXT");
+    db.exec("ALTER TABLE tasks ADD COLUMN gate_confirmed_at TEXT");
+    db.exec("ALTER TABLE tasks ADD COLUMN gate_confirmed_by TEXT");
+  }
+
+  // Auto-migration: ensure pending_audit is in status CHECK constraint
+  try {
+    const testId = 'migration-audit-status-' + Date.now();
+    db.prepare("INSERT INTO tasks (id, status, title, created_at, created_timestamp) VALUES (?, 'pending_audit', '_migration_test', ?, ?)").run(testId, new Date().toISOString(), Math.floor(Date.now() / 1000));
+    db.prepare("DELETE FROM tasks WHERE id = ?").run(testId);
+  } catch {
+    db.exec("ALTER TABLE tasks RENAME TO tasks_old");
+    db.exec(SCHEMA);
+    db.exec(`INSERT INTO tasks (id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, priority, started_timestamp, category_id, user_prompt_uuids, persistent_task_id, strict_infra_guidance, demo_involved, gate_success_criteria, gate_verification_method, gate_status, gate_confirmed_at, gate_confirmed_by)
+      SELECT id, section, status, title, description, created_at, started_at, completed_at, assigned_by, metadata, created_timestamp, completed_timestamp, COALESCE(followup_enabled, 0), followup_section, followup_prompt, COALESCE(priority, 'normal'), started_timestamp, category_id, user_prompt_uuids, persistent_task_id, strict_infra_guidance, demo_involved, gate_success_criteria, gate_verification_method, gate_status, gate_confirmed_at, gate_confirmed_by
+      FROM tasks_old`);
+    db.exec("DROP TABLE tasks_old");
+  }
+
+  // Auto-migration: create task_audits table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_audits (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      success_criteria TEXT NOT NULL,
+      verification_method TEXT NOT NULL,
+      verdict TEXT,
+      evidence TEXT,
+      failure_reason TEXT,
+      auditor_agent_id TEXT,
+      requested_at TEXT NOT NULL,
+      completed_at TEXT,
+      attempt_number INTEGER DEFAULT 1
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_task_audits_task ON task_audits(task_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_task_audits_pending ON task_audits(verdict) WHERE verdict IS NULL");
 
   seedCategories(db);
 
@@ -963,6 +1018,11 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const strictInfraGuidance = effectiveStrictInfra ? 1 : 0;
   const demoInvolved = args.demo_involved ? 1 : 0;
 
+  // Audit gate setup
+  const gateSuccessCriteria = args.gate_success_criteria ?? null;
+  const gateVerificationMethod = args.gate_verification_method ?? null;
+  const gateStatus = gateSuccessCriteria ? 'draft' : null;
+
   // Urgency auto-downgrade: only authorized creators can set urgent priority
   if (priority === 'urgent' && (!args.assigned_by || !(URGENCY_AUTHORIZED_CREATORS as readonly string[]).includes(args.assigned_by))) {
     priority = 'normal';
@@ -976,9 +1036,9 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
 
   try {
     db.prepare(`
-      INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, strict_infra_guidance, demo_involved)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, resolvedSection, resolvedCategoryId, taskStatus, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, strictInfraGuidance, demoInvolved);
+      INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt, priority, user_prompt_uuids, persistent_task_id, strict_infra_guidance, demo_involved, gate_success_criteria, gate_verification_method, gate_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, resolvedSection, resolvedCategoryId, taskStatus, args.title, args.description ?? null, args.assigned_by ?? null, created_at, created_timestamp, followup_enabled ? 1 : 0, followup_section, followup_prompt, priority, userPromptUuidsJson, persistentTaskId, strictInfraGuidance, demoInvolved, gateSuccessCriteria, gateVerificationMethod, gateStatus);
   } catch (err: unknown) {
     if (
       err instanceof Error &&
@@ -1023,7 +1083,12 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     demo_involved: demoInvolved === 1,
     category_id: resolvedCategoryId,
     category_name: createdCategoryName,
-    warning,
+    gate_status: gateStatus,
+    gate_success_criteria: gateSuccessCriteria,
+    gate_verification_method: gateVerificationMethod,
+    warning: gateStatus === 'draft'
+      ? (warning ? warning + ' | ' : '') + 'Gate is DRAFT. You MUST spawn a user-alignment sub-agent to review the gate criteria against user prompts, then call confirm_task_gate to make the task spawnable.'
+      : warning,
   };
 }
 
@@ -1075,10 +1140,48 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
     return { error: `Task already completed: ${args.id}` };
   }
 
+  if (task.status === 'pending_audit') {
+    return { error: `Task is pending audit — wait for the auditor verdict: ${args.id}` };
+  }
+
+  // Block completion when gate is draft (not confirmed)
+  if (task.gate_status === 'draft' && !args.force_complete) {
+    return {
+      error: `Task has a DRAFT gate that has not been confirmed. Call confirm_task_gate first, or pass force_complete:true if you are the CTO in an interactive session.`,
+    };
+  }
+
   const now = new Date();
   const completed_at = now.toISOString();
   const completed_timestamp = Math.floor(now.getTime() / 1000);
 
+  // Audit gate routing: if gate is active and not force_complete, route to pending_audit
+  const isForceComplete = args.force_complete && process.env.CLAUDE_SPAWNED_SESSION !== 'true';
+  const hasActiveGate = task.gate_status === 'active' && task.gate_success_criteria;
+
+  // Check if the task's category is gate-exempt (compare category ID directly)
+  const isGateExempt = !!task.category_id && (GATE_EXEMPT_CATEGORIES as readonly string[]).includes(task.category_id);
+
+  if (hasActiveGate && !isForceComplete && !isGateExempt) {
+    // Route to pending_audit — create audit record
+    const auditId = randomUUID();
+    const attemptNumber = ((db.prepare('SELECT MAX(attempt_number) as max_attempt FROM task_audits WHERE task_id = ?').get(args.id) as { max_attempt: number | null })?.max_attempt ?? 0) + 1;
+
+    db.prepare("UPDATE tasks SET status = 'pending_audit' WHERE id = ?").run(args.id);
+    db.prepare(`
+      INSERT INTO task_audits (id, task_id, success_criteria, verification_method, requested_at, attempt_number)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(auditId, args.id, task.gate_success_criteria!, task.gate_verification_method ?? '', now.toISOString(), attemptNumber);
+
+    return {
+      id: args.id,
+      status: 'pending_audit',
+      gate_success_criteria: task.gate_success_criteria!,
+      gate_verification_method: task.gate_verification_method ?? undefined,
+    };
+  }
+
+  // Direct completion (no gate, force_complete, or exempt category)
   db.prepare(`
     UPDATE tasks SET status = 'completed', completed_at = ?, completed_timestamp = ?
     WHERE id = ?
@@ -1095,8 +1198,6 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
     const followup_created_at = now.toISOString();
     const followup_timestamp = Math.floor(now.getTime() / 1000);
 
-    // priority intentionally omitted — follow-ups default to 'normal' regardless of parent's priority
-    // category_id inherited from the parent task so the follow-up runs the same workflow
     db.prepare(`
       INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled, followup_section, followup_prompt)
       VALUES (?, ?, ?, 'pending', ?, ?, 'system-followup', ?, ?, 0, NULL, NULL)
@@ -2015,6 +2116,137 @@ function gateEscalateTask(args: { id: string; reason: string }): object {
 // Server Setup
 // ============================================================================
 
+// ============================================================================
+// Audit Gate Handlers
+// ============================================================================
+
+function updateTaskGate(args: UpdateTaskGateArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT id, status, gate_status FROM tasks WHERE id = ?').get(args.task_id) as { id: string; status: string; gate_status: string | null } | undefined;
+  if (!task) return { error: `Task not found: ${args.task_id}` };
+  if (task.status === 'completed' || task.status === 'pending_audit') {
+    return { error: `Cannot update gate on a task with status '${task.status}'` };
+  }
+
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (args.success_criteria) { updates.push('gate_success_criteria = ?'); values.push(args.success_criteria); }
+  if (args.verification_method) { updates.push('gate_verification_method = ?'); values.push(args.verification_method); }
+  if (args.reset_to_draft) {
+    updates.push("gate_status = 'draft'", 'gate_confirmed_at = NULL', 'gate_confirmed_by = NULL');
+  } else if (!task.gate_status) {
+    updates.push("gate_status = 'draft'");
+  }
+  if (updates.length === 0) return { error: 'No fields to update' };
+
+  values.push(args.task_id);
+  db.prepare(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+
+  const updated = db.prepare('SELECT gate_success_criteria, gate_verification_method, gate_status, gate_confirmed_at FROM tasks WHERE id = ?').get(args.task_id) as Record<string, unknown>;
+  return { task_id: args.task_id, ...updated };
+}
+
+function confirmTaskGate(args: ConfirmTaskGateArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT id, gate_status, gate_success_criteria, gate_verification_method FROM tasks WHERE id = ?').get(args.task_id) as { id: string; gate_status: string | null; gate_success_criteria: string | null; gate_verification_method: string | null } | undefined;
+  if (!task) return { error: `Task not found: ${args.task_id}` };
+  if (!task.gate_status) return { error: `No gate defined on this task. Call update_task_gate first.` };
+  if (task.gate_status === 'active') return { task_id: args.task_id, gate_status: 'active', warning: 'Gate already confirmed' };
+
+  const now = new Date().toISOString();
+  const agentId = process.env.CLAUDE_AGENT_ID ?? 'unknown';
+  const criteria = args.refined_success_criteria ?? task.gate_success_criteria;
+  const method = args.refined_verification_method ?? task.gate_verification_method;
+
+  db.prepare(`UPDATE tasks SET gate_status = 'active', gate_confirmed_at = ?, gate_confirmed_by = ?, gate_success_criteria = ?, gate_verification_method = ? WHERE id = ?`)
+    .run(now, agentId, criteria, method, args.task_id);
+
+  return {
+    task_id: args.task_id,
+    gate_status: 'active',
+    gate_confirmed_at: now,
+    success_criteria: criteria,
+    verification_method: method,
+    alignment_session_id: args.alignment_session_id ?? null,
+  };
+}
+
+function checkTaskAudit(args: CheckTaskAuditArgs): object {
+  const db = getDb();
+  const audit = db.prepare('SELECT * FROM task_audits WHERE task_id = ? ORDER BY attempt_number DESC LIMIT 1').get(args.task_id) as Record<string, unknown> | undefined;
+  if (!audit) return { task_id: args.task_id, audit_status: 'not_applicable' };
+  return {
+    task_id: args.task_id,
+    audit_status: audit.verdict === null ? 'pending' : audit.verdict,
+    verdict: audit.verdict,
+    evidence: audit.evidence,
+    failure_reason: audit.failure_reason,
+    requested_at: audit.requested_at,
+    completed_at: audit.completed_at,
+    attempt_number: audit.attempt_number,
+    auditor_agent_id: audit.auditor_agent_id,
+  };
+}
+
+function taskAuditPass(args: TaskAuditPassArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT id, status, followup_enabled, followup_section, followup_prompt, section, category_id FROM tasks WHERE id = ?').get(args.task_id) as TaskRecord | undefined;
+  if (!task) return { error: `Task not found: ${args.task_id}` };
+  if (task.status !== 'pending_audit') return { error: `Task is not in pending_audit status (current: ${task.status})` };
+
+  const audit = db.prepare('SELECT id FROM task_audits WHERE task_id = ? AND verdict IS NULL ORDER BY attempt_number DESC LIMIT 1').get(args.task_id) as { id: string } | undefined;
+  if (!audit) return { error: `No pending audit found for task: ${args.task_id}` };
+
+  const now = new Date();
+  const completed_at = now.toISOString();
+  const completed_timestamp = Math.floor(now.getTime() / 1000);
+  const agentId = process.env.CLAUDE_AGENT_ID ?? 'unknown';
+
+  const txn = db.transaction(() => {
+    db.prepare("UPDATE task_audits SET verdict = 'pass', evidence = ?, completed_at = ?, auditor_agent_id = ? WHERE id = ?")
+      .run(args.evidence, completed_at, agentId, audit.id);
+    db.prepare("UPDATE tasks SET status = 'completed', completed_at = ?, completed_timestamp = ? WHERE id = ?")
+      .run(completed_at, completed_timestamp, args.task_id);
+
+    // Trigger follow-up if enabled
+    let followup_task_id: string | undefined;
+    if (task.followup_enabled) {
+      const followupId = randomUUID();
+      const section = task.followup_section ?? task.section;
+      db.prepare(`INSERT INTO tasks (id, section, category_id, status, title, description, assigned_by, created_at, created_timestamp, followup_enabled) VALUES (?, ?, ?, 'pending', ?, ?, 'system-followup', ?, ?, 0)`)
+        .run(followupId, section, task.category_id ?? null, `[Follow-up] ${task.title}`, task.followup_prompt, completed_at, completed_timestamp);
+      followup_task_id = followupId;
+    }
+    return followup_task_id;
+  });
+
+  const followup_task_id = txn();
+
+  return { task_id: args.task_id, status: 'completed', verdict: 'pass', evidence: args.evidence, completed_at, followup_task_id };
+}
+
+function taskAuditFail(args: TaskAuditFailArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT id, status FROM tasks WHERE id = ?').get(args.task_id) as { id: string; status: string } | undefined;
+  if (!task) return { error: `Task not found: ${args.task_id}` };
+  if (task.status !== 'pending_audit') return { error: `Task is not in pending_audit status (current: ${task.status})` };
+
+  const audit = db.prepare('SELECT id FROM task_audits WHERE task_id = ? AND verdict IS NULL ORDER BY attempt_number DESC LIMIT 1').get(args.task_id) as { id: string } | undefined;
+  if (!audit) return { error: `No pending audit found for task: ${args.task_id}` };
+
+  const now = new Date().toISOString();
+  const agentId = process.env.CLAUDE_AGENT_ID ?? 'unknown';
+
+  db.transaction(() => {
+    db.prepare("UPDATE task_audits SET verdict = 'fail', failure_reason = ?, evidence = ?, completed_at = ?, auditor_agent_id = ? WHERE id = ?")
+      .run(args.failure_reason, args.evidence, now, agentId, audit.id);
+    db.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?")
+      .run(args.task_id);
+  })();
+
+  return { task_id: args.task_id, status: 'in_progress', verdict: 'fail', failure_reason: args.failure_reason, evidence: args.evidence };
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'list_tasks',
@@ -2147,6 +2379,36 @@ const tools: AnyToolHandler[] = [
     description: 'Approve AND escalate a pending_review task. Moves to pending status and stores escalation reason in metadata for deputy-CTO review.',
     schema: GateEscalateTaskArgsSchema,
     handler: gateEscalateTask,
+  },
+  {
+    name: 'update_task_gate',
+    description: 'Set or update audit gate criteria on a task. Defines what success looks like and how to verify it. The task will be independently audited against these criteria before completion is accepted.',
+    schema: UpdateTaskGateArgsSchema,
+    handler: updateTaskGate,
+  },
+  {
+    name: 'confirm_task_gate',
+    description: 'Confirm a draft gate definition after user-alignment review. Transitions gate from draft to active, making the task spawnable. Call after running a user-alignment sub-agent to validate the gate criteria.',
+    schema: ConfirmTaskGateArgsSchema,
+    handler: confirmTaskGate,
+  },
+  {
+    name: 'check_task_audit',
+    description: 'Check the audit status of a task in pending_audit. Returns verdict (pending/pass/fail), evidence, and attempt number.',
+    schema: CheckTaskAuditArgsSchema,
+    handler: checkTaskAudit,
+  },
+  {
+    name: 'task_audit_pass',
+    description: 'Mark a task audit as passed. Transitions task from pending_audit to completed. Called by the universal-auditor agent after verifying success criteria are met.',
+    schema: TaskAuditPassArgsSchema,
+    handler: taskAuditPass,
+  },
+  {
+    name: 'task_audit_fail',
+    description: 'Mark a task audit as failed. Transitions task from pending_audit back to in_progress with failure reason. The agent must address the failure and re-attempt completion.',
+    schema: TaskAuditFailArgsSchema,
+    handler: taskAuditFail,
   },
 ];
 

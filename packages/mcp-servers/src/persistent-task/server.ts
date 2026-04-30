@@ -47,6 +47,16 @@ import {
   type PersistentTaskRecord,
   type AmendmentRecord,
   type ErrorResult,
+  UpdatePtGateArgsSchema,
+  ConfirmPtGateArgsSchema,
+  CheckPtAuditArgsSchema,
+  PtAuditPassArgsSchema,
+  PtAuditFailArgsSchema,
+  type UpdatePtGateArgs,
+  type ConfirmPtGateArgs,
+  type CheckPtAuditArgs,
+  type PtAuditPassArgs,
+  type PtAuditFailArgs,
 } from './types.js';
 
 // ============================================================================
@@ -84,7 +94,7 @@ CREATE TABLE IF NOT EXISTS persistent_tasks (
     user_prompt_uuids TEXT,
     metadata TEXT,
     last_summary TEXT,
-    CONSTRAINT valid_status CHECK (status IN ('draft','active','paused','completed','cancelled','failed'))
+    CONSTRAINT valid_status CHECK (status IN ('draft','active','paused','pending_audit','completed','cancelled','failed'))
 );
 
 CREATE TABLE IF NOT EXISTS amendments (
@@ -161,6 +171,53 @@ function initializeDatabase(): Database.Database {
 
   // Auto-migration: add last_summary column
   try { db.exec("SELECT last_summary FROM persistent_tasks LIMIT 0"); } catch { db.exec("ALTER TABLE persistent_tasks ADD COLUMN last_summary TEXT"); }
+
+  // Auto-migration: add audit gate columns
+  try { db.prepare("SELECT gate_success_criteria FROM persistent_tasks LIMIT 0").get(); } catch {
+    db.exec("ALTER TABLE persistent_tasks ADD COLUMN gate_success_criteria TEXT");
+    db.exec("ALTER TABLE persistent_tasks ADD COLUMN gate_verification_method TEXT");
+    db.exec("ALTER TABLE persistent_tasks ADD COLUMN gate_status TEXT");
+    db.exec("ALTER TABLE persistent_tasks ADD COLUMN gate_confirmed_at TEXT");
+  }
+
+  // Auto-migration: ensure pending_audit is in status CHECK constraint
+  try {
+    const testId = 'migration-pt-audit-' + Date.now();
+    db.prepare("INSERT INTO persistent_tasks (id, title, prompt, status, created_at) VALUES (?, '_test', '_test', 'pending_audit', ?)").run(testId, new Date().toISOString());
+    db.prepare("DELETE FROM persistent_tasks WHERE id = ?").run(testId);
+  } catch {
+    // Recreate table with updated CHECK constraint preserving data
+    db.exec("ALTER TABLE persistent_tasks RENAME TO persistent_tasks_old");
+    db.exec(SCHEMA);
+    const cols = 'id, title, prompt, original_input, outcome_criteria, status, parent_todo_task_id, monitor_agent_id, monitor_pid, monitor_session_id, created_at, activated_at, completed_at, cancelled_at, last_heartbeat, cycle_count, created_by, user_prompt_uuids, metadata, last_summary';
+    db.exec(`INSERT INTO persistent_tasks (${cols}) SELECT ${cols} FROM persistent_tasks_old`);
+    // Copy gate columns if they exist in old table
+    try {
+      db.exec("UPDATE persistent_tasks SET gate_success_criteria = (SELECT gate_success_criteria FROM persistent_tasks_old WHERE persistent_tasks_old.id = persistent_tasks.id)");
+      db.exec("UPDATE persistent_tasks SET gate_verification_method = (SELECT gate_verification_method FROM persistent_tasks_old WHERE persistent_tasks_old.id = persistent_tasks.id)");
+      db.exec("UPDATE persistent_tasks SET gate_status = (SELECT gate_status FROM persistent_tasks_old WHERE persistent_tasks_old.id = persistent_tasks.id)");
+      db.exec("UPDATE persistent_tasks SET gate_confirmed_at = (SELECT gate_confirmed_at FROM persistent_tasks_old WHERE persistent_tasks_old.id = persistent_tasks.id)");
+    } catch { /* gate columns may not exist in old table */ }
+    db.exec("DROP TABLE persistent_tasks_old");
+  }
+
+  // Auto-migration: create pt_audits table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pt_audits (
+      id TEXT PRIMARY KEY,
+      persistent_task_id TEXT NOT NULL,
+      success_criteria TEXT NOT NULL,
+      verification_method TEXT NOT NULL,
+      verdict TEXT,
+      evidence TEXT,
+      failure_reason TEXT,
+      auditor_agent_id TEXT,
+      requested_at TEXT NOT NULL,
+      completed_at TEXT,
+      attempt_number INTEGER DEFAULT 1
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_pt_audits_task ON pt_audits(persistent_task_id)");
 
   return db;
 }
@@ -305,12 +362,18 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
   if (args.is_plan_manager) metadataObj.is_plan_manager = true;
   const metadata = Object.keys(metadataObj).length > 0 ? JSON.stringify(metadataObj) : null;
 
+  // Audit gate setup
+  const gateSuccessCriteria = args.gate_success_criteria ?? null;
+  const gateVerificationMethod = args.gate_verification_method ?? null;
+  const gateStatus = gateSuccessCriteria ? 'draft' : null;
+
   // Insert persistent task row
   db.prepare(
     `INSERT INTO persistent_tasks
        (id, title, prompt, original_input, outcome_criteria, status,
-        parent_todo_task_id, created_at, created_by, user_prompt_uuids, metadata)
-     VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, 'cto', ?, ?)`
+        parent_todo_task_id, created_at, created_by, user_prompt_uuids, metadata,
+        gate_success_criteria, gate_verification_method, gate_status)
+     VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, 'cto', ?, ?, ?, ?, ?)`
   ).run(
     taskId,
     args.title,
@@ -321,6 +384,9 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     ts,
     args.user_prompt_uuids ? JSON.stringify(args.user_prompt_uuids) : null,
     metadata,
+    gateSuccessCriteria,
+    gateVerificationMethod,
+    gateStatus,
   );
 
   recordEvent(db, taskId, 'created', {
@@ -328,13 +394,20 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     parent_todo_task_id: parentTodoTaskId,
   });
 
-  return {
+  const result: Record<string, unknown> = {
     id: taskId,
     title: args.title,
     status: 'draft',
     parent_todo_task_id: parentTodoTaskId,
     created_at: ts,
   };
+  if (gateStatus) {
+    result.gate_status = gateStatus;
+    result.gate_success_criteria = gateSuccessCriteria;
+    result.gate_verification_method = gateVerificationMethod;
+    result.warning = 'Gate is DRAFT. You MUST spawn a user-alignment sub-agent to review the gate criteria, then call confirm_pt_gate to make the task activatable.';
+  }
+  return result;
 }
 
 /**
@@ -751,10 +824,50 @@ function completePersistentTask(args: CompletePersistentTaskArgs): object | Erro
   if (!task) {
     return { error: `Persistent task not found: ${args.id}` } as ErrorResult;
   }
+  if (task.status === 'completed') {
+    return { error: `Persistent task already completed: ${args.id}` } as ErrorResult;
+  }
+  if (task.status === 'pending_audit') {
+    return { error: `Persistent task is pending audit — wait for auditor verdict: ${args.id}` } as ErrorResult;
+  }
   if (task.status !== 'active') {
     return { error: `Cannot complete task in status '${task.status}' — task must be in 'active' status` } as ErrorResult;
   }
 
+  // Determine gate criteria: explicit gate_success_criteria > outcome_criteria fallback
+  const gateCriteria = task.gate_success_criteria ?? task.outcome_criteria;
+  const gateMethod = task.gate_verification_method;
+  const hasActiveGate = task.gate_status === 'active' && gateCriteria;
+  const isForceComplete = args.force_complete && process.env.CLAUDE_SPAWNED_SESSION !== 'true';
+
+  // Block if gate is draft (not confirmed)
+  if (task.gate_status === 'draft' && !isForceComplete) {
+    return { error: 'Persistent task has a DRAFT gate that has not been confirmed. Call confirm_pt_gate first, or pass force_complete:true from an interactive session.' } as ErrorResult;
+  }
+
+  // Route to pending_audit if gate is active
+  if (hasActiveGate && !isForceComplete) {
+    const auditId = randomUUID();
+    const ts = now();
+    const attemptNumber = ((db.prepare('SELECT MAX(attempt_number) as m FROM pt_audits WHERE persistent_task_id = ?').get(args.id) as { m: number | null })?.m ?? 0) + 1;
+
+    db.prepare("UPDATE persistent_tasks SET status = 'pending_audit', last_summary = ? WHERE id = ?")
+      .run(args.summary ?? task.last_summary, args.id);
+    db.prepare(`INSERT INTO pt_audits (id, persistent_task_id, success_criteria, verification_method, requested_at, attempt_number) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(auditId, args.id, gateCriteria!, gateMethod ?? '', ts, attemptNumber);
+    recordEvent(db, args.id, 'pending_audit', { summary: args.summary ?? null, attempt: attemptNumber });
+
+    return {
+      id: args.id,
+      title: task.title,
+      status: 'pending_audit',
+      gate_success_criteria: gateCriteria,
+      gate_verification_method: gateMethod,
+      summary: args.summary ?? null,
+    };
+  }
+
+  // Direct completion (no gate, force_complete, or no criteria)
   const ts = now();
   db.prepare(
     "UPDATE persistent_tasks SET status = 'completed', completed_at = ? WHERE id = ?"
@@ -928,6 +1041,98 @@ function getPersistentTaskSummary(args: GetPersistentTaskSummaryArgs): object | 
 // Server Setup
 // ============================================================================
 
+// ============================================================================
+// Audit Gate Handlers
+// ============================================================================
+
+function updatePtGate(args: UpdatePtGateArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT id, status, gate_status FROM persistent_tasks WHERE id = ?').get(args.id) as { id: string; status: string; gate_status: string | null } | undefined;
+  if (!task) return { error: `Persistent task not found: ${args.id}` };
+  if (['completed', 'cancelled', 'failed', 'pending_audit'].includes(task.status)) {
+    return { error: `Cannot update gate on a task with status '${task.status}'` };
+  }
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (args.success_criteria) { updates.push('gate_success_criteria = ?'); values.push(args.success_criteria); }
+  if (args.verification_method) { updates.push('gate_verification_method = ?'); values.push(args.verification_method); }
+  if (args.reset_to_draft) {
+    updates.push("gate_status = 'draft'", 'gate_confirmed_at = NULL');
+  } else if (!task.gate_status) {
+    updates.push("gate_status = 'draft'");
+  }
+  if (updates.length === 0) return { error: 'No fields to update' };
+  values.push(args.id);
+  db.prepare(`UPDATE persistent_tasks SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  const updated = db.prepare('SELECT gate_success_criteria, gate_verification_method, gate_status, gate_confirmed_at FROM persistent_tasks WHERE id = ?').get(args.id) as Record<string, unknown>;
+  return { id: args.id, ...updated };
+}
+
+function confirmPtGate(args: ConfirmPtGateArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT id, gate_status, gate_success_criteria, gate_verification_method FROM persistent_tasks WHERE id = ?').get(args.id) as { id: string; gate_status: string | null; gate_success_criteria: string | null; gate_verification_method: string | null } | undefined;
+  if (!task) return { error: `Persistent task not found: ${args.id}` };
+  if (!task.gate_status) return { error: 'No gate defined. Call update_pt_gate first.' };
+  if (task.gate_status === 'active') return { id: args.id, gate_status: 'active', warning: 'Gate already confirmed' };
+  const ts = now();
+  const criteria = args.refined_success_criteria ?? task.gate_success_criteria;
+  const method = args.refined_verification_method ?? task.gate_verification_method;
+  db.prepare("UPDATE persistent_tasks SET gate_status = 'active', gate_confirmed_at = ?, gate_success_criteria = ?, gate_verification_method = ? WHERE id = ?")
+    .run(ts, criteria, method, args.id);
+  return { id: args.id, gate_status: 'active', gate_confirmed_at: ts, success_criteria: criteria, verification_method: method };
+}
+
+function checkPtAudit(args: CheckPtAuditArgs): object {
+  const db = getDb();
+  const audit = db.prepare('SELECT * FROM pt_audits WHERE persistent_task_id = ? ORDER BY attempt_number DESC LIMIT 1').get(args.id) as Record<string, unknown> | undefined;
+  if (!audit) return { id: args.id, audit_status: 'not_applicable' };
+  return { id: args.id, audit_status: audit.verdict === null ? 'pending' : audit.verdict, verdict: audit.verdict, evidence: audit.evidence, failure_reason: audit.failure_reason, requested_at: audit.requested_at, completed_at: audit.completed_at, attempt_number: audit.attempt_number };
+}
+
+function ptAuditPass(args: PtAuditPassArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT * FROM persistent_tasks WHERE id = ?').get(args.id) as PersistentTaskRecord | undefined;
+  if (!task) return { error: `Persistent task not found: ${args.id}` };
+  if (task.status !== 'pending_audit') return { error: `Task is not in pending_audit status (current: ${task.status})` };
+  const audit = db.prepare('SELECT id FROM pt_audits WHERE persistent_task_id = ? AND verdict IS NULL ORDER BY attempt_number DESC LIMIT 1').get(args.id) as { id: string } | undefined;
+  if (!audit) return { error: `No pending audit found for: ${args.id}` };
+  const ts = now();
+  const agentId = process.env.CLAUDE_AGENT_ID ?? 'unknown';
+  db.transaction(() => {
+    db.prepare("UPDATE pt_audits SET verdict = 'pass', evidence = ?, completed_at = ?, auditor_agent_id = ? WHERE id = ?").run(args.evidence, ts, agentId, audit.id);
+    db.prepare("UPDATE persistent_tasks SET status = 'completed', completed_at = ? WHERE id = ?").run(ts, args.id);
+    recordEvent(db, args.id, 'completed', { audit_verdict: 'pass', evidence: args.evidence });
+  })();
+  // Cross-DB: complete parent todo task
+  if (task.parent_todo_task_id && fs.existsSync(TODO_DB_PATH)) {
+    try {
+      const todoDb = new Database(TODO_DB_PATH);
+      todoDb.pragma('journal_mode = WAL');
+      todoDb.pragma('busy_timeout = 5000');
+      todoDb.prepare("UPDATE tasks SET status = 'completed', completed_at = ? WHERE id = ? AND status != 'completed'").run(ts, task.parent_todo_task_id);
+      todoDb.close();
+    } catch { /* non-fatal */ }
+  }
+  return { id: args.id, status: 'completed', verdict: 'pass', evidence: args.evidence, completed_at: ts };
+}
+
+function ptAuditFail(args: PtAuditFailArgs): object {
+  const db = getDb();
+  const task = db.prepare('SELECT id, status FROM persistent_tasks WHERE id = ?').get(args.id) as { id: string; status: string } | undefined;
+  if (!task) return { error: `Persistent task not found: ${args.id}` };
+  if (task.status !== 'pending_audit') return { error: `Task is not in pending_audit (current: ${task.status})` };
+  const audit = db.prepare('SELECT id FROM pt_audits WHERE persistent_task_id = ? AND verdict IS NULL ORDER BY attempt_number DESC LIMIT 1').get(args.id) as { id: string } | undefined;
+  if (!audit) return { error: `No pending audit found for: ${args.id}` };
+  const ts = now();
+  const agentId = process.env.CLAUDE_AGENT_ID ?? 'unknown';
+  db.transaction(() => {
+    db.prepare("UPDATE pt_audits SET verdict = 'fail', failure_reason = ?, evidence = ?, completed_at = ?, auditor_agent_id = ? WHERE id = ?").run(args.failure_reason, args.evidence, ts, agentId, audit.id);
+    db.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ?").run(args.id);
+    recordEvent(db, args.id, 'audit_failed', { failure_reason: args.failure_reason, evidence: args.evidence });
+  })();
+  return { id: args.id, status: 'active', verdict: 'fail', failure_reason: args.failure_reason, evidence: args.evidence };
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'create_persistent_task',
@@ -1000,6 +1205,36 @@ const tools: AnyToolHandler[] = [
     description: 'Get a compact summary suitable for hook injection: id, title, status, outcome_criteria, amendment counts, sub-task counts, heartbeat, cycle_count.',
     schema: GetPersistentTaskSummaryArgsSchema,
     handler: getPersistentTaskSummary,
+  },
+  {
+    name: 'update_pt_gate',
+    description: 'Set or update audit gate criteria on a persistent task. Defines measurable success criteria and executable verification steps. The task will be independently audited against these criteria before completion is accepted.',
+    schema: UpdatePtGateArgsSchema,
+    handler: updatePtGate,
+  },
+  {
+    name: 'confirm_pt_gate',
+    description: 'Confirm a draft gate after user-alignment review. Transitions gate from draft to active. Call after running a user-alignment sub-agent to validate criteria.',
+    schema: ConfirmPtGateArgsSchema,
+    handler: confirmPtGate,
+  },
+  {
+    name: 'check_pt_audit',
+    description: 'Check audit status of a persistent task in pending_audit. Returns verdict, evidence, and attempt number.',
+    schema: CheckPtAuditArgsSchema,
+    handler: checkPtAudit,
+  },
+  {
+    name: 'pt_audit_pass',
+    description: 'Mark persistent task audit as passed. Transitions from pending_audit to completed. Also completes the parent todo.db task. Called by the universal-auditor.',
+    schema: PtAuditPassArgsSchema,
+    handler: ptAuditPass,
+  },
+  {
+    name: 'pt_audit_fail',
+    description: 'Mark persistent task audit as failed. Returns task to active status so the monitor can address the failure. The failure reason is injected into the next monitor cycle.',
+    schema: PtAuditFailArgsSchema,
+    handler: ptAuditFail,
   },
 ];
 

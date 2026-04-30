@@ -240,6 +240,24 @@ async function main() {
     return;
   }
 
+  // Audit gate awareness: if complete_task returned pending_audit, inform the agent
+  const toolResponse = event?.tool_response;
+  if (toolName === 'mcp__todo-db__complete_task' && toolResponse) {
+    try {
+      const resp = typeof toolResponse === 'string' ? JSON.parse(toolResponse) : toolResponse;
+      if (resp?.status === 'pending_audit') {
+        process.stdout.write(JSON.stringify({
+          continue: true,
+          hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            additionalContext: '[AUDIT GATE ACTIVE] Your task entered pending_audit. An independent auditor is verifying your work against the gate criteria. Do NOT call complete_task or summarize_work again — wait for the auditor verdict. Poll check_task_audit({ task_id: "' + (resp.id ?? '') + '" }) if needed.',
+          },
+        }));
+        return;
+      }
+    } catch { /* parse failure — continue to normal flow */ }
+  }
+
   // Find the session transcript file
   // Use CLAUDE_PROJECT_DIR as the canonical project directory for session discovery.
   // Worktrees have their own CLAUDE_PROJECT_DIR pointing to the worktree path,

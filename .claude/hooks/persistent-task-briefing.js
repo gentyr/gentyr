@@ -191,7 +191,7 @@ async function main() {
     console.log(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `[PERSISTENT MONITOR] Cycle ${task.cycle_count + 1}.${subtaskSummary}${amendStr} Check signals.${skepticismNudge}${compactPlanStr}`,
+        additionalContext: `[PERSISTENT MONITOR] Cycle ${task.cycle_count + 1}.${task.status === 'pending_audit' ? ' [AUDIT PENDING — awaiting auditor verdict]' : ''}${subtaskSummary}${amendStr} Check signals.${skepticismNudge}${compactPlanStr}`,
       },
     }));
     process.exit(0);
@@ -351,12 +351,17 @@ Consider requesting CTO scope review via submit_bypass_request with category: 's
 The current approach may need decomposition into smaller, focused tasks targeting specific root causes.`
   }
 
+  // Gate section
+  const gateSection = task.gate_success_criteria
+    ? `\n## Audit Gate (Required at Completion)\nSuccess criteria: ${task.gate_success_criteria}\nVerification method: ${task.gate_verification_method || '⚠️ NOT DEFINED'}\nGate status: ${task.gate_status || 'none'}${task.gate_status === 'draft' ? ' ⚠️ DRAFT — requires user-alignment confirmation via confirm_pt_gate' : ''}\nWhen complete_persistent_task is called, an independent auditor will verify against these criteria.\n`
+    : (task.outcome_criteria ? '' : '\n## Audit Gate\n⚠️ No gate criteria defined. Call update_pt_gate with measurable success criteria before completing.\n');
+
   const fullContext = `[PERSISTENT TASK MONITOR — CYCLE REINFORCEMENT]
 
 ## Your Persistent Task
 Title: ${task.title}
 Outcome: ${task.outcome_criteria || '(not specified)'}
-Status: ${task.status} | Cycle: ${task.cycle_count + 1} | Uptime: ${elapsedStr(task.activated_at)}
+Status: ${task.status}${task.status === 'pending_audit' ? ' ⚠️ AUDIT IN FLIGHT — wait for auditor verdict' : ''} | Cycle: ${task.cycle_count + 1} | Uptime: ${elapsedStr(task.activated_at)}${gateSection}
 
 ## Original Prompt
 ${task.prompt}

@@ -116,10 +116,11 @@ async function main() {
  * @returns {string}
  */
 function formatSignal(sig, agentId) {
+  const typeLabel = sig.type ? ` [${sig.type}]` : '';
   switch (sig.tier) {
     case 'note':
       return [
-        '[AGENT COMMUNICATION — HELPFUL NOTE]',
+        `[AGENT COMMUNICATION — HELPFUL NOTE]${typeLabel}`,
         `From: ${sig.from_agent_type} agent working on "${sig.from_task_title}"`,
         'Task context: You are working on your assigned task. This note is FYI only.',
         '',
@@ -131,7 +132,7 @@ function formatSignal(sig, agentId) {
 
     case 'instruction':
       return [
-        '[DEPUTY-CTO INSTRUCTION — URGENT]',
+        `[DEPUTY-CTO INSTRUCTION — URGENT]${typeLabel}`,
         'The Deputy-CTO has sent you an instruction. You MUST acknowledge and adhere to it.',
         '',
         `Message: "${sig.message}"`,
@@ -141,18 +142,19 @@ function formatSignal(sig, agentId) {
 
     case 'directive':
       return [
-        '[CTO DIRECTIVE — MANDATORY OVERRIDE]',
+        `[CTO DIRECTIVE — MANDATORY OVERRIDE]${typeLabel}`,
         'The CTO has issued a direct directive via the Deputy-CTO. This OVERRIDES your',
         'current approach. Address this IMMEDIATELY before any other work.',
         '',
         `Message: "${sig.message}"`,
         '',
-        `Acknowledge with: mcp__agent-tracker__acknowledge_signal({ signal_id: "${sig.id}" })`,
+        'You CANNOT complete your task until this directive is acknowledged.',
+        `Acknowledge: mcp__agent-tracker__acknowledge_signal({ signal_id: "${sig.id}" })`,
       ].join('\n');
 
     default:
       return [
-        `[AGENT COMMUNICATION — ${sig.tier.toUpperCase()}]`,
+        `[AGENT COMMUNICATION — ${sig.tier.toUpperCase()}]${typeLabel}`,
         `From: ${sig.from_agent_type} (${sig.from_agent_id})`,
         '',
         `Message: "${sig.message}"`,

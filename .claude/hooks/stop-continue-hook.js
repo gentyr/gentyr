@@ -197,13 +197,15 @@ async function main() {
       debugLog('Persistent monitor session detected', { taskId: ptTaskId });
 
       let taskStillActive = true;
+      let ptStatus = 'active';
       try {
         const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
         if (Database && fs.existsSync(ptDbPath)) {
           const ptDb = new Database(ptDbPath, { readonly: true });
           const row = ptDb.prepare("SELECT status FROM persistent_tasks WHERE id = ?").get(ptTaskId);
           ptDb.close();
-          taskStillActive = row && row.status === 'active';
+          ptStatus = row?.status ?? 'active';
+          taskStillActive = ptStatus === 'active' || ptStatus === 'pending_audit';
         }
       } catch (e) {
         debugLog('persistent-tasks.db read error (non-fatal)', { error: e.message });
@@ -211,11 +213,14 @@ async function main() {
       }
 
       if (taskStillActive) {
+        const blockReason = ptStatus === 'pending_audit'
+          ? '[AUDIT IN FLIGHT] Your persistent task is in pending_audit — an independent auditor is verifying your work. Wait for the verdict. Poll mcp__persistent-task__check_pt_audit({ id: "' + ptTaskId + '" }) every 30s. If pass → exit. If fail → address the failure.'
+          : '[PERSISTENT MONITOR] Your persistent task is still active. Continue monitoring sub-tasks. Call mcp__persistent-task__complete_persistent_task when the outcome criteria are met, or mcp__persistent-task__pause_persistent_task if you need to pause.';
         debugLog('Decision: BLOCK (persistent task monitor — task still active)');
         gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: 'persistent_monitor_active', isTask: true, isPersistent: true });
         console.log(JSON.stringify({
           decision: 'block',
-          reason: '[PERSISTENT MONITOR] Your persistent task is still active. Continue monitoring sub-tasks. Call mcp__persistent-task__complete_persistent_task when the outcome criteria are met, or mcp__persistent-task__pause_persistent_task if you need to pause.',
+          reason: blockReason,
         }));
         process.exit(0);
       }

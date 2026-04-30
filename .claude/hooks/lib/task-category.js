@@ -239,8 +239,34 @@ When a tool call or sub-agent fails:
 Do NOT immediately call summarize_work(success: false) on the first failure. Iterate.
 `;
 
+  // ── Audit gate block ─────────────────────────────────────────────────────────
+  const GATE_EXEMPT_IDS = ['triage', 'project-management', 'workstream-management'];
+  const isGateExempt = GATE_EXEMPT_IDS.includes(category.id);
+
+  // Prior audit failure injection
+  let priorAuditBlock = '';
+  if (task.prior_audit_failure_reason) {
+    priorAuditBlock = `\n## Prior Audit Failure\nYour last completion attempt was REJECTED by the auditor:\n> ${task.prior_audit_failure_reason}\nAddress this issue before calling complete_task again.\n`;
+  }
+
+  const auditGateBlock = isGateExempt ? '' : `
+## Audit Gate (MANDATORY)
+
+Before calling complete_task, set measurable gate criteria:
+\`\`\`
+mcp__todo-db__update_task_gate({
+  task_id: "${task.id}",
+  gate_success_criteria: "<what must be true when done — measurable, not vague>",
+  gate_verification_method: "<how an auditor verifies: test commands, file checks, PR status, DB queries>"
+})
+\`\`\`
+Your task will be independently audited after calling complete_task. If the auditor
+finds criteria are not met, you return to in_progress. GOOD: "Tests pass: npm test.
+PR merged. File X exists." BAD: "Task is done."${priorAuditBlock}
+`;
+
   // ── Completion block ─────────────────────────────────────────────────────────
-  const completionBlock = `${errorHandlingBlock}
+  const completionBlock = `${errorHandlingBlock}${auditGateBlock}
 ## When Done
 
 ### Step 1: Run project-manager (MANDATORY for code/test changes)

@@ -947,7 +947,7 @@ function reconcileTodo(item, projectDir, reason) {
     db = new Database(todoDbPath);
 
     const task = db.prepare('SELECT id, status FROM tasks WHERE id = ?').get(taskId);
-    if (!task || task.status !== 'in_progress') return;
+    if (!task || !['in_progress', 'pending_audit', 'pending'].includes(task.status)) return;
 
     if (reason === 'session_reaped_complete') {
       db.prepare("UPDATE tasks SET status = 'completed' WHERE id = ?").run(taskId);

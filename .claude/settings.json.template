@@ -201,6 +201,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__todo-db__complete_task,mcp__todo-db__summarize_work",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/signal-compliance-gate.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -369,6 +379,11 @@
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/context-pressure-hook.js",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/alignment-monitor-briefing.js",
             "timeout": 5
           }
         ]
@@ -614,6 +629,22 @@
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-audit-spawner.js",
           "timeout": 15
+        }]
+      },
+      {
+        "matcher": "mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/universal-audit-spawner.js",
+          "timeout": 15
+        }]
+      },
+      {
+        "matcher": "mcp__todo-db__create_task,mcp__persistent-task__create_persistent_task",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/gate-confirmation-enforcer.js",
+          "timeout": 5
         }]
       }
     ],

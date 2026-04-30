@@ -47,7 +47,7 @@ export const FORCED_FOLLOWUP_CREATORS: readonly string[] = ['deputy-cto', 'produ
 // Task Status
 // ============================================================================
 
-export const TASK_STATUS = ['pending', 'pending_review', 'in_progress', 'completed'] as const;
+export const TASK_STATUS = ['pending', 'pending_review', 'in_progress', 'pending_audit', 'completed'] as const;
 export type TaskStatus = (typeof TASK_STATUS)[number];
 
 /** Creators whose tasks bypass the gate and enter 'pending' directly. Non-trusted creators enter 'pending_review'. */
@@ -55,6 +55,9 @@ export const GATE_BYPASS_CREATORS: readonly string[] = ['deputy-cto', 'cto', 'hu
 
 /** Creators authorized to set priority: 'urgent'. Other creators are auto-downgraded to 'normal'. */
 export const URGENCY_AUTHORIZED_CREATORS: readonly string[] = ['deputy-cto', 'cto', 'human', 'pr-reviewer', 'system-followup', 'demo', 'self-heal-system'] as const;
+
+/** Categories exempt from audit gate enforcement. Tasks in these categories complete directly without independent audit. */
+export const GATE_EXEMPT_CATEGORIES: readonly string[] = ['triage', 'project-management', 'workstream-management'] as const;
 
 // ============================================================================
 // Task Priority
