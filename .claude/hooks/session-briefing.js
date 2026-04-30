@@ -210,6 +210,44 @@ function getRecentComms(maxLines = 5) {
 }
 
 // ---------------------------------------------------------------------------
+// Data gathering: preview → staging drift
+// ---------------------------------------------------------------------------
+
+/**
+ * Get preview → staging drift info.
+ * Uses automation state file for speed (no git subprocess on every session start).
+ * Falls back to git if state file is unavailable.
+ */
+function getPreviewStagingDrift() {
+  // Fast path: read from automation state file
+  try {
+    const statePath = path.join(PROJECT_DIR, '.claude', 'state', 'hourly-automation-state.json');
+    if (fs.existsSync(statePath)) {
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      if (typeof state.previewStagingDriftCount === 'number') {
+        return {
+          count: state.previewStagingDriftCount,
+          ageHours: state.previewStagingOldestDriftAge || null,
+        };
+      }
+    }
+  } catch { /* fall through to git */ }
+
+  // Slow path: git
+  try {
+    execSync('git fetch origin preview staging --quiet 2>/dev/null || true', {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 15000, stdio: 'pipe',
+    });
+    const result = execSync('git rev-list --count origin/staging..origin/preview 2>/dev/null', {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+    const count = parseInt(result, 10) || 0;
+    if (count === 0) return { count: 0, ageHours: null };
+    return { count, ageHours: null };
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
 // Data gathering: git state
 // ---------------------------------------------------------------------------
 
@@ -670,6 +708,41 @@ function buildInteractiveBriefing() {
     }
   } else {
     lines.push('Queue: unavailable');
+  }
+
+  // Preview → Staging drift
+  const drift = getPreviewStagingDrift();
+  if (drift && drift.count > 0) {
+    lines.push('=== PREVIEW → STAGING ===');
+    let driftLine = `${drift.count} commit${drift.count === 1 ? '' : 's'} on preview not yet in staging`;
+    if (drift.ageHours !== null) {
+      driftLine += ` (oldest: ${drift.ageHours}h ago)`;
+    }
+
+    // Check staging lock
+    try {
+      const lockPath = path.join(PROJECT_DIR, '.claude', 'state', 'staging-lock.json');
+      if (fs.existsSync(lockPath)) {
+        const lockState = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+        if (lockState.locked) {
+          driftLine += ' (staging locked — promotion paused for prod release)';
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    // Check automation toggle
+    try {
+      const configPath = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (config.previewPromotionEnabled === false) {
+          driftLine += ' (automated promotion disabled)';
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    lines.push(driftLine);
+    lines.push('');
   }
 
   lines.push('');

@@ -522,6 +522,63 @@ function generateCtoApproval(artifactDir) {
   }
 }
 
+/**
+ * Generate Section 10: Preview → Staging Promotion History
+ * Scans .claude/promotions/*/manifest.json for promotions that fed into this release.
+ *
+ * @param {string} artifactDir - Not used directly but kept for signature consistency
+ * @returns {string}
+ */
+function generatePromotionHistory(artifactDir) {
+  const promotionsDir = path.join(PROJECT_DIR, '.claude', 'promotions');
+  if (!fs.existsSync(promotionsDir)) {
+    return '_No promotion records found. Preview → staging promotions were not tracked for this release._';
+  }
+
+  try {
+    const entries = fs.readdirSync(promotionsDir, { withFileTypes: true });
+    const promotions = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const manifestPath = path.join(promotionsDir, entry.name, 'manifest.json');
+      if (!fs.existsSync(manifestPath)) continue;
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        promotions.push(manifest);
+      } catch { /* skip corrupt manifests */ }
+    }
+
+    if (promotions.length === 0) {
+      return '_No promotion records found._';
+    }
+
+    // Sort by created_at descending
+    promotions.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+
+    // Build table
+    const rows = promotions.map(p => {
+      const date = p.created_at ? new Date(p.created_at).toISOString().split('T')[0] : 'Unknown';
+      const commits = p.commit_count || '?';
+      const quality = p.quality_verdict || 'N/A';
+      const tests = p.test_verdict || 'N/A';
+      const demos = p.demo_verdict || 'N/A';
+      const pr = p.pr_number ? `#${p.pr_number}` : 'N/A';
+      return `| ${date} | ${commits} | ${quality} | ${tests} | ${demos} | ${pr} |`;
+    });
+
+    return [
+      '| Date | Commits | Quality | Tests | Demos | PR |',
+      '|------|---------|---------|-------|-------|----|',
+      ...rows,
+      '',
+      `_${promotions.length} promotion(s) recorded._`,
+    ].join('\n');
+  } catch (err) {
+    return `_Error reading promotion records: ${err.message}_`;
+  }
+}
+
 // ============================================================================
 // Main Export
 // ============================================================================
@@ -632,7 +689,8 @@ export async function generateStructuredReport(releaseId, projectDir = PROJECT_D
     .replace('{evidence_tasks}', evidenceTasks)
     .replace('{evidence_reports}', evidenceReports)
     .replace('{screenshots}', screenshots)
-    .replace('{cto_approval}', generateCtoApproval(artifactDir));
+    .replace('{cto_approval}', generateCtoApproval(artifactDir))
+    .replace('{promotion_history}', generatePromotionHistory(artifactDir));
 
   // Write report
   const mdPath = path.join(artifactDir, 'report.md');
