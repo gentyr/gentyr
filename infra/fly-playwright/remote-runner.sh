@@ -328,7 +328,7 @@ log "Running Playwright tests: $TEST_FILE"
 echo '{"type":"setup","phase":"test_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 
 PLAYWRIGHT_EXIT=0
-STALL_TIMEOUT=${GENTYR_STALL_TIMEOUT_S:-120}
+STALL_TIMEOUT=${GENTYR_STALL_TIMEOUT_S:-600}
 GRACE_PERIOD=${GENTYR_STALL_GRACE_S:-60}
 
 # Launch Playwright in the background; tee stdout/stderr to log files while
