@@ -299,6 +299,17 @@ if [[ -n "${DEV_SERVER_CMD:-}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Increase /dev/shm for Chrome stability (default 64MB is too small)
+# ---------------------------------------------------------------------------
+# Chrome uses /dev/shm for renderer IPC even with --disable-dev-shm-usage.
+# The 64MB default causes crashes after 2-3 minutes in headed mode.
+if mount -o remount,size=2G /dev/shm 2>/dev/null; then
+  log "Increased /dev/shm to 2GB"
+else
+  log "Warning: could not increase /dev/shm (may cause Chrome crashes)"
+fi
+
+# ---------------------------------------------------------------------------
 # Start virtual display for window-level recording (only when headed)
 # ---------------------------------------------------------------------------
 if [[ "${DEMO_HEADLESS:-1}" != "1" ]]; then
