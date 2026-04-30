@@ -152,7 +152,11 @@ if [[ ! -f /app/.project-image ]]; then
 else
   log "Project image — Playwright browsers already installed"
 fi
-export NODE_ENV=production
+# Use development mode — Fly machines run dev servers, and production mode
+# triggers strict env validation (e.g. CREDENTIAL_ENCRYPTION_KEY required).
+# The web server's NODE_ENV is handled by playwright.config.ts; this sets
+# it globally for the backend and other processes.
+export NODE_ENV=development
 
 # ---------------------------------------------------------------------------
 # Execute prerequisites from GENTYR_PREREQUISITES JSON
