@@ -88,15 +88,19 @@ GENTYR preserves project-local MCP servers across `npx gentyr sync`. To add a ne
 
 GENTYR enforces a strict merge chain: **feature -> preview -> staging -> production**.
 
-| Merge | Approval | Method |
-|---|---|---|
-| `feature/*` -> `preview` | Self-merge (immediate) | Project-manager creates PR + squash-merges |
-| `preview` -> `staging` | Self-merge (immediate) | Project-manager promotes fix PRs directly |
-| `staging` -> `main` | **CTO only** | `/promote-to-prod` — 8-phase release plan |
+| Source | Target | Mechanism | Quality Gates |
+|---|---|---|---|
+| `feature/*` | `preview` | Project-manager self-merge | Lint + security + **unit tests** (pre-merge test gate) |
+| `preview` | `staging` | **Automated (30min)** | Quality review + tests + demos + artifacts |
+| `staging` | `main` | CTO-initiated `/promote-to-prod` | 8-phase plan with CTO sign-off |
 
 **Forbidden merges:** Feature branches can NEVER merge directly into `staging` or `main`. Preview can NEVER merge directly into `main`.
 
 **Feature branches:** All work on feature branches in worktrees. After committing, the project-manager MUST immediately: push the branch, create a PR to `preview`, self-merge with `gh pr merge --squash --delete-branch`, and clean up the worktree. No waiting for review.
+
+**Pre-merge test gate:** Before creating a PR to preview, the project-manager agent runs unit tests as a quality gate. If tests fail, the PR is NOT created and the agent exits with failure details. Test command: `pnpm test:unit --reporter=json` (default). Override via `preMergeTestCommand` in `services.json`. Disable entirely via `preMergeTestEnabled: false`. When `activeTestScope` is set, only failures in scoped tests are blocking — non-scoped failures are reported as warnings but do not block the merge. Shared module: `.claude/hooks/lib/pre-merge-test-runner.js` outputs JSON with `{ passed, failed, skipped, total, verdict, failures }`.
+
+**Preview to staging promotion:** Automated pipeline that promotes changes from preview to staging with quality gates and artifact collection. Runs every 30 minutes when staging falls behind preview. Pipeline steps (single `preview-promoter` agent session, ~10-15 min): (1) Assess scope — `git diff --stat`, exit if >3000 lines or >80 files, (2) Quality review — scan diff for secrets, disabled tests, debug artifacts, (3) Test execution — full test suite via `run_tests` MCP tool, (4) Demo execution — run scenarios related to changed files (matched by feature file patterns), (5) Promote — create PR `--base staging --head preview`, merge, (6) Post-deploy verify & report — smoke test staging URL, generate promotion report. Artifacts stored at `.claude/promotions/{id}/` (manifest.json, quality-review.json, test-results.json, demo-results.json, pr-details.json, report.md). Controls: toggle via `set_automation_toggle({ feature: 'previewPromotionEnabled', enabled: true/false })`, manual trigger via `/promote-to-staging` (quick promote or full promote with quality gates), blocked during production releases (staging lock), 30-minute cooldown (configurable via `preview_promotion` in automation-config.json). Session briefing shows `=== PREVIEW → STAGING ===` with commit count and age; status line shows `STAGING: N behind preview`. Promotion artifacts are referenced in Section 10 of the production release report, creating an end-to-end evidence chain from preview through staging to production.
 
 **Staging reactive reviews:** When staging changes are detected, 4 concurrent review sessions spawn automatically (antipattern, code-quality, user-alignment, spec-compliance). If fixes are needed, they follow the per-fix PR chain: feature -> preview -> staging. Reviews run hourly (configurable).
 
