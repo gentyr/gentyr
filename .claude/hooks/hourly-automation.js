@@ -305,6 +305,7 @@ function getConfig() {
     demoValidationEnabled: false,
     dailyFeedbackEnabled: false,
     stagingReactiveReviewEnabled: true,
+    previewPromotionEnabled: true,
     lastModified: null,
     intervals: {},
   };
@@ -682,12 +683,15 @@ function getState() {
     }
     // Remove legacy triageAttempts if present (now handled by MCP server)
     delete state.triageAttempts;
-    // Clean up legacy promotion pipeline state fields
-    delete state.lastPreviewPromotionCheck;
+    // Clean up legacy promotion pipeline state fields (keep lastPreviewPromotionCheck for new automation)
     delete state.lastStagingPromotionCheck;
     delete state.lastPreviewToStagingMergeAt;
     delete state.stagingFreezeActive;
     delete state.stagingFreezeActivatedAt;
+    // Initialize preview promotion state fields
+    if (state.lastPreviewPromotionSha === undefined) state.lastPreviewPromotionSha = null;
+    if (state.previewStagingDriftCount === undefined) state.previewStagingDriftCount = 0;
+    if (state.previewStagingOldestDriftAge === undefined) state.previewStagingOldestDriftAge = null;
     if (state.lastSessionReviverCheck === undefined) state.lastSessionReviverCheck = 0;
     if (state.lastSessionReaperRun === undefined) state.lastSessionReaperRun = 0;
     if (state.lastVersionWatchRun === undefined) state.lastVersionWatchRun = 0;
@@ -2496,9 +2500,10 @@ function getPromotionWorktree(promotionType) {
   }
 }
 
-// spawnPreviewPromotion() and spawnStagingPromotion() removed in Phase 2 of
-// production promotion overhaul. Automated preview->staging and staging->main
-// promotion is replaced by CTO-initiated /promote-to-prod flow.
+// spawnStagingPromotion() removed in Phase 2 of production promotion overhaul.
+// Automated staging->main promotion is replaced by CTO-initiated /promote-to-prod flow.
+// Preview->staging promotion is now handled by the preview_promotion runIfDue block
+// in the gate-required section, which spawns a preview-promoter agent.
 
 /**
  * Spawn Emergency Hotfix Promotion (staging -> main, bypasses 24h + midnight).
@@ -4177,6 +4182,24 @@ async function main() {
   }
 
   // =========================================================================
+  // PREVIEW → STAGING DRIFT DETECTION (gate-exempt, informational)
+  // Records drift count for session briefing / CTO notification
+  // =========================================================================
+  if (remoteBranchExists('preview') && remoteBranchExists('staging')) {
+    const driftCommits = getNewCommits('preview', 'staging');
+    state.previewStagingDriftCount = driftCommits.length;
+    if (driftCommits.length > 0) {
+      const oldestTs = getLastCommitTimestamp('staging');
+      state.previewStagingOldestDriftAge = oldestTs > 0
+        ? Math.round((Date.now() / 1000 - oldestTs) / 3600) : null;
+      log(`Preview → Staging drift: ${driftCommits.length} commits behind (oldest: ${state.previewStagingOldestDriftAge}h)`);
+    } else {
+      state.previewStagingOldestDriftAge = null;
+    }
+    saveState(state);
+  }
+
+  // =========================================================================
   // PERSISTENT ALERT CHECK (every cycle, gate-exempt)
   // GAP 2: Re-escalate unresolved alerts past their threshold and GC old ones
   // =========================================================================
@@ -5329,6 +5352,106 @@ Then exit.`,
       } else {
         log(`Demo validation: all ${results.length} scenarios passed.`);
       }
+    },
+  });
+
+  // =========================================================================
+  // PREVIEW → STAGING PROMOTION (30min cooldown, gate-required)
+  // Auto-promotes preview→staging when quality gates pass
+  // Replaces removed spawnPreviewPromotion() / spawnStagingPromotion()
+  // =========================================================================
+  await runIfDue('preview_promotion', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastPreviewPromotionCheck',
+    configToggle: 'previewPromotionEnabled',
+    config,
+    localModeSkip: localMode,
+    label: 'Preview promotion',
+    fn: async () => {
+      // 1. Check staging lock (don't promote during prod release)
+      if (isStagingLocked(PROJECT_DIR)) {
+        log('Preview promotion: staging locked for production release, skipping.');
+        return;
+      }
+
+      // 2. Check branches exist
+      if (!remoteBranchExists('preview') || !remoteBranchExists('staging')) {
+        log('Preview promotion: preview or staging branch missing.');
+        return;
+      }
+
+      // 3. Check for commits to promote
+      const newCommits = getNewCommits('preview', 'staging');
+      if (newCommits.length === 0) {
+        log('Preview promotion: no commits to promote.');
+        return;
+      }
+
+      // 4. SHA dedup — don't re-evaluate same preview HEAD
+      let currentSha;
+      try {
+        currentSha = execSync('git rev-parse origin/preview', {
+          cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        }).trim();
+      } catch { return; }
+
+      if (state.lastPreviewPromotionSha === currentSha) {
+        log('Preview promotion: SHA unchanged since last attempt.');
+        return;
+      }
+
+      log(`Preview promotion: ${newCommits.length} commits to evaluate. Spawning preview-promoter.`);
+      ensureCredentials();
+
+      const promotionId = `prom-${Date.now()}-${currentSha.slice(0, 8)}`;
+      const wt = getPromotionWorktree('preview-promotion');
+      const commitList = newCommits.join('\n');
+
+      try {
+        enqueueSession({
+          title: `[Preview → Staging] ${newCommits.length} commits`,
+          agentType: 'preview-promoter',
+          hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+          tagContext: 'preview-promotion',
+          source: 'hourly-automation',
+          priority: 'normal',
+          agent: 'preview-promoter',
+          buildPrompt: (agentId) => [
+            `[Automation][preview-promoter][AGENT:${agentId}]`,
+            `## Preview → Staging Promotion`,
+            ``,
+            `**Promotion ID**: ${promotionId}`,
+            `**Commits to promote** (${newCommits.length}):`,
+            '```',
+            commitList,
+            '```',
+            getTestScopePromptContext(),
+            ``,
+            `Follow your agent instructions to evaluate quality, run tests/demos,`,
+            `and promote if all gates pass.`,
+            ``,
+            `Artifact directory: .claude/promotions/${promotionId}/`,
+          ].join('\n'),
+          extraEnv: {
+            ...resolvedCredentials,
+            CLAUDE_PROJECT_DIR: PROJECT_DIR,
+            GENTYR_PROMOTION_ID: promotionId,
+          },
+          metadata: {
+            promotionId,
+            commitCount: newCommits.length,
+            previewSha: currentSha,
+          },
+          cwd: wt.cwd,
+          mcpConfig: wt.mcpConfig,
+          projectDir: PROJECT_DIR,
+        });
+      } catch (err) {
+        log(`Preview promotion: failed to enqueue: ${err.message}`);
+      }
+
+      state.lastPreviewPromotionSha = currentSha;
+      saveState(state);
     },
   });
 

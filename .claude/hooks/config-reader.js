@@ -28,6 +28,8 @@ const DEFAULTS = {
   task_runner: 240,                    // 4h
   triage_per_item: 180,                // 3h per-item
   staging_reactive_review: 60,          // 1h
+  preview_promotion: 30,                // 30min
+  deploy_event_monitor: 5,              // 5min
   staging_health_monitor: 480,         // 8h
   production_health_monitor: 240,      // 4h
   standalone_antipattern_hunter: 1440, // daily
