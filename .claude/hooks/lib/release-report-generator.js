@@ -579,6 +579,66 @@ function generatePromotionHistory(artifactDir) {
   }
 }
 
+/**
+ * Generate Section 11: Deployment Artifact Verification
+ * Scans .claude/promotions/*/manifest.json for deployment artifacts tracked
+ * during preview-to-staging promotions and verifies deployment status.
+ *
+ * @param {string} artifactDir - Not used directly but kept for signature consistency
+ * @returns {string}
+ */
+function generateDeploymentVerification(artifactDir) {
+  const promotionsDir = path.join(PROJECT_DIR, '.claude', 'promotions');
+  if (!fs.existsSync(promotionsDir)) {
+    return '_No deployment artifact records available._';
+  }
+
+  try {
+    const entries = fs.readdirSync(promotionsDir, { withFileTypes: true });
+    const artifacts = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const manifestPath = path.join(promotionsDir, entry.name, 'manifest.json');
+      if (!fs.existsSync(manifestPath)) continue;
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (manifest.deploy_artifact && manifest.deploy_artifact.deploy_id) {
+          artifacts.push(manifest);
+        }
+      } catch { /* skip corrupt manifests */ }
+    }
+
+    if (artifacts.length === 0) {
+      return '_No deployment artifacts tracked. Configure `environments` in services.json to enable deployment tracking._';
+    }
+
+    // Sort by date descending
+    artifacts.sort((a, b) => (b.completed_at || '').localeCompare(a.completed_at || ''));
+
+    const rows = artifacts.map(a => {
+      const da = a.deploy_artifact;
+      const date = a.completed_at ? new Date(a.completed_at).toISOString().split('T')[0] : 'Unknown';
+      const platform = da.platform || 'Unknown';
+      const deployId = da.deploy_id ? da.deploy_id.slice(0, 12) : 'N/A';
+      const commitSha = da.commit_sha ? da.commit_sha.slice(0, 8) : 'N/A';
+      const status = da.status || 'N/A';
+      const verified = a.post_deploy_verification?.verified ? 'Yes' : (a.post_deploy_verification?.skipped ? 'Skipped' : 'No');
+      return `| ${date} | ${platform} | \`${deployId}\` | \`${commitSha}\` | ${status} | ${verified} |`;
+    });
+
+    return [
+      '| Date | Platform | Deploy ID | Commit | Status | Verified |',
+      '|------|----------|-----------|--------|--------|----------|',
+      ...rows,
+      '',
+      `_${artifacts.length} deployment artifact(s) tracked._`,
+    ].join('\n');
+  } catch (err) {
+    return `_Error reading deployment artifacts: ${err.message}_`;
+  }
+}
+
 // ============================================================================
 // Main Export
 // ============================================================================
@@ -690,7 +750,8 @@ export async function generateStructuredReport(releaseId, projectDir = PROJECT_D
     .replace('{evidence_reports}', evidenceReports)
     .replace('{screenshots}', screenshots)
     .replace('{cto_approval}', generateCtoApproval(artifactDir))
-    .replace('{promotion_history}', generatePromotionHistory(artifactDir));
+    .replace('{promotion_history}', generatePromotionHistory(artifactDir))
+    .replace('{deployment_verification}', generateDeploymentVerification(artifactDir));
 
   // Write report
   const mdPath = path.join(artifactDir, 'report.md');

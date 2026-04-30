@@ -4339,6 +4339,61 @@ async function main() {
   });
 
   // =========================================================================
+  // DEPLOY EVENT MONITOR (5min cooldown, gate-exempt)
+  // Quick health check on recent deployments — faster than hourly health monitors
+  // =========================================================================
+  await runIfDue('deploy_event_monitor', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastDeployEventMonitorRun',
+    label: 'Deploy event monitor',
+    localModeSkip: localMode,
+    fn: async () => {
+      // Read environment config
+      let environments = {};
+      try {
+        const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+        if (fs.existsSync(configPath)) {
+          const svcConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          environments = svcConfig.environments || {};
+        }
+      } catch { return; }
+
+      // Check each configured environment with a baseUrl
+      for (const [envName, envConfig] of Object.entries(environments)) {
+        if (!envConfig.baseUrl) continue;
+
+        const healthEndpoint = envConfig.healthEndpoint || '/api/health';
+        const url = `${envConfig.baseUrl}${healthEndpoint}`;
+
+        try {
+          // Quick HTTP health check via curl (no MCP dependency)
+          const result = execSync(
+            `curl -sf -o /dev/null -w "%{http_code}" --max-time 10 "${url}" 2>/dev/null || echo "000"`,
+            { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 15000, stdio: 'pipe' }
+          ).trim();
+
+          const statusCode = parseInt(result, 10);
+          if (statusCode >= 200 && statusCode < 400) {
+            log(`Deploy monitor: ${envName} healthy (${statusCode})`);
+            // Resolve any prior unhealthy alert for this environment
+            resolveAlert(`deploy_unhealthy_${envName}`);
+          } else {
+            log(`Deploy monitor: ${envName} UNHEALTHY (${statusCode})`);
+            // Create persistent alert for unhealthy deployment
+            recordAlert(`deploy_unhealthy_${envName}`, {
+              title: `Deployment unhealthy: ${envName} (HTTP ${statusCode})`,
+              severity: envName === 'production' ? 'critical' : 'high',
+              source: 'deploy-event-monitor',
+            });
+          }
+        } catch (err) {
+          log(`Deploy monitor: ${envName} check failed: ${err.message}`);
+        }
+      }
+    },
+  });
+
+  // =========================================================================
   // CTO GATE CHECK — exit if gate is closed after all monitoring-only steps
   // GAP 5: Everything above this point (Usage Optimizer, Key Sync, Session
   // Reviver, Triage, Health Monitors, CI Monitoring, Persistent Alerts,
