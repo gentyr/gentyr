@@ -100,9 +100,9 @@ export const RunTestsArgsSchema = z.object({
   timeout: z.coerce.number()
     .int()
     .min(30000)
-    .max(600000)
+    .max(1800000)
     .optional()
-    .describe('Per-test timeout in milliseconds (30s-600s). If omitted, uses Playwright config default.'),
+    .describe('Per-test timeout in milliseconds (30s-1800s). If omitted, uses Playwright config default.'),
 });
 
 export const SeedDataArgsSchema = z.object({});
@@ -245,8 +245,8 @@ export const RunDemoArgsSchema = z.object({
     .refine(v => !v.startsWith('/') && !v.includes('..'), 'test_file must be a relative path without ".." traversal')
     .optional()
     .describe('Relative path to a specific test file (e.g., e2e/demo/onboarding.demo.ts). When provided, only this file runs.'),
-  timeout: z.coerce.number().int().min(30000).max(600000).optional().default(120000)
-    .describe('Per-test timeout in milliseconds (30s-600s, default 120s)'),
+  timeout: z.coerce.number().int().min(30000).max(1800000).optional().default(1800000)
+    .describe('Per-test timeout in milliseconds (30s-1800s, default 30min). Remote Fly.io demos need time for install + build + test execution.'),
   recorded: z.coerce.boolean().optional().default(true)
     .describe('Capture video recording of the demo (default: true). When true, runs headed with window recording (ScreenCaptureKit locally, Xvfb+ffmpeg remotely). When false, runs headless without recording. This is the primary flag — use this instead of headless/skip_recording.'),
   headless: z.coerce.boolean().optional()
@@ -512,8 +512,8 @@ export const RunDemoBatchArgsSchema = z.object({
     .describe('Run in headless mode (default: true). Set false for watchable demos.'),
   slow_mo: z.coerce.number().int().min(0).max(5000).optional().default(0)
     .describe('Milliseconds between actions (default: 0 for batch, 800 for sessions).'),
-  timeout: z.coerce.number().int().min(30000).max(600000).optional().default(120000)
-    .describe('Per-test timeout in milliseconds (default: 120s).'),
+  timeout: z.coerce.number().int().min(30000).max(1800000).optional().default(1800000)
+    .describe('Per-test timeout in milliseconds (default: 30min).'),
   stop_on_failure: z.coerce.boolean().optional().default(false)
     .describe('Stop the entire batch run if any scenario fails.'),
   scenario_ids: z.array(z.string()).optional()
