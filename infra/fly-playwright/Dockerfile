@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
     libcairo2 libasound2 libwayland-client0 \
     # Recording (Xvfb + ffmpeg) and utilities
-    xvfb ffmpeg jq git curl \
+    xvfb ffmpeg unclutter jq git curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pnpm globally
