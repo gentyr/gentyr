@@ -1125,6 +1125,9 @@ function buildDemoEnv(opts: {
   extra_env?: Record<string, string>;
   progress_file?: string;
   dev_server_ready?: boolean;
+  run_id?: string;
+  telemetry?: boolean;
+  telemetry_dir?: string;
 }): Record<string, string> {
   const env: Record<string, string> = { ...process.env as Record<string, string> };
 
@@ -1153,6 +1156,9 @@ function buildDemoEnv(opts: {
   }
 
   if (opts.progress_file) env.DEMO_PROGRESS_FILE = opts.progress_file;
+  if (opts.run_id) env.DEMO_RUN_ID = opts.run_id;
+  if (opts.telemetry) env.DEMO_TELEMETRY = '1';
+  if (opts.telemetry_dir) env.DEMO_TELEMETRY_DIR = opts.telemetry_dir;
   if (opts.slow_mo !== undefined) env.DEMO_SLOW_MO = String(opts.slow_mo);
   if (opts.headless) env.DEMO_HEADLESS = '1';
   if (opts.base_url) env.PLAYWRIGHT_BASE_URL = opts.base_url;
@@ -1179,6 +1185,17 @@ function buildDemoEnv(opts: {
       env.NODE_OPTIONS = ((env.NODE_OPTIONS || '') + ` --import "${autoSetupPath}"`).trim();
     }
   } catch { /* auto-setup not available — skip */ }
+
+  // Auto-inject browser telemetry capture via --import (when telemetry enabled)
+  if (opts.telemetry) {
+    const telemetrySetupPath = path.resolve(PROJECT_DIR, '.claude/hooks/lib/playwright-telemetry-setup.mjs');
+    try {
+      fs.accessSync(telemetrySetupPath);
+      if (!(env.NODE_OPTIONS || '').includes('playwright-telemetry-setup')) {
+        env.NODE_OPTIONS = ((env.NODE_OPTIONS || '') + ` --import "${telemetrySetupPath}"`).trim();
+      }
+    } catch { /* telemetry setup not available — skip */ }
+  }
 
   // Apply extra_env last — may override explicit demo vars (same as original inline behavior)
   if (opts.extra_env) {
@@ -2343,7 +2360,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       if (fs.existsSync(feedbackDbPath)) {
         const feedbackDb = new Database(feedbackDbPath, { readonly: true });
         try {
-          const row = feedbackDb.prepare('SELECT env_vars, test_file FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { env_vars: string | null; test_file: string | null } | undefined;
+          const row = feedbackDb.prepare('SELECT env_vars, test_file, telemetry FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { env_vars: string | null; test_file: string | null; telemetry: number | null } | undefined;
           if (row?.env_vars) {
             try { scenarioEnvVars = JSON.parse(row.env_vars); } catch { /* invalid JSON */ }
           }
@@ -2390,6 +2407,34 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   const progressId = crypto.randomBytes(4).toString('hex');
   const progressFilePath = path.join(PROJECT_DIR, '.claude', 'state', `demo-progress-${progressId}.jsonl`);
 
+  // Generate unique run ID for telemetry correlation (always, even without telemetry mode)
+  const scenarioSlug = (args.scenario_id || 'adhoc').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 30);
+  const runId = `dr-${scenarioSlug}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+
+  // Resolve telemetry flag: explicit run_demo param overrides scenario-level setting
+  let scenarioTelemetry = false;
+  if (args.scenario_id) {
+    try {
+      const feedbackDbPath = getUserFeedbackDbPath();
+      if (fs.existsSync(feedbackDbPath)) {
+        const tmpDb = new Database(feedbackDbPath, { readonly: true });
+        try {
+          const tRow = tmpDb.prepare('SELECT telemetry FROM demo_scenarios WHERE id = ?').get(args.scenario_id) as { telemetry: number | null } | undefined;
+          scenarioTelemetry = tRow?.telemetry === 1;
+        } catch { /* column may not exist yet */ }
+        tmpDb.close();
+      }
+    } catch { /* non-fatal */ }
+  }
+  const telemetryEnabled = args.telemetry || scenarioTelemetry;
+
+  // Prepare telemetry directory when enabled
+  let telemetryDir: string | undefined;
+  if (telemetryEnabled) {
+    telemetryDir = path.join(PROJECT_DIR, '.claude', 'recordings', 'demos', args.scenario_id || 'adhoc', 'telemetry');
+    fs.mkdirSync(telemetryDir, { recursive: true });
+  }
+
   let env: Record<string, string>;
   try {
     env = buildDemoEnv({
@@ -2399,6 +2444,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       trace: args.trace,
       extra_env: Object.keys(mergedExtraEnv).length > 0 ? mergedExtraEnv : undefined,
       progress_file: progressFilePath,
+      run_id: runId,
+      telemetry: telemetryEnabled,
+      telemetry_dir: telemetryDir,
       dev_server_ready: devServer.ready,
     });
   } catch (err) {
@@ -3216,6 +3264,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       progress_file: progressFilePath,
       scenario_id: args.scenario_id,
       success_pause_ms: args.headless ? 0 : (args.success_pause_ms ?? 0),
+      run_id: runId,
+      telemetry_dir: telemetryDir,
     };
     if (windowRecorder) {
       demoState.window_recorder_pid = windowRecorder.pid;
@@ -3605,6 +3655,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           test_file: effectiveTestFile,
           execution_target: executionTargetResult?.target ?? 'local',
           execution_target_reason: executionTargetResult?.reason ?? 'Local execution (no remote routing attempted)',
+          run_id: runId,
         };
       }
 
@@ -3700,6 +3751,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       ...(recordingPermissionError ? { recording_permission_error: recordingPermissionError } : {}),
       execution_target: executionTargetResult?.target ?? 'local',
       execution_target_reason: executionTargetResult?.reason ?? 'Local execution (no remote routing attempted)',
+      run_id: runId,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -4673,8 +4725,31 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     failure_frames: failureFramesFinal,
     analysis_guidance: analysisGuidanceFinal,
     ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
+    run_id: entry.run_id,
+    telemetry_dir: entry.telemetry_dir,
+    telemetry_summary: entry.telemetry_dir ? readTelemetrySummaryLocal(entry.telemetry_dir) : undefined,
     message,
   };
+}
+
+function readTelemetrySummaryLocal(dir: string): { console_count: number; network_count: number; error_count: number; perf_entries: number; metric_samples: number } | undefined {
+  try {
+    if (!fs.existsSync(dir)) return undefined;
+    const countLines = (file: string): number => {
+      try {
+        const p = path.join(dir, file);
+        if (!fs.existsSync(p)) return 0;
+        return fs.readFileSync(p, 'utf8').split('\n').filter(l => l.trim()).length;
+      } catch { return 0; }
+    };
+    return {
+      console_count: countLines('console-logs.jsonl'),
+      network_count: countLines('network-log.jsonl'),
+      error_count: countLines('js-errors.jsonl'),
+      perf_entries: countLines('performance-metrics.jsonl'),
+      metric_samples: countLines('system-metrics.jsonl'),
+    };
+  } catch { return undefined; }
 }
 
 /**

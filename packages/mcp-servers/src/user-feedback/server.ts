@@ -439,6 +439,12 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     } catch {
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN dual_instance INTEGER NOT NULL DEFAULT 0");
     }
+    // Auto-migration: add telemetry column to demo_scenarios if missing
+    try {
+      db.prepare("SELECT telemetry FROM demo_scenarios LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE demo_scenarios ADD COLUMN telemetry INTEGER NOT NULL DEFAULT 0");
+    }
 
     // Auto-migration: create demo_prerequisites table if missing
     try {
@@ -497,6 +503,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         CREATE INDEX IF NOT EXISTS idx_demo_results_scenario ON demo_results(scenario_id);
         CREATE INDEX IF NOT EXISTS idx_demo_results_completed ON demo_results(completed_at);
       `);
+    }
+
+    // Auto-migration: add run_id column to demo_results if missing
+    try {
+      db.prepare("SELECT run_id FROM demo_results LIMIT 0").run();
+    } catch {
+      try { db.exec("ALTER TABLE demo_results ADD COLUMN run_id TEXT"); } catch { /* table may not exist yet */ }
     }
 
     // Migration: Convert any existing INTEGER timestamps to ISO 8601 TEXT (G005)
@@ -598,6 +611,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       remote_eligible: record.remote_eligible === 1,
       stealth_required: record.stealth_required === 1,
       dual_instance: record.dual_instance === 1,
+      telemetry: record.telemetry === 1,
       created_at: record.created_at,
       updated_at: record.updated_at,
       persona_name: personaName,
@@ -1472,8 +1486,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     try {
       db.prepare(`
-        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, stealth_required, dual_instance, created_at, created_timestamp, updated_at, env_vars)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, stealth_required, dual_instance, telemetry, created_at, created_timestamp, updated_at, env_vars)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         args.persona_id,
@@ -1487,6 +1501,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         args.remote_eligible ? 1 : 0,
         args.stealth_required ? 1 : 0,
         args.dual_instance ? 1 : 0,
+        args.telemetry ? 1 : 0,
         created_at,
         created_timestamp,
         created_at,
@@ -1540,6 +1555,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.remote_eligible !== undefined) { updates.push('remote_eligible = ?'); params.push(args.remote_eligible ? 1 : 0); }
     if (args.stealth_required !== undefined) { updates.push('stealth_required = ?'); params.push(args.stealth_required ? 1 : 0); }
     if (args.dual_instance !== undefined) { updates.push('dual_instance = ?'); params.push(args.dual_instance ? 1 : 0); }
+    if (args.telemetry !== undefined) { updates.push('telemetry = ?'); params.push(args.telemetry ? 1 : 0); }
     if (args.env_vars !== undefined) {
       if (args.env_vars === null) {
         updates.push('env_vars = ?'); params.push(null);

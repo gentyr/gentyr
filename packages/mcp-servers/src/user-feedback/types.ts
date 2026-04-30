@@ -384,6 +384,8 @@ export const CreateScenarioArgsSchema = z.object({
     .describe('Whether this scenario requires a stealth cloud browser (Steel.dev). Stealth scenarios bypass bot detection via residential proxies and undetectable Chromium. Fail-closed: errors if Steel not configured.'),
   dual_instance: z.coerce.boolean().optional().default(false)
     .describe('Whether this scenario requires dual-instance mode (Fly.io + Steel in parallel). Fly.io runs Playwright; Steel provides the stealth browser connected via bridge.'),
+  telemetry: z.coerce.boolean().optional().default(false)
+    .describe('Enable maximum telemetry capture for this scenario.'),
 });
 
 export const UpdateScenarioArgsSchema = z.object({
@@ -408,6 +410,8 @@ export const UpdateScenarioArgsSchema = z.object({
     .describe('Whether this scenario requires a stealth cloud browser (Steel.dev).'),
   dual_instance: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
     .describe('Whether this scenario requires dual-instance mode (Fly.io + Steel).'),
+  telemetry: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
+    .describe('Enable/disable maximum telemetry capture for this scenario.'),
 });
 
 export const DeleteScenarioArgsSchema = z.object({
@@ -447,6 +451,7 @@ export interface ScenarioRecord {
   remote_eligible: number; // SQLite boolean (0/1)
   stealth_required: number; // SQLite boolean (0/1)
   dual_instance: number; // SQLite boolean (0/1)
+  telemetry: number; // SQLite boolean (0/1)
   created_at: string;
   created_timestamp: string;
   updated_at: string;
@@ -469,6 +474,7 @@ export interface ScenarioResult {
   remote_eligible: boolean;
   stealth_required: boolean;
   dual_instance: boolean;
+  telemetry: boolean;
   created_at: string;
   updated_at: string;
   persona_name?: string;

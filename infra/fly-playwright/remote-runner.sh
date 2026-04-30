@@ -59,6 +59,11 @@ cleanup() {
     kill "$XVFB_PID" 2>/dev/null || true
   fi
 
+  # 2b. Stop system metrics poller
+  if [[ -n "${METRICS_PID:-}" ]]; then
+    kill "$METRICS_PID" 2>/dev/null || true
+  fi
+
   # 3. Copy whatever artifacts exist (even partial logs from early failures)
   log "Copying available artifacts..."
   for DIR in test-results playwright-report; do
@@ -71,6 +76,10 @@ cleanup() {
   fi
   # Copy any Playwright CDP .webm videos not already inside test-results/
   find /app/project -name "*.webm" -not -path "*/node_modules/*" -exec cp {} /app/.artifacts/ \; 2>/dev/null || true
+  # Copy telemetry JSONL files if telemetry was enabled
+  if [[ -d "/app/project/.claude/recordings/demos" ]]; then
+    find /app/project/.claude/recordings/demos -path "*/telemetry/*.jsonl" -exec sh -c 'mkdir -p /app/.artifacts/telemetry && cp "$1" /app/.artifacts/telemetry/' _ {} \; 2>/dev/null || true
+  fi
 
   # 4. Write exit code AFTER artifacts are fully copied — the MCP polling loop
   #    uses .artifacts-ready as the pull trigger, but .exit-code is still needed
@@ -91,9 +100,11 @@ cleanup() {
 trap cleanup EXIT
 
 log "Starting remote Playwright runner"
-log "  GIT_REMOTE : $GIT_REMOTE"
-log "  GIT_REF    : $GIT_REF"
-log "  TEST_FILE  : $TEST_FILE"
+log "  GIT_REMOTE    : $GIT_REMOTE"
+log "  GIT_REF       : $GIT_REF"
+log "  TEST_FILE     : $TEST_FILE"
+log "  DEMO_RUN_ID   : ${DEMO_RUN_ID:-<not set>}"
+log "  DEMO_TELEMETRY: ${DEMO_TELEMETRY:-0}"
 
 # ---------------------------------------------------------------------------
 # Configure git credential helper for private repos
@@ -324,6 +335,27 @@ else
 fi
 
 log "Progress file: $PROGRESS_FILE"
+
+# ---------------------------------------------------------------------------
+# System metrics poller (when telemetry enabled)
+# ---------------------------------------------------------------------------
+METRICS_PID=""
+if [[ "${DEMO_TELEMETRY:-}" == "1" ]]; then
+  TELEMETRY_DIR="${DEMO_TELEMETRY_DIR:-/app/.artifacts/telemetry}"
+  mkdir -p "$TELEMETRY_DIR"
+  log "Starting system metrics poller (interval: 2s) -> $TELEMETRY_DIR/system-metrics.jsonl"
+  (while true; do
+    MEM_INFO=$(free -m 2>/dev/null || echo "")
+    MEM_TOTAL=$(echo "$MEM_INFO" | awk '/Mem/{print $2}')
+    MEM_USED=$(echo "$MEM_INFO" | awk '/Mem/{print $3}')
+    MEM_FREE=$(echo "$MEM_INFO" | awk '/Mem/{print $7}')
+    CPU_PCT=$(top -bn1 2>/dev/null | grep 'Cpu(s)' | awk '{print $2}' || echo "0")
+    LOAD=$(cat /proc/loadavg 2>/dev/null | awk '{print $1","$2","$3}' || echo "0,0,0")
+    echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"type\":\"system_metrics\",\"run_id\":\"${DEMO_RUN_ID:-unknown}\",\"system\":{\"cpu_percent\":${CPU_PCT:-0},\"mem_used_mb\":${MEM_USED:-0},\"mem_total_mb\":${MEM_TOTAL:-0},\"mem_free_mb\":${MEM_FREE:-0},\"load_avg\":[${LOAD}]}}" >> "$TELEMETRY_DIR/system-metrics.jsonl" 2>/dev/null
+    sleep 2
+  done) &
+  METRICS_PID=$!
+fi
 
 # ---------------------------------------------------------------------------
 # Run Playwright tests (with stall-detection watchdog)

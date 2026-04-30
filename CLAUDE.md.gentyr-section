@@ -164,6 +164,28 @@ The `guiding_prompt` on a profile steers the product-manager agent's market rese
 - When `progress.has_failures` is true, call `stop_demo` to abort remaining tests and escalate immediately
 - Poll `check_demo_result` every 10 seconds (not 30) for faster failure detection
 - The progress reporter writes JSONL events to a temp file consumed by `check_demo_result`
+- Every demo run gets a unique `run_id` (format: `dr-{scenarioId}-{ts}-{hex}`) returned in `run_demo` and `check_demo_result` responses
+
+**Demo Telemetry (Maximum Capture Mode):**
+
+Enable per-scenario (`update_demo_scenario({ id: "...", telemetry: true })`) or per-run (`run_demo({ ..., telemetry: true })`). When enabled, captures:
+- Browser console logs from ALL open tabs (log/warn/error/info/debug)
+- Network requests and responses (method, URL, status, timing, headers)
+- JavaScript errors and unhandled exceptions with full stack traces
+- Performance metrics (Web Vitals: LCP, FCP, CLS, TTFB, navigation timing)
+- System metrics (CPU%, memory, load averages) sampled every 2 seconds
+- Full stdout/stderr capture
+
+Telemetry files: `.claude/recordings/demos/{scenarioId}/telemetry/*.jsonl`
+`check_demo_result` returns `telemetry_summary` with counts of each telemetry type.
+
+**Querying demo telemetry via Elastic** (`mcp__elastic-logs__query_logs`):
+- All telemetry for a run: `demo.run_id:"dr-xxx"`
+- Console errors only: `demo.run_id:"dr-xxx" AND telemetry_type:console AND level:error`
+- Network failures: `demo.run_id:"dr-xxx" AND telemetry_type:network_response AND status:>=400`
+- JavaScript errors: `demo.run_id:"dr-xxx" AND telemetry_type:js_error`
+- System metrics: `demo.run_id:"dr-xxx" AND telemetry_type:system_metrics`
+- Performance: `demo.run_id:"dr-xxx" AND telemetry_type:performance`
 
 **Demo Dev Server Management (AUTOMATED -- No Manual Steps):**
 
