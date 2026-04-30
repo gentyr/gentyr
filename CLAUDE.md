@@ -458,6 +458,34 @@ New tasks created by non-privileged agents enter `pending_review` status and are
 
 **Race condition prevention**: `urgent-task-spawner.js` (Universal Task Spawner v2.0.0) checks concurrency limits on the input side; `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
 
+## Universal Audit Gate System
+
+Non-exempt task completions are independently audited to verify that work was genuinely completed before the task is marked `completed`. This is separate from the plan-level verification audit gate (which uses `plan-auditor`) — the Universal Audit Gate covers todo-db tasks and persistent tasks.
+
+**Trigger**: When `create_task` or `activate_persistent_task` includes `gate_success_criteria` and `gate_verification_method` fields, the audit gate is armed. On completion, `universal-audit-spawner.js` intercepts the completion call, transitions the task to `pending_audit`, and enqueues an independent `universal-auditor` agent in the `audit` session lane.
+
+**Task state extension**: `pending_audit` status added between `in_progress` and `completed`. Tasks in `pending_audit` cannot be re-completed or modified by the original agent. The `gate-confirmation-enforcer.js` PreToolUse hook blocks any `complete_task` or `complete_persistent_task` call while `pending_audit` is active.
+
+**Universal Auditor agent** (`agents/universal-auditor.md`): Sonnet-tier. Runs in the `audit` lane (signal-excluded, 5-min TTL). Reads the `gate_success_criteria` and `gate_verification_method` from its prompt, executes the verification steps against actual artifacts (files, git state, test output, PR status, demo results), and renders exactly one verdict:
+- `task_audit_pass` / `pt_audit_pass` — task transitions `pending_audit → completed`, normal cascade runs
+- `task_audit_fail` / `pt_audit_fail` — task reverts to `in_progress` with failure reason injected into the next spawn prompt
+
+**Routing by task type**: `universal-auditor` uses `get_task` + `task_audit_pass`/`task_audit_fail` for todo-db tasks, and `get_persistent_task` + `pt_audit_pass`/`pt_audit_fail` for persistent tasks. Plan task audits continue to use the `plan-auditor` agent and its own tool set.
+
+**Gate-exempt categories**: Triage & Delegation, Project Management, and Workstream Management categories complete directly without audit (their work is coordination, not deliverable artifacts).
+
+**Signal compliance gate**: The `signal-compliance-gate.js` PreToolUse hook validates all inter-agent signals via `send_session_signal` against a registered schema before delivery. Directive signals (requiring acknowledgment) MUST be acknowledged before the receiving agent can complete its task — enforced by `signal-reader.js` tracking.
+
+## Global Deputy-CTO Monitor
+
+An optional persistent deputy-CTO session operating in continuous alignment monitoring mode. When spawned with `GENTYR_DEPUTY_CTO_MONITOR=true` in its environment, the deputy-CTO runs a 5-minute polling loop: enumerates active tasks and persistent tasks, dispatches user-alignment sub-agents in the `alignment` session lane (sub-limit: 3 concurrent) to verify work matches CTO intent before code is written, reads alignment results, sends corrective signals to drifting agents, detects zombies (sessions alive >2h with no recent tool calls), and oversees stuck audit gates.
+
+**Escalation framework**: Signals for minor drift (~50%), self-created correction tasks for moderate misalignment (~35%), and `submit_bypass_request` on the affected task for significant drift or systemic issues (~15%).
+
+**Bootstrap**: Create a persistent task with `metadata: { "task_type": "global_monitor", "do_not_complete": true }` and env `GENTYR_DEPUTY_CTO_MONITOR=true`. The `alignment-monitor-briefing.js` PostToolUse hook automatically delivers cross-session alignment summaries to the monitor session on each tool call.
+
+**Signal throttling**: Max 1 signal per agent per 30 minutes. If >5 signals are firing per hour, the monitor self-pauses and escalates a diagnostic report to the CTO.
+
 ## Task Category System
 
 Task categories replace the legacy hardcoded `section` routing. A category defines an agent pipeline (ordered sequence of sub-agent types), prompt template, model tier, creator restrictions, and urgency authorization — all stored in `todo.db` and editable at runtime without code changes.
@@ -1281,8 +1309,8 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 80 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
-| 2. Agent Definitions | 20 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
+| 1. Hooks | 86 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 2. Agent Definitions | 21 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
@@ -1305,7 +1333,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 ### Hooks by Lifecycle Phase
 
-#### PreToolUse (15 hooks — BLOCK dangerous actions)
+#### PreToolUse (17 hooks — BLOCK dangerous actions)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1324,8 +1352,10 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | protected-action-gate.js | `mcp__*` | Block protected MCP actions; store as deferred action for spawned agents |
 | staging-lock-guard.js | `Bash` | Block staging merges (gh pr merge, git push, git merge) when staging is locked for a production release |
 | worktree-sync-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block `gentyr sync` when CWD is inside a worktree (sync destroys the worktree directory) |
+| gate-confirmation-enforcer.js | `mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task` | Block task completion while `pending_audit` is active; prevents bypassing the audit gate |
+| signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |
 
-#### PostToolUse (30 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (34 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1360,6 +1390,8 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | context-pressure-hook.js | `""` (all) | Monitor spawned-agent context window size and session age; nudge at configurable tiers; call `request_self_compact` at critical threshold |
 | release-artifact-collector.js | `complete_task,summarize_work` | Archive session transcripts to release artifact directory when GENTYR_RELEASE_ID is set |
 | release-completion-hook.js | `complete_persistent_task` | On release plan-manager completion: unlock staging, generate report, emit audit event, broadcast signal |
+| universal-audit-spawner.js | `complete_task,update_task_progress,complete_persistent_task` | Fire on task completion; when `gate_success_criteria` / `verification_strategy` set, transition to `pending_audit` and enqueue Haiku auditor in `audit` lane |
+| alignment-monitor-briefing.js | `""` (all) | Deliver cross-session alignment violation summaries to active deputy-CTO monitor sessions |
 
 #### SessionStart (9 hooks — set initial context)
 
@@ -1432,7 +1464,7 @@ Key modules consumed by hooks:
 - `cto-approval-proof.js` — CTO release approval cryptographic proof: `verifyQuoteInJsonl` (line-by-line JSONL scan for verbatim quote), `computeApprovalHmac` (HMAC-SHA256 with `cto-release-approval` domain separator), `verifyApprovalHmac` (constant-time verification), `computeFileHash` (SHA-256), `findCurrentSessionJsonl` (session discovery — encodes project path by replacing all non-alphanumeric chars with dashes to match canonical `~/.claude/projects/` directory naming). Consumed by `record_cto_approval` tool on release-ledger server. **TOCTOU defense**: `record_cto_approval` copies the live JSONL to a stable snapshot first, then verifies the quote and hashes the snapshot (not the live file), ensuring the archived hash matches the verified content. **Spawned-session guard**: `record_cto_approval` blocks `CLAUDE_SPAWNED_SESSION=true` sessions — only interactive CTO sessions can sign off releases. **`approval_text` minimum**: 10 characters (enforced by Zod schema) to ensure a substantive audit trail
 - `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
 
-### Agent Definitions (20 shared)
+### Agent Definitions (21 shared)
 
 | Agent | Model | Purpose | Key Constraints |
 |-------|-------|---------|----------------|
@@ -1442,11 +1474,12 @@ Key modules consumed by hooks:
 | project-manager | sonnet | Git operations | ONLY agent that commits, pushes, creates PRs, self-merges |
 | investigator | opus | Research/diagnose | Read-only, no worktree needed |
 | user-alignment | sonnet | Verify user intent | Read-only auditor, no file edits |
-| deputy-cto | opus | Triage/escalation | Review promotion PRs, manage task queue |
+| deputy-cto | opus | Triage/escalation | Review promotion PRs, manage task queue; can operate as global alignment monitor |
 | persistent-monitor | opus | Long-running orchestrator | Never edits files, spawns sub-agents via create_task |
 | plan-manager | opus | Plan execution | Spawns persistent tasks for plan steps |
 | plan-updater | haiku | Sync plan substeps | Lightweight, completes in <30s |
 | plan-auditor | sonnet | Verify plan task completion | Independent, 5-min TTL, audit lane |
+| universal-auditor | sonnet | Verify todo-db and persistent task completion | Independent, 5-min TTL, audit lane, signal-excluded; does NOT audit plan tasks |
 | demo-manager | sonnet | Demo lifecycle | Only agent that creates/modifies .demo.ts files |
 | feedback-agent | sonnet | User persona testing | No source code access |
 | product-manager | opus | PMF analysis | External research only |
