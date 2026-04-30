@@ -271,6 +271,8 @@ export const RunDemoArgsSchema = z.object({
     ),
   remote: z.coerce.boolean().optional().default(true)
     .describe('Run on remote Fly.io machine (default: true). Auto-routes to Fly.io when configured. Pass false to force local execution.'),
+  telemetry: z.coerce.boolean().optional().default(false)
+    .describe('Enable maximum telemetry capture (browser console/network/errors/performance + system metrics). Overrides scenario-level telemetry setting when true. Telemetry data is stored as JSONL files alongside demo artifacts and shipped to Elastic with the run ID.'),
 });
 
 export type RunDemoArgs = z.infer<typeof RunDemoArgsSchema>;
@@ -288,6 +290,7 @@ export interface RunDemoResult {
   execution_target_reason?: string;
   fly_machine_id?: string;
   steel_session_id?: string;
+  run_id?: string;
 }
 
 export const CheckDemoResultArgsSchema = z.object({
@@ -358,6 +361,9 @@ export interface CheckDemoResultResult {
   steel_recording_path?: string;
   /** Fly.io recording path (test orchestration view) for dual-instance scenarios */
   fly_recording_path?: string;
+  run_id?: string;
+  telemetry_dir?: string;
+  telemetry_summary?: { console_count: number; network_count: number; error_count: number; perf_entries: number; metric_samples: number };
   message: string;
 }
 
@@ -410,6 +416,8 @@ export interface DemoRunState {
   execution_target?: 'local' | 'remote' | 'steel';
   /** Runtime-only — prevents double DB writes to demo_results */
   result_persisted?: boolean;
+  run_id?: string;
+  telemetry_dir?: string;
 }
 
 export interface StopDemoResult {
