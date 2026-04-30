@@ -159,6 +159,7 @@ export const AUTOMATION_TOGGLE_KEYS = [
   'staleTaskCleanupEnabled',
   'orphanProcessReaperEnabled',
   'staleWorkDetectorEnabled',
+  'previewPromotionEnabled',
 ] as const;
 
 export type AutomationToggleKey = typeof AUTOMATION_TOGGLE_KEYS[number];
