@@ -107,6 +107,17 @@ export function createPromotionDir(promotionId, projectDir = PROJECT_DIR) {
  * @param {string} data.created_at - ISO timestamp when promotion started.
  * @param {string|null} data.completed_at - ISO timestamp when promotion completed.
  * @param {number|null} data.duration_seconds - Total promotion duration in seconds.
+ * @param {object} [data.deploy_artifact] - Deployment artifact details from deploy-verifier.
+ * @param {string} [data.deploy_artifact.platform] - Deployment platform ('vercel' | 'render').
+ * @param {string} [data.deploy_artifact.deploy_id] - Platform-specific deployment ID.
+ * @param {string} [data.deploy_artifact.deploy_url] - Deployment URL (if available).
+ * @param {string} [data.deploy_artifact.commit_sha] - Commit SHA the deployment was built from.
+ * @param {string} [data.deploy_artifact.status] - Deployment status ('READY', 'live', etc).
+ * @param {string} [data.deploy_artifact.deploy_ready_at] - ISO timestamp when deployment became ready.
+ * @param {number} [data.deploy_artifact.build_duration_seconds] - Build duration (if available).
+ * @param {object} [data.post_deploy_verification] - Post-deploy smoke test results.
+ * @param {boolean} [data.post_deploy_verification.verified] - Whether the smoke test passed.
+ * @param {object} [data.post_deploy_verification.smokeTest] - Smoke test details (url, healthy, statusCode, responseTimeMs).
  * @param {string} [projectDir] - Project root directory.
  * @returns {string} Absolute path to the written manifest file.
  * @throws {Error} If promotionId or data is invalid, or write fails.
