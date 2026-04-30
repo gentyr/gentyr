@@ -106,6 +106,31 @@ You are the ONLY agent responsible for committing, pushing, merging, and cleanin
 ### Merge Protocol (MANDATORY -- do this IMMEDIATELY after committing)
 
 5. Push: `git push -u origin HEAD`
+
+### Pre-Merge Test Gate
+
+After pushing but BEFORE creating the PR, run the pre-merge quality gate:
+
+1. Run the test runner:
+   ```bash
+   node "$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })/.claude/hooks/lib/pre-merge-test-runner.js"
+   ```
+
+2. Parse the JSON output. Check the `verdict` field:
+   - `"passed"` — Proceed to PR creation
+   - `"passed_with_warnings"` — Proceed, but note the warnings in the PR body
+   - `"skipped"` — Proceed (pre-merge tests disabled in config)
+   - `"failed"` — **DO NOT create the PR.** Report the failures:
+     - List each failure name and error from the `failures` array
+     - Call `summarize_work` with status explaining which tests failed
+     - Exit without creating the PR or merging
+
+3. Include test results in the PR body:
+   ```
+   Tests: {passed} passed, {failed} failed, {skipped} skipped of {total} total
+   ```
+   If there are warnings (non-scoped failures), note them as informational.
+
 6. Create PR: `gh pr create --base preview --head "$(git branch --show-current)" --title "<title>" --body "<summary>"`
 7. Self-merge IMMEDIATELY: `gh pr merge <number> --squash --delete-branch`
    - Do NOT wait for review. Do NOT create a deputy-CTO task. Merge NOW.
