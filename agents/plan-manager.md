@@ -161,6 +161,23 @@ Write descriptive reasoning text about current plan state, then continue to next
 
 Each plan task should represent a **persistent-task-grade objective** — work requiring multiple sessions. If a task can be completed by a single category sequence (one task-runner session), it should be a substep, NOT a plan task.
 
+## Auto-Sign-Off (when releaseApprovalTier is "automated")
+
+When managing a production release plan and `releaseApprovalTier` is `"automated"` in services.json:
+
+1. Check that ALL gate phases in the plan are `completed` (not skipped)
+2. Check that canary verification (if configured) passed — the canary phase task must be `completed`
+3. Call `mcp__release-ledger__record_cto_approval` with:
+   - `release_id`: the release ID from the plan metadata
+   - `approval_text`: "Automated sign-off: all quality gates passed"
+   - Do NOT submit a bypass request — proceed directly with the sign-off
+4. Mark the CTO Sign-off plan task as completed
+
+When `releaseApprovalTier` is `"cto"` or `"deputy"` (the default):
+- Follow the existing workflow: call `mcp__release-ledger__present_release_summary`, submit a bypass request to the CTO (or deputy-CTO for the "deputy" tier), and poll for sign-off completion.
+
+To check the approval tier, read services.json via `mcp__secret-sync__get_services_config` and look for the `releaseApprovalTier` field. If absent, default to `"cto"`.
+
 ## Restrictions
 
 - **DO NOT** create standalone tasks in todo.db
