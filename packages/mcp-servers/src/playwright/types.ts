@@ -364,6 +364,8 @@ export interface CheckDemoResultResult {
   run_id?: string;
   telemetry_dir?: string;
   telemetry_summary?: { console_count: number; network_count: number; error_count: number; perf_entries: number; metric_samples: number };
+  /** Warning emitted when a running demo has not been polled for an extended period */
+  stale_warning?: string;
   message: string;
 }
 
@@ -416,6 +418,8 @@ export interface DemoRunState {
   execution_target?: 'local' | 'remote' | 'steel';
   /** Runtime-only — prevents double DB writes to demo_results */
   result_persisted?: boolean;
+  /** Runtime-only — epoch ms of last check_demo_result poll. Used for stale demo warnings. */
+  last_polled_at?: number;
   run_id?: string;
   telemetry_dir?: string;
 }

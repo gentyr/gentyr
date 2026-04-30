@@ -385,6 +385,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/alignment-monitor-briefing.js",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/stale-demo-warning.js",
+            "timeout": 3
           }
         ]
       },
