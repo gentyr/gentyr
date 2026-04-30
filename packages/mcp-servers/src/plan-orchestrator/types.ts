@@ -41,7 +41,10 @@ const InlineTaskSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().optional(),
   agent_type: z.string().optional(),
+  category_id: z.string().optional().describe('Category ID for task routing'),
   verification_strategy: z.string().optional(),
+  create_todo: z.boolean().optional().default(false).describe('Create a linked todo-db task for this plan task'),
+  todo_section: z.string().optional().default('GENERAL').describe('Legacy section for todo-db task routing'),
   substeps: z.array(InlineSubstepSchema).optional(),
 });
 
