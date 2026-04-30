@@ -268,6 +268,13 @@ export const ServicesConfigSchema = z.object({
     .describe('Named test scope profiles for vertical slice deployment gating. Each scope defines patterns that classify which tests are "in scope" for push/promotion gating.'),
   activeTestScope: z.string().nullable().optional()
     .describe('Active scope name from testScopes. Only scoped test failures block push; non-scoped failures produce warnings. null or absent = full suite gates (default behavior).'),
+  preMergeTestCommand: z.string().optional().describe(
+    'Override the default test command (pnpm test:unit --reporter=json) for pre-merge testing. ' +
+    'The command should output JSON in Jest/Vitest format for structured result parsing.'
+  ),
+  preMergeTestEnabled: z.boolean().optional().describe(
+    'Set to false to disable pre-merge testing. Default: true (tests run before every PR creation).'
+  ),
   distVerification: z.array(z.object({
     srcGlob: z.string().describe('Glob pattern for source files (e.g., "apps/extension/src/**")'),
     distPath: z.string().describe('Path to compiled artifact to verify (e.g., "apps/extension/dist-proxy-chrome/background.js")'),
