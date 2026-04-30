@@ -1323,7 +1323,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 86 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 87 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 21 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
@@ -1369,7 +1369,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | gate-confirmation-enforcer.js | `mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task` | Block task completion while `pending_audit` is active; prevents bypassing the audit gate |
 | signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |
 
-#### PostToolUse (34 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (35 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1388,6 +1388,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | task-gate-spawner.js | `create_task` | Spawn gate agent for pending_review tasks |
 | workstream-spawner.js | `create_task` | Auto-spawn workstream tasks |
 | persistent-task-linker.js | `create_task` | Auto-link sub-tasks to persistent tasks |
+| orchestration-guidance-hook.js | `create_task` | Analyze task complexity; nudge CTO toward parallel tasks, persistent tasks, or plans when complexity signals detected |
 | project-manager-reminder.js | `summarize_work` | Remind to spawn project-manager |
 | worktree-cleanup-gate.js | `summarize_work` | Remind to clean up worktree |
 | plan-work-tracker.js | `summarize_work` | Record work against plan tasks |
