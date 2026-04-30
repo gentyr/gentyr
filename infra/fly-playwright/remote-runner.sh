@@ -440,39 +440,58 @@ PLAYWRIGHT_PID=$!
 # recording minutes of blank Xvfb desktop.
 # ---------------------------------------------------------------------------
 if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID" ]]; then
+  # Remove stale signal from a previous run
+  rm -f /tmp/.demo-automation-ready
+
   (
-    # Poll for Chrome window (up to 5 minutes)
+    # Wait for the demo fixture to signal that automation is about to begin.
+    # The vendorPage fixture writes /tmp/.demo-automation-ready after the
+    # dashboard loads and just before handing the page to the test body.
+    # Falls back to Chrome window detection, then to a 5-minute timeout.
     WAIT_START=$(date +%s)
-    while kill -0 "$PLAYWRIGHT_PID" 2>/dev/null; do
-      # xdotool search returns 0 when a matching window is found
-      if xdotool search --name "Chrom" >/dev/null 2>&1; then
-        sleep 1  # Give Chrome a moment to render its first frame
-        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Chrome window detected — starting ffmpeg recording" >&2
-        ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
-          -framerate "${RECORDING_FPS}" -i :99 \
-          -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
-          -movflags +faststart -y "$RECORDING_FILE" \
-          < /dev/null > /app/.ffmpeg.log 2>&1 &
-        echo $! > /tmp/.ffmpeg_pid
+    STARTED=false
+
+    start_ffmpeg() {
+      ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
+        -framerate "${RECORDING_FPS}" -i :99 \
+        -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
+        -movflags +faststart -y "$RECORDING_FILE" \
+        < /dev/null > /app/.ffmpeg.log 2>&1 &
+      echo $! > /tmp/.ffmpeg_pid
+      STARTED=true
+    }
+
+    while kill -0 "$PLAYWRIGHT_PID" 2>/dev/null && [[ "$STARTED" == "false" ]]; do
+      # Primary: fixture signal file
+      if [[ -f /tmp/.demo-automation-ready ]]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Demo automation ready signal received — starting recording" >&2
+        start_ffmpeg
         break
       fi
+
       ELAPSED=$(( $(date +%s) - WAIT_START ))
-      if [[ "$ELAPSED" -ge 300 ]]; then
-        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARNING: Chrome not detected after 5 min — starting ffmpeg anyway" >&2
-        ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
-          -framerate "${RECORDING_FPS}" -i :99 \
-          -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
-          -movflags +faststart -y "$RECORDING_FILE" \
-          < /dev/null > /app/.ffmpeg.log 2>&1 &
-        echo $! > /tmp/.ffmpeg_pid
+
+      # Fallback: Chrome window detected + 5s buffer for fixture to finish
+      if [[ "$ELAPSED" -ge 30 ]] && xdotool search --name "Chrom" >/dev/null 2>&1; then
+        # Chrome has been up for a while but no signal — fixture may not support it
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Chrome window detected (no signal file) — starting recording" >&2
+        start_ffmpeg
         break
       fi
-      sleep 2
+
+      # Hard fallback: 5 minutes
+      if [[ "$ELAPSED" -ge 300 ]]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARNING: No automation signal after 5 min — starting recording" >&2
+        start_ffmpeg
+        break
+      fi
+
+      sleep 1
     done
   ) &
   CHROME_DETECT_PID=$!
 
-  # The main script picks up FFMPEG_PID from the file once available
+  # Log when recording actually starts
   (
     while [[ ! -f /tmp/.ffmpeg_pid ]] && kill -0 "$PLAYWRIGHT_PID" 2>/dev/null; do
       sleep 1
