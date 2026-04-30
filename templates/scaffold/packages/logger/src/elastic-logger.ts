@@ -11,12 +11,14 @@
 
 import { createLogger, type LoggerConfig, type Logger, type LogEntry } from './logger.js';
 
-let _client: unknown = null;
-let _clientInitAttempted = false;
+type ElasticClient = { index: (args: { index: string; document: unknown }) => Promise<unknown> };
 
-function getClient(): { index: (args: { index: string; document: unknown }) => Promise<unknown> } | null {
-  if (_clientInitAttempted) return _client as ReturnType<typeof getClient>;
-  _clientInitAttempted = true;
+let _client: ElasticClient | null = null;
+let _clientInitPromise: Promise<ElasticClient | null> | null = null;
+
+async function getClient(): Promise<ElasticClient | null> {
+  if (_client) return _client;
+  if (_clientInitPromise) return _clientInitPromise;
 
   const apiKey = process.env.ELASTIC_API_KEY;
   const cloudId = process.env.ELASTIC_CLOUD_ID;
@@ -24,19 +26,23 @@ function getClient(): { index: (args: { index: string; document: unknown }) => P
 
   if (!apiKey || (!cloudId && !endpoint)) return null;
 
-  try {
-    // Dynamic require to avoid hard dependency — @elastic/elasticsearch is an optional peer dep
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('@elastic/elasticsearch');
-    _client = new Client({
-      ...(cloudId ? { cloud: { id: cloudId } } : { node: endpoint }),
-      auth: { apiKey },
-    });
-    return _client as ReturnType<typeof getClient>;
-  } catch {
-    return null;
-  }
+  _clientInitPromise = (async () => {
+    try {
+      const { Client } = await import('@elastic/elasticsearch');
+      _client = new Client({
+        ...(cloudId ? { cloud: { id: cloudId } } : { node: endpoint }),
+        auth: { apiKey },
+      });
+      return _client;
+    } catch {
+      return null;
+    }
+  })();
+
+  return _clientInitPromise;
 }
+
+let lastShipErrorAt = 0;
 
 function getIndexName(service: string): string {
   const prefix = process.env.ELASTIC_INDEX_PREFIX || 'logs';
@@ -56,27 +62,32 @@ export function createElasticLogger(config: LoggerConfig & { service: string }):
         process.stdout.write(json + '\n');
       }
 
-      // 2. Ship to Elastic (non-blocking, best-effort)
-      const client = getClient();
-      if (!client) return;
+      // 2. Ship to Elastic (non-blocking, best-effort, rate-limited errors)
+      getClient().then(client => {
+        if (!client) return;
 
-      const doc: Record<string, unknown> = {
-        '@timestamp': entry['@timestamp'],
-        level: entry.level,
-        message: entry.message,
-        service: config.service,
-      };
-      if (entry.module) doc.module = entry.module;
-      if (entry.requestId) doc.requestId = entry.requestId;
-      if (entry.userId) doc.userId = entry.userId;
-      if (entry.data) Object.assign(doc, entry.data);
-      if (entry.error) doc.error = entry.error;
-      // Include DEMO_RUN_ID for end-to-end correlation
-      if (process.env.DEMO_RUN_ID) doc['demo.run_id'] = process.env.DEMO_RUN_ID;
+        const doc: Record<string, unknown> = {
+          '@timestamp': entry['@timestamp'],
+          level: entry.level,
+          message: entry.message,
+          service: config.service,
+        };
+        if (entry.module) doc.module = entry.module;
+        if (entry.requestId) doc.requestId = entry.requestId;
+        if (entry.userId) doc.userId = entry.userId;
+        if (entry.data) Object.assign(doc, entry.data);
+        if (entry.error) doc.error = entry.error;
+        if (process.env.DEMO_RUN_ID) doc['demo.run_id'] = process.env.DEMO_RUN_ID;
 
-      client.index({ index: getIndexName(config.service), document: doc }).catch((err: unknown) => {
-        process.stderr.write(`[elastic-logger] Ship error: ${err instanceof Error ? err.message : String(err)}\n`);
-      });
+        client.index({ index: getIndexName(config.service), document: doc }).catch((err: unknown) => {
+          // Rate-limit error reporting: max 1 error per 60s to prevent stderr flood
+          const now = Date.now();
+          if (now - lastShipErrorAt > 60_000) {
+            lastShipErrorAt = now;
+            process.stderr.write(`[elastic-logger] Ship error (suppressing repeats for 60s): ${err instanceof Error ? err.message : String(err)}\n`);
+          }
+        });
+      }).catch(() => {});
     },
   });
 }

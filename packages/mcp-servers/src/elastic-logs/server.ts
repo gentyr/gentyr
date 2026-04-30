@@ -17,8 +17,7 @@
 
 import { Client } from '@elastic/elasticsearch';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
-import * as fs from 'fs';
-import * as path from 'path';
+import { loadServicesConfig } from '../shared/op-secrets.js';
 import {
   QueryLogsArgsSchema,
   GetLogStatsArgsSchema,
@@ -275,51 +274,44 @@ async function getLogStats(args: GetLogStatsArgs): Promise<GetLogStatsResult | E
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
-function readServicesJson(): Record<string, unknown> | null {
-  try {
-    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
-    if (!fs.existsSync(configPath)) return null;
-    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  } catch { return null; }
-}
-
-function hasSecretKey(secrets: Record<string, unknown> | undefined, key: string): boolean {
-  if (!secrets || typeof secrets !== 'object') return false;
-  return key in secrets;
+function hasKey(obj: Record<string, unknown> | undefined, key: string): boolean {
+  // Only checks key presence — never accesses secret values
+  return !!obj && typeof obj === 'object' && key in obj;
 }
 
 async function verifyLoggingConfig(): Promise<VerifyLoggingConfigResult | ErrorResult> {
-  const config = readServicesJson();
+  let config;
+  try {
+    config = loadServicesConfig(PROJECT_DIR);
+  } catch (err) {
+    return { error: `Failed to read services.json: ${err instanceof Error ? err.message : String(err)}`, hint: 'Ensure .claude/config/services.json exists and is valid JSON' };
+  }
+
   const recommendations: string[] = [];
 
-  // Check elastic section
-  const elastic = config?.elastic as { enabled?: boolean; apiKey?: string; cloudId?: string; endpoint?: string; indexPrefix?: string } | undefined;
+  // Check elastic section (Zod-validated by loadServicesConfig)
+  const elastic = config.elastic;
   const elasticConfigured = !!elastic;
   const elasticEnabled = elastic?.enabled !== false;
-  const indexPrefix = (elastic?.indexPrefix as string) || 'logs';
+  const indexPrefix = elastic?.indexPrefix || 'logs';
 
   if (!elasticConfigured) {
     recommendations.push('Add elastic section to services.json: mcp__secret-sync__update_services_config({ updates: { elastic: { apiKey: "op://Production/Elastic/api-key", cloudId: "op://Production/Elastic/cloud-id", enabled: true } } })');
   }
 
-  // Check secrets.local
-  const secrets = config?.secrets as Record<string, unknown> | undefined;
-  const localSecrets = secrets?.local as Record<string, string> | undefined;
-  const hasLocalApiKey = hasSecretKey(localSecrets, 'ELASTIC_API_KEY');
-  const hasLocalCloudId = hasSecretKey(localSecrets, 'ELASTIC_CLOUD_ID') || hasSecretKey(localSecrets, 'ELASTIC_ENDPOINT');
+  // Check secrets.local (key presence only — values are op:// refs, not raw secrets)
+  const localSecrets = config.secrets?.local;
+  const hasLocalApiKey = hasKey(localSecrets, 'ELASTIC_API_KEY');
+  const hasLocalCloudId = hasKey(localSecrets, 'ELASTIC_CLOUD_ID') || hasKey(localSecrets, 'ELASTIC_ENDPOINT');
 
   if (!hasLocalApiKey || !hasLocalCloudId) {
     recommendations.push('Add Elastic credentials to secrets.local: mcp__secret-sync__populate_secrets_local({ entries: { ELASTIC_API_KEY: "op://...", ELASTIC_CLOUD_ID: "op://..." } })');
   }
 
-  // Check deployment secrets
-  const renderProd = secrets?.renderProduction as Record<string, string> | undefined;
-  const renderStag = secrets?.renderStaging as Record<string, string> | undefined;
-  const vercelSecrets = secrets?.vercel as Record<string, unknown> | undefined;
-
-  const hasRenderProd = hasSecretKey(renderProd, 'ELASTIC_API_KEY') && (hasSecretKey(renderProd, 'ELASTIC_CLOUD_ID') || hasSecretKey(renderProd, 'ELASTIC_ENDPOINT'));
-  const hasRenderStag = hasSecretKey(renderStag, 'ELASTIC_API_KEY') && (hasSecretKey(renderStag, 'ELASTIC_CLOUD_ID') || hasSecretKey(renderStag, 'ELASTIC_ENDPOINT'));
-  const hasVercel = hasSecretKey(vercelSecrets, 'ELASTIC_API_KEY') && (hasSecretKey(vercelSecrets, 'ELASTIC_CLOUD_ID') || hasSecretKey(vercelSecrets, 'ELASTIC_ENDPOINT'));
+  // Check deployment secret sections (key presence only)
+  const hasRenderProd = hasKey(config.secrets?.renderProduction, 'ELASTIC_API_KEY') && (hasKey(config.secrets?.renderProduction, 'ELASTIC_CLOUD_ID') || hasKey(config.secrets?.renderProduction, 'ELASTIC_ENDPOINT'));
+  const hasRenderStag = hasKey(config.secrets?.renderStaging, 'ELASTIC_API_KEY') && (hasKey(config.secrets?.renderStaging, 'ELASTIC_CLOUD_ID') || hasKey(config.secrets?.renderStaging, 'ELASTIC_ENDPOINT'));
+  const hasVercel = hasKey(config.secrets?.vercel as Record<string, unknown> | undefined, 'ELASTIC_API_KEY') && (hasKey(config.secrets?.vercel as Record<string, unknown> | undefined, 'ELASTIC_CLOUD_ID') || hasKey(config.secrets?.vercel as Record<string, unknown> | undefined, 'ELASTIC_ENDPOINT'));
 
   if (!hasRenderProd) {
     recommendations.push('Add ELASTIC_API_KEY + ELASTIC_CLOUD_ID to secrets.renderProduction for production backend logging');
