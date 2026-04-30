@@ -691,6 +691,22 @@ export async function pullRemoteArtifacts(
     { remotePath: '/app/.devserver.log', localName: 'devserver.log' },
   ];
 
+  // Also capture the machine's system journal (dmesg + process list) for crash diagnosis
+  try {
+    const journalBuf = await execInMachine(handle, config, [
+      'sh', '-c',
+      'echo "=== dmesg (last 30 lines) ===" && dmesg 2>/dev/null | tail -30 && ' +
+      'echo "\\n=== process list ===" && ps aux --sort=-rss 2>/dev/null | head -20 && ' +
+      'echo "\\n=== memory ===" && cat /proc/meminfo 2>/dev/null | head -5 && ' +
+      'echo "\\n=== uptime ===" && uptime 2>/dev/null',
+    ], 10_000);
+    const journalPath = path.join(destDir, 'fly-machine.log');
+    await fsPromises.writeFile(journalPath, journalBuf);
+    artifacts.push({ localPath: journalPath, type: inferArtifactType(journalPath) });
+  } catch {
+    // Non-fatal — machine may already be shutting down
+  }
+
   // 15MB limit — base64 encoding adds ~33%, keeping well under exec API response limits
   const MAX_EXEC_FILE_SIZE = 15 * 1024 * 1024;
 

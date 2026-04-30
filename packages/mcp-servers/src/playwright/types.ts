@@ -620,6 +620,14 @@ export type SetFlyMachineRamArgs = z.infer<typeof SetFlyMachineRamArgsSchema>;
 export const GetFlyMachineRamArgsSchema = z.object({});
 export type GetFlyMachineRamArgs = z.infer<typeof GetFlyMachineRamArgsSchema>;
 
+export const GetFlyLogsArgsSchema = z.object({
+  lines: z.coerce.number().int().min(10).max(500).optional().default(100)
+    .describe('Number of log lines to retrieve (default: 100, max: 500).'),
+  machine_id: z.string().optional()
+    .describe('Filter logs to a specific machine ID. If omitted, shows recent logs from all machines.'),
+});
+export type GetFlyLogsArgs = z.infer<typeof GetFlyLogsArgsSchema>;
+
 // Steel.dev MCP tool schemas
 export const SteelHealthCheckArgsSchema = z.object({});
 export type SteelHealthCheckArgs = z.infer<typeof SteelHealthCheckArgsSchema>;

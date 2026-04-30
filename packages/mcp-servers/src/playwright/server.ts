@@ -102,6 +102,8 @@ import {
   type SetFlyMachineRamArgs,
   GetFlyMachineRamArgsSchema,
   type GetFlyMachineRamArgs,
+  GetFlyLogsArgsSchema,
+  type GetFlyLogsArgs,
   SteelHealthCheckArgsSchema,
   type SteelHealthCheckArgs,
   UploadSteelExtensionArgsSchema,
@@ -4173,6 +4175,16 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         fly_machine_id: entry.fly_machine_id,
         fly_region: remoteMachineConfig.region,
         ...(artifactErrors.length > 0 ? { artifact_errors: artifactErrors } : {}),
+        // Include machine diagnostics for crash analysis
+        ...((() => {
+          try {
+            const machineLogPath = path.join(destDir, 'fly-machine.log');
+            if (fs.existsSync(machineLogPath)) {
+              return { fly_machine_log: fs.readFileSync(machineLogPath, 'utf-8').slice(-3000) };
+            }
+          } catch { /* non-fatal */ }
+          return {};
+        })()),
       };
     } catch (remoteCheckErr) {
       return { status: 'unknown', pid, message: `Failed to check remote demo result: ${remoteCheckErr instanceof Error ? remoteCheckErr.message : String(remoteCheckErr)}` };
@@ -8291,6 +8303,44 @@ const tools: AnyToolHandler[] = [
     handler: async (_args: GetFlyMachineRamArgs) => {
       const config = readFlyMachineConfig();
       return JSON.stringify(config);
+    },
+  },
+  {
+    name: 'get_fly_logs',
+    description:
+      'Retrieve recent Fly.io app logs for the demo execution machines. ' +
+      'Shows machine lifecycle events, process output, crash reasons, and SIGTERM sources. ' +
+      'Essential for diagnosing why remote demo machines die unexpectedly.',
+    schema: GetFlyLogsArgsSchema,
+    handler: async (args: GetFlyLogsArgs) => {
+      const flySection = getFlyConfigFromServices();
+      if (!flySection || !flySection.appName) {
+        return JSON.stringify({ error: 'Fly.io not configured' });
+      }
+      try {
+        const cmdArgs = ['logs', '--app', flySection.appName, '--no-tail', '-n', String(args.lines)];
+        if (args.machine_id) {
+          cmdArgs.push('--instance', args.machine_id);
+        }
+        const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+          execFile('fly', cmdArgs, { encoding: 'utf-8', timeout: 15000 }, (err, stdout, stderr) => {
+            if (err && !stdout) reject(err);
+            else resolve({ stdout: stdout || '', stderr: stderr || '' });
+          });
+        });
+        return JSON.stringify({
+          app: flySection.appName,
+          lines: args.lines,
+          machine_id: args.machine_id || 'all',
+          logs: stdout.trim(),
+          ...(stderr ? { warnings: stderr.trim() } : {}),
+        });
+      } catch (err) {
+        return JSON.stringify({
+          error: `Failed to retrieve logs: ${err instanceof Error ? err.message : String(err)}`,
+          hint: 'Ensure flyctl is installed and authenticated (fly auth login)',
+        });
+      }
     },
   },
   // ── Steel.dev Cloud Browser Tools ──
