@@ -440,18 +440,18 @@ PLAYWRIGHT_PID=$!
 # recording minutes of blank Xvfb desktop.
 # ---------------------------------------------------------------------------
 if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID" ]]; then
-  # Remove stale signal from a previous run
-  rm -f /tmp/.demo-automation-ready
+  # Remove stale signals from a previous run
+  rm -f /tmp/.demo-automation-ready /tmp/.ffmpeg_start_epoch /tmp/.demo-signal-epoch
 
   (
-    # Wait for the demo fixture to signal that automation is about to begin.
-    # The vendorPage fixture writes /tmp/.demo-automation-ready after the
-    # dashboard loads and just before handing the page to the test body.
-    # Falls back to Chrome window detection, then to a 5-minute timeout.
+    # Strategy: start ffmpeg when Chrome window appears (captures fixture UI),
+    # record the ffmpeg start timestamp, then record when the automation-ready
+    # signal fires. The post-trim step uses the delta to cut fixture setup.
     WAIT_START=$(date +%s)
     STARTED=false
 
     start_ffmpeg() {
+      date +%s > /tmp/.ffmpeg_start_epoch
       ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
         -framerate "${RECORDING_FPS}" -i :99 \
         -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
@@ -462,32 +462,35 @@ if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID
     }
 
     while kill -0 "$PLAYWRIGHT_PID" 2>/dev/null && [[ "$STARTED" == "false" ]]; do
-      # Primary: fixture signal file
-      if [[ -f /tmp/.demo-automation-ready ]]; then
-        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Demo automation ready signal received — starting recording" >&2
+      # Start recording when Chrome window appears
+      if xdotool search --name "Chrom" >/dev/null 2>&1; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Chrome window detected — starting ffmpeg" >&2
         start_ffmpeg
         break
       fi
 
       ELAPSED=$(( $(date +%s) - WAIT_START ))
-
-      # Fallback: Chrome window detected + 5s buffer for fixture to finish
-      if [[ "$ELAPSED" -ge 30 ]] && xdotool search --name "Chrom" >/dev/null 2>&1; then
-        # Chrome has been up for a while but no signal — fixture may not support it
-        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Chrome window detected (no signal file) — starting recording" >&2
-        start_ffmpeg
-        break
-      fi
-
-      # Hard fallback: 5 minutes
       if [[ "$ELAPSED" -ge 300 ]]; then
-        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARNING: No automation signal after 5 min — starting recording" >&2
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARNING: Chrome not detected after 5 min — starting ffmpeg anyway" >&2
         start_ffmpeg
         break
       fi
-
-      sleep 1
+      sleep 2
     done
+
+    # Now wait for the automation-ready signal and record its timestamp
+    if [[ "$STARTED" == "true" ]]; then
+      SIGNAL_WAIT=0
+      while kill -0 "$PLAYWRIGHT_PID" 2>/dev/null && [[ "$SIGNAL_WAIT" -lt 300 ]]; do
+        if [[ -f /tmp/.demo-automation-ready ]]; then
+          date +%s > /tmp/.demo-signal-epoch
+          echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Automation signal received (trim marker set)" >&2
+          break
+        fi
+        sleep 1
+        SIGNAL_WAIT=$((SIGNAL_WAIT + 1))
+      done
+    fi
   ) &
   CHROME_DETECT_PID=$!
 
@@ -596,15 +599,17 @@ if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
         fi
       fi
 
-      # Find the first non-blank content by detecting when the page navigates
-      # away from about:blank. Use freezedetect: the first frame change after
-      # the initial static blank page marks the dashboard appearing.
+      # Find the automation start using the timestamp-based signal.
+      # The subshell records ffmpeg start epoch and automation-ready signal epoch.
+      # The delta is the number of seconds of fixture setup to trim from the start.
       TRIM_START=""
-      FREEZE_DETECT=$(ffmpeg -i "$RECORDING_FILE" -vf "freezedetect=n=0.003:d=1" -f null - 2>&1 | grep "freeze_end" | head -1 || true)
-      if [[ -n "$FREEZE_DETECT" ]]; then
-        TRIM_START=$(echo "$FREEZE_DETECT" | grep -oP 'freeze_end:\K[0-9.]+' || true)
-        if [[ -z "$TRIM_START" ]]; then
-          TRIM_START=$(echo "$FREEZE_DETECT" | sed -n 's/.*freeze_end:\([0-9.]*\).*/\1/p' || true)
+      if [[ -f /tmp/.ffmpeg_start_epoch && -f /tmp/.demo-signal-epoch ]]; then
+        FFMPEG_EPOCH=$(cat /tmp/.ffmpeg_start_epoch)
+        SIGNAL_EPOCH=$(cat /tmp/.demo-signal-epoch)
+        if [[ -n "$FFMPEG_EPOCH" && -n "$SIGNAL_EPOCH" ]]; then
+          TRIM_START=$((SIGNAL_EPOCH - FFMPEG_EPOCH))
+          # Clamp to 0 minimum, cap at recording duration
+          if [[ "$TRIM_START" -lt 0 ]]; then TRIM_START=0; fi
         fi
       fi
 
