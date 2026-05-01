@@ -458,21 +458,24 @@ if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID
         < /dev/null > /app/.ffmpeg.log 2>&1 &
       echo $! > /tmp/.ffmpeg_pid
       STARTED=true
-      # Wait for ffmpeg to start capturing, then extract its real start time
-      # from the log. ffmpeg writes "start: <epoch.fractional>" when it begins.
-      # This is more accurate than `date +%s` which runs ~4s before first frame.
+      # Record ffmpeg start epoch: capture wall clock time when ffmpeg begins
+      # encoding. x11grab's 'start:' field is 0.000000 on Linux (not a wall
+      # clock epoch), so we wait for "Output #0" in the log (ffmpeg has
+      # initialized the output muxer and is about to write the first frame).
       (
-        for i in $(seq 1 20); do
-          REAL_START=$(sed -n 's/.*start: \([0-9]*\).*/\1/p' /app/.ffmpeg.log 2>/dev/null | head -1)
-          if [[ -n "$REAL_START" ]]; then
-            echo "$REAL_START" > /tmp/.ffmpeg_start_epoch
+        LAUNCH_EPOCH=$(date +%s)
+        for i in $(seq 1 30); do
+          if grep -q "Output #0" /app/.ffmpeg.log 2>/dev/null; then
+            date +%s > /tmp/.ffmpeg_start_epoch
+            echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] ffmpeg output initialized (epoch: $(cat /tmp/.ffmpeg_start_epoch), launch_epoch: $LAUNCH_EPOCH)" >&2
             break
           fi
           sleep 0.5
         done
-        # Fallback: use current time if ffmpeg log parsing failed
+        # Fallback: use launch time if output detection failed
         if [[ ! -f /tmp/.ffmpeg_start_epoch ]]; then
-          date +%s > /tmp/.ffmpeg_start_epoch
+          echo "$LAUNCH_EPOCH" > /tmp/.ffmpeg_start_epoch
+          echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] ffmpeg epoch fallback to launch time: $LAUNCH_EPOCH" >&2
         fi
       ) &
     }
@@ -635,10 +638,15 @@ fi
           # Strip milliseconds for GNU date compatibility (2026-05-01T10:14:00.000Z -> 2026-05-01T10:14:00Z)
           CLEAN_TS=$(echo "$FIRST_ACTION_TS" | sed 's/\.[0-9]*Z$/Z/')
           FA_EPOCH=$(date -d "$CLEAN_TS" +%s 2>/dev/null || date -d "$FIRST_ACTION_TS" +%s 2>/dev/null || echo "")
-          log "Trim debug: ffmpeg_epoch=$FFMPEG_EPOCH action_ts=$FIRST_ACTION_TS action_epoch=$FA_EPOCH delta=$((FA_EPOCH - FFMPEG_EPOCH))"
           if [[ -n "$FA_EPOCH" ]]; then
             TRIM_START=$((FA_EPOCH - FFMPEG_EPOCH))
-            if [[ "$TRIM_START" -lt 0 ]]; then TRIM_START=0; fi
+            log "Trim debug: ffmpeg_epoch=$FFMPEG_EPOCH action_ts=$FIRST_ACTION_TS action_epoch=$FA_EPOCH delta=${TRIM_START}s"
+            # Sanity check: delta should be 5-120s (Chrome appears, then demo starts).
+            # If delta is >120 or <0, the epoch source is likely wrong.
+            if [[ "$TRIM_START" -gt 120 || "$TRIM_START" -lt 0 ]]; then
+              log "WARNING: Trim delta ${TRIM_START}s looks wrong — skipping start trim"
+              TRIM_START=""
+            fi
           fi
         fi
 
