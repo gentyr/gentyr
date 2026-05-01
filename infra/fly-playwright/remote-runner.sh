@@ -575,8 +575,10 @@ if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
     kill -9 "$FFMPEG_PID" 2>/dev/null || true
   fi
   log "Recording stopped"
+fi
 
-  # ── Post-process: trim dead frames from start and end ──
+# ── Post-process: trim dead frames from start and end ──
+# Runs independently — only needs the recording file to exist.
   # Start: the signal file timestamp tells us when automation began.
   #   ffmpeg started when the signal was detected, but Chrome was already
   #   showing about:blank/dashboard from the fixture. The first automation
@@ -639,7 +641,6 @@ if [[ -n "$FFMPEG_PID" ]] && kill -0 "$FFMPEG_PID" 2>/dev/null; then
       fi
     fi
   fi
-fi
 
 # The EXIT trap (cleanup) handles: writing exit code, stopping Xvfb,
 # copying artifacts, and the 60s grace period for artifact retrieval.
