@@ -601,17 +601,28 @@ fi
         fi
       fi
 
-      # Find the automation start using the timestamp-based signal.
-      # The subshell records ffmpeg start epoch and automation-ready signal epoch.
-      # The delta is the number of seconds of fixture setup to trim from the start.
+      # Find the automation start using the progress.jsonl heartbeat timestamps.
+      # The first heartbeat fires at t=15s into the test body. The test body
+      # starts after fixture setup (about:blank → dashboard → networkidle).
+      # We want to trim to ~15s before the first heartbeat = test body start.
       TRIM_START=""
-      if [[ -f /tmp/.ffmpeg_start_epoch && -f /tmp/.demo-signal-epoch ]]; then
+      if [[ -f /tmp/.ffmpeg_start_epoch && -f /app/.progress.jsonl ]]; then
         FFMPEG_EPOCH=$(cat /tmp/.ffmpeg_start_epoch)
-        SIGNAL_EPOCH=$(cat /tmp/.demo-signal-epoch)
-        if [[ -n "$FFMPEG_EPOCH" && -n "$SIGNAL_EPOCH" ]]; then
-          TRIM_START=$((SIGNAL_EPOCH - FFMPEG_EPOCH))
-          # Clamp to 0 minimum, cap at recording duration
-          if [[ "$TRIM_START" -lt 0 ]]; then TRIM_START=0; fi
+        # Find the first heartbeat timestamp from progress.jsonl
+        FIRST_HB=$(grep '"heartbeat":true' /app/.progress.jsonl 2>/dev/null | head -1 | sed -n 's/.*"timestamp":"\([^"]*\)".*/\1/p' || true)
+        if [[ -n "$FFMPEG_EPOCH" && -n "$FIRST_HB" ]]; then
+          # Convert ISO timestamp to epoch seconds
+          HB_EPOCH=$(date -d "$FIRST_HB" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${FIRST_HB%%.*}" +%s 2>/dev/null || echo "")
+          if [[ -n "$HB_EPOCH" ]]; then
+            # First heartbeat is at t=15s, so test body started 15s earlier
+            TEST_BODY_START=$((HB_EPOCH - 15))
+            TRIM_START=$((TEST_BODY_START - FFMPEG_EPOCH))
+            if [[ "$TRIM_START" -lt 0 ]]; then TRIM_START=0; fi
+            if [[ "$TRIM_START" -gt 5 ]]; then
+              # Subtract 2s buffer to show the dashboard for context
+              TRIM_START=$((TRIM_START - 2))
+            fi
+          fi
         fi
       fi
 
