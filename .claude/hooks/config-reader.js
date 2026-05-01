@@ -76,6 +76,8 @@ const DEFAULTS = {
   revival_compact_min_tokens: 200000,          // min tokens to trigger revival compaction
   revival_compact_max_minutes: 30,             // max minutes since last compact for revival
   revival_compact_timeout_ms: 120000,          // timeout for compact command (ms)
+  environment_parity_check: 360,               // 6 hours
+  dependency_vulnerability_scan: 1440,         // daily (24h)
 };
 
 /**
