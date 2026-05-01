@@ -655,7 +655,11 @@ fi
 
       if [[ -n "$FFMPEG_TRIM_ARGS" ]]; then
         TRIMMED_FILE="${RECORDING_FILE%.mp4}-trimmed.mp4"
-        if ffmpeg -i "$RECORDING_FILE" $FFMPEG_TRIM_ARGS -c copy -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
+        # Re-encode (not -c copy) for frame-accurate seeking — -c copy only
+        # seeks to the nearest keyframe which can be 5-10s before the target.
+        if ffmpeg -i "$RECORDING_FILE" $FFMPEG_TRIM_ARGS \
+          -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+          -movflags +faststart -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
           mv "$TRIMMED_FILE" "$RECORDING_FILE"
           NEW_SIZE=$(stat -c%s "$RECORDING_FILE" 2>/dev/null || stat -f%z "$RECORDING_FILE" 2>/dev/null || echo "?")
           log "Trimmed recording: ${RECORDING_SIZE} -> ${NEW_SIZE} bytes"
