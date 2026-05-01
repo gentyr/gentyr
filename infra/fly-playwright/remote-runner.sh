@@ -614,14 +614,11 @@ fi
           # Convert ISO timestamp to epoch seconds
           HB_EPOCH=$(date -d "$FIRST_HB" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${FIRST_HB%%.*}" +%s 2>/dev/null || echo "")
           if [[ -n "$HB_EPOCH" ]]; then
-            # First heartbeat is at t=15s, so test body started 15s earlier
-            TEST_BODY_START=$((HB_EPOCH - 15))
-            TRIM_START=$((TEST_BODY_START - FFMPEG_EPOCH))
+            # First heartbeat fires at t=15s into the test body, but the first
+            # VISIBLE automation (page navigation completing) happens at ~t=5-7s.
+            # Trim to ~2s before the first page loads: HB - 8s.
+            TRIM_START=$((HB_EPOCH - 8 - FFMPEG_EPOCH))
             if [[ "$TRIM_START" -lt 0 ]]; then TRIM_START=0; fi
-            if [[ "$TRIM_START" -gt 5 ]]; then
-              # Subtract 2s buffer to show the dashboard for context
-              TRIM_START=$((TRIM_START - 2))
-            fi
           fi
         fi
       fi
