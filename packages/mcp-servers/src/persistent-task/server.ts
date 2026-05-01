@@ -167,6 +167,30 @@ function initializeDatabase(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
+
+  // Repair: detect and fix broken FK references to persistent_tasks_old.
+  // This handles the case where the ALTER TABLE migration completed but left
+  // child tables (amendments, events, sub_tasks) with stale FK references in
+  // their sqlite_master DDL. With PRAGMA foreign_keys = ON, any write to those
+  // tables would fail with "no such table: main.persistent_tasks_old".
+  const brokenFKRows = db.prepare(
+    `SELECT name FROM sqlite_master WHERE name IN ('amendments', 'events', 'sub_tasks') AND sql LIKE '%persistent_tasks_old%'`
+  ).all() as Array<{ name: string }>;
+  if (brokenFKRows.length > 0) {
+    process.stderr.write(`[persistent-task] Repairing ${brokenFKRows.length} table(s) with stale FK references to persistent_tasks_old: ${brokenFKRows.map(r => r.name).join(', ')}\n`);
+    db.pragma('foreign_keys = OFF');
+    db.exec('DROP INDEX IF EXISTS idx_amendments_task');
+    db.exec('DROP INDEX IF EXISTS idx_amendments_undelivered');
+    db.exec('DROP INDEX IF EXISTS idx_sub_tasks_task');
+    db.exec('DROP INDEX IF EXISTS idx_events_task');
+    db.exec('DROP INDEX IF EXISTS idx_events_time');
+    db.exec('DROP TABLE IF EXISTS events');
+    db.exec('DROP TABLE IF EXISTS amendments');
+    db.exec('DROP TABLE IF EXISTS sub_tasks');
+    db.pragma('foreign_keys = ON');
+    // Tables will be recreated by the SCHEMA exec below
+  }
+
   db.exec(SCHEMA);
 
   // Auto-migration: add last_summary column
@@ -186,8 +210,20 @@ function initializeDatabase(): Database.Database {
     db.prepare("INSERT INTO persistent_tasks (id, title, prompt, status, created_at) VALUES (?, '_test', '_test', 'pending_audit', ?)").run(testId, new Date().toISOString());
     db.prepare("DELETE FROM persistent_tasks WHERE id = ?").run(testId);
   } catch {
-    // Recreate table with updated CHECK constraint preserving data
+    // Recreate table with updated CHECK constraint preserving data.
+    // IMPORTANT: Also drop child tables (amendments, events, sub_tasks) so that
+    // db.exec(SCHEMA) recreates them with FK references to persistent_tasks (not
+    // persistent_tasks_old). CREATE TABLE IF NOT EXISTS would skip them otherwise,
+    // leaving stale FK references that break with PRAGMA foreign_keys = ON.
     db.exec("ALTER TABLE persistent_tasks RENAME TO persistent_tasks_old");
+    db.exec('DROP INDEX IF EXISTS idx_amendments_task');
+    db.exec('DROP INDEX IF EXISTS idx_amendments_undelivered');
+    db.exec('DROP INDEX IF EXISTS idx_sub_tasks_task');
+    db.exec('DROP INDEX IF EXISTS idx_events_task');
+    db.exec('DROP INDEX IF EXISTS idx_events_time');
+    db.exec('DROP TABLE IF EXISTS events');
+    db.exec('DROP TABLE IF EXISTS amendments');
+    db.exec('DROP TABLE IF EXISTS sub_tasks');
     db.exec(SCHEMA);
     const cols = 'id, title, prompt, original_input, outcome_criteria, status, parent_todo_task_id, monitor_agent_id, monitor_pid, monitor_session_id, created_at, activated_at, completed_at, cancelled_at, last_heartbeat, cycle_count, created_by, user_prompt_uuids, metadata, last_summary';
     db.exec(`INSERT INTO persistent_tasks (${cols}) SELECT ${cols} FROM persistent_tasks_old`);
