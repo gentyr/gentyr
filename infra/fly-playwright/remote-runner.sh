@@ -601,25 +601,44 @@ fi
         fi
       fi
 
-      # Find the automation start using the progress.jsonl heartbeat timestamps.
-      # The first heartbeat fires at t=15s into the test body. The test body
-      # starts after fixture setup (about:blank → dashboard → networkidle).
-      # We want to trim to ~15s before the first heartbeat = test body start.
+      # Find trim points from real event telemetry in progress.jsonl.
+      # demo_first_action: emitted by the test right before Step 1 (first visible automation)
+      # demo_last_action: emitted right after the last step completes
+      # Fallback: first heartbeat minus 8s (approximate)
       TRIM_START=""
       if [[ -f /tmp/.ffmpeg_start_epoch && -f /app/.progress.jsonl ]]; then
         FFMPEG_EPOCH=$(cat /tmp/.ffmpeg_start_epoch)
-        # Find the first heartbeat timestamp from progress.jsonl
-        FIRST_HB=$(grep '"heartbeat":true' /app/.progress.jsonl 2>/dev/null | head -1 | sed -n 's/.*"timestamp":"\([^"]*\)".*/\1/p' || true)
-        if [[ -n "$FFMPEG_EPOCH" && -n "$FIRST_HB" ]]; then
-          # Convert ISO timestamp to epoch seconds
-          HB_EPOCH=$(date -d "$FIRST_HB" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${FIRST_HB%%.*}" +%s 2>/dev/null || echo "")
-          if [[ -n "$HB_EPOCH" ]]; then
-            # First heartbeat fires at t=15s into the test body, but the first
-            # VISIBLE automation (page navigation completing) happens at ~t=5-7s.
-            # Trim to ~2s before the first page loads: HB - 8s.
-            TRIM_START=$((HB_EPOCH - 8 - FFMPEG_EPOCH))
+
+        # Primary: use demo_first_action event (exact)
+        FIRST_ACTION_TS=$(grep '"demo_first_action"' /app/.progress.jsonl 2>/dev/null | head -1 | sed -n 's/.*"timestamp":"\([^"]*\)".*/\1/p' || true)
+        if [[ -n "$FIRST_ACTION_TS" && -n "$FFMPEG_EPOCH" ]]; then
+          FA_EPOCH=$(date -d "$FIRST_ACTION_TS" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${FIRST_ACTION_TS%%.*}" +%s 2>/dev/null || echo "")
+          if [[ -n "$FA_EPOCH" ]]; then
+            TRIM_START=$((FA_EPOCH - FFMPEG_EPOCH))
             if [[ "$TRIM_START" -lt 0 ]]; then TRIM_START=0; fi
           fi
+        fi
+
+        # Fallback: first heartbeat minus 8s
+        if [[ -z "$TRIM_START" ]]; then
+          FIRST_HB=$(grep '"heartbeat":true' /app/.progress.jsonl 2>/dev/null | head -1 | sed -n 's/.*"timestamp":"\([^"]*\)".*/\1/p' || true)
+          if [[ -n "$FIRST_HB" && -n "$FFMPEG_EPOCH" ]]; then
+            HB_EPOCH=$(date -d "$FIRST_HB" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${FIRST_HB%%.*}" +%s 2>/dev/null || echo "")
+            if [[ -n "$HB_EPOCH" ]]; then
+              TRIM_START=$((HB_EPOCH - 8 - FFMPEG_EPOCH))
+              if [[ "$TRIM_START" -lt 0 ]]; then TRIM_START=0; fi
+            fi
+          fi
+        fi
+      fi
+
+      # Override end trim with demo_last_action if available (more precise than blackdetect)
+      LAST_ACTION_TS=$(grep '"demo_last_action"' /app/.progress.jsonl 2>/dev/null | tail -1 | sed -n 's/.*"timestamp":"\([^"]*\)".*/\1/p' || true)
+      if [[ -n "$LAST_ACTION_TS" && -n "$FFMPEG_EPOCH" ]]; then
+        LA_EPOCH=$(date -d "$LAST_ACTION_TS" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${LAST_ACTION_TS%%.*}" +%s 2>/dev/null || echo "")
+        if [[ -n "$LA_EPOCH" ]]; then
+          # Add 3s buffer after last action for final UI state to settle
+          TRIM_END=$((LA_EPOCH - FFMPEG_EPOCH + 3))
         fi
       fi
 
