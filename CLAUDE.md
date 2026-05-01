@@ -103,7 +103,8 @@ cd /path/to/project && claude mcp list
 
 2. **PRs target `main` directly.** No `preview` or `staging` branches in this repo.
 
-3. **Self-merge immediately.** After `gh pr create`, the project-manager runs
+3. **Self-merge after CI passes.** After `gh pr create`, the project-manager waits
+   for CI (`gh pr checks --watch --fail-on-fail`), then runs
    `gh pr merge --squash --delete-branch` in the same session. No waiting for review.
 
 4. **Clean up immediately.** After merge: delete local branch, remove worktree.
@@ -129,8 +130,9 @@ Agents work on feature branches (`feature/*`, `fix/*`, `refactor/*`, `docs/*`, `
 After committing, the project-manager agent:
 1. Pushes the branch: `git push -u origin HEAD`
 2. Creates a PR to the appropriate base branch (`preview` in target projects, `main` in the gentyr repo): `gh pr create --base <base> --head <branch> --title "..."`
-3. **Self-merges immediately**: `gh pr merge <number> --squash --delete-branch`
-4. Syncs the base branch, deletes the local feature branch, and runs `git worktree remove --force` + `git worktree prune` to remove the worktree. Session is NOT complete until worktree is removed.
+3. **Waits for CI**: `gh pr checks <number> --watch --fail-on-fail`
+4. **Self-merges**: `gh pr merge <number> --squash --delete-branch`
+5. Syncs the base branch, deletes the local feature branch, and runs `git worktree remove --force` + `git worktree prune` to remove the worktree. Session is NOT complete until worktree is removed.
 
 Code review happens at promotion time (preview -> staging), not at the feature branch level.
 

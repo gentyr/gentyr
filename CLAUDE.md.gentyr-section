@@ -96,7 +96,9 @@ GENTYR enforces a strict merge chain: **feature -> preview -> staging -> product
 
 **Forbidden merges:** Feature branches can NEVER merge directly into `staging` or `main`. Preview can NEVER merge directly into `main`.
 
-**Feature branches:** All work on feature branches in worktrees. After committing, the project-manager MUST immediately: push the branch, create a PR to `preview`, self-merge with `gh pr merge --squash --delete-branch`, and clean up the worktree. No waiting for review.
+**GitHub Actions CI**: Every PR runs lint, typecheck, build, unit tests, and dependency audit on GitHub infrastructure. The merge chain is enforced by the `Validate Merge Chain` required status check. Project-manager waits for all checks to pass before self-merging.
+
+**Feature branches:** All work on feature branches in worktrees. After committing, the project-manager MUST immediately: push the branch, create a PR to `preview`, wait for CI checks (`gh pr checks --watch --fail-on-fail`), then self-merge with `gh pr merge --squash --delete-branch`, and clean up the worktree. No waiting for review.
 
 **Pre-merge test gate:** Before creating a PR to preview, the project-manager agent runs unit tests as a quality gate. If tests fail, the PR is NOT created and the agent exits with failure details. Test command: `pnpm test:unit --reporter=json` (default). Override via `preMergeTestCommand` in `services.json`. Disable entirely via `preMergeTestEnabled: false`. When `activeTestScope` is set, only failures in scoped tests are blocking — non-scoped failures are reported as warnings but do not block the merge. Shared module: `.claude/hooks/lib/pre-merge-test-runner.js` outputs JSON with `{ passed, failed, skipped, total, verdict, failures }`.
 
