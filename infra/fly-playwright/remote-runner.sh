@@ -643,21 +643,30 @@ fi
       fi
 
       # Apply trim if we found valid points
-      FFMPEG_TRIM_ARGS=""
+      # Use -ss BEFORE -i (input seeking) for frame-accurate start trim.
+      # Use -t (duration) instead of -to (which is relative to output start when
+      # -ss is an output option, causing incorrect trim).
+      FFMPEG_INPUT_ARGS=""
+      FFMPEG_OUTPUT_ARGS=""
       if [[ -n "$TRIM_START" ]]; then
-        log "Trim start: ${TRIM_START}s (first content change)"
-        FFMPEG_TRIM_ARGS="-ss $TRIM_START"
+        log "Trim start: ${TRIM_START}s (demo_first_action)"
+        FFMPEG_INPUT_ARGS="-ss $TRIM_START"
       fi
       if [[ -n "$TRIM_END" ]]; then
-        log "Trim end: ${TRIM_END}s (black screen detected)"
-        FFMPEG_TRIM_ARGS="$FFMPEG_TRIM_ARGS -to $TRIM_END"
+        log "Trim end: ${TRIM_END}s (demo_last_action/blackdetect)"
+        if [[ -n "$TRIM_START" ]]; then
+          # Duration = end - start
+          TRIM_DURATION=$((TRIM_END - TRIM_START))
+          FFMPEG_OUTPUT_ARGS="-t $TRIM_DURATION"
+        else
+          FFMPEG_OUTPUT_ARGS="-t $TRIM_END"
+        fi
       fi
 
-      if [[ -n "$FFMPEG_TRIM_ARGS" ]]; then
+      if [[ -n "$FFMPEG_INPUT_ARGS" || -n "$FFMPEG_OUTPUT_ARGS" ]]; then
         TRIMMED_FILE="${RECORDING_FILE%.mp4}-trimmed.mp4"
-        # Re-encode (not -c copy) for frame-accurate seeking — -c copy only
-        # seeks to the nearest keyframe which can be 5-10s before the target.
-        if ffmpeg -i "$RECORDING_FILE" $FFMPEG_TRIM_ARGS \
+        # -ss before -i = input seeking (frame-accurate with re-encode)
+        if ffmpeg $FFMPEG_INPUT_ARGS -i "$RECORDING_FILE" $FFMPEG_OUTPUT_ARGS \
           -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
           -movflags +faststart -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
           mv "$TRIMMED_FILE" "$RECORDING_FILE"
