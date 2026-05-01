@@ -4475,20 +4475,62 @@ async function main() {
           const statusCode = parseInt(result, 10);
           if (statusCode >= 200 && statusCode < 400) {
             log(`Deploy monitor: ${envName} healthy (${statusCode})`);
-            // Resolve any prior unhealthy alert for this environment
             resolveAlert(`deploy_unhealthy_${envName}`);
+            // Auto-rollback: record healthy deploy
+            try {
+              const { recordHealthy } = await import('./lib/auto-rollback.js');
+              recordHealthy(envName, 'current', 'vercel');
+            } catch { /* non-fatal — auto-rollback module not yet installed */ }
           } else {
             log(`Deploy monitor: ${envName} UNHEALTHY (${statusCode})`);
-            // Create persistent alert for unhealthy deployment
             recordAlert(`deploy_unhealthy_${envName}`, {
               title: `Deployment unhealthy: ${envName} (HTTP ${statusCode})`,
               severity: envName === 'production' ? 'critical' : 'high',
               source: 'deploy-event-monitor',
             });
+            // Auto-rollback: check if conditions met for autonomous rollback
+            try {
+              const { recordFailure, executeRollback } = await import('./lib/auto-rollback.js');
+              const failResult = recordFailure(envName);
+              if (failResult.shouldRollback) {
+                log(`AUTO-ROLLBACK: ${envName} — ${failResult.consecutiveFailures} consecutive failures, deploy ${failResult.deployAge}s old`);
+                const rollbackResult = executeRollback(envName, PROJECT_DIR);
+                if (rollbackResult.success) {
+                  recordAlert(`auto_rollback_${envName}`, {
+                    title: `Auto-rollback executed: ${envName} reverted to previous deploy`,
+                    severity: 'critical',
+                    source: 'auto-rollback',
+                  });
+                } else {
+                  log(`Auto-rollback FAILED for ${envName}: ${rollbackResult.error}`);
+                }
+              }
+            } catch { /* non-fatal — auto-rollback module not yet installed */ }
           }
         } catch (err) {
           log(`Deploy monitor: ${envName} check failed: ${err.message}`);
         }
+      }
+    },
+  });
+
+  // =========================================================================
+  // DORA METRICS COLLECTION (daily, gate-exempt)
+  // Tracks Deployment Frequency, Lead Time, Change Failure Rate, MTTR
+  // =========================================================================
+  await runIfDue('dora_metrics_collection', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastDoraMetricsRun',
+    label: 'DORA metrics collection',
+    fn: async () => {
+      try {
+        const { collectDoraMetrics } = await import('./lib/dora-metrics.js');
+        const metrics = collectDoraMetrics(PROJECT_DIR);
+        log(`DORA: ${metrics.rating} (freq=${metrics.deployment_frequency}/day, lead=${metrics.lead_time_hours}h, CFR=${metrics.change_failure_rate}%, MTTR=${metrics.mttr_minutes}m)`);
+        state.latestDoraMetrics = metrics;
+        saveState(state);
+      } catch (err) {
+        log(`DORA metrics error (non-fatal): ${err.message}`);
       }
     },
   });
