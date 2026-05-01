@@ -4536,6 +4536,74 @@ async function main() {
   });
 
   // =========================================================================
+  // ENVIRONMENT PARITY CHECK (6h cooldown, gate-exempt)
+  // Compares env var names and service configs between staging and production
+  // =========================================================================
+  await runIfDue('environment_parity_check', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastEnvironmentParityCheck',
+    label: 'Environment parity check',
+    localModeSkip: localMode,
+    fn: async () => {
+      try {
+        const { checkEnvironmentParity } = await import('./lib/environment-parity.js');
+        const report = checkEnvironmentParity(PROJECT_DIR);
+        if (!report.parity) {
+          log(`Environment parity: ${report.drift.length} difference(s) detected`);
+          recordAlert('environment_parity_drift', {
+            title: `Environment drift: ${report.drift.length} difference(s) between staging and production`,
+            severity: 'medium',
+            source: 'environment-parity-check',
+          });
+        } else {
+          log('Environment parity: staging and production in sync');
+          resolveAlert('environment_parity_drift');
+        }
+        // Store report for dashboard
+        try {
+          fs.writeFileSync(
+            path.join(PROJECT_DIR, '.claude', 'state', 'environment-parity.json'),
+            JSON.stringify(report, null, 2)
+          );
+        } catch { /* non-fatal */ }
+      } catch (err) {
+        log(`Environment parity error (non-fatal): ${err.message}`);
+      }
+    },
+  });
+
+  // =========================================================================
+  // DEPENDENCY VULNERABILITY SCAN (daily, gate-exempt)
+  // Runs pnpm audit and reports HIGH/CRITICAL findings not in allowlist
+  // =========================================================================
+  await runIfDue('dependency_vulnerability_scan', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastVulnScanRun',
+    label: 'Dependency vulnerability scan',
+    localModeSkip: localMode,
+    fn: async () => {
+      try {
+        const { getActionableFindings } = await import('./lib/vulnerability-scanner.js');
+        const { actionable, total } = getActionableFindings(PROJECT_DIR);
+
+        if (actionable.length > 0) {
+          log(`Vulnerability scan: ${actionable.length} HIGH/CRITICAL finding(s)`);
+          recordAlert('vuln_scan_critical', {
+            title: `${actionable.length} HIGH/CRITICAL vulnerabilities found`,
+            severity: 'high',
+            source: 'vulnerability-scanner',
+          });
+        } else {
+          log(`Vulnerability scan: clean (${total.total} total, 0 actionable)`);
+          resolveAlert('vuln_scan_critical');
+        }
+      } catch (err) {
+        log(`Vulnerability scan error (non-fatal): ${err.message}`);
+      }
+    },
+  });
+
+  // =========================================================================
   // CTO GATE CHECK — exit if gate is closed after all monitoring-only steps
   // GAP 5: Everything above this point (Usage Optimizer, Key Sync, Session
   // Reviver, Triage, Health Monitors, CI Monitoring, Persistent Alerts,
