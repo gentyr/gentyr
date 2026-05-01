@@ -471,12 +471,16 @@ async function spawnTaskAgent(task) {
       metadata: { taskId: task.id, section: task.section, categoryId: task.category_id, worktreePath, urgent: true, assignedBy: task.assigned_by },
     });
 
-    const spawnedImmediately = result.drained && result.drained.spawned > 0;
+    if (result.blocked) {
+      log(`Enqueue blocked for task ${task.id}: "${task.title}" (reason: ${result.blocked})`);
+      return;
+    }
+    const spawnedImmediately = result.drained?.spawned > 0;
     log(`Enqueued ${agentLabel} for task ${task.id}: "${task.title}" (priority: ${queuePriority}, queueId: ${result.queueId}, spawned: ${spawnedImmediately})`);
 
     // For CTO tasks: if the queue was at capacity (nothing was spawned immediately),
     // trigger preemption of the lowest-priority running session to make room.
-    if (isCtoTask && result.drained.spawned === 0 && result.drained.atCapacity) {
+    if (isCtoTask && result.drained?.spawned === 0 && result.drained?.atCapacity) {
       log(`CTO task ${task.id} is at capacity — triggering preemption`);
       try {
         const preemptResult = await preemptForCtoTask(result.queueId, PROJECT_DIR);
@@ -534,15 +538,36 @@ process.stdin.on('end', async () => {
     let taskId = null;
     try {
       const response = hookInput.tool_response;
-      if (response && typeof response === 'object') {
+      // Bare content array (Claude Code's primary PostToolUse format)
+      if (Array.isArray(response)) {
+        for (const block of response) {
+          if (block && block.type === 'text' && block.text) {
+            try {
+              const parsed = JSON.parse(block.text);
+              if (parsed.id) { taskId = parsed.id; break; }
+            } catch { /* not JSON */ }
+          }
+        }
+      } else if (response && typeof response === 'object') {
         taskId = response.id;
+        // Check for MCP content wrapper
+        if (!taskId && response.content && Array.isArray(response.content)) {
+          for (const block of response.content) {
+            if (block.type === 'text' && block.text) {
+              try {
+                const parsed = JSON.parse(block.text);
+                if (parsed.id) { taskId = parsed.id; break; }
+              } catch { /* not JSON */ }
+            }
+          }
+        }
       } else if (typeof response === 'string') {
         const parsed = JSON.parse(response);
         taskId = parsed.id;
       }
     } catch (err) {
       console.error('[urgent-task-spawner] Warning:', err.message);
-      // Try extracting from content array (MCP tool response format)
+      // Fallback: try content array on the raw response
       try {
         const response = hookInput.tool_response;
         if (response && response.content && Array.isArray(response.content)) {

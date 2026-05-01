@@ -3155,6 +3155,27 @@ async function main() {
   async function reviveOrphanedPlan(plan, ptDbPath, plansDbPath) {
     if (!Database) throw new Error('Database not available');
 
+    // Plan-level rate limiting: if 3+ persistent tasks were created for this plan
+    // in the last 30 minutes, skip revival and log a warning. This prevents the
+    // circuit breaker bypass where orphan detection creates new PT IDs (with fresh
+    // revival budgets) faster than the per-PT circuit breaker can contain.
+    try {
+      const ptDbRateCheck = new Database(ptDbPath, { readonly: true });
+      ptDbRateCheck.pragma('busy_timeout = 3000');
+      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const recentPtCount = ptDbRateCheck.prepare(
+        "SELECT COUNT(*) as cnt FROM persistent_tasks WHERE json_extract(metadata, '$.plan_id') = ? AND created_at > ?"
+      ).get(plan.id, thirtyMinAgo)?.cnt ?? 0;
+      ptDbRateCheck.close();
+
+      if (recentPtCount >= 3) {
+        log(`Plan orphan detection: plan "${plan.title}" has ${recentPtCount} persistent tasks created in the last 30 min — rate limited, skipping revival`);
+        return;
+      }
+    } catch (rateErr) {
+      log(`Plan orphan detection: rate limit check failed for plan "${plan.title}": ${rateErr.message} — proceeding with revival`);
+    }
+
     const ptId = randomUUID();
     const nowTs = new Date().toISOString();
 

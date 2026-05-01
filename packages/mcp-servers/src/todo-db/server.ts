@@ -1140,12 +1140,15 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
     return { error: `Task already completed: ${args.id}` };
   }
 
-  if (task.status === 'pending_audit') {
+  // Evaluate force_complete first — CTO interactive sessions can override all gates
+  const isForceComplete = args.force_complete && process.env.CLAUDE_SPAWNED_SESSION !== 'true';
+
+  if (task.status === 'pending_audit' && !isForceComplete) {
     return { error: `Task is pending audit — wait for the auditor verdict: ${args.id}` };
   }
 
   // Block completion when gate is draft (not confirmed)
-  if (task.gate_status === 'draft' && !args.force_complete) {
+  if (task.gate_status === 'draft' && !isForceComplete) {
     return {
       error: `Task has a DRAFT gate that has not been confirmed. Call confirm_task_gate first, or pass force_complete:true if you are the CTO in an interactive session.`,
     };
@@ -1156,7 +1159,6 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
   const completed_timestamp = Math.floor(now.getTime() / 1000);
 
   // Audit gate routing: if gate is active and not force_complete, route to pending_audit
-  const isForceComplete = args.force_complete && process.env.CLAUDE_SPAWNED_SESSION !== 'true';
   const hasActiveGate = task.gate_status === 'active' && task.gate_success_criteria;
 
   // Check if the task's category is gate-exempt (compare category ID directly)
