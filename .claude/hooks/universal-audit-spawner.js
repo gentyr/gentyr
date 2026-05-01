@@ -20,6 +20,12 @@ import fs from 'fs';
 import path from 'path';
 import { enqueueSession } from './lib/session-queue.js';
 
+let auditEvent;
+try {
+  const auditMod = await import('./lib/session-audit.js');
+  auditEvent = auditMod.auditEvent;
+} catch { auditEvent = () => {}; }
+
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'universal-audit-spawner.log');
 
@@ -233,6 +239,7 @@ You have 8 minutes. Be efficient. If you cannot verify (external system unavaila
       },
     });
 
+    auditEvent('task_pending_audit', { task_type: taskType, task_id: taskId, criteria: (resolvedCriteria || '').slice(0, 200) });
     log(`Enqueued auditor for ${taskType} task ${taskId}`);
   } catch (err) {
     log(`Error: ${err.message}\n${err.stack}`);

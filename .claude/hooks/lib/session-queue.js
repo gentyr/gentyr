@@ -471,6 +471,7 @@ export function enqueueSession(spec) {
     ).get(wtCheckPath, wtCheckPath);
     if (wtExisting) {
       log(`Worktree exclusivity BLOCKED: "${spec.title}" — worktree ${wtCheckPath} already in use by queue item ${wtExisting.id} ("${wtExisting.title}", status: ${wtExisting.status})`);
+      auditEvent('session_enqueue_blocked', { reason: 'worktree_exclusive', title: spec.title, source: spec.source, priority: spec.priority, conflictQueueId: wtExisting.id });
       return { queueId: null, blocked: 'worktree_exclusive', title: spec.title, conflictQueueId: wtExisting.id, conflictTitle: wtExisting.title };
     }
   }
@@ -484,6 +485,7 @@ export function enqueueSession(spec) {
       const bypassCheck = checkBypassBlock(bypassTaskType, bypassTaskId);
       if (bypassCheck.blocked) {
         log(`Bypass request BLOCKED: "${spec.title}" — pending CTO bypass request ${bypassCheck.requestId} (${bypassCheck.category})`);
+        auditEvent('session_enqueue_blocked', { reason: 'bypass_request', title: spec.title, source: spec.source, priority: spec.priority, bypassRequestId: bypassCheck.requestId });
         return { queueId: null, blocked: 'bypass_request', title: spec.title, bypassRequestId: bypassCheck.requestId };
       }
     }
@@ -503,6 +505,7 @@ export function enqueueSession(spec) {
 
     if (!allowed) {
       log(`Focus mode BLOCKED: "${spec.title}" (source: ${spec.source}, priority: ${spec.priority || 'normal'})`);
+      auditEvent('session_enqueue_blocked', { reason: 'focus_mode', title: spec.title, source: spec.source, priority: spec.priority || 'normal' });
       return { queueId: null, blocked: 'focus_mode', title: spec.title };
     }
   }
@@ -1691,11 +1694,15 @@ function spawnQueueItem(db, item) {
       const todoDbPath = path.join(item.project_dir || PROJECT_DIR, '.claude', 'todo.db');
       if (fs.existsSync(todoDbPath)) {
         const todoDb = new Database(todoDbPath);
+        todoDb.pragma('journal_mode = WAL');
         todoDb.pragma('busy_timeout = 3000');
-        todoDb.prepare(
+        const changes = todoDb.prepare(
           "UPDATE tasks SET status = 'in_progress', started_at = ?, started_timestamp = ? WHERE id = ? AND status = 'pending'"
         ).run(new Date().toISOString(), Math.floor(Date.now() / 1000), spawnMeta.taskId);
         todoDb.close();
+        if (changes.changes > 0) {
+          auditEvent('task_status_synced', { queue_id: item.id, task_id: spawnMeta.taskId, new_status: 'in_progress', trigger: 'spawn' });
+        }
       }
     }
   } catch (_) { /* non-fatal */ }
