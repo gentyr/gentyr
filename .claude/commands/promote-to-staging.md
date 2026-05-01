@@ -76,6 +76,14 @@ Create the PR:
 gh pr create --base staging --head preview --title "Promote preview → staging (manual)" --body "CTO-initiated manual promotion."
 ```
 
+Wait for CI checks:
+
+```bash
+gh pr checks {number} --watch --fail-on-fail
+```
+
+If CI fails: show the failures and stop. Do not merge.
+
 Merge the PR:
 
 ```bash

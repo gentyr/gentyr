@@ -139,8 +139,8 @@ After pushing but BEFORE creating the PR, run the pre-merge quality gate:
    - If CI fails: report failures, DO NOT merge, call summarize_work and exit
    - If no required checks configured (command exits immediately): proceed to merge
    - Timeout: if checks haven't completed in 10 minutes, report timeout and exit
-8. Self-merge IMMEDIATELY: `gh pr merge <number> --squash --delete-branch`
-   - Do NOT wait for review. Do NOT create a deputy-CTO task. Merge NOW.
+8. Self-merge (after CI passes): `gh pr merge <number> --squash --delete-branch`
+   - Do NOT wait for review. Do NOT create a deputy-CTO task. Merge after CI passes.
    - If merge fails (conflict), rebase: `git pull --rebase origin preview` and retry.
 9. Sync local base branch after merge:
    ```bash
@@ -168,8 +168,8 @@ Note: Commits on feature branches pass through immediately (lint + security only
 When a staging reactive reviewer identifies an issue and a code-writer fixes it, YOU are responsible for the promotion chain:
 
 1. The code-writer commits the fix to a feature branch in a worktree
-2. You create a PR from the feature branch to `preview` and self-merge it
-3. **Immediately after**, create a second PR from `preview` to `staging` and self-merge it
+2. You create a PR from the feature branch to `preview`, wait for CI (`gh pr checks <number> --watch --fail-on-fail`), and self-merge it
+3. **Immediately after**, create a second PR from `preview` to `staging`, wait for CI, and self-merge it
 4. This ensures staging fixes propagate quickly without waiting for batch promotions
 
 This per-fix chain is used by staging reactive reviewers (antipattern, code-quality, user-alignment, spec-compliance sessions). When you see a task from a staging reviewer, follow this chain.
@@ -240,9 +240,10 @@ git branch --no-merged origin/preview --sort=-committerdate
 # 1. Check if it has unique commits worth preserving
 git log --oneline origin/preview..<branch-name>
 
-# 2. If it has work: push it, create PR, self-merge
+# 2. If it has work: push it, create PR, wait for CI, self-merge
 git push -u origin <branch-name>
 gh pr create --base preview --head <branch-name> --title "Cleanup: merge stale <branch-name>"
+gh pr checks <number> --watch --fail-on-fail
 gh pr merge <number> --squash --delete-branch
 
 # 3. If it has no unique work: delete it
@@ -291,7 +292,8 @@ git rebase origin/preview
 # 3. Force-push the rebased branch
 git push --force-with-lease origin HEAD
 
-# 4. Retry the merge
+# 4. Wait for CI and retry the merge
+gh pr checks <number> --watch --fail-on-fail
 gh pr merge <number> --squash --delete-branch
 ```
 

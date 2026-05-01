@@ -148,7 +148,13 @@ Check for an existing open PR from preview to staging:
 gh pr list --head preview --base staging --state open --json number,url
 ```
 
-If an open PR exists, merge it:
+If an open PR exists, wait for CI and merge it:
+
+```bash
+gh pr checks {number} --watch --fail-on-fail
+```
+
+If CI fails: record in artifact directory, report via `report_to_deputy_cto`, exit without merging.
 
 ```bash
 gh pr merge {number} --merge
@@ -166,6 +172,12 @@ Quality: {verdict}
 Tests: {verdict}
 Demos: {verdict}"
 ```
+
+```bash
+gh pr checks {number} --watch --fail-on-fail
+```
+
+If CI fails: record in artifact directory, report via `report_to_deputy_cto`, exit without merging.
 
 ```bash
 gh pr merge {number} --merge
