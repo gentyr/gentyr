@@ -4536,70 +4536,54 @@ async function main() {
   });
 
   // =========================================================================
-  // ENVIRONMENT PARITY CHECK (6h cooldown, gate-exempt)
-  // Compares env var names and service configs between staging and production
+  // WEEKLY SECURITY AUDIT (gate-exempt, spawns security-auditor agent)
+  // Scans source files changed in the last 7 days for security vulnerabilities.
   // =========================================================================
-  await runIfDue('environment_parity_check', {
+  await runIfDue('security_audit', {
     state, now, intervals: config.intervals,
-    stateKey: 'lastEnvironmentParityCheck',
-    label: 'Environment parity check',
+    stateKey: 'lastSecurityAuditRun',
+    label: 'Security audit',
     localModeSkip: localMode,
     fn: async () => {
+      // Get files changed in the last 7 days
+      let changedFiles = [];
       try {
-        const { checkEnvironmentParity } = await import('./lib/environment-parity.js');
-        const report = checkEnvironmentParity(PROJECT_DIR);
-        if (!report.parity) {
-          log(`Environment parity: ${report.drift.length} difference(s) detected`);
-          recordAlert('environment_parity_drift', {
-            title: `Environment drift: ${report.drift.length} difference(s) between staging and production`,
-            severity: 'medium',
-            source: 'environment-parity-check',
-          });
-        } else {
-          log('Environment parity: staging and production in sync');
-          resolveAlert('environment_parity_drift');
-        }
-        // Store report for dashboard
-        try {
-          fs.writeFileSync(
-            path.join(PROJECT_DIR, '.claude', 'state', 'environment-parity.json'),
-            JSON.stringify(report, null, 2)
-          );
-        } catch { /* non-fatal */ }
-      } catch (err) {
-        log(`Environment parity error (non-fatal): ${err.message}`);
-      }
-    },
-  });
+        const result = execSync(
+          'git log --since="7 days ago" --name-only --pretty=format:"" | sort -u | grep -E "\\.(ts|tsx|js|jsx)$" | head -50',
+          { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe' }
+        ).trim();
+        changedFiles = result ? result.split('\n').filter(Boolean) : [];
+      } catch { return; }
 
-  // =========================================================================
-  // DEPENDENCY VULNERABILITY SCAN (daily, gate-exempt)
-  // Runs pnpm audit and reports HIGH/CRITICAL findings not in allowlist
-  // =========================================================================
-  await runIfDue('dependency_vulnerability_scan', {
-    state, now, intervals: config.intervals,
-    stateKey: 'lastVulnScanRun',
-    label: 'Dependency vulnerability scan',
-    localModeSkip: localMode,
-    fn: async () => {
-      try {
-        const { getActionableFindings } = await import('./lib/vulnerability-scanner.js');
-        const { actionable, total } = getActionableFindings(PROJECT_DIR);
-
-        if (actionable.length > 0) {
-          log(`Vulnerability scan: ${actionable.length} HIGH/CRITICAL finding(s)`);
-          recordAlert('vuln_scan_critical', {
-            title: `${actionable.length} HIGH/CRITICAL vulnerabilities found`,
-            severity: 'high',
-            source: 'vulnerability-scanner',
-          });
-        } else {
-          log(`Vulnerability scan: clean (${total.total} total, 0 actionable)`);
-          resolveAlert('vuln_scan_critical');
-        }
-      } catch (err) {
-        log(`Vulnerability scan error (non-fatal): ${err.message}`);
+      if (changedFiles.length === 0) {
+        log('Security audit: no source files changed in last 7 days, skipping.');
+        return;
       }
+
+      ensureCredentials();
+
+      enqueueSession({
+        title: `[Security Audit] ${changedFiles.length} files`,
+        agentType: 'security-auditor',
+        hookType: HOOK_TYPES.HOURLY_AUTOMATION,
+        tagContext: 'security-audit',
+        source: 'hourly-automation',
+        priority: 'low',
+        agent: 'security-auditor',
+        buildPrompt: (agentId) => [
+          `[Automation][security-auditor][AGENT:${agentId}]`,
+          `## Weekly Security Audit`,
+          ``,
+          `Review the following ${changedFiles.length} source files modified in the last 7 days:`,
+          '',
+          changedFiles.map(f => `- ${f}`).join('\n'),
+          '',
+          `Follow your agent instructions to review, report findings, and create tasks for critical issues.`,
+        ].join('\n'),
+        extraEnv: { ...resolvedCredentials },
+        metadata: { fileCount: changedFiles.length },
+        projectDir: PROJECT_DIR,
+      });
     },
   });
 

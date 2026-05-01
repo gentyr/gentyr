@@ -423,6 +423,11 @@
           },
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/ai-pr-review-hook.js",
+            "timeout": 15
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-merge-tracker.js",
             "timeout": 5
           },
