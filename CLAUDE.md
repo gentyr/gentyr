@@ -253,6 +253,149 @@ Task(subagent_type: "code-writer", ...)
 
 **Task-specific workflow overrides**: The standard 6-step pipeline (investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager) injected into agent prompts is the DEFAULT. If a task description provides explicit alternative workflow instructions (e.g., "skip investigation, just build and run the demo"), spawned agents follow those instructions instead. This is intentional: the task creator (persistent monitor, CTO, or other orchestrator) knows the context. The only invariant is that project-manager must run if file changes were made. This replaces the former "WORKFLOW IS NON-NEGOTIABLE" enforcement across `hourly-automation.js`, `urgent-task-spawner.js`, and `scripts/force-spawn-tasks.js`.
 
+## Enforcement Doctrine: Multi-Layer Compliance
+
+GENTYR uses a layered enforcement architecture that GUARANTEES consistent outcomes. Agent compliance is not optional or guidance-based — critical behaviors are enforced at the infrastructure level so agents CANNOT deviate regardless of their reasoning.
+
+### Three Enforcement Layers
+
+| Layer | Mechanism | Can agent bypass? | Examples |
+|-------|-----------|:---:|---------|
+| **Guidance** (soft) | Agent definitions, CLAUDE.md, session briefing, prompt templates | Yes (agent can ignore) | "Use the project-manager for git ops", "Defer to cicd-manager for deployments" |
+| **Orchestration** (medium) | PostToolUse hooks that inject reminders, session-completion-gate that blocks summarize_work | Technically yes (agent could stop responding) | uncommitted-change-monitor, project-manager-reminder, worktree-cleanup-gate |
+| **Enforcement** (hard) | PreToolUse hooks that DENY tool calls, root-owned files agents can't modify | **No** — tool call is rejected before execution | staging-lock-guard, main-tree-commit-guard, credential-file-guard, interactive-lockdown-guard |
+
+### Design Principle: Don't Trust the Agent
+
+For any behavior that MUST happen consistently:
+1. **Guide** the agent to do it willingly (agent definitions, CLAUDE.md, prompt injection)
+2. **Orchestrate** the environment so doing the right thing is easy (PostToolUse hooks inject reminders)
+3. **Enforce** at the infrastructure level so the wrong thing is impossible (PreToolUse hooks block bad actions)
+
+Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
+
+### Enforcement Patterns
+
+#### Pattern 1: Protected Branch Merge Guard
+
+**Requirement**: Only the preview-promoter agent (with full quality gates) can merge to staging.
+
+**Guidance layer**:
+- `agents/project-manager.md`: "For deployment matters, defer to cicd-manager"
+- `CLAUDE.md.gentyr-section`: "Staging merges MUST go through the preview-promoter pipeline"
+- Session briefing: Shows staging drift and promotion status
+
+**Orchestration layer**:
+- `pr-auto-merge-nudge.js`: Reminds agent to wait for CI after PR creation
+- `preview_promotion` automation block: Auto-spawns preview-promoter every 30 minutes
+
+**Enforcement layer**:
+- `staging-lock-guard.js` (PreToolUse, root-owned): DENIES `gh pr merge --base staging`, `git push origin staging` for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`
+- `merge-chain-check.yml` (GitHub Actions): BLOCKS PRs from non-preview branches to staging
+- `setup-branch-protection.js`: Configures GitHub required status checks
+
+**CTO bypass**: `APPROVE BYPASS <code>` → HMAC-signed token → temporarily allows the blocked action.
+
+#### Pattern 2: Interactive Session Lockdown
+
+**Requirement**: CTO interactive sessions manage via tasks/agents, never edit code directly.
+
+**Guidance layer**:
+- Session briefing: "Deputy-CTO console — manage via tasks"
+- `CLAUDE.md.gentyr-section`: Documents the lockdown model
+
+**Orchestration layer**:
+- `orchestration-guidance-hook.js`: Nudges toward parallel tasks when complexity detected
+
+**Enforcement layer**:
+- `interactive-lockdown-guard.js` (PreToolUse, root-owned): DENIES Write/Edit/NotebookEdit and code-modifying Agent spawns in interactive sessions
+- HMAC token required to disable: `set_lockdown_mode({ enabled: false })` requires a valid bypass token
+
+**CTO bypass**: `APPROVE BYPASS <code>` → `bypass-approval-hook.js` writes HMAC token → `set_lockdown_mode` verifies and disables lockdown.
+
+#### Pattern 3: Backward-Compatible Migration Enforcement
+
+**Requirement**: All database migrations must be backward-compatible (enables safe auto-rollback).
+
+**Guidance layer**:
+- `agents/preview-promoter.md`: Documents expand/contract pattern with examples
+- `agents/cicd-manager.md`: Lists BLOCKED patterns (DROP TABLE, DROP COLUMN, RENAME, etc.)
+
+**Orchestration layer**:
+- `migration-safety.js`: LLM-powered analysis provides detailed expand/contract fix suggestions
+
+**Enforcement layer**:
+- Preview-promoter agent EXITS without promoting when destructive patterns detected
+- `staging-lock-guard.js`: Even if the promoter is somehow bypassed, staging is blocked
+- Auto-rollback (`auto-rollback.js`): If a bad migration somehow reaches staging, code is automatically reverted
+
+#### Pattern 4: CI Wait Before Merge
+
+**Requirement**: All PRs must pass CI before merging (to any branch).
+
+**Guidance layer**:
+- `agents/project-manager.md`: Step 7 documents `gh pr checks --watch --fail-on-fail`
+- `CLAUDE.md.gentyr-section`: "CI is a required status check"
+
+**Orchestration layer**:
+- `pr-auto-merge-nudge.js`: Injects CI wait reminder after every `gh pr create`
+
+**Enforcement layer**:
+- GitHub branch protection (required status checks): `gh pr merge` fails if CI hasn't passed
+- `setup-branch-protection.js`: Configures these rules automatically
+
+### The HMAC CTO Bypass System
+
+When enforcement blocks a legitimate CTO action, the bypass system allows temporary override:
+
+1. **Agent hits a block**: PreToolUse hook denies the action
+2. **Agent requests bypass**: Calls `submit_bypass_request` or the hook returns a bypass code
+3. **CTO types**: `APPROVE BYPASS <6-char-code>` in the interactive session
+4. **bypass-approval-hook.js fires**:
+   - Reads the code from `deputy-cto.db`
+   - Computes HMAC-SHA256 with `.claude/protection-key` (root-owned, agents can't read)
+   - Writes signed approval token
+5. **Agent retries**: The blocked action now succeeds (token is consumed on use)
+
+**Security properties**:
+- The 6-char code is server-generated (stored in DB) — agents can't forge it
+- The HMAC is signed with `.claude/protection-key` — agents can't read or compute it
+- Token is one-time use — consumed after successful verification
+- Spawned sessions CANNOT use bypass even with valid token (server-side guard)
+
+**When to use HMAC bypass in new enforcement hooks**:
+```javascript
+// In a PreToolUse hook that blocks an action:
+const reason = 'This action is blocked. If this is intentional, the CTO can override: ' +
+  'APPROVE BYPASS <code> (request a code via submit_bypass_request or /lockdown off)';
+```
+
+### Adding New Enforcement
+
+When adding a new "must always happen" behavior:
+
+1. **Start with enforcement** — write the PreToolUse hook that blocks the bad action
+2. **Add to criticalHooks** — in `cli/commands/protect.js` so it becomes root-owned
+3. **Add guidance** — update agent definitions and CLAUDE.md so agents understand why
+4. **Add orchestration** — PostToolUse hook that reminds/nudges the correct behavior
+5. **Wire CTO bypass** — include bypass instructions in the denial message
+6. **Test the enforcement** — verify an agent CANNOT perform the blocked action
+
+### Files Involved in Enforcement
+
+| File | Role | Root-owned? |
+|------|------|:-----------:|
+| `.claude/hooks/staging-lock-guard.js` | Block staging merges | Yes |
+| `.claude/hooks/main-tree-commit-guard.js` | Block main tree commits by spawned agents | Yes |
+| `.claude/hooks/interactive-lockdown-guard.js` | Block file edits in CTO sessions | Yes |
+| `.claude/hooks/credential-file-guard.js` | Block access to credential files | Yes |
+| `.claude/hooks/branch-checkout-guard.js` | Block branch switching in main tree | Yes |
+| `.claude/hooks/block-no-verify.js` | Block --no-verify on git commands | Yes |
+| `.claude/hooks/gate-confirmation-enforcer.js` | Block task completion during audit | Yes |
+| `.claude/hooks/signal-compliance-gate.js` | Block malformed inter-agent signals | Yes |
+| `.claude/protection-key` | HMAC signing key for bypass tokens | Yes |
+| `cli/commands/protect.js` | Manages the criticalHooks list | — |
+
 ## Propagation to Linked Projects
 
 When developing GENTYR locally with `pnpm link`, most changes auto-propagate to target projects:
