@@ -1980,7 +1980,8 @@ function spawnTaskAgent(task) {
     hookType: HOOK_TYPES.TASK_RUNNER,
     tagContext: `task-runner-${mapping.agent}`,
     source: 'hourly-automation',
-    priority: 'low',
+    // CTO/human-assigned tasks use 'cto' priority to pass through focus mode gate
+    priority: task.assigned_by && ['cto', 'human'].includes(task.assigned_by) ? 'cto' : 'low',
     agent: mapping.agent,
     buildPrompt: (agentId) => {
       if (mapping.category) {
