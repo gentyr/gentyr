@@ -132,17 +132,24 @@ After pushing but BEFORE creating the PR, run the pre-merge quality gate:
    If there are warnings (non-scoped failures), note them as informational.
 
 6. Create PR: `gh pr create --base preview --head "$(git branch --show-current)" --title "<title>" --body "<summary>"`
-7. Self-merge IMMEDIATELY: `gh pr merge <number> --squash --delete-branch`
+7. Wait for CI checks:
+   ```bash
+   gh pr checks <number> --watch --fail-on-fail
+   ```
+   - If CI fails: report failures, DO NOT merge, call summarize_work and exit
+   - If no required checks configured (command exits immediately): proceed to merge
+   - Timeout: if checks haven't completed in 10 minutes, report timeout and exit
+8. Self-merge IMMEDIATELY: `gh pr merge <number> --squash --delete-branch`
    - Do NOT wait for review. Do NOT create a deputy-CTO task. Merge NOW.
    - If merge fails (conflict), rebase: `git pull --rebase origin preview` and retry.
-8. Sync local base branch after merge:
+9. Sync local base branch after merge:
    ```bash
    git checkout preview && git pull --ff-only origin preview
    git branch -D <feature-branch-name>
    ```
    This fetches the squash-merged commit. Without this pull, `git checkout preview`
    reverts the working tree to the pre-edit state and all merged changes appear lost.
-9. **Clean up worktree (MANDATORY if you are in a worktree):**
+10. **Clean up worktree (MANDATORY if you are in a worktree):**
    ```bash
    WORKTREE_PATH="$(pwd)"
    cd "$(git -C "$WORKTREE_PATH" rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"

@@ -1,0 +1,42 @@
+name: Validate Merge Chain
+
+on:
+  pull_request:
+    branches: [preview, staging, main]
+
+jobs:
+  validate-merge-chain:
+    name: Validate Merge Chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check merge chain compliance
+        run: |
+          BASE="${{ github.base_ref }}"
+          HEAD="${{ github.head_ref }}"
+
+          echo "PR: $HEAD -> $BASE"
+
+          if [ "$BASE" = "main" ]; then
+            if [ "$HEAD" != "staging" ]; then
+              echo "::error::Merge chain violation: PRs to 'main' must come from 'staging'."
+              echo "::error::Got: '$HEAD' -> 'main'"
+              echo ""
+              echo "The merge chain is: feature/* -> preview -> staging -> main"
+              echo "To promote to main, merge staging into main."
+              exit 1
+            fi
+            echo "Valid: staging -> main"
+          elif [ "$BASE" = "staging" ]; then
+            if [ "$HEAD" != "preview" ]; then
+              echo "::error::Merge chain violation: PRs to 'staging' must come from 'preview'."
+              echo "::error::Got: '$HEAD' -> 'staging'"
+              echo ""
+              echo "The merge chain is: feature/* -> preview -> staging -> main"
+              echo "To promote to staging, merge preview into staging."
+              exit 1
+            fi
+            echo "Valid: preview -> staging"
+          elif [ "$BASE" = "preview" ]; then
+            echo "Valid: '$HEAD' -> preview (any branch can target preview)"
+          fi

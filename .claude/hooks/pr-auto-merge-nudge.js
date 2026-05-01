@@ -56,7 +56,7 @@ async function main() {
     continue: true,
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
-      additionalContext: `PR created: ${prUrl}\n\nYou MUST now self-merge immediately:\n\`\`\`bash\ngh pr merge ${prNumber} --squash --delete-branch\n\`\`\`\n\nThen clean up the worktree and local branch. Your session is NOT complete until the PR is merged.`
+      additionalContext: `PR created: ${prUrl}\n\nYou MUST now wait for CI checks, then self-merge:\n\n1. Wait for CI:\n\`\`\`bash\ngh pr checks ${prNumber} --watch --fail-on-fail\n\`\`\`\nIf CI fails, report the failures and do NOT merge.\n\n2. If CI passes, self-merge:\n\`\`\`bash\ngh pr merge ${prNumber} --squash --delete-branch\n\`\`\`\n\nThen clean up the worktree and local branch. Your session is NOT complete until the PR is merged.`
     }
   }));
 }
