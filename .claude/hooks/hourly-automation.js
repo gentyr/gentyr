@@ -1565,7 +1565,7 @@ function getPendingTasksForRunner() {
     const oneHourAgo = nowTimestamp - 3600;
 
     const candidates = db.prepare(`
-      SELECT id, section, category_id, title, description, strict_infra_guidance, demo_involved, persistent_task_id, user_prompt_uuids
+      SELECT id, section, category_id, title, description, strict_infra_guidance, demo_involved, persistent_task_id, user_prompt_uuids, assigned_by, priority
       FROM tasks
       WHERE status = 'pending'
         AND category_id IS NOT NULL
@@ -1591,7 +1591,7 @@ function getUrgentPendingTasks() {
   try {
     const db = new Database(TODO_DB_PATH, { readonly: true });
     const candidates = db.prepare(`
-      SELECT id, section, category_id, title, description, strict_infra_guidance, demo_involved, persistent_task_id, user_prompt_uuids
+      SELECT id, section, category_id, title, description, strict_infra_guidance, demo_involved, persistent_task_id, user_prompt_uuids, assigned_by, priority
       FROM tasks
       WHERE status = 'pending'
         AND priority = 'urgent'
