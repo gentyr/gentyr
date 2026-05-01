@@ -69,6 +69,21 @@ function parseResponse(response) {
     result.taskTitle = parsed.title || '';
   }
 
+  // Attempt 0: response is a bare content array (Claude Code's primary PostToolUse format)
+  if (Array.isArray(response)) {
+    for (const block of response) {
+      if (block && block.type === 'text' && block.text) {
+        try {
+          extractFields(JSON.parse(block.text));
+          if (result.status) return result;
+        } catch {
+          // Not JSON text block, continue
+        }
+      }
+    }
+    return result;
+  }
+
   // Attempt 1: response is already an object
   if (response && typeof response === 'object' && !Array.isArray(response)) {
     // Check for MCP content array format

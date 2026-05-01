@@ -106,7 +106,11 @@ export function spawnResumedSession(sessionId, agentId, log, revivalPrompt, resu
       },
     });
 
-    const spawned = result.drained.spawned > 0;
+    if (result.blocked) {
+      log(`  Revival blocked for session ${sessionId.slice(0, 8)}... (reason: ${result.blocked})`);
+      return false;
+    }
+    const spawned = result.drained?.spawned > 0;
     if (spawned) {
       log(`  Enqueued and spawned revival of session ${sessionId.slice(0, 8)}... (queueId: ${result.queueId})`);
     } else {
