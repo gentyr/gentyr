@@ -485,6 +485,54 @@ function getBlockingQueueCount() {
 }
 
 /**
+ * Cache for pending bypass requests (60-second TTL)
+ */
+let _bypassRequestsCache = null;
+let _bypassRequestsCacheTime = 0;
+const BYPASS_REQUESTS_CACHE_TTL_MS = 60000;
+
+/**
+ * Get pending bypass requests with full details for CTO action.
+ * Uses a 60-second cache to avoid querying the DB on every prompt.
+ * Returns array of { id, task_title, category, summary, created_at } or empty array.
+ */
+function getPendingBypassRequests() {
+  const now = Date.now();
+  if (_bypassRequestsCache !== null && (now - _bypassRequestsCacheTime) < BYPASS_REQUESTS_CACHE_TTL_MS) {
+    return _bypassRequestsCache;
+  }
+
+  try {
+    const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+    if (!fs.existsSync(dbPath) || !Database) {
+      _bypassRequestsCache = [];
+      _bypassRequestsCacheTime = now;
+      return _bypassRequestsCache;
+    }
+    const db = new Database(dbPath, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='bypass_requests'").get();
+    if (!tableExists) {
+      db.close();
+      _bypassRequestsCache = [];
+      _bypassRequestsCacheTime = now;
+      return _bypassRequestsCache;
+    }
+    const rows = db.prepare(
+      "SELECT id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
+    ).all();
+    db.close();
+    _bypassRequestsCache = rows || [];
+    _bypassRequestsCacheTime = now;
+    return _bypassRequestsCache;
+  } catch (_) {
+    _bypassRequestsCache = [];
+    _bypassRequestsCacheTime = now;
+    return _bypassRequestsCache;
+  }
+}
+
+/**
  * Read preview → staging drift count from automation state file.
  * Fast: file read only, no git subprocess.
  */
@@ -934,6 +982,19 @@ async function main() {
     }
 
     message = lines.join('\n');
+  }
+
+  // Append pending bypass request details to message (both critical and normal paths)
+  const pendingBypassRequests = getPendingBypassRequests();
+  if (pendingBypassRequests.length > 0) {
+    const bypassLines = ['\n=== ACTION REQUIRED: Bypass Requests ==='];
+    for (let i = 0; i < pendingBypassRequests.length; i++) {
+      const req = pendingBypassRequests[i];
+      const age = req.created_at ? `${Math.round((Date.now() - new Date(req.created_at).getTime()) / 60000)}m ago` : '';
+      bypassLines.push(`${i + 1}. [${req.id}] "${req.task_title || 'Unknown'}" (${req.category || 'general'}) — ${req.summary || 'No summary'}${age ? ` [${age}]` : ''}`);
+      bypassLines.push(`   -> resolve_bypass_request({ request_id: "${req.id}", decision: "approved"|"rejected", context: "..." })`);
+    }
+    message += bypassLines.join('\n');
   }
 
   console.log(JSON.stringify({

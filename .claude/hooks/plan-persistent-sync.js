@@ -19,6 +19,7 @@ import { randomUUID } from 'crypto';
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const PERSISTENT_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const NOOP = JSON.stringify({});
 
 async function readStdin() {
@@ -114,11 +115,37 @@ async function main() {
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 3000');
 
-    const planTask = db.prepare('SELECT status, phase_id, verification_strategy, title FROM plan_tasks WHERE id = ?').get(planTaskId);
+    const planTask = db.prepare('SELECT status, phase_id, verification_strategy, title, todo_task_id FROM plan_tasks WHERE id = ?').get(planTaskId);
     if (!planTask || planTask.status === 'completed' || planTask.status === 'pending_audit') {
       db.close();
       process.stdout.write(NOOP);
       return;
+    }
+
+    // Cross-check: if plan task has a linked todo_task_id, verify it's completed before cascading
+    if (planTask.todo_task_id) {
+      try {
+        if (fs.existsSync(TODO_DB_PATH)) {
+          const todoDb = new Database(TODO_DB_PATH, { readonly: true });
+          const todoTask = todoDb.prepare('SELECT status FROM tasks WHERE id = ?').get(planTask.todo_task_id);
+          todoDb.close();
+
+          if (todoTask && todoTask.status !== 'completed') {
+            // Linked todo task is not completed — do NOT cascade plan task completion
+            db.close();
+            const warning = `Plan task ${planTaskId} completion blocked: linked todo task ${planTask.todo_task_id} is still in status "${todoTask.status}"`;
+            process.stderr.write(`[plan-persistent-sync] ${warning}\n`);
+            process.stdout.write(JSON.stringify({
+              additionalContext: `[PLAN SYNC BLOCKED] ${warning}. The plan task remains in_progress until the linked todo task completes.`,
+            }));
+            return;
+          }
+          // If todoTask doesn't exist in DB (deleted?), allow completion (fail-open)
+        }
+      } catch (todoErr) {
+        // Fail-open: DB errors should not block plan completion
+        process.stderr.write(`[plan-persistent-sync] Warning: could not verify todo task status: ${todoErr.message}\n`);
+      }
     }
 
     const now = new Date().toISOString();
@@ -183,6 +210,12 @@ ${planTask.verification_strategy}
 ## Your Job
 You are an INDEPENDENT auditor. Verify the verification strategy against actual artifacts.
 Do NOT trust the agent's claims — check actual files, test results, PR status, directory contents, etc.
+
+## CRITICAL: File Path Verification
+If the verification_strategy references specific file paths (e.g., "Results at .claude/releases/X/test-results.json",
+"Report generated at .claude/releases/X/report.md", or any path starting with ./ or .claude/), you MUST verify those
+files exist on disk using the Read tool. If the referenced files do NOT exist, the audit FAILS — the work was not
+actually completed regardless of what the agent claimed. Missing artifact files are an automatic FAIL verdict.
 
 ## Verdict (pick ONE, then exit immediately)
 - PASS: mcp__plan-orchestrator__verification_audit_pass({ task_id: "${planTaskId}", evidence: "<what you found>" })

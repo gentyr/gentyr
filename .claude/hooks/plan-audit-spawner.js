@@ -159,6 +159,12 @@ Do NOT trust the agent's claims — check actual files, test results, PR status,
    - If strategy mentions counts: verify actual counts match
 3. Render exactly ONE verdict with concrete evidence
 
+## CRITICAL: File Path Verification
+If the verification_strategy references specific file paths (e.g., "Results at .claude/releases/X/test-results.json",
+"Report generated at .claude/releases/X/report.md", or any path starting with ./ or .claude/), you MUST verify those
+files exist on disk using the Read tool. If the referenced files do NOT exist, the audit FAILS — the work was not
+actually completed regardless of what the agent claimed. Missing artifact files are an automatic FAIL verdict.
+
 ## Verdict (pick ONE, then exit immediately)
 - PASS: mcp__plan-orchestrator__verification_audit_pass({ task_id: "${taskId}", evidence: "<what you found>" })
 - FAIL: mcp__plan-orchestrator__verification_audit_fail({ task_id: "${taskId}", failure_reason: "<why>", evidence: "<what you found>" })
