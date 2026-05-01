@@ -455,6 +455,7 @@ if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID
       ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
         -framerate "${RECORDING_FPS}" -i :99 \
         -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
+        -g "${RECORDING_FPS}" \
         -movflags +faststart -y "$RECORDING_FILE" \
         < /dev/null > /app/.ffmpeg.log 2>&1 &
       echo $! > /tmp/.ffmpeg_pid
@@ -612,7 +613,10 @@ fi
         # Primary: use demo_first_action event (exact)
         FIRST_ACTION_TS=$(grep '"demo_first_action"' /app/.progress.jsonl 2>/dev/null | head -1 | sed -n 's/.*"timestamp":"\([^"]*\)".*/\1/p' || true)
         if [[ -n "$FIRST_ACTION_TS" && -n "$FFMPEG_EPOCH" ]]; then
-          FA_EPOCH=$(date -d "$FIRST_ACTION_TS" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${FIRST_ACTION_TS%%.*}" +%s 2>/dev/null || echo "")
+          # Strip milliseconds for GNU date compatibility (2026-05-01T10:14:00.000Z -> 2026-05-01T10:14:00Z)
+          CLEAN_TS=$(echo "$FIRST_ACTION_TS" | sed 's/\.[0-9]*Z$/Z/')
+          FA_EPOCH=$(date -d "$CLEAN_TS" +%s 2>/dev/null || date -d "$FIRST_ACTION_TS" +%s 2>/dev/null || echo "")
+          log "Trim debug: ffmpeg_epoch=$FFMPEG_EPOCH action_ts=$FIRST_ACTION_TS action_epoch=$FA_EPOCH delta=$((FA_EPOCH - FFMPEG_EPOCH))"
           if [[ -n "$FA_EPOCH" ]]; then
             TRIM_START=$((FA_EPOCH - FFMPEG_EPOCH))
             if [[ "$TRIM_START" -lt 0 ]]; then TRIM_START=0; fi
@@ -667,11 +671,10 @@ fi
 
       if [[ -n "$FFMPEG_INPUT_ARGS" || -n "$FFMPEG_OUTPUT_ARGS" ]]; then
         TRIMMED_FILE="${RECORDING_FILE%.mp4}-trimmed.mp4"
-        # -ss before -i = input seeking. Re-encode for frame-accurate trim.
-        # ultrafast preset keeps re-encode under 30s for a 3-min video.
+        # -ss before -i = input seeking. With -g 25 (keyframe every 1s),
+        # -c copy seeking is accurate to within 1 second — fast and precise.
         if ffmpeg $FFMPEG_INPUT_ARGS -i "$RECORDING_FILE" $FFMPEG_OUTPUT_ARGS \
-          -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
-          -movflags +faststart -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
+          -c copy -movflags +faststart -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
           mv "$TRIMMED_FILE" "$RECORDING_FILE"
           NEW_SIZE=$(stat -c%s "$RECORDING_FILE" 2>/dev/null || stat -f%z "$RECORDING_FILE" 2>/dev/null || echo "?")
           log "Trimmed recording: ${RECORDING_SIZE} -> ${NEW_SIZE} bytes"
