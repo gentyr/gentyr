@@ -451,7 +451,6 @@ if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID
     STARTED=false
 
     start_ffmpeg() {
-      date +%s > /tmp/.ffmpeg_start_epoch
       ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
         -framerate "${RECORDING_FPS}" -i :99 \
         -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
@@ -459,6 +458,23 @@ if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID
         < /dev/null > /app/.ffmpeg.log 2>&1 &
       echo $! > /tmp/.ffmpeg_pid
       STARTED=true
+      # Wait for ffmpeg to start capturing, then extract its real start time
+      # from the log. ffmpeg writes "start: <epoch.fractional>" when it begins.
+      # This is more accurate than `date +%s` which runs ~4s before first frame.
+      (
+        for i in $(seq 1 20); do
+          REAL_START=$(sed -n 's/.*start: \([0-9]*\).*/\1/p' /app/.ffmpeg.log 2>/dev/null | head -1)
+          if [[ -n "$REAL_START" ]]; then
+            echo "$REAL_START" > /tmp/.ffmpeg_start_epoch
+            break
+          fi
+          sleep 0.5
+        done
+        # Fallback: use current time if ffmpeg log parsing failed
+        if [[ ! -f /tmp/.ffmpeg_start_epoch ]]; then
+          date +%s > /tmp/.ffmpeg_start_epoch
+        fi
+      ) &
     }
 
     while kill -0 "$PLAYWRIGHT_PID" 2>/dev/null && [[ "$STARTED" == "false" ]]; do
