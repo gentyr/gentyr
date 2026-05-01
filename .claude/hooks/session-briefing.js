@@ -745,6 +745,25 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
+  // DORA metrics
+  try {
+    const autoStatePath = path.join(PROJECT_DIR, '.claude', 'state', 'hourly-automation-state.json');
+    if (fs.existsSync(autoStatePath)) {
+      const autoState = JSON.parse(fs.readFileSync(autoStatePath, 'utf8'));
+      if (autoState.latestDoraMetrics) {
+        const m = autoState.latestDoraMetrics;
+        const parts = [];
+        if (m.deployment_frequency != null) parts.push(`freq ${m.deployment_frequency}/day`);
+        if (m.lead_time_hours != null) parts.push(`lead ${m.lead_time_hours}h`);
+        if (m.change_failure_rate != null) parts.push(`CFR ${m.change_failure_rate}%`);
+        if (m.mttr_minutes != null) parts.push(`MTTR ${m.mttr_minutes}m`);
+        if (parts.length > 0) {
+          lines.push(`DORA: ${(m.rating || 'N/A').toUpperCase()} (${parts.join(', ')})`);
+        }
+      }
+    }
+  } catch { /* non-fatal */ }
+
   lines.push('');
 
   // Recent CTO prompts

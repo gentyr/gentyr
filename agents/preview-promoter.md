@@ -59,6 +59,24 @@ Get the full diff for quality review:
 git diff origin/staging..origin/preview
 ```
 
+### Step 1.5: Migration Safety Check
+
+Check for database migrations in the diff:
+1. `git diff --name-only origin/staging..origin/preview | grep -iE 'migration'`
+2. If migration files exist, check each for backward-incompatible patterns:
+   - **BLOCKED (stop promotion)**: DROP TABLE, DROP COLUMN, RENAME, ALTER TYPE, SET NOT NULL
+   - **WARNING (continue)**: CREATE INDEX without CONCURRENTLY
+3. If any BLOCKED pattern found:
+   - Record findings in `migration-safety.json` in the artifact directory
+   - Report via `report_to_deputy_cto`: include the file, line, pattern, and the expand/contract fix steps
+   - Call `summarize_work` and EXIT without promoting
+4. If only warnings or no migrations: record in `migration-safety.json` and continue
+
+The expand/contract pattern for common operations:
+- **DROP COLUMN**: Deploy code that stops using it → wait → DROP in cleanup migration
+- **RENAME**: ADD new → backfill → deploy code using new → DROP old later
+- **SET NOT NULL**: Deploy code that never inserts NULL → backfill NULLs → add constraint later
+
 ### Step 2: Quality Review
 
 Scan the diff for red flags. These are the patterns to check:
