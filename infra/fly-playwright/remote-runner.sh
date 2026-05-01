@@ -478,20 +478,30 @@ if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID
     }
 
     while kill -0 "$PLAYWRIGHT_PID" 2>/dev/null && [[ "$STARTED" == "false" ]]; do
-      # Start recording when Chrome window appears
-      if xdotool search --name "Chrom" >/dev/null 2>&1; then
-        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Chrome window detected — starting ffmpeg" >&2
+      # Start recording when demo_first_action appears in progress.jsonl.
+      # This is written by the test right before cursor automation begins,
+      # so ffmpeg's first frame IS the automation — no trim needed.
+      if grep -q '"demo_first_action"' /app/.progress.jsonl 2>/dev/null; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] demo_first_action detected — starting ffmpeg" >&2
         start_ffmpeg
         break
       fi
 
       ELAPSED=$(( $(date +%s) - WAIT_START ))
-      if [[ "$ELAPSED" -ge 300 ]]; then
-        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARNING: Chrome not detected after 5 min — starting ffmpeg anyway" >&2
+
+      # Fallback: Chrome window after 60s (for demos without demo_first_action)
+      if [[ "$ELAPSED" -ge 60 ]] && xdotool search --name "Chrom" >/dev/null 2>&1; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Chrome window fallback (no demo_first_action) — starting ffmpeg" >&2
         start_ffmpeg
         break
       fi
-      sleep 2
+
+      if [[ "$ELAPSED" -ge 300 ]]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARNING: No signal after 5 min — starting ffmpeg anyway" >&2
+        start_ffmpeg
+        break
+      fi
+      sleep 1
     done
 
     # Now wait for the automation-ready signal and record its timestamp
