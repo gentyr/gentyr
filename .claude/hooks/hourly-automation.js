@@ -709,9 +709,37 @@ function getState() {
     if (state.lastStagingReviewedSha === undefined) state.lastStagingReviewedSha = null;
     return state;
   } catch (err) {
-    log(`FATAL: State file corrupted: ${err.message}`);
-    log(`Delete ${STATE_FILE} to reset.`);
-    process.exit(1);
+    log(`WARNING: State file missing or corrupted: ${err.message}`);
+    log(`Automation state file missing — created fresh state (all cooldowns reset)`);
+    const freshState = {
+      lastRun: 0, lastClaudeMdRefactor: 0, lastTriageCheck: 0, lastTaskRunnerCheck: 0,
+      lastStagingHealthCheck: 0, lastProductionHealthCheck: 0,
+      lastStandaloneAntipatternHunt: 0, lastStandaloneComplianceCheck: 0,
+      lastFeedbackCheck: 0, lastFeedbackSha: null,
+      lastSessionReviverCheck: 0,
+      lastSessionReaperRun: 0,
+      lastVersionWatchRun: 0,
+      lastCiMonitoringRun: 0,
+      lastMergeChainGapRun: 0,
+      lastPersistentAlertsRun: 0,
+      lastUrgentDispatcherRun: 0,
+      lastTaskGateCleanupRun: 0,
+      lastUserFeedbackRun: 0,
+      lastDailyFeedbackCheck: 0,
+      lastStagingReactiveReviewCheck: 0,
+      lastStagingReviewedSha: null,
+      lastPreviewPromotionSha: null,
+      previewStagingDriftCount: 0,
+      previewStagingOldestDriftAge: null,
+      lastReportAutoResolveRun: 0,
+      lastReportDedupRun: 0,
+      lastMergedPRTimestamp: 0,
+    };
+    // Persist the fresh state so subsequent reads don't repeatedly fail
+    try {
+      fs.writeFileSync(STATE_FILE, JSON.stringify(freshState, null, 2));
+    } catch { /* non-fatal — we still return the fresh state */ }
+    return freshState;
   }
 }
 

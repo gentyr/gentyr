@@ -745,6 +745,18 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
+  // Hotfix divergence check (main ahead of staging)
+  try {
+    const mainAheadCount = execSync(
+      'git rev-list --count origin/staging..origin/main 2>/dev/null',
+      { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe' }
+    ).trim();
+    if (parseInt(mainAheadCount, 10) > 0) {
+      lines.push(`WARNING: MERGE-BACK NEEDED: main has ${mainAheadCount} commit(s) not in staging (likely hotfixes). Merge main->staging before next promotion.`);
+      lines.push('');
+    }
+  } catch { /* non-fatal — branches may not exist */ }
+
   // DORA metrics
   try {
     const autoStatePath = path.join(PROJECT_DIR, '.claude', 'state', 'hourly-automation-state.json');

@@ -986,6 +986,31 @@ export default async function sync(args) {
     console.log(`  No workflow templates found, skipping.`);
   }
 
+  // 6c. Check GitHub branch protection
+  console.log(`\n${YELLOW}Checking GitHub branch protection...${NC}`);
+  try {
+    const branches = ['preview', 'staging', 'main'];
+    const missingProtection = [];
+    for (const branch of branches) {
+      try {
+        execFileSync('gh', ['api', `repos/:owner/:repo/branches/${branch}/protection`], {
+          cwd: projectDir, stdio: 'pipe', timeout: 10000,
+        });
+      } catch {
+        missingProtection.push(branch);
+      }
+    }
+    if (missingProtection.length > 0) {
+      console.log(`  ${YELLOW}WARNING: No branch protection on: ${missingProtection.join(', ')}${NC}`);
+      console.log(`  ${YELLOW}CI workflows exist but results aren't enforced. Run:${NC}`);
+      console.log(`  ${YELLOW}  node ${path.join(frameworkDir, 'scripts', 'setup-branch-protection.js')} --path ${projectDir}${NC}`);
+    } else {
+      console.log(`  Branch protection verified on all branches.`);
+    }
+  } catch {
+    // Non-fatal — gh CLI might not be available
+  }
+
   // 7. Rebuild MCP servers
   console.log(`\n${YELLOW}Rebuilding MCP servers...${NC}`);
   const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
