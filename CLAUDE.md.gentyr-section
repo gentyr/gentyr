@@ -94,7 +94,7 @@ GENTYR enforces a strict merge chain: **feature -> preview -> staging -> product
 | `preview` | `staging` | **Automated (30min)** | Quality review + tests + demos + artifacts |
 | `staging` | `main` | CTO-initiated `/promote-to-prod` | 8-phase plan with CTO sign-off |
 
-**GitHub Actions CI pipeline**: Every PR triggers lint, typecheck, build, unit tests, and dependency audit on GitHub infrastructure. CI is a **required status check** — the project-manager waits for all checks to pass (`gh pr checks --watch --fail-on-fail`) before self-merging. The `Validate Merge Chain` check enforces the promotion order (feature->preview->staging->main). Security scan (CodeQL + TruffleHog) runs on PRs to main.
+**GitHub Actions CI pipeline**: Every PR triggers lint, typecheck, build, unit tests, E2E smoke tests (Playwright headless), and dependency audit on GitHub infrastructure. CI is a **required status check** — the project-manager waits for all checks to pass (`gh pr checks --watch --fail-on-fail`) before self-merging. The `Validate Merge Chain` check enforces the promotion order (feature->preview->staging->main). Security scan (CodeQL + TruffleHog) runs on PRs to main.
 
 **CI/CD Manager agent** (`cicd-manager`): The single authority for deployment, promotion, rollback, and release infrastructure. Other agents (code-writer, test-writer, investigator) should NOT directly manage deployments, staging locks, or release pipelines. For deployment-related needs, create a task for the cicd-manager or defer to it when it is active.
 
@@ -104,7 +104,7 @@ GENTYR enforces a strict merge chain: **feature -> preview -> staging -> product
 
 **Forbidden merges:** Feature branches can NEVER merge directly into `staging` or `main`. Preview can NEVER merge directly into `main`.
 
-**GitHub Actions CI**: Every PR runs lint, typecheck, build, unit tests, and dependency audit on GitHub infrastructure. The merge chain is enforced by the `Validate Merge Chain` required status check. Project-manager waits for all checks to pass before self-merging.
+**GitHub Actions CI**: Every PR runs lint, typecheck, build, unit tests, E2E smoke tests (Playwright headless), and dependency audit on GitHub infrastructure. The merge chain is enforced by the `Validate Merge Chain` required status check. Project-manager waits for all checks to pass before self-merging.
 
 **Feature branches:** All work on feature branches in worktrees. After committing, the project-manager MUST immediately: push the branch, create a PR to `preview`, wait for CI checks (`gh pr checks --watch --fail-on-fail`), then self-merge with `gh pr merge --squash --delete-branch`, and clean up the worktree. No waiting for review.
 
