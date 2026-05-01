@@ -963,6 +963,29 @@ export default async function sync(args) {
     }
   }
 
+  // 6b. Sync GitHub Actions workflows
+  console.log(`\n${YELLOW}Syncing GitHub Actions workflows...${NC}`);
+  const workflowTemplateDir = path.join(frameworkDir, 'templates', 'github', 'workflows');
+  if (fs.existsSync(workflowTemplateDir)) {
+    const projectWorkflowDir = path.join(projectDir, '.github', 'workflows');
+    fs.mkdirSync(projectWorkflowDir, { recursive: true });
+    const templateFiles = fs.readdirSync(workflowTemplateDir).filter(f => f.endsWith('.template'));
+    for (const file of templateFiles) {
+      const src = path.join(workflowTemplateDir, file);
+      const dstName = file.replace(/\.template$/, '');
+      const dst = path.join(projectWorkflowDir, dstName);
+      try {
+        fs.copyFileSync(src, dst);
+        console.log(`  Synced: .github/workflows/${dstName}`);
+      } catch {
+        console.log(`  ${YELLOW}Skipped .github/workflows/${dstName} (not writable)${NC}`);
+      }
+    }
+    console.log(`  ${templateFiles.length} workflow(s) synced.`);
+  } else {
+    console.log(`  No workflow templates found, skipping.`);
+  }
+
   // 7. Rebuild MCP servers
   console.log(`\n${YELLOW}Rebuilding MCP servers...${NC}`);
   const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');

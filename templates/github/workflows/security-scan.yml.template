@@ -1,0 +1,36 @@
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  security-events: write
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  trufflehog:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: TruffleHog Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified

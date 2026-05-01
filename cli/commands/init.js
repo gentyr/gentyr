@@ -399,6 +399,36 @@ export default async function init(args) {
   console.log(`\n${YELLOW}Setting up husky hooks...${NC}`);
   installHuskyHooks(projectDir, frameworkDir);
 
+  // 4b. GitHub Actions workflows
+  console.log(`\n${YELLOW}Installing GitHub Actions workflows...${NC}`);
+  const workflowTemplateDir = path.join(frameworkDir, 'templates', 'github', 'workflows');
+  if (fs.existsSync(workflowTemplateDir)) {
+    const projectWorkflowDir = path.join(projectDir, '.github', 'workflows');
+    fs.mkdirSync(projectWorkflowDir, { recursive: true });
+    const templateFiles = fs.readdirSync(workflowTemplateDir).filter(f => f.endsWith('.template'));
+    for (const file of templateFiles) {
+      const src = path.join(workflowTemplateDir, file);
+      const dstName = file.replace(/\.template$/, '');
+      const dst = path.join(projectWorkflowDir, dstName);
+      try {
+        fs.copyFileSync(src, dst);
+        console.log(`  Installed .github/workflows/${dstName}`);
+      } catch {
+        console.log(`  ${YELLOW}Skipped .github/workflows/${dstName}${NC}`);
+      }
+    }
+  }
+
+  // 4c. Branch protection (non-fatal)
+  console.log(`\n${YELLOW}Setting up GitHub branch protection...${NC}`);
+  try {
+    execFileSync('node', [path.join(frameworkDir, 'scripts', 'setup-branch-protection.js'), '--path', projectDir], {
+      encoding: 'utf8', timeout: 30000, stdio: 'inherit',
+    });
+  } catch {
+    console.log(`  ${YELLOW}Branch protection setup skipped (run manually: node scripts/setup-branch-protection.js)${NC}`);
+  }
+
   // 5. Build dependencies
   buildDependencies(frameworkDir);
 
