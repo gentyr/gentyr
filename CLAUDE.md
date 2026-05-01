@@ -1483,7 +1483,7 @@ Key modules consumed by hooks:
 - `cto-approval-proof.js` — CTO release approval cryptographic proof: `verifyQuoteInJsonl` (line-by-line JSONL scan for verbatim quote), `computeApprovalHmac` (HMAC-SHA256 with `cto-release-approval` domain separator), `verifyApprovalHmac` (constant-time verification), `computeFileHash` (SHA-256), `findCurrentSessionJsonl` (session discovery — encodes project path by replacing all non-alphanumeric chars with dashes to match canonical `~/.claude/projects/` directory naming). Consumed by `record_cto_approval` tool on release-ledger server. **TOCTOU defense**: `record_cto_approval` copies the live JSONL to a stable snapshot first, then verifies the quote and hashes the snapshot (not the live file), ensuring the archived hash matches the verified content. **Spawned-session guard**: `record_cto_approval` blocks `CLAUDE_SPAWNED_SESSION=true` sessions — only interactive CTO sessions can sign off releases. **`approval_text` minimum**: 10 characters (enforced by Zod schema) to ensure a substantive audit trail
 - `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
 
-### Agent Definitions (21 shared)
+### Agent Definitions (22 shared)
 
 | Agent | Model | Purpose | Key Constraints |
 |-------|-------|---------|----------------|
@@ -1508,6 +1508,7 @@ Key modules consumed by hooks:
 | repo-hygiene-expert | sonnet | Repo structure analysis | Read-only |
 | workstream-manager | haiku | Queue dependency analysis | Read-only |
 | staging-reviewer | sonnet | Staging reactive review (antipattern, code-quality, user-alignment, spec-compliance) | Read-only reviewer; spawns code-writer sub-agents for fixes |
+| cicd-manager | sonnet | Deployment, promotion, rollback, release infrastructure | Single authority for CI/CD pipeline; does NOT edit source code |
 
 ### MCP Servers (~38 servers)
 

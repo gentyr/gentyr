@@ -163,6 +163,10 @@ After pushing but BEFORE creating the PR, run the pre-merge quality gate:
 
 Note: Commits on feature branches pass through immediately (lint + security only).
 
+### Deployment Matters
+
+The project-manager handles git operations (commit, push, PR, merge). For deployment-related decisions — staging promotion, production releases, rollback, migration safety, deployment health — defer to the `cicd-manager` agent. Do NOT directly manage staging locks, release pipelines, or deployment verification.
+
 ### Staging Promotion (Per-Fix PR Chain)
 
 When a staging reactive reviewer identifies an issue and a code-writer fixes it, YOU are responsible for the promotion chain:
