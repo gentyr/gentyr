@@ -667,10 +667,11 @@ fi
 
       if [[ -n "$FFMPEG_INPUT_ARGS" || -n "$FFMPEG_OUTPUT_ARGS" ]]; then
         TRIMMED_FILE="${RECORDING_FILE%.mp4}-trimmed.mp4"
-        # -ss before -i = input seeking (seeks to nearest keyframe, then
-        # discards frames until target — fast with -c copy, at most 1-2s early)
+        # -ss before -i = input seeking. Re-encode for frame-accurate trim.
+        # ultrafast preset keeps re-encode under 30s for a 3-min video.
         if ffmpeg $FFMPEG_INPUT_ARGS -i "$RECORDING_FILE" $FFMPEG_OUTPUT_ARGS \
-          -c copy -movflags +faststart -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
+          -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+          -movflags +faststart -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
           mv "$TRIMMED_FILE" "$RECORDING_FILE"
           NEW_SIZE=$(stat -c%s "$RECORDING_FILE" 2>/dev/null || stat -f%z "$RECORDING_FILE" 2>/dev/null || echo "?")
           log "Trimmed recording: ${RECORDING_SIZE} -> ${NEW_SIZE} bytes"
