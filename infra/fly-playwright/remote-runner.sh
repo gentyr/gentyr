@@ -654,12 +654,14 @@ fi
       fi
       if [[ -n "$TRIM_END" ]]; then
         log "Trim end: ${TRIM_END}s (demo_last_action/blackdetect)"
+        # Truncate floats to integers (bash arithmetic can't handle floats)
+        TRIM_END_INT=${TRIM_END%%.*}
+        TRIM_START_INT=${TRIM_START%%.*}
         if [[ -n "$TRIM_START" ]]; then
-          # Duration = end - start
-          TRIM_DURATION=$((TRIM_END - TRIM_START))
+          TRIM_DURATION=$((TRIM_END_INT - TRIM_START_INT))
           FFMPEG_OUTPUT_ARGS="-t $TRIM_DURATION"
         else
-          FFMPEG_OUTPUT_ARGS="-t $TRIM_END"
+          FFMPEG_OUTPUT_ARGS="-t $TRIM_END_INT"
         fi
       fi
 
