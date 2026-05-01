@@ -455,7 +455,6 @@ if [[ -n "$XVFB_PID" ]] && kill -0 "$XVFB_PID" 2>/dev/null && [[ -z "$FFMPEG_PID
       ffmpeg -f x11grab -video_size "${RECORDING_RESOLUTION}" \
         -framerate "${RECORDING_FPS}" -i :99 \
         -c:v libx264 -preset ultrafast -profile:v high -crf 23 -pix_fmt yuv420p \
-        -g "${RECORDING_FPS}" \
         -movflags +faststart -y "$RECORDING_FILE" \
         < /dev/null > /app/.ffmpeg.log 2>&1 &
       echo $! > /tmp/.ffmpeg_pid
@@ -671,10 +670,11 @@ fi
 
       if [[ -n "$FFMPEG_INPUT_ARGS" || -n "$FFMPEG_OUTPUT_ARGS" ]]; then
         TRIMMED_FILE="${RECORDING_FILE%.mp4}-trimmed.mp4"
-        # -ss before -i = input seeking. With -g 25 (keyframe every 1s),
-        # -c copy seeking is accurate to within 1 second — fast and precise.
+        # Re-encode for frame-accurate trim. With retries disabled (single
+        # attempt), videos are ~2.5 min — re-encode takes <15s with ultrafast.
         if ffmpeg $FFMPEG_INPUT_ARGS -i "$RECORDING_FILE" $FFMPEG_OUTPUT_ARGS \
-          -c copy -movflags +faststart -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
+          -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+          -movflags +faststart -y "$TRIMMED_FILE" < /dev/null >> /app/.ffmpeg.log 2>&1; then
           mv "$TRIMMED_FILE" "$RECORDING_FILE"
           NEW_SIZE=$(stat -c%s "$RECORDING_FILE" 2>/dev/null || stat -f%z "$RECORDING_FILE" 2>/dev/null || echo "?")
           log "Trimmed recording: ${RECORDING_SIZE} -> ${NEW_SIZE} bytes"
