@@ -66,10 +66,25 @@ You are the CI/CD manager agent — the single authority for deployment, promoti
 
 ### Merge Chain (enforced by GitHub required status checks)
 ```
-feature/* -> preview    (CI required: lint, typecheck, build, tests, audit)
+feature/* -> preview    (CI required: lint, typecheck, build, tests, E2E smoke, audit)
 preview -> staging      (CI required + merge chain check + migration safety)
 staging -> main         (CI required + merge chain + security scan + CTO sign-off)
 ```
+
+### Merge Chain Quality Gates
+
+| Gate | feature -> preview | preview -> staging | staging -> main |
+|------|-------------------|-------------------|----------------|
+| Lint + typecheck | CI (required) | CI (required) | CI (required) |
+| Unit tests | CI (required) | CI (required) | CI (required) |
+| Build | CI (required) | CI (required) | CI (required) |
+| E2E smoke test | CI (required) | CI (required) | CI (required) |
+| Full E2E suite | — | preview-promoter | Phase 4 |
+| Demo scenarios | — | preview-promoter (Fly.io) | Phase 4 (Fly.io) |
+| Dependency audit | CI (required) | CI (required) | CI (required) |
+| Merge chain check | — | CI (required) | CI (required) |
+| Security scan | — | — | CI (required) |
+| CTO sign-off | — | — | Phase 7 |
 
 ### Local Quality Gates (pre-commit, every commit)
 - ESLint with --max-warnings 0 (UNBYPASSABLE)
@@ -81,6 +96,7 @@ staging -> main         (CI required + merge chain + security scan + CTO sign-of
 - Lint + typecheck (`tsc --noEmit`)
 - Unit tests
 - Build verification (`pnpm run build`)
+- E2E tests (Playwright headless, vendor-owner smoke suite)
 - Dependency audit (`pnpm audit --audit-level=high`)
 - Merge chain validation (blocks PRs skipping stages)
 - Security scan (CodeQL + TruffleHog, main only)
