@@ -59,44 +59,9 @@ Show the user:
 git diff --stat origin/staging..origin/preview
 ```
 
-### Step 5: Ask the User Which Mode
+### Step 5: Spawn the Preview-Promoter Agent
 
-Present two options:
-
-- **Quick promote**: The CTO is the quality gate. Create the PR and merge immediately without running quality checks, tests, or demos.
-- **Full promote**: Spawn the `preview-promoter` agent to run all quality gates (quality scan, tests, related demos) before merging. Artifacts and a report are collected.
-
-### Step 6: Quick Promote
-
-If the user chose Quick promote:
-
-Create the PR:
-
-```bash
-gh pr create --base staging --head preview --title "Promote preview → staging (manual)" --body "CTO-initiated manual promotion."
-```
-
-Wait for CI checks:
-
-```bash
-gh pr checks {number} --watch --fail-on-fail
-```
-
-If CI fails: show the failures and stop. Do not merge.
-
-Merge the PR:
-
-```bash
-gh pr merge {number} --merge
-```
-
-Show the PR URL and confirm success:
-
-> Preview promoted to staging via PR #{number}: {url}
-
-### Step 7: Full Promote
-
-If the user chose Full promote:
+All promotions go through the preview-promoter with full quality gates. Direct staging merges are blocked by the staging-promotion-guard hook.
 
 Generate a promotion ID: `promo-{YYYYMMDD}-{HHmmss}`
 
@@ -106,12 +71,24 @@ Spawn the preview-promoter agent by calling `mcp__agent-tracker__force_spawn_tas
 - Set `assigned_by: "cto"` to bypass the task gate
 - Set `priority: "urgent"`
 
+The preview-promoter will:
+- Check migration safety (backward-compatible only)
+- Scan for quality issues and anti-patterns
+- Run tests and related demos
+- Create and merge the PR if all gates pass
+
+This is the ONLY path to staging — direct merges are blocked by the staging-promotion-guard hook.
+
+### Step 6: Monitor Progress
+
 The agent will be queued and can be monitored via `/status` or `/monitor`.
 
 Show the user:
 
-> Full promotion agent has been queued with promotion ID **{promotion_id}**.
+> Promotion agent has been queued with promotion ID **{promotion_id}**.
 >
 > Monitor progress: `/status` or `/monitor`
 >
 > Artifacts will be collected at `.claude/promotions/{promotion_id}/`
+>
+> If you need to bypass quality gates in an emergency, type `APPROVE BYPASS <code>` (request a code via `submit_bypass_request`).

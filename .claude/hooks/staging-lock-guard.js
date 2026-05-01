@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /**
- * PreToolUse Hook: Staging Lock Guard
+ * PreToolUse Hook: Staging Promotion Guard (Always-On)
  *
- * Blocks Bash commands that would merge into staging when a production release
- * is in progress (staging is locked). The lock state is read from
- * .claude/state/staging-lock.json via the staging-lock shared module.
+ * ALWAYS blocks Bash commands that would merge into staging unless the caller
+ * is a promotion pipeline agent (GENTYR_PROMOTION_PIPELINE=true). This ensures
+ * all staging merges go through the preview-promoter quality gate pipeline.
+ *
+ * When staging is additionally locked for a production release, the error message
+ * references the active release. When staging is NOT locked, the error message
+ * directs the user to /promote-to-staging or the automated 30-minute cycle.
  *
  * Blocked patterns:
  *   - `gh pr merge` targeting staging (--base staging, or PR against staging)
@@ -12,8 +16,7 @@
  *   - `git merge` into staging (when on the staging branch)
  *
  * Fast exits:
- *   - GENTYR_PROMOTION_PIPELINE=true (release agents need staging access)
- *   - Staging not locked (most common path)
+ *   - GENTYR_PROMOTION_PIPELINE=true (promotion pipeline agents need staging access)
  *   - Non-Bash tool calls
  *
  * Uses the same tokenizer / splitOnShellOperators pattern from
@@ -26,7 +29,7 @@
  *
  * SECURITY: This file should be root-owned via npx gentyr protect
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import path from 'node:path';
@@ -336,12 +339,6 @@ async function main() {
     return;
   }
 
-  // Fast path: if staging is not locked, allow everything
-  if (!isStagingLocked(PROJECT_DIR)) {
-    process.stdout.write(JSON.stringify({ allow: true }));
-    return;
-  }
-
   // Extract command from tool input
   const command = event?.tool_input?.command || '';
   if (!command) {
@@ -349,25 +346,41 @@ async function main() {
     return;
   }
 
-  // Get lock state for the deny message
-  const lockState = getStagingLockState(PROJECT_DIR);
-  const releaseId = lockState.release_id || 'unknown';
-
   // Split on shell operators and analyze each sub-command
   const subCommands = splitOnShellOperators(command);
   for (const sub of subCommands) {
     const result = analyzeSubCommand(sub);
     if (result.blocked) {
-      const reason = [
-        `BLOCKED: Staging is locked — production release in progress (release ${releaseId})`,
-        '',
-        `Detected: ${result.reason}`,
-        '',
-        'Staging is locked to prevent new merges from contaminating the release candidate.',
-        'No code may be merged to staging until the release completes or is aborted.',
-        '',
-        'Use /promote-to-prod to manage the release.',
-      ].join('\n');
+      // Determine the appropriate error message based on lock state
+      const locked = isStagingLocked(PROJECT_DIR);
+      let reason;
+
+      if (locked) {
+        const lockState = getStagingLockState(PROJECT_DIR);
+        const releaseId = lockState.release_id || 'unknown';
+        reason = [
+          `BLOCKED: Staging is LOCKED — production release in progress (release ${releaseId})`,
+          '',
+          `Detected: ${result.reason}`,
+          '',
+          'Staging is locked to prevent new merges from contaminating the release candidate.',
+          'No code may be merged to staging until the release completes or is cancelled.',
+          '',
+          'Use /promote-to-prod to manage the release.',
+        ].join('\n');
+      } else {
+        reason = [
+          `BLOCKED: Staging merges MUST go through the preview-promoter agent pipeline.`,
+          '',
+          `Detected: ${result.reason}`,
+          '',
+          'Direct staging merges are not allowed — they bypass quality gates (tests, demos, migration safety).',
+          'Use /promote-to-staging to trigger the promotion pipeline, or wait for the automated 30-minute cycle.',
+          '',
+          'If this is an emergency, the CTO can type APPROVE BYPASS <code> to temporarily allow direct staging access.',
+          'Request a bypass code via submit_bypass_request.',
+        ].join('\n');
+      }
 
       process.stdout.write(JSON.stringify({
         permissionDecision: 'deny',
@@ -382,10 +395,10 @@ async function main() {
 }
 
 main().catch((err) => {
-  // G001 fail-closed: staging lock guard must not silently allow on crash
+  // G001 fail-closed: staging promotion guard must not silently allow on crash
   try { process.stderr.write(`[staging-lock-guard] Unexpected error: ${err?.message || err}\n`); } catch (_) { /* ignore */ }
   process.stdout.write(JSON.stringify({
     permissionDecision: 'deny',
-    permissionDecisionReason: `Staging lock guard crashed: ${err?.message || 'unknown error'}. Run again or check .claude/state/staging-lock.json manually.`,
+    permissionDecisionReason: `Staging promotion guard crashed: ${err?.message || 'unknown error'}. Run again or check .claude/state/staging-lock.json manually.`,
   }));
 });
