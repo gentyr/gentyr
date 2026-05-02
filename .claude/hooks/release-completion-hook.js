@@ -199,6 +199,33 @@ async function main() {
     // Continue — audit event and signal are still valuable
   }
 
+  // Step 2b: Create GitHub Release with git tag
+  let githubReleaseResult = null;
+  try {
+    // Read the version from the release-ledger DB
+    const ledgerDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'release-ledger.db');
+    if (fs.existsSync(ledgerDbPath)) {
+      const db = new Database(ledgerDbPath, { readonly: true });
+      db.pragma('busy_timeout = 3000');
+      const release = db.prepare('SELECT version FROM releases WHERE id = ?').get(releaseId);
+      db.close();
+
+      if (release && release.version) {
+        const { createGitHubRelease } = await import('./lib/release-orchestrator.js');
+        githubReleaseResult = createGitHubRelease(releaseId, release.version, reportPath, PROJECT_DIR);
+        if (githubReleaseResult) {
+          log(`GitHub Release created: tag=${githubReleaseResult.tag}, url=${githubReleaseResult.releaseUrl}`);
+        } else {
+          log(`GitHub Release creation returned null (non-fatal)`);
+        }
+      } else {
+        log(`No version found for release ${releaseId} — skipping GitHub Release creation`);
+      }
+    }
+  } catch (err) {
+    log(`Warning: GitHub Release creation failed (non-fatal): ${err.message}`);
+  }
+
   // Step 3: Update release record with report path
   if (reportPath) {
     try {
@@ -256,11 +283,15 @@ async function main() {
     ? `Release report generated at: ${reportPath}`
     : 'Release report generation failed — check session-queue.log for details.';
 
+  const ghInfo = githubReleaseResult
+    ? ` GitHub Release: ${githubReleaseResult.releaseUrl} (tag: ${githubReleaseResult.tag}).`
+    : '';
+
   process.stdout.write(JSON.stringify({
     continue: true,
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
-      additionalContext: `[RELEASE COMPLETE] Release ${releaseId} finalized. Staging unlocked. ${reportInfo}`,
+      additionalContext: `[RELEASE COMPLETE] Release ${releaseId} finalized. Staging unlocked. ${reportInfo}${ghInfo}`,
     },
   }));
 }

@@ -93,6 +93,106 @@ function findSessionFileByAgentId(sessionDir, agentId) {
 }
 
 // ============================================================================
+// GitHub Release Creation
+// ============================================================================
+
+/**
+ * Create a GitHub Release with a git tag after staging merges to main.
+ *
+ * Steps:
+ *   1. Create a git tag on the current HEAD of main
+ *   2. Push the tag to origin
+ *   3. Create a GitHub Release via `gh release create`
+ *
+ * Non-fatal: returns null on any failure (the release happened even if
+ * the GitHub Release fails to create).
+ *
+ * @param {string} releaseId - Release ID for logging
+ * @param {string} version - Version string (e.g., "v2026.05.02")
+ * @param {string} reportPath - Path to the release report markdown file
+ * @param {string} [projectDir]
+ * @returns {{ tag: string, releaseUrl: string } | null}
+ */
+export function createGitHubRelease(releaseId, version, reportPath, projectDir = PROJECT_DIR) {
+  if (!releaseId || !version) {
+    log(`createGitHubRelease: missing releaseId or version — skipping`);
+    return null;
+  }
+
+  // Ensure the version starts with 'v' for the tag
+  const tag = version.startsWith('v') ? version : `v${version}`;
+
+  try {
+    // Step 1: Create the git tag on current HEAD (should be main after merge)
+    execFileSync('git', ['tag', tag], {
+      cwd: projectDir,
+      encoding: 'utf8',
+      timeout: 15000,
+      stdio: 'pipe',
+    });
+    log(`Created git tag: ${tag}`);
+  } catch (err) {
+    // Tag may already exist (re-run scenario)
+    const message = err.message || String(err);
+    if (message.includes('already exists')) {
+      log(`Tag ${tag} already exists — proceeding to push`);
+    } else {
+      log(`Failed to create git tag ${tag}: ${message}`);
+      return null;
+    }
+  }
+
+  try {
+    // Step 2: Push the tag to origin
+    execFileSync('git', ['push', 'origin', tag], {
+      cwd: projectDir,
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: 'pipe',
+    });
+    log(`Pushed tag ${tag} to origin`);
+  } catch (err) {
+    const message = err.message || String(err);
+    // "[rejected]" with "already exists" means the tag is already pushed — continue
+    if (message.includes('already exists')) {
+      log(`Tag ${tag} already exists on remote — proceeding to create release`);
+    } else {
+      log(`Failed to push tag ${tag}: ${message}`);
+      return null;
+    }
+  }
+
+  try {
+    // Step 3: Create the GitHub Release
+    const ghArgs = ['release', 'create', tag, '--title', `Release ${version}`];
+
+    // Use the report as release notes if available
+    if (reportPath && fs.existsSync(reportPath)) {
+      ghArgs.push('--notes-file', reportPath);
+    } else {
+      ghArgs.push('--notes', `Production release ${version} (${releaseId})`);
+    }
+
+    const output = execFileSync('gh', ghArgs, {
+      cwd: projectDir,
+      encoding: 'utf8',
+      timeout: 30000,
+      stdio: 'pipe',
+    }).trim();
+
+    // `gh release create` outputs the release URL on success
+    const releaseUrl = output || '';
+    log(`Created GitHub Release: ${releaseUrl}`);
+
+    return { tag, releaseUrl };
+  } catch (err) {
+    const message = err.message || String(err);
+    log(`Failed to create GitHub Release for tag ${tag}: ${message}`);
+    return null;
+  }
+}
+
+// ============================================================================
 // PR Enumeration
 // ============================================================================
 

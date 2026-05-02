@@ -78,9 +78,9 @@ Use `AskUserQuestion` to ask:
 
 > Ready to create a production release with these {N} PRs?
 >
-> You can optionally provide a version string (e.g., "2.1.0"). If left blank, one will be auto-generated.
+> You can optionally provide a version string (e.g., "2.1.0"). If left blank, the release ledger auto-generates a date-based version (v{YYYY}.{MM}.{DD}) with collision handling for same-day releases.
 
-Record the CTO's response. If they provide a version string, use it. Otherwise, auto-generate as `v{YYYY}.{MM}.{DD}` from today's date.
+Record the CTO's response. If they provide a version string, pass it to `create_release`. Otherwise, omit the `version` field — the server handles auto-generation with collision detection (v{YYYY}.{MM}.{DD}, then .1, .2, etc.).
 
 If the CTO says no or cancels, stop immediately.
 
@@ -283,8 +283,8 @@ Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo
 - verification_strategy: "Release status is 'signed_off' AND cto-approval.json exists in the release artifact directory"
 - create_todo: true, todo_section: "DEPUTY-CTO"
 
-**Phase 8 task**: "Generate Release Report"
-- Description: "Collect all artifacts, generate the structured release report, and persist to the release ledger."
+**Phase 8 task**: "Generate Release Report and Merge to Main"
+- Description: "Merge staging to main, collect all artifacts, generate the structured release report, and persist to the release ledger. After the report is generated, a GitHub Release is automatically created with a git tag and the report as release notes (handled by release-completion-hook.js — no manual action needed)."
 - create_todo: true, todo_section: "PROJECT-MANAGER"
 
 ### 5e. Add phase dependencies
