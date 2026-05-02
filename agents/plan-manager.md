@@ -178,6 +178,14 @@ When `releaseApprovalTier` is `"cto"` or `"deputy"` (the default):
 
 To check the approval tier, read services.json via `mcp__secret-sync__get_services_config` and look for the `releaseApprovalTier` field. If absent, default to `"cto"`.
 
+## Coverage Gate
+
+100% test coverage is mandatory for production releases. Before advancing past the test execution phase (Phase 4):
+1. Verify that `pnpm run test:coverage:check` exits 0 (100% coverage on lines, statements, functions, and branches)
+2. If coverage is below 100%, spawn test-writer tasks targeting the uncovered files/functions
+3. Do NOT advance to Phase 5 (Demo Coverage Audit) or CTO sign-off until coverage is verified at 100%
+4. Record coverage verification results in `coverage-report.json` in the release artifact directory
+
 ## CI Gate Before CTO Sign-off
 
 Before advancing to any phase that requires CTO approval (typically the sign-off phase):

@@ -102,16 +102,21 @@ If you find a disabled test (`.skip()` or `.todo()`), this is a violation of pol
 
 ### 4. Coverage Requirements
 
-- Minimum 80% coverage globally (statements, branches, functions, lines)
-- 100% coverage required for:
-  - Session interception
-  - Credential handling
-  - MCP tool execution
-  - Input validation
+**100% test coverage is mandatory.** The project enforces 100% coverage on all four metrics (lines, statements, functions, branches) as a hard gate in the production promotion pipeline. Coverage below 100% blocks promotion — no exceptions.
+
+- 100% coverage required globally on ALL metrics: lines, statements, functions, branches
+- Every new line, function, branch, and statement MUST be covered
+- If existing code lacks coverage, add tests for it — do not just cover your changes
+- The CI pipeline runs `pnpm run test:coverage:check` and fails the build if any metric is below 100%
 
 Run coverage with:
 ```bash
 pnpm run test:coverage
+```
+
+Verify the hard gate passes:
+```bash
+pnpm run test:coverage:check
 ```
 
 ## Test Organization
@@ -356,8 +361,9 @@ pnpm run test:coverage
 
 ### Coverage Gates
 
-- PRs that decrease overall coverage should be flagged
-- Critical paths (credential handling, auth, input validation) require 100% coverage
+- 100% coverage is enforced as a hard gate — PRs that bring coverage below 100% CANNOT be promoted to production
+- The `test:coverage:check` script in `package.json` is the enforcement mechanism — it must exit non-zero when any metric is below 100%
+- Critical paths (credential handling, auth, input validation) require 100% coverage — but so does everything else
 
 ### Codecov MCP Tools (Optional)
 

@@ -39,6 +39,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run test
+      # Coverage gate: 100% coverage is mandatory for production promotion.
+      # Projects must define a `test:coverage:check` script in package.json that
+      # exits non-zero when coverage is below 100% on any metric (lines, statements,
+      # functions, branches). Example implementation using vitest:
+      #   "test:coverage:check": "vitest run --coverage && node -e \"const s=JSON.parse(require('fs').readFileSync('coverage/coverage-summary.json','utf8')).total;const f=['lines','statements','functions','branches'].filter(m=>s[m].pct<100);if(f.length){console.error('FAILED:',f.map(m=>m+':'+s[m].pct+'%').join(', '));process.exit(1)}\""
+      - name: Verify 100% test coverage
+        run: pnpm run test:coverage:check || (echo "::error::Coverage below 100% — all code must be tested before promotion" && exit 1)
 
   build:
     name: Build

@@ -120,6 +120,39 @@ If tests FAIL: record the results in `test-results.json` in the promotion artifa
 
 Record passing test results in `test-results.json`.
 
+### Step 3.5: Coverage Gate
+
+100% test coverage is mandatory. Run coverage verification:
+
+```bash
+pnpm run test:coverage:check
+```
+
+Or via MCP if available:
+```
+mcp__secret-sync__secret_run_command({ command: "pnpm run test:coverage:check", label: "coverage-check" })
+```
+
+If coverage is below 100% on ANY metric (lines, statements, functions, branches), enter the **Coverage Self-Healing Loop**:
+
+1. Parse the coverage output to identify uncovered files/functions/branches
+2. Create a `Test Suite Work` category task via `mcp__todo-db__create_task` targeting the specific uncovered files:
+   - Title: "Add tests for uncovered code: {file1}, {file2}, ..."
+   - Description: Include the exact uncovered lines/functions from the coverage report
+   - Priority: `urgent`
+   - `assigned_by`: `"cto"` (gate-bypass so it spawns immediately)
+3. Spawn the task immediately via `mcp__agent-tracker__force_spawn_tasks`
+4. Wait for the task to complete (poll `mcp__todo-db__get_task` every 60 seconds, max 30 minutes)
+5. After the test-writer task completes, re-run coverage: `pnpm run test:coverage:check`
+6. If coverage is now 100% — proceed to Step 4
+7. If coverage is still below 100% — repeat from step 1 (max 3 iterations)
+8. After 3 failed iterations:
+   - Record the remaining gaps in `coverage-report.json`
+   - Report to CTO via `mcp__agent-reports__report_to_deputy_cto` with what's still uncovered
+   - EXIT without promoting — do NOT proceed
+
+CRITICAL: Never proceed to Step 4 or promote with coverage below 100%. The self-healing loop must either achieve 100% or escalate — there is no "close enough."
+
 ### Step 4: Run Related Demos
 
 Get the list of changed files:
