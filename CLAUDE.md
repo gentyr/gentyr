@@ -21,7 +21,7 @@ Installs framework symlinks (via `node_modules/gentyr`), configs, husky hooks, b
 npx gentyr sync
 ```
 
-Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes. At every SessionStart, the hook also checks `~/.claude/settings.json` for stale hook file references (hook entries whose referenced file no longer exists on disk) and emits an escalated warning to run `npx gentyr sync` immediately. `npx gentyr sync` itself removes stale hook entries from `~/.claude/settings.json` as part of its cleanup pass. **Session recycling** (Step 10): After all config steps complete, `npx gentyr sync` enumerates all `running`/`spawning` sessions in the queue (excluding `gate` and `audit` lanes), sends SIGTERM→SIGKILL to each, marks the old queue item `failed`, resets linked TODO tasks to `pending`, releases shared resources, and immediately re-enqueues each session at `urgent` priority via `enqueueSession()` with `source: 'sync-recycle'`. Resume-capable sessions (those with a matching JSONL file including worktree session directories) are re-spawned with `--resume`; others start fresh. A 30-second poll verifies each revived session has a live PID. **Phase 2b — MCP daemon restart**: Between killing sessions and re-enqueuing them, `npx gentyr sync` always restarts the shared MCP daemon to pick up new code and credentials after the rebuild. It kills the stale PID (from state file) and any process holding port 18090, then restarts via `launchctl bootstrap` (macOS) or `systemctl --user restart` (Linux), and polls for recovery up to 15 seconds. Reports green (healthy), yellow (restart attempted), or red (failed to recover). Non-fatal — sync succeeds even if daemon restart fails. Worktree paths that no longer exist are skipped during session re-enqueue (sessions are re-spawned without a worktree context instead of crashing with ENOENT). **Project-local MCP server preservation**: Both `npx gentyr sync` and the SessionStart auto-regeneration preserve any MCP servers the target project added to `.mcp.json` that are not part of the gentyr template. Gentyr-owned names always win on collision; dynamically-injected servers (`plugin-manager`, `plugin-*`) are excluded from the preserved set. This is implemented via `extractProjectServers()` and `mergeProjectServers()` in `lib/shared-mcp-config.js`.
+Rebuilds MCP servers, re-merges settings.json, regenerates .mcp.json, and deploys staged hooks. Also runs automatically on `SessionStart` when framework version or config hash changes. At every SessionStart, the hook also checks `~/.claude/settings.json` for stale hook file references (hook entries whose referenced file no longer exists on disk) and emits an escalated warning to run `npx gentyr sync` immediately. `npx gentyr sync` itself removes stale hook entries from `~/.claude/settings.json` as part of its cleanup pass. **Step 6c — branch protection check**: `npx gentyr sync` checks whether GitHub branch protection (required status checks) is configured on `preview`, `staging`, and `main` via the GitHub API. If any branch is missing protection, a yellow warning is printed with the command to run `scripts/setup-branch-protection.js`. This is advisory — sync succeeds even if protection is absent. **Session recycling** (Step 10): After all config steps complete, `npx gentyr sync` enumerates all `running`/`spawning` sessions in the queue (excluding `gate` and `audit` lanes), sends SIGTERM→SIGKILL to each, marks the old queue item `failed`, resets linked TODO tasks to `pending`, releases shared resources, and immediately re-enqueues each session at `urgent` priority via `enqueueSession()` with `source: 'sync-recycle'`. Resume-capable sessions (those with a matching JSONL file including worktree session directories) are re-spawned with `--resume`; others start fresh. A 30-second poll verifies each revived session has a live PID. **Phase 2b — MCP daemon restart**: Between killing sessions and re-enqueuing them, `npx gentyr sync` always restarts the shared MCP daemon to pick up new code and credentials after the rebuild. It kills the stale PID (from state file) and any process holding port 18090, then restarts via `launchctl bootstrap` (macOS) or `systemctl --user restart` (Linux), and polls for recovery up to 15 seconds. Reports green (healthy), yellow (restart attempted), or red (failed to recover). Non-fatal — sync succeeds even if daemon restart fails. Worktree paths that no longer exist are skipped during session re-enqueue (sessions are re-spawned without a worktree context instead of crashing with ENOENT). **Project-local MCP server preservation**: Both `npx gentyr sync` and the SessionStart auto-regeneration preserve any MCP servers the target project added to `.mcp.json` that are not part of the gentyr template. Gentyr-owned names always win on collision; dynamically-injected servers (`plugin-manager`, `plugin-*`) are excluded from the preserved set. This is implemented via `extractProjectServers()` and `mergeProjectServers()` in `lib/shared-mcp-config.js`.
 
 ### Migrate from legacy install
 
@@ -106,6 +106,9 @@ cd /path/to/project && claude mcp list
 3. **Self-merge after CI passes.** After `gh pr create`, the project-manager waits
    for CI (`gh pr checks --watch --fail-on-fail`), then runs
    `gh pr merge --squash --delete-branch` in the same session. No waiting for review.
+   **CI Fix Loop**: If CI fails, the project-manager autonomously iterates — fixes the
+   failure, pushes, and re-checks — up to 5 times. Only escalates with "I'm stuck" after
+   exhausting all attempts. Agents MUST NOT ask the CTO to approve a PR with failing CI.
 
 4. **Clean up immediately.** After merge: delete local branch, remove worktree.
    Feature branches must not exist for more than a few hours.
@@ -131,8 +134,9 @@ After committing, the project-manager agent:
 1. Pushes the branch: `git push -u origin HEAD`
 2. Creates a PR to the appropriate base branch (`preview` in target projects, `main` in the gentyr repo): `gh pr create --base <base> --head <branch> --title "..."`
 3. **Waits for CI**: `gh pr checks <number> --watch --fail-on-fail`
-4. **Self-merges**: `gh pr merge <number> --squash --delete-branch`
-5. Syncs the base branch, deletes the local feature branch, and runs `git worktree remove --force` + `git worktree prune` to remove the worktree. Session is NOT complete until worktree is removed.
+4. **If CI fails**: Diagnoses and fixes the failure, pushes again, and re-runs `gh pr checks`. Repeats up to 5 times. Escalates with "I'm stuck" only after all attempts are exhausted. Never asks the CTO to approve a failing PR.
+5. **Self-merges**: `gh pr merge <number> --squash --delete-branch`
+6. Syncs the base branch, deletes the local feature branch, and runs `git worktree remove --force` + `git worktree prune` to remove the worktree. Session is NOT complete until worktree is removed.
 
 Code review happens at promotion time (preview -> staging), not at the feature branch level.
 
@@ -166,6 +170,18 @@ The original non-scoped path (full suite failures always block) is preserved ver
 **Tests**: 23 unit tests in `.claude/hooks/__tests__/test-scope.test.js` cover all four exported functions. 19 structural tests in `.claude/hooks/__tests__/test-scope-classifier.test.js` cover the classifier CLI and pre-push integration.
 
 Read and write `testScopes` and `activeTestScope` via the `get_services_config` / `update_services_config` tools on the `secret-sync` MCP server.
+
+### 100% Test Coverage Gate (Production Promotion)
+
+Production promotion to staging and main is hard-gated on 100% test coverage (lines, statements, functions, branches). This is non-negotiable.
+
+**CI template** (`templates/github/workflows/ci.yml.template`): Includes a `test:coverage:check` step that fails the build when any coverage metric falls below 100%. Target projects that run `npx gentyr sync` receive this step automatically.
+
+**Preview-promoter self-healing loop**: When the `test:coverage:check` CI step fails during promotion, the `preview-promoter` agent does NOT escalate immediately. Instead it spawns `test-writer` sub-agents for the uncovered code, waits for them to complete, re-runs the full CI pipeline, and repeats — up to 3 iterations. Only after all 3 iterations fail does the promoter escalate to the CTO. This is fully autonomous; no CTO intervention is needed for coverage gaps.
+
+**Plan-manager gate**: Before advancing a plan to the CTO sign-off phase, the `plan-manager` agent verifies CI is green and all coverage checks pass. A failing CI check blocks phase advancement regardless of other task completions.
+
+**test-writer mandate**: The `test-writer` agent treats 100% coverage as non-negotiable. When writing or updating tests, it must ensure every new line of code has corresponding test coverage. The test-writer is the designated recipient of coverage fix tasks spawned by the preview-promoter's self-healing loop.
 
 ### Deputy-CTO Triage (Two-Tier)
 
@@ -552,6 +568,8 @@ scripts/setup-automation-service.sh setup --path /project --op-token TOKEN  # In
 
 By default, the automation service runs without 1Password credentials in background mode to avoid macOS permission prompts. Provide `--op-token` with a 1Password service account token to enable headless credential resolution for infrastructure MCP servers. **OP token preservation**: When regenerating an existing plist (macOS) or systemd unit (Linux) without explicitly passing `--op-token`, the setup script reads the token from the existing service file and carries it forward automatically. This prevents token loss during sync/update cycles.
 
+**Automation state resilience**: `hourly-automation.js` reads `hourly-automation-state.json` at startup to track last-run timestamps. If the file is missing, corrupt, or contains non-numeric timestamps, the automation recreates it with epoch (0) timestamps — forcing all `runIfDue` blocks to fire immediately on the next cycle rather than exiting with a parse error. This prevents automation from going silent after a crash or manual deletion of the state file.
+
 ### Automation Toggle Tools
 
 **2 MCP tools** (on `agent-tracker` server):
@@ -711,7 +729,7 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 
 **Strict Infrastructure Guidance** (`strict_infra_guidance` flag): An opt-in flag that adds three things to persistent task monitors and their child agents: (1) a detailed MCP-only infrastructure instruction block from `lib/strict-infra-guidance-prompt.js` (via `buildStrictInfraGuidancePrompt()`), enforcing Bash prohibition for builds, dev servers, secrets, and demos; (2) `strict-infra-nudge-hook.js` PostToolUse enforcement that detects prohibited Bash infrastructure commands and redirects agents to the correct MCP tools; (3) shared resource coordination guidance for `display`, `chrome-bridge`, and `main-dev-server` resources. Env var `GENTYR_STRICT_INFRA_GUIDANCE=true` is injected into spawned sessions when the flag is set. When a persistent task has `strict_infra_guidance: true` in its `metadata`, the monitor's prompt is augmented with `lib/persistent-monitor-strict-infra-instructions.js` (via `buildPersistentMonitorStrictInfraInstructions()`), which instructs the monitor to propagate `strict_infra_guidance: true` to all child tasks that touch infrastructure. Worktrees already have per-worktree port isolation (base 3100, +100 per worktree) — demos and dev servers run directly from the worktree on isolated ports, no merge needed. Child agents that fail MUST diagnose and retry at least once before reporting blocked; only create a new fix task if the issue is confirmed to be in code, not infrastructure.
 
-**Cross-system wiring**: `todo-db` `create_task` accepts `persistent_task_id`; `stop-continue-hook.js` blocks the normal stop flow for active monitor sessions and forwards `GENTYR_PERSISTENT_TASK_ID` env var — when a monitor is blocked and needs CTO intervention, the hook directs it to use `submit_bypass_request` (not raw `pause_persistent_task`) before stopping; `session-briefing.js` includes a persistent task summary in interactive session briefings; `cto-notification-hook.js` shows active monitor count in the status line.
+**Cross-system wiring**: `todo-db` `create_task` accepts `persistent_task_id`; `stop-continue-hook.js` blocks the normal stop flow for active monitor sessions and forwards `GENTYR_PERSISTENT_TASK_ID` env var — when a monitor is blocked and needs CTO intervention, the hook directs it to use `submit_bypass_request` (not raw `pause_persistent_task`) before stopping; `session-briefing.js` includes a persistent task summary in interactive session briefings; `cto-notification-hook.js` shows active monitor count in the status line and injects pending bypass request details into `additionalContext` on every CTO prompt — the model sees bypass requests directly (not just the terminal UI) so the CTO is never left unaware of blocked work.
 
 **CTO Dashboard**: `PersistentTaskSection` component reads from `persistent-tasks.db` via `packages/cto-dashboard/src/utils/persistent-task-reader.ts`. Rendered on `/cto-report` (static) and `/cto-dashboard` (live TUI).
 
@@ -1410,7 +1428,7 @@ The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`)
 
 **Cross-DB integration**: `add_plan_task` optionally creates a corresponding `todo.db` task and links them via `todo_task_id`. `plan-merge-tracker.js` hook detects `gh pr merge` calls (PostToolUse Bash) and auto-advances linked plan tasks to `completed`, then cascades `ready` status to unblocked dependents.
 
-**Plan-persistent sync hook** (`plan-persistent-sync.js`, PostToolUse): Fires on `complete_persistent_task`. When the completed persistent task has `plan_task_id` in its metadata, auto-marks the linked plan task as `completed`, cascades phase completion when all tasks in the phase are done (phases with ALL tasks skipped become `skipped` not `completed`), and cascades plan completion only when all phases are `completed` with no skipped required phases. Non-fatal — always exits 0.
+**Plan-persistent sync hook** (`plan-persistent-sync.js`, PostToolUse): Fires on `complete_persistent_task`. When the completed persistent task has `plan_task_id` in its metadata, auto-marks the linked plan task as `completed`, cascades phase completion when all tasks in the phase are done (phases with ALL tasks skipped become `skipped` not `completed`), and cascades plan completion only when all phases are `completed` with no skipped required phases. Non-fatal — always exits 0. **Cross-check guard**: Before cascading, verifies that the plan task's linked `todo_task_id` (if set) is already `completed` in `todo.db`. If the linked todo task is still `pending`, `in_progress`, or `pending_audit`, the cascade is blocked and `additionalContext` warns the agent — preventing plan task completion from outrunning the actual work completion.
 
 **Plan activation spawner hook** (`plan-activation-spawner.js`, PostToolUse): Fires on `update_plan_status`. When a plan transitions to `active` and has no `persistent_task_id`, atomically creates a persistent task for the plan-manager, links it to the plan (TOCTOU-safe via `UPDATE ... WHERE persistent_task_id IS NULL`), and enqueues the monitor in the `persistent` lane at `critical` priority. This ensures plans always have an automated orchestrator driving phase advancement. If the enqueue is blocked (focus mode, etc.), the persistent task exists and will be picked up when the block clears. Emits `plan_manager_spawned` audit event.
 
@@ -1567,13 +1585,13 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | credential-health-check.js | Verify 1Password connectivity |
 | playwright-health-check.js | Verify Playwright and browser availability |
 | plan-briefing.js | Brief agent on active plan state |
-| session-briefing.js | Comprehensive context dump: queue, tasks, deferred actions, bypass requests, focus mode, active persona profile |
+| session-briefing.js | Comprehensive context dump: queue, tasks, deferred actions, bypass requests, focus mode, active persona profile; also warns when main has commits not in staging (merge-back needed) |
 
 #### UserPromptSubmit (12 hooks — process user/CTO input)
 
 | Hook | Purpose |
 |------|---------|
-| cto-notification-hook.js | Update CTO status line |
+| cto-notification-hook.js | Update CTO status line; inject pending bypass request details into model context on every prompt |
 | secret-leak-detector.js | Scan for leaked secrets |
 | bypass-approval-hook.js | Detect "APPROVE BYPASS" pattern |
 | protected-action-approval-hook.js | Detect protected action approval tokens; execute approved deferred actions via MCP daemon |
