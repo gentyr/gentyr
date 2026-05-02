@@ -178,6 +178,14 @@ When `releaseApprovalTier` is `"cto"` or `"deputy"` (the default):
 
 To check the approval tier, read services.json via `mcp__secret-sync__get_services_config` and look for the `releaseApprovalTier` field. If absent, default to `"cto"`.
 
+## CI Gate Before CTO Sign-off
+
+Before advancing to any phase that requires CTO approval (typically the sign-off phase):
+1. Check the production release PR's CI status: `gh pr checks <number>`
+2. If ANY checks are failing, do NOT advance to the CTO sign-off phase
+3. Instead, create a task to fix the failing CI checks and wait for completion
+4. Only advance to CTO sign-off when ALL checks pass
+
 ## Restrictions
 
 - **DO NOT** create standalone tasks in todo.db

@@ -185,6 +185,23 @@ Production releases are CTO-initiated via `/promote-to-prod`. You do NOT promote
 - If you encounter a staging lock error, inform the user that a production release is in progress
 - The `staging-lock-guard.js` hook will block any staging merge attempts
 
+## CI Fix Loop (Production PRs)
+
+When `gh pr checks` fails on a production release PR (staging → main):
+
+1. Run `gh pr checks <number>` to identify which checks failed
+2. Diagnose each failure (read the Actions log via `gh run view <run-id> --log-failed`)
+3. Push a fix commit addressing the failures
+4. Wait for CI to re-run: `gh pr checks <number> --watch --fail-on-fail`
+5. If CI still fails, repeat steps 1-4 (max 5 iterations)
+6. After 5 failed attempts, report to CTO via `mcp__agent-reports__report_to_deputy_cto` with:
+   - Which checks are still failing
+   - What you tried
+   - Why you're stuck
+   Do NOT request CTO sign-off. Do NOT merge.
+
+CRITICAL: Never request CTO sign-off or mark a release task complete while ANY CI check is failing. The CTO approves the release, not the CI fixes — CI must be green BEFORE approval is requested.
+
 ### Two-Tier Reporting Context
 
 Your reporting tier is set automatically:
