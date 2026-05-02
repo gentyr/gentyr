@@ -203,6 +203,45 @@ function releaseExists(db: Database.Database, releaseId: string): ReleaseRecord 
   return db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId) as ReleaseRecord | undefined;
 }
 
+/**
+ * Generate the next available version string with date-based collision handling.
+ *
+ * Pattern: v{YYYY}.{MM}.{DD} for the first release of the day,
+ * then v{YYYY}.{MM}.{DD}.1, v{YYYY}.{MM}.{DD}.2, etc.
+ *
+ * This is atomic — runs inside the same transaction as the INSERT to prevent
+ * race conditions between concurrent create_release calls.
+ */
+function generateNextVersion(db: Database.Database): string {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const baseVersion = `v${yyyy}.${mm}.${dd}`;
+
+  // Query all versions matching today's date pattern
+  const existing = db.prepare(
+    "SELECT version FROM releases WHERE version LIKE ? ORDER BY version ASC"
+  ).all(`${baseVersion}%`) as Array<{ version: string | null }>;
+
+  const existingVersions = new Set(
+    existing.map(r => r.version).filter((v): v is string => v !== null)
+  );
+
+  // If the base version is not taken, use it
+  if (!existingVersions.has(baseVersion)) {
+    return baseVersion;
+  }
+
+  // Find the next available suffix: .1, .2, .3, ...
+  let suffix = 1;
+  while (existingVersions.has(`${baseVersion}.${suffix}`)) {
+    suffix++;
+  }
+
+  return `${baseVersion}.${suffix}`;
+}
+
 // ============================================================================
 // Tool Implementations
 // ============================================================================
@@ -217,12 +256,15 @@ function createRelease(args: CreateReleaseArgs): object {
   const id = `rel-${shortUuid()}`;
   const ts = now();
 
+  // Auto-generate version with collision handling when not provided by caller
+  const version = args.version ?? generateNextVersion(db);
+
   const metadata = args.metadata ? JSON.stringify(args.metadata) : null;
 
   db.prepare(
     `INSERT INTO releases (id, version, status, created_at, metadata)
      VALUES (?, ?, 'in_progress', ?, ?)`
-  ).run(id, args.version ?? null, ts, metadata);
+  ).run(id, version, ts, metadata);
 
   // Create artifact directory with manifest
   const artifactDir = path.join(PROJECT_DIR, '.claude', 'releases', id);
@@ -233,7 +275,7 @@ function createRelease(args: CreateReleaseArgs): object {
     fs.mkdirSync(path.join(artifactDir, 'reports'), { recursive: true });
     const manifest = {
       release_id: id,
-      version: args.version ?? null,
+      version,
       created_at: ts,
       metadata: args.metadata ?? null,
     };
@@ -251,7 +293,7 @@ function createRelease(args: CreateReleaseArgs): object {
 
   return {
     id,
-    version: args.version ?? null,
+    version,
     status: 'in_progress',
     artifact_dir: artifactDir,
     created_at: ts,
@@ -1569,7 +1611,7 @@ function unlockStagingTool(args: UnlockStagingArgs): object {
 const tools: AnyToolHandler[] = [
   {
     name: 'create_release',
-    description: 'Create a new release record. Auto-generates ID as rel-<uuid>. Creates artifact directory at .claude/releases/{id}/ with manifest.json.',
+    description: 'Create a new release record. Auto-generates ID as rel-<uuid>. If version is not provided, auto-generates a date-based version (v{YYYY}.{MM}.{DD}) with collision handling (.1, .2, etc. for same-day releases). Creates artifact directory at .claude/releases/{id}/ with manifest.json.',
     schema: CreateReleaseArgsSchema,
     handler: createRelease,
   },
