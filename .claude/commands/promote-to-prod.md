@@ -271,6 +271,10 @@ Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo
 - Description: "Deputy-CTO reviews all test/demo results, outstanding issues, and Phase 3 meta-review findings. Makes go/no-go recommendation."
 - create_todo: true, todo_section: "DEPUTY-CTO"
 
+**Phase 7 prerequisites (enforced by plan-manager):**
+- ALL CI checks on the staging→main PR must be passing (0 failures)
+- If any checks are failing, Phase 7 CANNOT start — return to Phase 4 to fix CI issues first
+
 **Phase 7 task**: "CTO Sign-off"
 - Description depends on `releaseApprovalTier` from the canary config check above:
   - **If `releaseApprovalTier` is `"automated"`**: "All gate phases have passed. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Call mcp__release-ledger__record_cto_approval({ release_id }) — the automated tier allows the plan-manager to sign off directly without CTO intervention. (3) Verify release status is 'signed_off'."

@@ -154,7 +154,12 @@ If an open PR exists, wait for CI and merge it:
 gh pr checks {number} --watch --fail-on-fail
 ```
 
-If CI fails: record in artifact directory, report via `report_to_deputy_cto`, exit without merging.
+If CI fails after creating the PR:
+1. Diagnose failures via `gh run view <run-id> --log-failed`
+2. Push fix commits to the source branch
+3. Wait for CI re-run: `gh pr checks <number> --watch --fail-on-fail`
+4. Repeat up to 5 times
+5. If still failing after 5 attempts, report to CTO and EXIT without merging
 
 ```bash
 gh pr merge {number} --merge
@@ -177,7 +182,12 @@ Demos: {verdict}"
 gh pr checks {number} --watch --fail-on-fail
 ```
 
-If CI fails: record in artifact directory, report via `report_to_deputy_cto`, exit without merging.
+If CI fails after creating the PR:
+1. Diagnose failures via `gh run view <run-id> --log-failed`
+2. Push fix commits to the source branch
+3. Wait for CI re-run: `gh pr checks <number> --watch --fail-on-fail`
+4. Repeat up to 5 times
+5. If still failing after 5 attempts, report to CTO and EXIT without merging
 
 ```bash
 gh pr merge {number} --merge
