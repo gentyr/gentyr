@@ -984,26 +984,46 @@ async function main() {
     message = lines.join('\n');
   }
 
-  // Append pending bypass request details to message (both critical and normal paths)
+  // Build bypass request block — PREPENDED to additionalContext so the model sees it first
   const pendingBypassRequests = getPendingBypassRequests();
+  let bypassBlock = '';
   if (pendingBypassRequests.length > 0) {
-    const bypassLines = ['\n=== ACTION REQUIRED: Bypass Requests ==='];
+    const bypassLines = [
+      `URGENT — ${pendingBypassRequests.length} BYPASS REQUEST(S) NEED CTO DECISION`,
+      'Agents are BLOCKED and waiting. You MUST present these to the CTO using AskUserQuestion with approve/reject options for each request.',
+      '---',
+    ];
     for (let i = 0; i < pendingBypassRequests.length; i++) {
       const req = pendingBypassRequests[i];
       const age = req.created_at ? `${Math.round((Date.now() - new Date(req.created_at).getTime()) / 60000)}m ago` : '';
-      bypassLines.push(`${i + 1}. [${req.id}] "${req.task_title || 'Unknown'}" (${req.category || 'general'}) — ${req.summary || 'No summary'}${age ? ` [${age}]` : ''}`);
-      bypassLines.push(`   -> resolve_bypass_request({ request_id: "${req.id}", decision: "approved"|"rejected", context: "..." })`);
+      bypassLines.push(`${i + 1}. [${req.id}] "${req.task_title || 'Unknown'}" (${req.category || 'general'})${age ? ` [${age}]` : ''}`);
+      bypassLines.push(`   Summary: ${req.summary || 'No summary'}`);
+      bypassLines.push(`   Approve: mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "approved", context: "<your instructions>" })`);
+      bypassLines.push(`   Reject:  mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "rejected", context: "<reason>" })`);
+      bypassLines.push('');
     }
-    message += bypassLines.join('\n');
+    bypassLines.push('INSTRUCTION: Before responding to the user\'s message, use AskUserQuestion to present each pending bypass request with Approve/Reject options. Include the request summary so the CTO can make an informed decision. If the user\'s message is unrelated, still mention the pending requests briefly.');
+    bypassBlock = bypassLines.join('\n');
   }
+
+  // systemMessage: short status line for terminal (bypass count shown prominently if any)
+  const bypassPrefix = pendingBypassRequests.length > 0
+    ? `${pendingBypassRequests.length} BYPASS AWAITING DECISION | `
+    : '';
+  const systemMsg = bypassPrefix + message;
+
+  // additionalContext: bypass requests FIRST, then status — model sees bypass requests at top priority
+  const modelContext = bypassBlock
+    ? bypassBlock + '\n\n' + message
+    : message;
 
   console.log(JSON.stringify({
     continue: true,
     suppressOutput: false,
-    systemMessage: message,
+    systemMessage: systemMsg,
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: message,
+      additionalContext: modelContext,
     },
   }));
 }
