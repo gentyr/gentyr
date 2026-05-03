@@ -1265,7 +1265,7 @@ export function drainQueue() {
             "SELECT t.id, t.title, t.gate_success_criteria, t.gate_verification_method FROM tasks t " +
             "WHERE t.status = 'pending_audit' " +
             "AND EXISTS (SELECT 1 FROM task_audits ta WHERE ta.task_id = t.id AND ta.verdict IS NULL " +
-            "  AND ta.requested_at < datetime('now', '-10 minutes'))"
+            "  AND datetime(ta.requested_at) < datetime('now', '-10 minutes'))"
           ).all();
           todoDb.close();
 
