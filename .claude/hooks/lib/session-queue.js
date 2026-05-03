@@ -496,15 +496,16 @@ export function enqueueSession(spec) {
     }
   }
 
-  // Plan-level dedup: if this item serves a plan, block if ANY monitor for the same plan
-  // is already queued/running (regardless of persistentTaskId). Prevents mass-spawning
-  // when multiple persistent tasks exist for the same plan (e.g., from prior reviveOrphanedPlan proliferation).
-  if (spec.metadata?.planId && spec.lane === 'persistent') {
+  // Plan-level dedup: only deduplicate PLAN MANAGERS (isPlanManager=true) against each other.
+  // Plan task monitors share the same planId but serve different persistent tasks — they must
+  // not be blocked by the plan manager or by each other. The persistentTaskId dedup (above)
+  // already prevents duplicate monitors for the same persistent task.
+  if (spec.metadata?.planId && spec.metadata?.isPlanManager && spec.lane === 'persistent') {
     const planExisting = db.prepare(
-      "SELECT id FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.planId') = ?"
+      "SELECT id FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.planId') = ? AND json_extract(metadata, '$.isPlanManager') = 1"
     ).get(spec.metadata.planId);
     if (planExisting) {
-      log(`Dedup: planId ${spec.metadata.planId} already has queue item ${planExisting.id} — skipping`);
+      log(`Dedup: plan manager for planId ${spec.metadata.planId} already has queue item ${planExisting.id} — skipping`);
       return { queueId: planExisting.id, position: 0, drained: { spawned: 0, atCapacity: false } };
     }
   }
@@ -897,13 +898,18 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
       ptDbRo.close();
       if (taskRow?.metadata) {
         const taskMeta = JSON.parse(taskRow.metadata);
-        if (taskMeta.plan_id) {
-          const planExisting = db.prepare(
-            "SELECT id, status FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.planId') = ? LIMIT 1"
-          ).get(taskMeta.plan_id);
-          if (planExisting) {
-            log(`[persistent-revival] Skipped revival for ${taskId}: another monitor for plan ${taskMeta.plan_id} already ${planExisting.status} in queue (${planExisting.id})`);
-            return;
+        if (taskMeta.plan_id && taskMeta.plan_id === taskMeta.plan_id) {
+          // Only apply plan-level dedup for plan MANAGERS (title starts with "Plan Manager:")
+          // Plan task monitors share the same plan_id but must not block each other
+          const isPlanManager = task.title && task.title.startsWith('Plan Manager:');
+          if (isPlanManager) {
+            const planExisting = db.prepare(
+              "SELECT id, status FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.planId') = ? AND json_extract(metadata, '$.isPlanManager') = 1 LIMIT 1"
+            ).get(taskMeta.plan_id);
+            if (planExisting) {
+              log(`[persistent-revival] Skipped revival for ${taskId}: plan manager for plan ${taskMeta.plan_id} already ${planExisting.status} in queue (${planExisting.id})`);
+              return;
+            }
           }
         }
       }
@@ -1089,10 +1095,13 @@ Persistent Task ID: ${taskId}`;
     PROJECT_DIR,
     JSON.stringify((() => {
       const meta = { persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' };
-      // Include planId so plan-level dedup can detect duplicate monitors for the same plan
+      // Include planId and isPlanManager so plan-level dedup only blocks duplicate plan managers
       try {
         const taskMeta3 = task.metadata ? JSON.parse(task.metadata) : {};
-        if (taskMeta3.plan_id) meta.planId = taskMeta3.plan_id;
+        if (taskMeta3.plan_id) {
+          meta.planId = taskMeta3.plan_id;
+          meta.isPlanManager = task.title && task.title.startsWith('Plan Manager:') ? true : false;
+        }
       } catch (_) { /* non-fatal */ }
       return meta;
     })()),

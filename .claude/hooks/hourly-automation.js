@@ -3293,6 +3293,7 @@ async function main() {
       metadata: {
         persistentTaskId: ptId,
         planId: plan.id,
+        isPlanManager: true,
         revivalReason: 'plan_orphan_detection',
       },
     });
