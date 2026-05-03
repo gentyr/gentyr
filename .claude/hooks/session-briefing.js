@@ -981,6 +981,21 @@ function buildSpawnedBriefing() {
     lines.push('');
   }
 
+  // Elastic log availability (one-line reminder for spawned agents)
+  if (!localMode) {
+    try {
+      const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+      if (fs.existsSync(servicesPath)) {
+        const svcConfig = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+        const elastic = svcConfig?.elastic;
+        if (elastic && elastic.enabled !== false) {
+          lines.push('Elastic: configured — query errors via mcp__elastic-logs__query_logs({ query: "level:error", from: "now-1h", to: "now" })');
+          lines.push('');
+        }
+      }
+    } catch { /* non-fatal */ }
+  }
+
   // Task context
   const task = getCurrentTaskDetails();
   if (task) {
