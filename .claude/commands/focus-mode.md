@@ -5,58 +5,26 @@ Blocks ALL automated agent spawning except CTO-directed work, persistent task mo
 and session revivals. Use when you want to dedicate all queue slots and API quota to
 specific tasks without background automation interfering.
 
-## Framework Path Resolution
+## Step 1: Check Current State
 
-```bash
-GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })"
+Call the `get_focus_mode` MCP tool on the `agent-tracker` server:
+
+```
+mcp__agent-tracker__get_focus_mode()
 ```
 
-## Step 1: Check Current Focus Mode State
-
-Read the focus mode state file directly:
-
-```bash
-node -e "
-const fs = require('fs');
-const path = require('path');
-const statePath = path.join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'state', 'focus-mode.json');
-try {
-  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-  console.log(JSON.stringify(state));
-} catch {
-  console.log(JSON.stringify({ enabled: false }));
-}
-"
-```
-
-Parse the JSON output:
-- `enabled: true` → focus mode is currently **ENABLED**
-- `enabled: false` or file missing → focus mode is currently **DISABLED**
+This returns `{ enabled, enabledAt, enabledBy, allowedSources }`.
 
 ## Step 2: Toggle to Opposite State
 
-Based on the current state, toggle to the opposite:
+Based on the current state, toggle to the opposite using the `set_focus_mode` MCP tool:
 
-- If currently **ENABLED** → write `{ "enabled": false, ... }`
-- If currently **DISABLED** → write `{ "enabled": true, ... }`
+- If currently **ENABLED** → call `mcp__agent-tracker__set_focus_mode({ enabled: false })`
+- If currently **DISABLED** → call `mcp__agent-tracker__set_focus_mode({ enabled: true })`
 
-Run the toggle:
-
-```bash
-node -e "
-const fs = require('fs');
-const path = require('path');
-const statePath = path.join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'state', 'focus-mode.json');
-const dir = path.dirname(statePath);
-if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-let current = { enabled: false };
-try { current = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch {}
-const newEnabled = !current.enabled;
-const newState = { enabled: newEnabled, enabledAt: new Date().toISOString(), enabledBy: 'cto' };
-fs.writeFileSync(statePath, JSON.stringify(newState, null, 2));
-console.log(JSON.stringify(newState));
-"
-```
+If the user passed an argument (`on` or `off`), use that instead of toggling:
+- `/focus-mode on` → call `mcp__agent-tracker__set_focus_mode({ enabled: true })`
+- `/focus-mode off` → call `mcp__agent-tracker__set_focus_mode({ enabled: false })`
 
 ## Step 3: Show Result
 
@@ -71,6 +39,7 @@ ALLOWED (will still spawn):
   - Persistent task monitors (lane: persistent)
   - Session revivals (lane: revival)
   - Task gate agents (lane: gate)
+  - Audit agents (lane: audit)
   - Manual CTO spawns via /spawn-tasks (source: force-spawn-tasks)
   - Persistent task spawner (source: persistent-task-spawner)
   - Inline session revival (source: stop-continue-hook)
