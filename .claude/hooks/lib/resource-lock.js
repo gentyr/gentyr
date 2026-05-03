@@ -888,6 +888,19 @@ export function checkAndExpireResources() {
       }
     }
 
+    // Purge stale historical queue entries older than 24 hours.
+    // Rows with status 'acquired' or 'skipped' are historical records that serve no
+    // operational purpose after the lock has been released. Without cleanup, the table
+    // grows indefinitely (80+ rows observed in production).
+    try {
+      const purged = db.prepare(
+        "DELETE FROM resource_queue WHERE status IN ('acquired', 'skipped') AND enqueued_at < datetime('now', '-24 hours')"
+      ).run();
+      if (purged.changes > 0) {
+        log(`Resource queue cleanup: purged ${purged.changes} stale historical entry/entries (>24h old).`);
+      }
+    } catch (_) { /* non-fatal — data hygiene only */ }
+
     return results;
   })();
 }

@@ -1238,6 +1238,116 @@ export function drainQueue() {
     }
   }
 
+  // Step 1b.7: Orphan pending_audit recovery — catch tasks stuck in pending_audit with no active auditor.
+  // Unlike Step 1b.5 (which revives dead auditors found in the reap pass), this catches tasks where
+  // no auditor was EVER spawned (e.g., due to a silent hook failure) or where the auditor died and
+  // was already cleaned up before the reap pass could flag it.
+  try {
+    if (Database) {
+      const MAX_AUDIT_ORPHAN_SPAWNS_PER_DRAIN = 5;
+      let auditOrphanCount = 0;
+
+      // Helper: check if an auditor is already queued/running for a task
+      const hasActiveAuditor = (taskId) => {
+        const existing = db.prepare(
+          "SELECT id FROM queue_items WHERE lane = 'audit' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.taskId') = ?"
+        ).get(taskId);
+        return !!existing;
+      };
+
+      // 1. Todo-db tasks in pending_audit
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+      if (fs.existsSync(todoDbPath)) {
+        try {
+          const todoDb = new Database(todoDbPath, { readonly: true });
+          todoDb.pragma('busy_timeout = 3000');
+          const stuckTasks = todoDb.prepare(
+            "SELECT t.id, t.title, t.gate_success_criteria, t.gate_verification_method FROM tasks t " +
+            "WHERE t.status = 'pending_audit' " +
+            "AND EXISTS (SELECT 1 FROM task_audits ta WHERE ta.task_id = t.id AND ta.verdict IS NULL " +
+            "  AND ta.requested_at < datetime('now', '-10 minutes'))"
+          ).all();
+          todoDb.close();
+
+          for (const task of stuckTasks) {
+            if (auditOrphanCount >= MAX_AUDIT_ORPHAN_SPAWNS_PER_DRAIN) break;
+            if (hasActiveAuditor(task.id)) continue;
+
+            const spec = buildAuditorSessionSpec(
+              { taskId: task.id, taskType: 'todo', taskTitle: task.title || '', criteria: task.gate_success_criteria || '', method: task.gate_verification_method || '' },
+              PROJECT_DIR,
+            );
+            enqueueSession({ ...spec, title: `Universal audit (orphan recovery): ${task.title || task.id}`, source: 'drain-audit-orphan-recovery' });
+            auditOrphanCount++;
+            log(`Step 1b.7: Spawned orphan auditor for todo task ${task.id}`);
+            try { auditEvent('audit_orphan_recovered', { task_id: task.id, task_type: 'todo' }); } catch (_) { /* non-fatal */ }
+          }
+        } catch (_) { /* non-fatal */ }
+      }
+
+      // 2. Persistent tasks in pending_audit
+      const ptDbPath2 = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath2)) {
+        try {
+          const ptDb2 = new Database(ptDbPath2, { readonly: true });
+          ptDb2.pragma('busy_timeout = 3000');
+          const stuckPts = ptDb2.prepare(
+            "SELECT id, title, gate_success_criteria, gate_verification_method FROM persistent_tasks " +
+            "WHERE status = 'pending_audit'"
+          ).all();
+          ptDb2.close();
+
+          for (const pt of stuckPts) {
+            if (auditOrphanCount >= MAX_AUDIT_ORPHAN_SPAWNS_PER_DRAIN) break;
+            if (hasActiveAuditor(pt.id)) continue;
+
+            const spec = buildAuditorSessionSpec(
+              { taskId: pt.id, taskType: 'persistent', taskTitle: pt.title || '', criteria: pt.gate_success_criteria || '', method: pt.gate_verification_method || '' },
+              PROJECT_DIR,
+            );
+            enqueueSession({ ...spec, title: `Universal audit (orphan recovery): ${pt.title || pt.id}`, source: 'drain-audit-orphan-recovery' });
+            auditOrphanCount++;
+            log(`Step 1b.7: Spawned orphan auditor for persistent task ${pt.id}`);
+            try { auditEvent('audit_orphan_recovered', { task_id: pt.id, task_type: 'persistent' }); } catch (_) { /* non-fatal */ }
+          }
+        } catch (_) { /* non-fatal */ }
+      }
+
+      // 3. Plan tasks in pending_audit
+      const plansDbPath2 = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+      if (fs.existsSync(plansDbPath2)) {
+        try {
+          const plansDb2 = new Database(plansDbPath2, { readonly: true });
+          plansDb2.pragma('busy_timeout = 3000');
+          const stuckPlanTasks = plansDb2.prepare(
+            "SELECT id, title, verification_strategy FROM plan_tasks WHERE status = 'pending_audit'"
+          ).all();
+          plansDb2.close();
+
+          for (const pt of stuckPlanTasks) {
+            if (auditOrphanCount >= MAX_AUDIT_ORPHAN_SPAWNS_PER_DRAIN) break;
+            if (hasActiveAuditor(pt.id)) continue;
+
+            const spec = buildAuditorSessionSpec(
+              { taskId: pt.id, taskType: 'plan', taskTitle: pt.title || '', criteria: pt.verification_strategy || '', method: pt.verification_strategy || '' },
+              PROJECT_DIR,
+            );
+            enqueueSession({ ...spec, title: `Plan audit (orphan recovery): ${pt.title || pt.id}`, source: 'drain-audit-orphan-recovery' });
+            auditOrphanCount++;
+            log(`Step 1b.7: Spawned orphan auditor for plan task ${pt.id}`);
+            try { auditEvent('audit_orphan_recovered', { task_id: pt.id, task_type: 'plan' }); } catch (_) { /* non-fatal */ }
+          }
+        } catch (_) { /* non-fatal */ }
+      }
+
+      if (auditOrphanCount > 0) {
+        log(`Step 1b.7: Recovered ${auditOrphanCount} orphan pending_audit task(s)`);
+      }
+    }
+  } catch (err) {
+    log(`Step 1b.7 audit orphan recovery error (non-fatal): ${err.message}`);
+  }
+
   // Step 1c: Catch-all — check for active persistent tasks with no running/queued monitor
   try {
     const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
