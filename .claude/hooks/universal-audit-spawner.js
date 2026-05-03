@@ -19,6 +19,7 @@
 import fs from 'fs';
 import path from 'path';
 import { enqueueSession } from './lib/session-queue.js';
+import { buildAuditorSessionSpec } from './lib/auditor-prompt.js';
 
 let auditEvent;
 try {
@@ -200,58 +201,14 @@ process.stdin.on('end', async () => {
 
     log(`Audit needed for ${taskType} task ${taskId}: "${resolvedTitle}"`);
 
-    // Build tool names based on task type
-    const passTool = taskType === 'todo'
-      ? 'mcp__todo-db__task_audit_pass'
-      : 'mcp__persistent-task__pt_audit_pass';
-    const failTool = taskType === 'todo'
-      ? 'mcp__todo-db__task_audit_fail'
-      : 'mcp__persistent-task__pt_audit_fail';
-
+    const spec = buildAuditorSessionSpec(
+      { taskId, taskType, taskTitle: resolvedTitle, criteria: resolvedCriteria, method: resolvedMethod },
+      PROJECT_DIR,
+    );
     enqueueSession({
+      ...spec,
       title: `Universal audit: ${resolvedTitle}`,
-      agentType: 'universal-auditor',
-      hookType: 'universal-auditor',
-      tagContext: 'universal-auditor',
       source: 'universal-audit-spawner',
-      model: 'claude-haiku-4-5-20251001',
-      agent: 'universal-auditor',
-      lane: 'audit',
-      priority: 'normal',
-      ttlMs: 8 * 60 * 1000, // 8 minute TTL
-      projectDir: PROJECT_DIR,
-      metadata: { taskId, taskType },
-      buildPrompt: (agentId) => {
-        return `[Automation][universal-auditor][AGENT:${agentId}] Audit ${taskType} task ${taskId}.
-
-## Task
-"${resolvedTitle}"
-
-## Success Criteria
-${resolvedCriteria || '(none provided)'}
-
-## Verification Method
-${resolvedMethod || '(none provided)'}
-
-## Your Job
-You are an INDEPENDENT auditor. Verify the success criteria and verification method against actual artifacts.
-Do NOT trust the agent's claims — check actual files, test results, PR status, directory contents, etc.
-
-## Process
-1. Read the success criteria and verification method above carefully
-2. Use Read, Glob, Grep, Bash to check each claim against reality:
-   - If criteria mention tests: run them or check recent test output
-   - If criteria mention files/directories: verify they exist with expected content
-   - If criteria mention PRs: check PR status via \`gh pr view\`
-   - If criteria mention counts: verify actual counts match
-3. Render exactly ONE verdict with concrete evidence
-
-## Verdict (pick ONE, then exit immediately)
-- PASS: ${passTool}({ task_id: "${taskId}", evidence: "<what you found>" })
-- FAIL: ${failTool}({ task_id: "${taskId}", failure_reason: "<why>", evidence: "<what you found>" })
-
-You have 8 minutes. Be efficient. If you cannot verify (external system unavailable, ambiguous criteria), FAIL with reason.`;
-      },
     });
 
     auditEvent('task_pending_audit', { task_type: taskType, task_id: taskId, criteria: (resolvedCriteria || '').slice(0, 200) });

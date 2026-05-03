@@ -28,6 +28,7 @@ import { killProcessGroup, isClaudeProcess } from './process-tree.js';
 import { compactSessionIfNeeded } from './compact-session.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
+import { buildAuditorSessionSpec } from './auditor-prompt.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorStrictInfraInstructions } from './persistent-monitor-strict-infra-instructions.js';
 import { checkAndExpireResources } from './resource-lock.js';
@@ -186,6 +187,13 @@ function getDb() {
     if (err.message && err.message.includes('malformed')) {
       const corruptPath = `${DB_PATH}.corrupt.${Date.now()}`;
       log(`CRITICAL: session-queue.db is corrupted (${err.message}). Renaming to ${path.basename(corruptPath)} and creating fresh DB.`);
+
+      // Salvage queue_config before closing (max_concurrent, reserved_slots, focus_mode)
+      let savedConfig = [];
+      try {
+        savedConfig = _db.prepare('SELECT key, value FROM queue_config').all();
+      } catch (_) { /* config table may also be corrupt */ }
+
       try { _db.close(); } catch (_) { /* cleanup */ }
       _db = null;
       // Also rename WAL and SHM files if they exist
@@ -196,7 +204,11 @@ function getDb() {
       _db = new Database(DB_PATH);
       _db.pragma('journal_mode = WAL');
       _db.pragma('busy_timeout = 5000');
-      try { auditEvent('session_queue_db_recovered', { corrupt_path: corruptPath, reason: err.message }); } catch (_) { /* audit may not be ready */ }
+
+      // Re-seed salvaged config after schema creation (deferred to after CREATE TABLE below)
+      _db._savedConfig = savedConfig;
+
+      try { auditEvent('session_queue_db_recovered', { corrupt_path: corruptPath, reason: err.message, config_salvaged: savedConfig.length }); } catch (_) { /* audit may not be ready */ }
     } else {
       throw err; // Non-corruption error — don't swallow
     }
@@ -267,6 +279,17 @@ function getDb() {
     _db.prepare('SELECT diagnosis FROM revival_events LIMIT 0').get();
   } catch {
     _db.exec('ALTER TABLE revival_events ADD COLUMN diagnosis TEXT');
+  }
+
+  // Restore salvaged config from corruption recovery (if any)
+  if (_db._savedConfig && _db._savedConfig.length > 0) {
+    for (const row of _db._savedConfig) {
+      try {
+        _db.prepare('INSERT OR REPLACE INTO queue_config (key, value, updated_at) VALUES (?, ?, datetime(\'now\'))').run(row.key, row.value);
+      } catch (_) { /* non-fatal */ }
+    }
+    log(`Restored ${_db._savedConfig.length} config entries from corrupted DB`);
+    delete _db._savedConfig;
   }
 
   // Seed default config if not present
@@ -1187,57 +1210,14 @@ export function drainQueue() {
           continue;
         }
 
-        const passTool = revival.taskType === 'todo'
-          ? 'mcp__todo-db__task_audit_pass'
-          : 'mcp__persistent-task__pt_audit_pass';
-        const failTool = revival.taskType === 'todo'
-          ? 'mcp__todo-db__task_audit_fail'
-          : 'mcp__persistent-task__pt_audit_fail';
-
+        const spec = buildAuditorSessionSpec(
+          { taskId: revival.taskId, taskType: revival.taskType, taskTitle: revival.taskTitle, criteria: revival.criteria, method: revival.method },
+          PROJECT_DIR,
+        );
         enqueueSession({
+          ...spec,
           title: `Universal audit (revival): ${revival.taskTitle}`,
-          agentType: 'universal-auditor',
-          hookType: 'universal-auditor',
-          tagContext: 'universal-auditor',
           source: 'session-reaper-audit-revival',
-          model: 'claude-haiku-4-5-20251001',
-          agent: 'universal-auditor',
-          lane: 'audit',
-          priority: 'normal',
-          ttlMs: 8 * 60 * 1000,
-          projectDir: PROJECT_DIR,
-          metadata: { taskId: revival.taskId, taskType: revival.taskType },
-          buildPrompt: (agentId) => {
-            return `[Automation][universal-auditor][AGENT:${agentId}] Audit ${revival.taskType} task ${revival.taskId} (REVIVAL — previous auditor died).
-
-## Task
-"${revival.taskTitle}"
-
-## Success Criteria
-${revival.criteria || '(none provided)'}
-
-## Verification Method
-${revival.method || '(none provided)'}
-
-## Your Job
-You are an INDEPENDENT auditor. Verify the success criteria and verification method against actual artifacts.
-Do NOT trust the agent's claims — check actual files, test results, PR status, directory contents, etc.
-
-## Process
-1. Read the success criteria and verification method above carefully
-2. Use Read, Glob, Grep, Bash to check each claim against reality:
-   - If criteria mention tests: run them or check recent test output
-   - If criteria mention files/directories: verify they exist with expected content
-   - If criteria mention PRs: check PR status via \`gh pr view\`
-   - If criteria mention counts: verify actual counts match
-3. Render exactly ONE verdict with concrete evidence
-
-## Verdict (pick ONE, then exit immediately)
-- PASS: ${passTool}({ task_id: "${revival.taskId}", evidence: "<what you found>" })
-- FAIL: ${failTool}({ task_id: "${revival.taskId}", failure_reason: "<why>", evidence: "<what you found>" })
-
-You have 8 minutes. Be efficient. If you cannot verify (external system unavailable, ambiguous criteria), FAIL with reason.`;
-          },
         });
 
         log(`Step 1b.5: Re-spawned auditor for task ${revival.taskId} (previous auditor ${revival.agentId} died)`);
