@@ -36,6 +36,8 @@ export const CreatePersistentTaskArgsSchema = z.object({
     .describe('MEASURABLE outcome for audit gate. Falls back to outcome_criteria if not set. Example: "All demo scenarios pass with video recording"'),
   gate_verification_method: z.string().optional()
     .describe('EXECUTABLE verification steps for the auditor. Example: "Call verify_demo_completeness and assert complete: true"'),
+  verification_strategy: z.string().optional()
+    .describe('Alias for gate_success_criteria (unified naming across todo-db, persistent-task, and plan-orchestrator). If both verification_strategy and gate_success_criteria are provided, gate_success_criteria wins.'),
 });
 
 export const ActivatePersistentTaskArgsSchema = z.object({

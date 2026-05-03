@@ -398,10 +398,19 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
   if (args.is_plan_manager) metadataObj.is_plan_manager = true;
   const metadata = Object.keys(metadataObj).length > 0 ? JSON.stringify(metadataObj) : null;
 
-  // Audit gate setup
-  const gateSuccessCriteria = args.gate_success_criteria ?? null;
+  // Audit gate setup — gate_success_criteria wins over verification_strategy alias
+  const gateSuccessCriteria = args.gate_success_criteria ?? args.verification_strategy ?? null;
   const gateVerificationMethod = args.gate_verification_method ?? null;
   const gateStatus = gateSuccessCriteria ? 'draft' : null;
+
+  // Mandatory audit gate: persistent tasks MUST provide gate_success_criteria
+  // Exception: plan managers (title starts with "Plan Manager:") are coordination tasks
+  const isPlanManager = args.title.startsWith('Plan Manager:') || args.is_plan_manager;
+  if (!isPlanManager && !gateSuccessCriteria) {
+    return {
+      error: 'Persistent tasks require gate_success_criteria (or verification_strategy). Provide measurable success criteria for the audit gate. Exception: plan managers (title starting with "Plan Manager:" or is_plan_manager: true) are exempt.',
+    } as ErrorResult;
+  }
 
   // Insert persistent task row
   db.prepare(

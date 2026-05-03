@@ -1223,9 +1223,10 @@ export function drainQueue() {
           { taskId: revival.taskId, taskType: revival.taskType, taskTitle: revival.taskTitle, criteria: revival.criteria, method: revival.method },
           PROJECT_DIR,
         );
+        const auditLabel = revival.taskType === 'plan' ? 'Plan audit' : 'Universal audit';
         enqueueSession({
           ...spec,
-          title: `Universal audit (revival): ${revival.taskTitle}`,
+          title: `${auditLabel} (revival): ${revival.taskTitle}`,
           source: 'session-reaper-audit-revival',
         });
 

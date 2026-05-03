@@ -632,6 +632,21 @@ function createPlan(args: CreatePlanArgs) {
   const planId = randomUUID();
   const ts = now();
 
+  // Validate: all inline tasks must have verification_strategy
+  if (args.phases) {
+    for (const phase of args.phases) {
+      if (phase.tasks) {
+        for (const task of phase.tasks) {
+          if (!task.verification_strategy) {
+            return {
+              error: `Plan task "${task.title}" requires verification_strategy. Provide concrete verification criteria for the independent audit gate (e.g., "Run pytest and verify 250/250 pass", "Verify PR #N merged to preview"). ALL plan tasks require verification_strategy.`,
+            };
+          }
+        }
+      }
+    }
+  }
+
   // Collect inline tasks that need linked todo-db tasks (created AFTER transaction)
   const pendingTodoTasks: Array<{
     planTaskId: string;
@@ -989,6 +1004,13 @@ function addPlanTask(args: AddPlanTaskArgs) {
   const db = getDb();
   const phase = db.prepare('SELECT * FROM phases WHERE id = ?').get(args.phase_id) as PhaseRecord | undefined;
   if (!phase) return { error: `Phase not found: ${args.phase_id}` } as ErrorResult;
+
+  // Mandatory audit gate: all plan tasks require verification_strategy
+  if (!args.verification_strategy) {
+    return {
+      error: `Plan task "${args.title}" requires verification_strategy. Provide concrete verification criteria for the independent audit gate (e.g., "Run pytest and verify 250/250 pass", "Verify PR #N merged to preview"). ALL plan tasks require verification_strategy.`,
+    } as ErrorResult;
+  }
 
   const maxOrder = (db.prepare('SELECT MAX(task_order) as m FROM plan_tasks WHERE phase_id = ?').get(args.phase_id) as { m: number | null }).m ?? 0;
   const taskId = randomUUID();

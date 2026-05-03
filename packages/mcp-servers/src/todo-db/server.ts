@@ -1018,10 +1018,18 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
   const strictInfraGuidance = effectiveStrictInfra ? 1 : 0;
   const demoInvolved = args.demo_involved ? 1 : 0;
 
-  // Audit gate setup
-  const gateSuccessCriteria = args.gate_success_criteria ?? null;
+  // Audit gate setup — gate_success_criteria wins over verification_strategy alias
+  const gateSuccessCriteria = args.gate_success_criteria ?? args.verification_strategy ?? null;
   const gateVerificationMethod = args.gate_verification_method ?? null;
   const gateStatus = gateSuccessCriteria ? 'draft' : null;
+
+  // Mandatory audit gate: non-exempt categories MUST provide gate_success_criteria
+  const isGateExempt = resolvedCategoryId && (GATE_EXEMPT_CATEGORIES as readonly string[]).includes(resolvedCategoryId);
+  if (!isGateExempt && !gateSuccessCriteria) {
+    return {
+      error: 'Non-exempt tasks require gate_success_criteria (or verification_strategy). Provide measurable success criteria for the audit gate, or use a gate-exempt category (triage, project-management, workstream-management).',
+    };
+  }
 
   // Urgency auto-downgrade: only authorized creators can set urgent priority
   if (priority === 'urgent' && (!args.assigned_by || !(URGENCY_AUTHORIZED_CREATORS as readonly string[]).includes(args.assigned_by))) {

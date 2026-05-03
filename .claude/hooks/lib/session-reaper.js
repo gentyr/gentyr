@@ -462,6 +462,31 @@ export function reapSyncPass(db) {
                   }
                 }
               } catch (_) { /* non-fatal */ }
+            } else if (!task && item.lane === 'audit' && (metadata.taskType === 'plan' || metadata.planId)) {
+              // Plan task audit — check plans.db
+              // Matches both: buildAuditorSessionSpec sets taskType:'plan', plan-audit-spawner sets planId
+              try {
+                const plansDbPath = path.join(projectDir, '.claude', 'state', 'plans.db');
+                if (fs.existsSync(plansDbPath)) {
+                  const plansDb = new Database(plansDbPath, { readonly: true });
+                  plansDb.pragma('busy_timeout = 3000');
+                  const planTask = plansDb.prepare('SELECT id, title, verification_strategy, status FROM plan_tasks WHERE id = ?').get(metadata.taskId);
+                  plansDb.close();
+                  if (planTask && planTask.status === 'pending_audit') {
+                    result.auditRevivals.push({
+                      taskId: metadata.taskId,
+                      taskType: 'plan',
+                      taskTitle: planTask.title || '',
+                      criteria: planTask.verification_strategy || '',
+                      method: planTask.verification_strategy || '',
+                      queueId: item.id,
+                      agentId: item.agent_id,
+                    });
+                    debugLog('session-reaper', 'plan_audit_revival_candidate', { taskId: metadata.taskId });
+                    try { auditEvent('audit_revival_candidate', { queue_id: item.id, task_id: metadata.taskId, task_type: 'plan', agent_id: item.agent_id }); } catch (_) { /* non-fatal */ }
+                  }
+                }
+              } catch (_) { /* non-fatal */ }
             } else if (task && task.status === 'in_progress') {
               const resetResult = todoDb.prepare(
                 "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
