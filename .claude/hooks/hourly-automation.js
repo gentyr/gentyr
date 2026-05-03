@@ -1986,6 +1986,23 @@ function spawnTaskAgent(task) {
 
   // NOTE: Memory pressure check is handled by the session queue. Do NOT check here.
 
+  // Pre-check: skip worktree creation if focus mode would block the enqueue anyway.
+  // This prevents a wasteful create-worktree → enqueue-blocked → destroy-worktree spin loop
+  // that costs ~2 minutes of pnpm install per cycle.
+  const isCtoAssigned = task.assigned_by && ['cto', 'human'].includes(task.assigned_by);
+  if (!isCtoAssigned) {
+    try {
+      const focusStatePath = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
+      if (fs.existsSync(focusStatePath)) {
+        const focusState = JSON.parse(fs.readFileSync(focusStatePath, 'utf8'));
+        if (focusState && focusState.enabled) {
+          log(`Task runner: skipping "${task.title}" — focus mode active (non-CTO task)`);
+          return false;
+        }
+      }
+    } catch (_) { /* non-fatal — fall through to normal path */ }
+  }
+
   // --- Worktree setup (aborts if it fails — main tree must not be used) ---
   let worktreePath = null;
 
@@ -4639,6 +4656,86 @@ async function main() {
   });
 
   // =========================================================================
+  // TASK GATE STALE CLEANUP (gate-exempt)
+  // Auto-approve pending_review tasks older than 10 minutes (gate agent timed out)
+  // Runs every cycle — no cooldown, simple DB update. Must be gate-exempt because
+  // pending_review tasks block the entire task lifecycle regardless of CTO activity.
+  // =========================================================================
+  if (Database) {
+    try {
+      const todoDbPathGate = path.join(PROJECT_DIR, '.claude', 'todo.db');
+      if (fs.existsSync(todoDbPathGate)) {
+        const todoDbGate = new Database(todoDbPathGate);
+        const nowTimestampGate = Math.floor(Date.now() / 1000);
+        const gateResult = todoDbGate.prepare(
+          "UPDATE tasks SET status = 'pending' WHERE status = 'pending_review' AND created_timestamp < ?"
+        ).run(nowTimestampGate - 600);
+        if (gateResult.changes > 0) {
+          log(`Task gate cleanup: auto-approved ${gateResult.changes} stale pending_review task(s).`);
+        }
+        todoDbGate.close();
+      }
+    } catch (err) {
+      log(`Task gate cleanup error (non-fatal): ${err.message}`);
+    }
+  }
+
+  // =========================================================================
+  // STALE TASK CLEANUP (gate-exempt, 30min cooldown)
+  // Resets in_progress tasks that have been stuck for >30 minutes back to pending.
+  // Must be gate-exempt because stale in_progress tasks block revival and re-spawning.
+  // =========================================================================
+  await runIfDue('stale_task_cleanup', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStaleTaskCleanup',
+    configToggle: 'staleTaskCleanupEnabled',
+    config,
+    label: 'Stale task cleanup (gate-exempt)',
+    fn: async () => {
+      if (!Database) return;
+      const todoDbPathStale = path.join(PROJECT_DIR, '.claude', 'todo.db');
+      if (!fs.existsSync(todoDbPathStale)) return;
+      let staleDb;
+      try {
+        staleDb = new Database(todoDbPathStale);
+        staleDb.pragma('busy_timeout = 3000');
+        staleDb.pragma('journal_mode = WAL');
+        const nowSec = Math.floor(Date.now() / 1000);
+        const staleResult = staleDb.prepare(
+          `UPDATE tasks
+           SET status = 'pending', started_at = NULL, started_timestamp = NULL
+           WHERE status = 'in_progress'
+             AND started_timestamp IS NOT NULL
+             AND (? - started_timestamp) > 1800`
+        ).run(nowSec);
+        if (staleResult.changes > 0) {
+          log(`Stale task cleanup: reset ${staleResult.changes} stale in_progress task(s) to pending.`);
+        }
+      } catch (err) {
+        log(`Stale task cleanup: error — ${err.message}`);
+      } finally {
+        try { if (staleDb) staleDb.close(); } catch { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
+  // DRAIN QUEUE HEARTBEAT (gate-exempt)
+  // Ensure drainQueue() runs at least once per automation cycle so the sync pass
+  // can reap dead PIDs and trigger audit orphan recovery even when focus mode
+  // blocks new enqueues (which would otherwise trigger inline drains).
+  // =========================================================================
+  try {
+    const { drainQueue: drainQueueHeartbeat } = await import(
+      path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js')
+    );
+    drainQueueHeartbeat();
+    log('Drain queue heartbeat: sync pass executed.');
+  } catch (err) {
+    log(`Drain queue heartbeat error (non-fatal): ${err.message}`);
+  }
+
+  // =========================================================================
   // CTO GATE CHECK — exit if gate is closed after all monitoring-only steps
   // GAP 5: Everything above this point (Usage Optimizer, Key Sync, Session
   // Reviver, Triage, Health Monitors, CI Monitoring, Persistent Alerts,
@@ -4754,30 +4851,6 @@ async function main() {
   // is retained for emergency use.
 
   // =========================================================================
-  // TASK GATE STALE CLEANUP
-  // Auto-approve pending_review tasks older than 10 minutes (gate agent timed out)
-  // Runs every cycle — no cooldown, simple DB update
-  // =========================================================================
-  if (Database) {
-    try {
-      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
-      if (fs.existsSync(todoDbPath)) {
-        const todoDb = new Database(todoDbPath);
-        const nowTimestamp = Math.floor(Date.now() / 1000);
-        const result = todoDb.prepare(
-          "UPDATE tasks SET status = 'pending' WHERE status = 'pending_review' AND created_timestamp < ?"
-        ).run(nowTimestamp - 600);
-        if (result.changes > 0) {
-          log(`Task gate cleanup: auto-approved ${result.changes} stale pending_review task(s).`);
-        }
-        todoDb.close();
-      }
-    } catch (err) {
-      log(`Task gate cleanup error (non-fatal): ${err.message}`);
-    }
-  }
-
-  // =========================================================================
   // ABANDONED WORKTREE RESCUE (30min cooldown)
   // Spawns project-manager for worktrees with uncommitted changes and no active agent
   // NOTE: Must run BEFORE worktree_cleanup so abandoned worktrees with uncommitted
@@ -4843,54 +4916,7 @@ async function main() {
   });
 
   // =========================================================================
-  // STALE TASK CLEANUP (30min cooldown)
-  // Resets in_progress tasks that have been stuck for >30 minutes back to pending.
-  // Mirrors todo-maintenance.js SessionStart logic but runs continuously.
-  // =========================================================================
-  await runIfDue('stale_task_cleanup', {
-    state, now, intervals: config.intervals,
-    stateKey: 'lastStaleTaskCleanup',
-    configToggle: 'staleTaskCleanupEnabled',
-    config,
-    label: 'Stale task cleanup',
-    fn: async () => {
-      if (!Database) {
-        log('Stale task cleanup: better-sqlite3 unavailable, skipping.');
-        return;
-      }
-      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
-      if (!fs.existsSync(todoDbPath)) {
-        log('Stale task cleanup: todo.db not found, skipping.');
-        return;
-      }
-      let db;
-      try {
-        db = new Database(todoDbPath);
-        db.pragma('busy_timeout = 3000');
-        db.pragma('journal_mode = WAL');
-        const nowSec = Math.floor(Date.now() / 1000);
-        const result = db.prepare(
-          `UPDATE tasks
-           SET status = 'pending', started_at = NULL, started_timestamp = NULL
-           WHERE status = 'in_progress'
-             AND started_timestamp IS NOT NULL
-             AND (? - started_timestamp) > 1800`
-        ).run(nowSec);
-        if (result.changes > 0) {
-          log(`Stale task cleanup: reset ${result.changes} stale in_progress task(s) to pending.`);
-        } else {
-          log('Stale task cleanup: no stale in_progress tasks found.');
-        }
-      } catch (err) {
-        log(`Stale task cleanup: error — ${err.message}`);
-      } finally {
-        try { if (db) db.close(); } catch { /* non-fatal */ }
-      }
-    },
-  });
-
-  // =========================================================================
-  // BYPASS REQUEST STALENESS CHECK (5min cooldown, gate-exempt)
+  // BYPASS REQUEST STALENESS CHECK (5min cooldown)
   // Auto-cancels pending bypass requests whose blocking condition has cleared:
   // linked task deleted/terminal, or resource_access requests older than 1 hour.
   // =========================================================================

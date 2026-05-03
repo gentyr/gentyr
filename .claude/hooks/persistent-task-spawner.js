@@ -147,13 +147,39 @@ async function main() {
     process.exit(0);
   }
 
-  // Handle cancel_persistent_task — audit only, no spawn
+  // Handle cancel_persistent_task — audit + blocking_queue cleanup, no spawn
   if (toolName === 'mcp__persistent-task__cancel_persistent_task' || responseData.status === 'cancelled') {
     if (!responseData.error && responseData.id) {
       const taskId = responseData.id;
       const reason = responseData.reason ?? null;
       log(`[persistent-task] Task ${taskId} cancelled: ${reason}`);
       auditEvent('persistent_task_cancelled', { taskId, reason, cancelledBy: AGENT_ID });
+
+      // Resolve any active blocking_queue entries for this cancelled task
+      try {
+        const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+        if (Database && fs.existsSync(bypassDbPath)) {
+          const bypassDb = new Database(bypassDbPath);
+          bypassDb.pragma('busy_timeout = 3000');
+          const resolved = bypassDb.prepare(
+            "UPDATE blocking_queue SET status = 'resolved', resolved_at = datetime('now'), resolution_context = ? " +
+            "WHERE persistent_task_id = ? AND status = 'active'"
+          ).run(`Auto-resolved: persistent task cancelled (${reason || 'no reason'})`, taskId);
+          if (resolved.changes > 0) {
+            log(`[persistent-task] Resolved ${resolved.changes} blocking_queue entry/entries for cancelled task ${taskId}`);
+          }
+          bypassDb.close();
+        }
+      } catch (_) { /* non-fatal */ }
+
+      // Also propagate cancellation to plan layer (resolve plan task pause if linked)
+      try {
+        const { propagateResumeToPlan } = await import('./lib/pause-propagation.js');
+        const result = propagateResumeToPlan(taskId);
+        if (result.propagated) {
+          log(`[persistent-task] Cancel propagated to plan: plan_resumed=${result.plan_resumed}`);
+        }
+      } catch (_) { /* non-fatal */ }
     }
     console.log(JSON.stringify({ }));
     process.exit(0);

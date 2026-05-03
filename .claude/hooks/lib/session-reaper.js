@@ -18,7 +18,7 @@ import path from 'path';
 import os from 'os';
 import { execSync, execFileSync } from 'child_process';
 import { auditEvent } from './session-audit.js';
-import { killProcessGroup, killProcessGroupEscalated } from './process-tree.js';
+import { killProcessGroup, killProcessGroupEscalated, killProcessesInDirectory } from './process-tree.js';
 import { getCooldown } from '../config-reader.js';
 import { debugLog } from './debug-log.js';
 import { releaseAllResources, removeFromAllQueues } from './resource-lock.js';
@@ -364,9 +364,6 @@ export function reapSyncPass(db) {
   ).all();
 
   for (const item of running) {
-    // Gate lane exemption — gate agents are lightweight, handled separately
-    if (item.lane === 'gate') continue;
-
     if (!item.pid) continue;
 
     if (!isPidAlive(item.pid)) {
@@ -607,6 +604,10 @@ export function reapSyncPass(db) {
           }
         } catch (_) { /* non-fatal — background sweep will catch it */ }
       }
+    } else if (item.lane === 'gate') {
+      // Gate agents are lightweight Haiku sessions — skip stuck-alive checks.
+      // Dead gate PIDs are already reaped above (dead PID detection has no lane exemption).
+      continue;
     } else if (item.lane === 'persistent') {
       // Persistent monitors are long-running by design — don't use elapsed time.
       // Instead, check heartbeat staleness: if the persistent task's heartbeat
@@ -898,6 +899,22 @@ export async function reapAsyncPass(projectDir, stuckAliveItems, options = {}) {
 
         // Reset linked TODO to pending
         reconcileTodo(item, projectDir, 'session_hard_killed');
+
+        // Kill orphaned child processes in the worktree (esbuild, tsc --watch, dev servers)
+        // that survive after the Claude process is killed
+        const hardKillMeta = typeof item.metadata === 'string' ? (() => { try { return JSON.parse(item.metadata); } catch { return {}; } })() : (item.metadata || {});
+        const hardKillWtPath = hardKillMeta.worktreePath || item.worktree_path;
+        if (hardKillWtPath && fs.existsSync(hardKillWtPath)) {
+          try {
+            killProcessesInDirectory(hardKillWtPath);
+            log(`Session reaper: killed orphaned processes in worktree ${hardKillWtPath}`);
+          } catch (_) { /* non-fatal — orphan process reaper will catch these later */ }
+        }
+
+        // Release resource locks held by the hard-killed agent
+        if (item.agentId) {
+          try { releaseAllResources(item.agentId); removeFromAllQueues(item.agentId); } catch (_) { /* non-fatal */ }
+        }
 
         // Write deputy-CTO report
         writeDeputyCtoReport(projectDir, item);
