@@ -576,14 +576,25 @@ function areDependenciesMet(db: Database.Database, entityId: string, entityType:
  * Returns tasks that are ready to spawn.
  */
 function updateAndGetReadyTasks(db: Database.Database, planId: string): PlanTaskRecord[] {
+  // Query pending/blocked for promotion AND ready for return — tasks already promoted
+  // to 'ready' in a prior call must still be returned so plan managers can see them.
   const tasks = db.prepare(
-    "SELECT * FROM plan_tasks WHERE plan_id = ? AND status IN ('pending', 'blocked')"
+    "SELECT * FROM plan_tasks WHERE plan_id = ? AND status IN ('pending', 'blocked', 'ready')"
   ).all(planId) as PlanTaskRecord[];
 
   const readyTasks: PlanTaskRecord[] = [];
   const ts = now();
 
   for (const task of tasks) {
+    // Tasks already in 'ready' that haven't been spawned yet — include them directly
+    if (task.status === 'ready') {
+      // Only include if not already linked to a persistent task (i.e., not yet spawned)
+      if (!task.persistent_task_id) {
+        readyTasks.push(task);
+      }
+      continue;
+    }
+
     // Check task-level deps
     const taskDepsMet = areDependenciesMet(db, task.id, 'task');
     // Check phase-level deps
@@ -598,7 +609,10 @@ function updateAndGetReadyTasks(db: Database.Database, planId: string): PlanTask
         db.prepare('UPDATE plan_tasks SET status = ?, updated_at = ? WHERE id = ?').run('ready', ts, task.id);
         recordStateChange(db, 'task', task.id, 'status', oldStatus, 'ready');
       }
-      readyTasks.push({ ...task, status: 'ready' });
+      // Only include if not already linked to a persistent task
+      if (!task.persistent_task_id) {
+        readyTasks.push({ ...task, status: 'ready' });
+      }
     } else if (task.status !== 'blocked') {
       const oldStatus = task.status;
       db.prepare('UPDATE plan_tasks SET status = ?, updated_at = ? WHERE id = ?').run('blocked', ts, task.id);
@@ -1165,8 +1179,13 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
           recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed');
         }
       }
+    } else if (args.status === 'pending_audit') {
+      // Block direct pending_audit transitions — must go through the 'completed' path
+      // which checks verification_strategy and creates an audit record.
+      // Tasks set to pending_audit without an audit record are permanently stuck.
+      return { error: 'Cannot set status to pending_audit directly. Use status: "completed" — the audit gate routes through pending_audit automatically when verification_strategy is set.' } as ErrorResult;
     } else {
-      // All other status transitions (pending, blocked, ready, in_progress)
+      // All other status transitions (pending, blocked, ready, in_progress, paused)
       updates.push('status = ?');
       values.push(args.status);
       resolvedStatus = args.status;
