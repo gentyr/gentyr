@@ -339,7 +339,7 @@ function isAuthStalled(sessionFile) {
  * @returns {{ reaped: Array<{queueId: string, agentId: string, pid: number, revivalCandidate: boolean, metadata: object}>, stuckAlive: Array<{queueId: string, agentId: string, pid: number, spawnedAt: string, runDurationMs: number, agentType: string, title: string}> }}
  */
 export function reapSyncPass(db) {
-  const result = { reaped: [], stuckAlive: [] };
+  const result = { reaped: [], stuckAlive: [], auditRevivals: [] };
   const hardKillMs = getCooldown('session_hard_kill_minutes', 60) * 60 * 1000;
   const now = Date.now();
 
@@ -415,20 +415,64 @@ export function reapSyncPass(db) {
       });
 
       // Reset linked TODO task to pending so it can be re-spawned
+      // For audit-lane sessions: if the task is still pending_audit, flag for auditor revival
+      // instead of resetting to pending (which would lose the audit gate state)
       if (metadata.taskId && Database) {
         try {
           const todoDbPath = path.join(projectDir, '.claude', 'todo.db');
           if (fs.existsSync(todoDbPath)) {
             const todoDb = new Database(todoDbPath);
             todoDb.pragma('busy_timeout = 3000');
-            const resetResult = todoDb.prepare(
-              "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
-            ).run(metadata.taskId);
-            todoDb.close();
-            if (resetResult.changes > 0) {
-              debugLog('session-reaper', 'todo_reset_dead_pid', { taskId: metadata.taskId });
-              try { auditEvent('task_reset_on_reap', { queue_id: item.id, task_id: metadata.taskId, agent_id: item.agent_id }); } catch (_) { /* non-fatal */ }
+            const task = todoDb.prepare('SELECT id, status, gate_success_criteria, gate_verification_method, title FROM tasks WHERE id = ?').get(metadata.taskId);
+
+            if (task && task.status === 'pending_audit' && item.lane === 'audit') {
+              // Dead auditor — task stays in pending_audit, flag for re-spawn
+              result.auditRevivals.push({
+                taskId: metadata.taskId,
+                taskType: metadata.taskType || 'todo',
+                taskTitle: task.title || '',
+                criteria: task.gate_success_criteria || '',
+                method: task.gate_verification_method || '',
+                queueId: item.id,
+                agentId: item.agent_id,
+              });
+              debugLog('session-reaper', 'audit_revival_candidate', { taskId: metadata.taskId, lane: item.lane });
+              try { auditEvent('audit_revival_candidate', { queue_id: item.id, task_id: metadata.taskId, agent_id: item.agent_id }); } catch (_) { /* non-fatal */ }
+            } else if (!task && item.lane === 'audit' && metadata.taskType === 'persistent') {
+              // Persistent task audit — check persistent-tasks.db instead
+              try {
+                const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+                if (fs.existsSync(ptDbPath)) {
+                  const ptDb = new Database(ptDbPath, { readonly: true });
+                  ptDb.pragma('busy_timeout = 3000');
+                  const ptTask = ptDb.prepare('SELECT id, status, title, gate_success_criteria, gate_verification_method FROM persistent_tasks WHERE id = ?').get(metadata.taskId);
+                  ptDb.close();
+                  if (ptTask && ptTask.status === 'pending_audit') {
+                    result.auditRevivals.push({
+                      taskId: metadata.taskId,
+                      taskType: 'persistent',
+                      taskTitle: ptTask.title || '',
+                      criteria: ptTask.gate_success_criteria || '',
+                      method: ptTask.gate_verification_method || '',
+                      queueId: item.id,
+                      agentId: item.agent_id,
+                    });
+                    debugLog('session-reaper', 'pt_audit_revival_candidate', { taskId: metadata.taskId });
+                    try { auditEvent('audit_revival_candidate', { queue_id: item.id, task_id: metadata.taskId, task_type: 'persistent', agent_id: item.agent_id }); } catch (_) { /* non-fatal */ }
+                  }
+                }
+              } catch (_) { /* non-fatal */ }
+            } else if (task && task.status === 'in_progress') {
+              const resetResult = todoDb.prepare(
+                "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
+              ).run(metadata.taskId);
+              if (resetResult.changes > 0) {
+                debugLog('session-reaper', 'todo_reset_dead_pid', { taskId: metadata.taskId });
+                try { auditEvent('task_reset_on_reap', { queue_id: item.id, task_id: metadata.taskId, agent_id: item.agent_id }); } catch (_) { /* non-fatal */ }
+              }
             }
+
+            todoDb.close();
           }
         } catch (_) { /* non-fatal */ }
       }

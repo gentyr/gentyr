@@ -172,9 +172,35 @@ function getDb() {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  _db = new Database(DB_PATH);
-  _db.pragma('journal_mode = WAL');
-  _db.pragma('busy_timeout = 5000');
+  // Corruption auto-recovery: if the DB is malformed (e.g., power loss mid-write),
+  // rename it aside and create a fresh one. The session queue is ephemeral state —
+  // losing it means queued items need re-enqueuing, but running sessions track their
+  // own PIDs independently and will be re-discovered by the revival daemon.
+  try {
+    _db = new Database(DB_PATH);
+    _db.pragma('journal_mode = WAL');
+    _db.pragma('busy_timeout = 5000');
+    // Quick integrity probe — triggers "malformed" if WAL/page corruption exists
+    _db.pragma('integrity_check(1)');
+  } catch (err) {
+    if (err.message && err.message.includes('malformed')) {
+      const corruptPath = `${DB_PATH}.corrupt.${Date.now()}`;
+      log(`CRITICAL: session-queue.db is corrupted (${err.message}). Renaming to ${path.basename(corruptPath)} and creating fresh DB.`);
+      try { _db.close(); } catch (_) { /* cleanup */ }
+      _db = null;
+      // Also rename WAL and SHM files if they exist
+      try { fs.renameSync(DB_PATH, corruptPath); } catch (_) { /* may not exist */ }
+      try { fs.renameSync(DB_PATH + '-wal', corruptPath + '-wal'); } catch (_) { /* may not exist */ }
+      try { fs.renameSync(DB_PATH + '-shm', corruptPath + '-shm'); } catch (_) { /* may not exist */ }
+      // Create fresh DB
+      _db = new Database(DB_PATH);
+      _db.pragma('journal_mode = WAL');
+      _db.pragma('busy_timeout = 5000');
+      try { auditEvent('session_queue_db_recovered', { corrupt_path: corruptPath, reason: err.message }); } catch (_) { /* audit may not be ready */ }
+    } else {
+      throw err; // Non-corruption error — don't swallow
+    }
+  }
 
   _db.exec(`
     CREATE TABLE IF NOT EXISTS queue_items (
@@ -1142,6 +1168,82 @@ export function drainQueue() {
         } catch (err) {
           log(`Persistent monitor re-enqueue error (non-fatal): ${err.message}`);
         }
+      }
+    }
+  }
+
+  // Step 1b.5: Re-spawn auditors for dead audit-lane sessions
+  // When an auditor dies and its task is still pending_audit, spawn a fresh auditor.
+  // The reaper flags these in auditRevivals (task stays pending_audit, not reset to pending).
+  if (reaperResult && reaperResult.auditRevivals && reaperResult.auditRevivals.length > 0) {
+    for (const revival of reaperResult.auditRevivals) {
+      try {
+        // Dedup: check if another auditor is already queued/running for this task
+        const existingAudit = db.prepare(
+          "SELECT id FROM queue_items WHERE lane = 'audit' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.taskId') = ?"
+        ).get(revival.taskId);
+        if (existingAudit) {
+          log(`Step 1b.5: Audit revival skipped for task ${revival.taskId} — auditor already queued (${existingAudit.id})`);
+          continue;
+        }
+
+        const passTool = revival.taskType === 'todo'
+          ? 'mcp__todo-db__task_audit_pass'
+          : 'mcp__persistent-task__pt_audit_pass';
+        const failTool = revival.taskType === 'todo'
+          ? 'mcp__todo-db__task_audit_fail'
+          : 'mcp__persistent-task__pt_audit_fail';
+
+        enqueueSession({
+          title: `Universal audit (revival): ${revival.taskTitle}`,
+          agentType: 'universal-auditor',
+          hookType: 'universal-auditor',
+          tagContext: 'universal-auditor',
+          source: 'session-reaper-audit-revival',
+          model: 'claude-haiku-4-5-20251001',
+          agent: 'universal-auditor',
+          lane: 'audit',
+          priority: 'normal',
+          ttlMs: 8 * 60 * 1000,
+          projectDir: PROJECT_DIR,
+          metadata: { taskId: revival.taskId, taskType: revival.taskType },
+          buildPrompt: (agentId) => {
+            return `[Automation][universal-auditor][AGENT:${agentId}] Audit ${revival.taskType} task ${revival.taskId} (REVIVAL — previous auditor died).
+
+## Task
+"${revival.taskTitle}"
+
+## Success Criteria
+${revival.criteria || '(none provided)'}
+
+## Verification Method
+${revival.method || '(none provided)'}
+
+## Your Job
+You are an INDEPENDENT auditor. Verify the success criteria and verification method against actual artifacts.
+Do NOT trust the agent's claims — check actual files, test results, PR status, directory contents, etc.
+
+## Process
+1. Read the success criteria and verification method above carefully
+2. Use Read, Glob, Grep, Bash to check each claim against reality:
+   - If criteria mention tests: run them or check recent test output
+   - If criteria mention files/directories: verify they exist with expected content
+   - If criteria mention PRs: check PR status via \`gh pr view\`
+   - If criteria mention counts: verify actual counts match
+3. Render exactly ONE verdict with concrete evidence
+
+## Verdict (pick ONE, then exit immediately)
+- PASS: ${passTool}({ task_id: "${revival.taskId}", evidence: "<what you found>" })
+- FAIL: ${failTool}({ task_id: "${revival.taskId}", failure_reason: "<why>", evidence: "<what you found>" })
+
+You have 8 minutes. Be efficient. If you cannot verify (external system unavailable, ambiguous criteria), FAIL with reason.`;
+          },
+        });
+
+        log(`Step 1b.5: Re-spawned auditor for task ${revival.taskId} (previous auditor ${revival.agentId} died)`);
+        try { auditEvent('audit_session_revived', { task_id: revival.taskId, task_type: revival.taskType, previous_agent: revival.agentId }); } catch (_) { /* non-fatal */ }
+      } catch (err) {
+        log(`Step 1b.5: Audit revival error for task ${revival.taskId}: ${err.message}`);
       }
     }
   }
