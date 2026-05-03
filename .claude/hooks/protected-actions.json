@@ -195,6 +195,12 @@
       "phrase": "APPROVE ICON DELETE",
       "tools": ["delete_icon"],
       "description": "Icon store management — deletion requires CTO approval to prevent accidental loss"
+    },
+    "user-feedback": {
+      "protection": "approval-only",
+      "phrase": "APPROVE DISABLE",
+      "tools": ["disable_scenarios"],
+      "description": "Disabling demo scenarios requires CTO approval — prevents agents from bypassing promotion gates by silently disabling failing demos"
     }
   },
   "files": {

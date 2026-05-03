@@ -767,3 +767,38 @@ export interface VerifyDemoCompletenessResult {
   branch: string | null;
   checked_at: string;
 }
+
+// ============================================================================
+// Bulk Scenario Disable/Enable Schemas (CTO-gated)
+// ============================================================================
+
+export const DisableScenariosArgsSchema = z.object({
+  scenario_ids: z.array(z.string().min(1)).min(1).describe('Array of scenario IDs to disable'),
+  reason: z.string().min(5).max(500).describe('Why these scenarios are being disabled (required for audit trail)'),
+});
+export type DisableScenariosArgs = z.infer<typeof DisableScenariosArgsSchema>;
+
+export const EnableScenariosArgsSchema = z.object({
+  scenario_ids: z.array(z.string().min(1)).min(1).describe('Array of scenario IDs to enable'),
+});
+export type EnableScenariosArgs = z.infer<typeof EnableScenariosArgsSchema>;
+
+export interface BulkScenarioResult {
+  id: string;
+  title: string;
+  success: boolean;
+  error?: string;
+}
+
+export interface DisableScenariosResult {
+  disabled: number;
+  total: number;
+  reason: string;
+  results: BulkScenarioResult[];
+}
+
+export interface EnableScenariosResult {
+  enabled: number;
+  total: number;
+  results: BulkScenarioResult[];
+}

@@ -127,6 +127,13 @@ import {
   type VerifyDemoCompletenessArgs,
   type DemoCompletenessScenarioStatus,
   type VerifyDemoCompletenessResult,
+  DisableScenariosArgsSchema,
+  type DisableScenariosArgs,
+  type DisableScenariosResult,
+  type BulkScenarioResult,
+  EnableScenariosArgsSchema,
+  type EnableScenariosArgs,
+  type EnableScenariosResult,
 } from './types.js';
 
 // ============================================================================
@@ -1599,6 +1606,53 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     return { deleted: true, message: `Scenario "${record.title}" deleted` };
   }
 
+  function disableScenarios(args: DisableScenariosArgs): DisableScenariosResult | ErrorResult {
+    const results: BulkScenarioResult[] = [];
+    const stmt = db.prepare('UPDATE demo_scenarios SET enabled = 0, updated_at = ? WHERE id = ?');
+    const now = new Date().toISOString();
+
+    for (const id of args.scenario_ids) {
+      const existing = db.prepare('SELECT id, title FROM demo_scenarios WHERE id = ?').get(id) as { id: string; title: string } | undefined;
+      if (!existing) {
+        results.push({ id, title: '', success: false, error: 'Scenario not found' });
+        continue;
+      }
+      stmt.run(now, id);
+      results.push({ id, title: existing.title, success: true });
+    }
+
+    const disabledCount = results.filter(r => r.success).length;
+    return {
+      disabled: disabledCount,
+      total: args.scenario_ids.length,
+      reason: args.reason,
+      results,
+    };
+  }
+
+  function enableScenarios(args: EnableScenariosArgs): EnableScenariosResult | ErrorResult {
+    const results: BulkScenarioResult[] = [];
+    const stmt = db.prepare('UPDATE demo_scenarios SET enabled = 1, updated_at = ? WHERE id = ?');
+    const now = new Date().toISOString();
+
+    for (const id of args.scenario_ids) {
+      const existing = db.prepare('SELECT id, title FROM demo_scenarios WHERE id = ?').get(id) as { id: string; title: string } | undefined;
+      if (!existing) {
+        results.push({ id, title: '', success: false, error: 'Scenario not found' });
+        continue;
+      }
+      stmt.run(now, id);
+      results.push({ id, title: existing.title, success: true });
+    }
+
+    const enabledCount = results.filter(r => r.success).length;
+    return {
+      enabled: enabledCount,
+      total: args.scenario_ids.length,
+      results,
+    };
+  }
+
   function listScenarios(args: ListScenariosArgs): { scenarios: ScenarioResult[]; total: number } {
     let sql = `
       SELECT ds.*, p.name as persona_name
@@ -2862,6 +2916,19 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       description: 'Get full details of a demo scenario including its persona name.',
       schema: GetScenarioArgsSchema,
       handler: getScenario,
+    },
+    // Bulk Scenario Disable/Enable (CTO-gated via protected-actions.json)
+    {
+      name: 'disable_scenarios',
+      description: 'Bulk-disable demo scenarios. REQUIRES CTO APPROVAL — protected action. Use when scenarios are irrelevant to the current vertical slice and should be excluded from promotion gates. Disabled scenarios are skipped by verify_demo_completeness.',
+      schema: DisableScenariosArgsSchema,
+      handler: disableScenarios,
+    },
+    {
+      name: 'enable_scenarios',
+      description: 'Bulk-enable demo scenarios. No approval required — re-enabling is always safe. Use to restore previously disabled scenarios.',
+      schema: EnableScenariosArgsSchema,
+      handler: enableScenarios,
     },
     // Demo Completeness Verification
     {
