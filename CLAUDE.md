@@ -570,6 +570,22 @@ By default, the automation service runs without 1Password credentials in backgro
 
 **Automation state resilience**: `hourly-automation.js` reads `hourly-automation-state.json` at startup to track last-run timestamps. If the file is missing, corrupt, or contains non-numeric timestamps, the automation recreates it with epoch (0) timestamps — forcing all `runIfDue` blocks to fire immediately on the next cycle rather than exiting with a parse error. This prevents automation from going silent after a crash or manual deletion of the state file.
 
+### Synthetic Monitoring and Auto-Rollback
+
+`scripts/synthetic-monitor.js` runs as a KeepAlive launchd service (`com.local.gentyr-synthetic-monitor`) installed by `setup-automation-service.sh`. It probes all health endpoints defined in `services.json` `environments` config and writes results to a SQLite WAL-mode database at `.claude/state/synthetic-metrics.db`.
+
+**Probe intervals**: production endpoints every 60 seconds; all other environments (staging, preview) every 5 minutes. Main loop tick is 5 seconds. Probe HTTP timeout is 10 seconds via `AbortSignal.timeout`.
+
+**Two SQLite tables**: `health_probes` (7-day retention — status code, response time, healthy flag, error text per probe) and `metrics_summary` (90-day retention — per-environment hourly rollup of uptime %, P95 latency, probe count, failure count). The summary is computed opportunistically after each probe cycle.
+
+**Alert conditions**: (1) 3+ consecutive failures for the same endpoint → `consecutive_failures` alert; (2) response time > 2× the 5-minute rolling baseline → `latency_spike` alert. Alerts are written atomically (tmp+rename) to `.claude/state/synthetic-alerts.json` (capped at last 100 entries).
+
+**Auto-rollback integration**: `hourly-automation.js` runs an `auto_rollback_check` gate-exempt block every 2 minutes. It reads `synthetic-alerts.json`, filters to `consecutive_failures` alerts from the last 10 minutes, deduplicates by environment, then calls `recordFailure(envName)` and `executeRollback(envName, PROJECT_DIR)` from `.claude/hooks/lib/auto-rollback.js` when rollback conditions are met (deploy < 5 minutes old, 3+ consecutive failures, known-good prior deploy exists). Rollback targets Vercel (`npx vercel rollback --yes`) or Render (REST API) based on the `platform` field in deploy state. Skipped in local mode.
+
+**Deploy state**: `auto-rollback.js` tracks deployments in `.claude/state/deploy-tracking.json`. Call `trackDeployment(environment, deployId, platform)` after each deploy, `recordHealthy(environment, deployId, platform)` when health checks pass (updates `lastKnownGood`). The rollback log is at `.claude/auto-rollback.log`.
+
+**Cooldown key**: `auto_rollback_check: 2` in `config-reader.js` DEFAULTS.
+
 ### Automation Toggle Tools
 
 **2 MCP tools** (on `agent-tracker` server):
@@ -1506,7 +1522,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
 | 6. Session Briefing | 1 hook + content | Session start | One-time context dump: queue status, active tasks, bypass requests |
 | 7. Prompt Templates | ~10 builders | Agent spawn | Task-specific instructions injected into spawn prompts |
-| 8. Automation Scripts | 25 scripts | Cron/launchd/daemon | Background orchestration outside of agent sessions |
+| 8. Automation Scripts | 26 scripts | Cron/launchd/daemon | Background orchestration outside of agent sessions |
 
 ### What Each Category CAN and CANNOT Do
 
@@ -1786,11 +1802,12 @@ Session Stop
     v
 Background Automation
     |
-    +-- hourly-automation.js --> Spawn tasks, reap sessions, cleanup worktrees
+    +-- hourly-automation.js --> Spawn tasks, reap sessions, cleanup worktrees, auto-rollback
     +-- revival-daemon.js --> Detect dead agents, revive immediately
     +-- session-activity-broadcaster.js --> Generate and deliver session summaries
     +-- live-feed-daemon.js --> Generate Live Feed commentary entries to live-feed.db
     +-- preview-watcher.js --> Keep worktrees fresh
+    +-- synthetic-monitor.js --> Probe health endpoints, write alerts for auto-rollback pipeline
 ```
 
 ## GENTYR Session Lifecycle — Complete Inventory
@@ -1980,6 +1997,7 @@ draft → active → paused ⇆ active → completed
 | Report auto-resolve | 2 min | Auto-resolves reports matching merged PRs |
 | Report dedup | 30 min | Deduplicates pending reports |
 | Triage check | 5 min | Spawns triage agents for pending reports by tier |
+| Auto-rollback check | 2 min | Reads `synthetic-alerts.json`; triggers rollback on 3+ consecutive probe failures within 5 min of deploy |
 
 **Gate-Required (CTO briefing within 24h):**
 
@@ -2003,6 +2021,7 @@ draft → active → paused ⇆ active → completed
 | Session activity broadcaster | `scripts/session-activity-broadcaster.js` | 5 min | Generates per-session summaries, broadcasts to agents |
 | Live feed daemon | `scripts/live-feed-daemon.js` | 60s | Generates AI commentary for CTO dashboard Page 5 |
 | MCP shared daemon | `scripts/mcp-server-daemon.js` | Always-on | Hosts Tier 1 MCP servers on port 18090 |
+| Synthetic monitor | `scripts/synthetic-monitor.js` | 60s prod / 5 min staging | Probes health endpoints from `services.json`; writes alerts to `synthetic-alerts.json`; stores metrics in `synthetic-metrics.db` |
 
 ### Cross-Cutting Guards
 

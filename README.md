@@ -276,6 +276,8 @@ The merge chain promotes code through four stages on configurable timers. The st
 
 When staging is ready for production, `/promote-to-prod` orchestrates an 8-phase release plan: per-PR quality review, initial triage, meta-review, test and demo execution, demo coverage audit, final triage, CTO sign-off, and release report generation. The plan-manager runs autonomously through all phases, locks staging during the release, collects artifacts (session transcripts, screenshots, triage actions), and unlocks staging when the release is signed off. The CTO reviews and approves at Phase 7 via `sign_off_release`.
 
+A synthetic monitoring daemon (`scripts/synthetic-monitor.js`) probes health endpoints from `services.json` every 60 seconds (production) or 5 minutes (staging). When 3 or more consecutive failures are detected within 5 minutes of a deploy, the auto-rollback pipeline (`auto-rollback.js`) automatically reverts to the last known-good deployment — Vercel via `npx vercel rollback` or Render via REST API. This is safe because all database migrations must be backward-compatible (enforced by the migration safety gate), so rolling back code leaves the database in a valid state for the prior version.
+
 ### protection
 
 Critical files are root-owned. Agents cannot modify the hooks, guards, or specs that govern them. The credential file guard blocks agents from reading `.mcp.json`. Secret leak detection scans every diff. Protected path enforcement triggers on any write attempt to `.claude/hooks/`.
