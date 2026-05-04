@@ -269,20 +269,26 @@ export function diagnoseSessionFailure(sessionFile) {
       const isAuthError = (parsed.error === 'authentication_error') ||
         (parsed.type === 'error' && typeof parsed.message === 'string' &&
          (parsed.message.includes('401') || parsed.message.includes('authentication')));
-      // Detect Claude Code usage limit messages (specific patterns to avoid false positives)
-      const isUsageLimit = (parsed.type === 'error' && typeof parsed.message === 'string' &&
-        (parsed.message.includes('out of') && parsed.message.includes('usage')) ||
-        (parsed.type === 'error' && typeof parsed.message === 'string' &&
-         parsed.message.includes('hit your limit')) ||
-        (parsed.type === 'error' && typeof parsed.message === 'string' &&
-         parsed.message.includes('extra usage') && parsed.message.includes('resets')));
+      // Detect Claude Code usage limit messages — these appear as both type: 'error'
+      // AND as synthetic assistant messages (model: '<synthetic>', type: 'assistant')
+      const msgText = (parsed.type === 'error' && typeof parsed.message === 'string')
+        ? parsed.message
+        : (parsed.type === 'assistant' && parsed.message?.model === '<synthetic>')
+          ? (Array.isArray(parsed.message?.content)
+            ? parsed.message.content.filter(c => c.type === 'text').map(c => c.text).join(' ')
+            : '')
+          : '';
+      const isUsageLimit = msgText && (
+        (msgText.includes('out of') && msgText.includes('usage')) ||
+        msgText.includes('hit your limit') ||
+        (msgText.includes('extra usage') && msgText.includes('resets')));
 
       if (isRateLimit || isAuthError || isUsageLimit) {
         consecutiveErrors++;
         if (isRateLimit || isUsageLimit) rateLimitCount++;
         if (isAuthError) authErrorCount++;
         if (!sampleError) {
-          sampleError = (parsed.message || parsed.error || '').toString().slice(0, 200);
+          sampleError = (msgText || parsed.message || parsed.error || '').toString().slice(0, 200);
         }
       } else {
         break;

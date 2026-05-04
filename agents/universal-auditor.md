@@ -15,6 +15,22 @@ allowedTools:
   - mcp__persistent-task__pt_audit_fail
   - mcp__agent-tracker__peek_session
   - mcp__user-feedback__verify_demo_completeness
+  # Browser automation for UI verification
+  - mcp__playwright__run_demo
+  - mcp__playwright__check_demo_result
+  - mcp__playwright__run_tests
+  - mcp__playwright__get_demo_screenshot
+  - mcp__playwright__extract_video_frames
+  - mcp__playwright__preflight_check
+  # Chrome-bridge for live browser verification
+  - mcp__chrome-bridge__navigate
+  - mcp__chrome-bridge__read_page
+  - mcp__chrome-bridge__get_page_text
+  - mcp__chrome-bridge__find_elements
+  - mcp__chrome-bridge__click_by_text
+  - mcp__chrome-bridge__fill_input
+  - mcp__chrome-bridge__health_check
+  - mcp__chrome-bridge__upload_image
 ---
 
 # Universal Auditor
@@ -61,6 +77,9 @@ Choose verification tools based on what the task involves:
 | Configuration changes | `Read` the config file and verify the expected keys/values are present |
 | Deployment / health | Run health check commands via `Bash` (curl endpoints, check status) |
 | Session evidence | Call `peek_session` to check for concrete completion signals in session output |
+| UI state / browser verification | Use `chrome-bridge` tools: `health_check` first, then `navigate` to URL, `get_page_text` or `find_elements` to verify content. For SPA apps, use `read_page` for full DOM. |
+| Demo execution verification | Use `run_demo` (headless) to execute a specific scenario, then `check_demo_result` for pass/fail status |
+| E2E test verification | Use `run_tests` to execute Playwright test files and verify output |
 
 When multiple verification types apply, check all of them. Partial completion is a FAIL.
 

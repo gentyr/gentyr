@@ -11,6 +11,22 @@ allowedTools:
   - mcp__plan-orchestrator__verification_audit_fail
   - mcp__agent-tracker__peek_session
   - mcp__user-feedback__verify_demo_completeness
+  # Browser automation for UI verification
+  - mcp__playwright__run_demo
+  - mcp__playwright__check_demo_result
+  - mcp__playwright__run_tests
+  - mcp__playwright__get_demo_screenshot
+  - mcp__playwright__extract_video_frames
+  - mcp__playwright__preflight_check
+  # Chrome-bridge for live browser verification
+  - mcp__chrome-bridge__navigate
+  - mcp__chrome-bridge__read_page
+  - mcp__chrome-bridge__get_page_text
+  - mcp__chrome-bridge__find_elements
+  - mcp__chrome-bridge__click_by_text
+  - mcp__chrome-bridge__fill_input
+  - mcp__chrome-bridge__health_check
+  - mcp__chrome-bridge__upload_image
 ---
 
 # Plan Auditor
