@@ -1558,7 +1558,7 @@ export function drainQueue() {
 
   // Step 3: Count running items by lane (suspended items do NOT count toward capacity)
   // Automated lane is excluded — automated sessions don't consume standard concurrency slots
-  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent', 'audit', 'automated')").get().cnt;
+  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent', 'audit', 'automated', 'alignment', 'revival')").get().cnt;
   const gateRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'gate'").get().cnt;
   const auditRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'audit'").get().cnt;
   const maxConcurrent = getMaxConcurrentSessions();
@@ -1570,7 +1570,7 @@ export function drainQueue() {
   const queued = db.prepare(`
     SELECT * FROM queue_items WHERE status = 'queued'
     ORDER BY
-      CASE lane WHEN 'revival' THEN 0 WHEN 'persistent' THEN 1 WHEN 'audit' THEN 2 WHEN 'automated' THEN 3 WHEN 'gate' THEN 4 ELSE 5 END,
+      CASE lane WHEN 'persistent' THEN 0 WHEN 'audit' THEN 1 WHEN 'revival' THEN 2 WHEN 'automated' THEN 3 WHEN 'gate' THEN 4 WHEN 'alignment' THEN 5 ELSE 6 END,
       CASE priority WHEN 'cto' THEN 0 WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
       enqueued_at ASC
   `).all();
@@ -1587,68 +1587,80 @@ export function drainQueue() {
   let persistentSpawnedThisDrain = 0;
 
   for (const item of queued) {
-    if (item.lane === 'persistent' || item.lane === 'automated') {
-      // Persistent and automated lanes have no capacity limit — spawn immediately
-    } else if (item.lane === 'audit') {
-      // Audit lane: top priority — skips queue, no capacity limit, independent of standard slots.
-      // Sub-limit still applies to prevent runaway auditor spawning.
-      if (auditRunning + auditSpawnedThisDrain >= AUDIT_LANE_LIMIT) {
-        continue; // Skip, audit sub-limit reached
+    // ── Spawn tier classification ──────────────────────────────────────
+    //
+    // Tier 0 (unconditional): persistent, audit
+    //   No capacity limit, no memory gating. Spawn IMMEDIATELY.
+    //   Monitors and auditors must never wait — they are the verification layer.
+    //
+    // Tier 1 (automated): gate, alignment, revival, automated
+    //   No capacity limit (don't consume standard slots).
+    //   Memory pressure still applies. Preempt lower-priority sessions if blocked.
+    //
+    // Tier 2 (standard): everything else
+    //   Capacity limits, reserved slots, memory pressure all apply.
+    //
+    const isTier0 = item.lane === 'persistent' || item.lane === 'audit';
+    const isTier1 = item.lane === 'gate' || item.lane === 'alignment' || item.lane === 'revival' || item.lane === 'automated';
+
+    if (isTier0) {
+      // Tier 0: unconditional spawn — no capacity check, no memory check.
+      // Soft sub-limits to prevent runaway spawning (not hard blocks):
+      if (item.lane === 'audit' && auditRunning + auditSpawnedThisDrain >= AUDIT_LANE_LIMIT) {
+        continue; // Audit sub-limit reached — skip this cycle, retry next drain
       }
-      // Audit lane bypasses all other checks (capacity, memory pressure) — falls through to spawn directly
-    } else if (item.lane === 'gate') {
-      // Gate lane has its own sub-limit (tracked separately from main capacity)
-      if (gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
-        continue; // Skip, gate full
+    } else if (isTier1) {
+      // Tier 1: no capacity limit but memory pressure applies
+      // Sub-limits per lane type:
+      if (item.lane === 'gate' && gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
+        continue;
       }
-    } else if (item.lane === 'alignment') {
-      // Alignment lane for user-alignment spot-checks (spawned by global deputy-CTO monitor)
-      const alignmentRunning = db.prepare("SELECT COUNT(*) as c FROM queue_items WHERE status IN ('running','spawning') AND lane = 'alignment'").get().c;
-      if (alignmentRunning + alignmentSpawnedThisDrain >= ALIGNMENT_LANE_LIMIT) {
-        continue; // Skip, alignment full
+      if (item.lane === 'alignment') {
+        const alignmentRunning = db.prepare("SELECT COUNT(*) as c FROM queue_items WHERE status IN ('running','spawning') AND lane = 'alignment'").get().c;
+        if (alignmentRunning + alignmentSpawnedThisDrain >= ALIGNMENT_LANE_LIMIT) {
+          continue;
+        }
+      }
+      // Memory pressure check for Tier 1 — preempt if blocked
+      const memCheck = shouldAllowSpawn({
+        priority: item.priority === 'cto' || item.priority === 'critical' ? item.priority : 'urgent',
+        context: `session-queue:${item.lane}`,
+      });
+      if (!memCheck.allowed) {
+        // Try to preempt a lower-priority standard session to free memory
+        try {
+          const preempted = preemptLowestPriority(db, item);
+          if (preempted) {
+            log(`Tier 1 (${item.lane}) session ${item.id} preempted ${preempted.id} to free memory`);
+          } else {
+            result.memoryBlocked++;
+            log(`Memory pressure blocked Tier 1 ${item.id} (${item.lane}): ${memCheck.reason}`);
+            continue;
+          }
+        } catch (_) {
+          result.memoryBlocked++;
+          continue;
+        }
       }
     } else {
-      // Standard + revival lanes share the main limit (gate and persistent spawns don't consume it)
-      // Reserved slots: non-priority-eligible items see maxConcurrent - reservedSlots as their cap.
-      // Priority-eligible items (cto/critical/persistent/persistentTaskId children) see the full maxConcurrent.
+      // Tier 2: standard capacity limits apply
       const effectiveMax = isPriorityEligible(item) ? maxConcurrent : maxConcurrent - reservedSlots;
       if (standardRunning + standardSpawnedThisDrain >= effectiveMax) {
-        // Inline preemption: cto/critical items suspend the lowest-priority running session
         if (item.priority === 'cto' || item.priority === 'critical') {
           const preempted = preemptLowestPriority(db, item);
           if (preempted) {
             log(`Preempted ${preempted.id} (${preempted.priority}) for ${item.id} (${item.priority})`);
-            // Net zero: freed one slot, about to fill it — don't increment standardSpawnedThisDrain extra
           } else {
             result.atCapacity = true;
             break;
           }
         } else if (isPriorityEligible(item)) {
-          // Priority-eligible but not cto/critical — can't preempt, but don't break the loop.
-          // There may be items later that CAN preempt or fit in reserved slots.
           continue;
         } else {
-          // Non-eligible item hit the reduced cap — skip it but keep checking
-          // for priority-eligible items that can use reserved slots
           continue;
         }
       }
-    }
-
-    // Memory pressure check — audit lane bypasses (top priority, preempts if needed)
-    if (item.lane === 'audit') {
-      const memCheck = shouldAllowSpawn({ priority: 'critical', context: `session-queue:audit` });
-      if (!memCheck.allowed) {
-        // Audit sessions preempt the lowest-priority running session to make room
-        try {
-          const preempted = preemptLowestPriority(db);
-          if (preempted) {
-            log(`Audit session ${item.id} preempted ${preempted.id} (${preempted.title}) to free memory`);
-          }
-        } catch (_) { /* non-fatal — proceed anyway */ }
-      }
-      // Always allow audit lane regardless of memory pressure
-    } else {
+      // Memory pressure check for Tier 2
       const memCheck = shouldAllowSpawn({
         priority: item.priority,
         context: `session-queue:${item.source}`,
@@ -1657,7 +1669,7 @@ export function drainQueue() {
         result.memoryBlocked++;
         log(`Memory pressure blocked ${item.id}: ${memCheck.reason}`);
         debugLog('session-queue', 'drain_memory_blocked', { queueId: item.id, priority: item.priority, pressure: memCheck.pressure });
-        continue; // Skip this item, try next (might be higher priority)
+        continue;
       }
     }
 
@@ -2390,7 +2402,7 @@ export function getQueueStatus() {
 
   // Separate running counts: automated sessions don't consume standard slots
   const automatedRunning = activeRunning.filter(r => r.lane === 'automated').length;
-  const standardRunning = activeRunning.filter(r => !['gate', 'persistent', 'audit', 'automated'].includes(r.lane || 'standard')).length;
+  const standardRunning = activeRunning.filter(r => !['gate', 'persistent', 'audit', 'automated', 'alignment', 'revival'].includes(r.lane || 'standard')).length;
 
   return {
     hasData: true,
