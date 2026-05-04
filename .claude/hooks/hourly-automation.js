@@ -4677,6 +4677,74 @@ async function main() {
   });
 
   // =========================================================================
+  // AUTO-ROLLBACK CHECK (2min cooldown, gate-exempt — safety net runs always)
+  // Reads synthetic-alerts.json written by the synthetic-monitor daemon and
+  // feeds consecutive-failure alerts into the auto-rollback pipeline. This is
+  // a standalone path from the deploy_event_monitor above — it fires when the
+  // synthetic monitor detects failures between hourly-automation cycles.
+  // =========================================================================
+  await runIfDue('auto_rollback_check', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastAutoRollbackCheck',
+    label: 'Auto-rollback check (gate-exempt)',
+    localModeSkip: localMode,
+    fn: async () => {
+      const alertsPath = path.join(PROJECT_DIR, '.claude', 'state', 'synthetic-alerts.json');
+      if (!fs.existsSync(alertsPath)) return;
+
+      let alerts;
+      try {
+        const raw = fs.readFileSync(alertsPath, 'utf8');
+        alerts = JSON.parse(raw);
+        if (!Array.isArray(alerts)) return;
+      } catch {
+        return; // Corrupt or empty — skip
+      }
+
+      // Filter to recent consecutive-failure alerts (last 10 minutes)
+      const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+      const recentFailures = alerts.filter(a =>
+        a.type === 'consecutive_failures' &&
+        a.timestamp > cutoff &&
+        a.environment
+      );
+
+      if (recentFailures.length === 0) return;
+
+      // Deduplicate by environment — only process the latest alert per env
+      const byEnv = new Map();
+      for (const alert of recentFailures) {
+        byEnv.set(alert.environment, alert);
+      }
+
+      for (const [envName, alert] of byEnv) {
+        try {
+          const { recordFailure, executeRollback } = await import('./lib/auto-rollback.js');
+          const failResult = recordFailure(envName);
+          if (failResult.shouldRollback) {
+            log(`AUTO-ROLLBACK (synthetic): ${envName} — ${failResult.consecutiveFailures} consecutive failures, deploy ${failResult.deployAge}s old`);
+            const rollbackResult = executeRollback(envName, PROJECT_DIR);
+            if (rollbackResult.success) {
+              log(`AUTO-ROLLBACK (synthetic): ${envName} reverted successfully via ${rollbackResult.platform}`);
+              recordAlert(`auto_rollback_${envName}`, {
+                title: `Auto-rollback executed (synthetic monitor): ${envName} reverted to previous deploy`,
+                severity: 'critical',
+                source: 'auto-rollback-synthetic',
+              });
+            } else {
+              log(`AUTO-ROLLBACK (synthetic) FAILED for ${envName}: ${rollbackResult.error}`);
+            }
+          } else {
+            log(`Auto-rollback check: ${envName} has ${failResult.consecutiveFailures} failures but rollback conditions not met (deploy age: ${failResult.deployAge}s)`);
+          }
+        } catch (err) {
+          log(`Auto-rollback check error for ${envName}: ${err.message}`);
+        }
+      }
+    },
+  });
+
+  // =========================================================================
   // DORA METRICS COLLECTION (daily, gate-exempt)
   // Tracks Deployment Frequency, Lead Time, Change Failure Rate, MTTR
   // =========================================================================

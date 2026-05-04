@@ -21,10 +21,22 @@ import { execSync } from 'child_process';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const STATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'deploy-tracking.json');
+const LOG_PATH = path.join(PROJECT_DIR, '.claude', 'auto-rollback.log');
 
 // Rollback thresholds
 const MAX_DEPLOY_AGE_MS = 5 * 60 * 1000; // 5 minutes
 const MIN_CONSECUTIVE_FAILURES = 3;
+
+/**
+ * Append a line to the auto-rollback log. Best-effort — never throws.
+ * @param {string} msg - Log message
+ */
+function logAction(msg) {
+  try {
+    const line = `[${new Date().toISOString()}] ${msg}\n`;
+    fs.appendFileSync(LOG_PATH, line);
+  } catch { /* best-effort */ }
+}
 
 /**
  * Read the deploy state from disk.
@@ -90,6 +102,7 @@ export function trackDeployment(environment, deployId, platform) {
     consecutiveFailures: 0,
   };
   saveDeployState(state);
+  logAction(`TRACK: ${environment} deploy=${deployId} platform=${platform}`);
 }
 
 /**
@@ -187,10 +200,12 @@ export function executeRollback(environment, projectDir) {
   const previousGood = state.lastKnownGood[environment];
 
   if (!previousGood || !previousGood.deployId) {
+    logAction(`ROLLBACK SKIPPED: ${environment} — no known-good deploy to rollback to`);
     return { success: false, platform: 'unknown', error: 'No known-good deploy to rollback to' };
   }
 
   const platform = (deploy && deploy.platform) || previousGood.platform || 'unknown';
+  logAction(`ROLLBACK INITIATED: ${environment} platform=${platform} from=${deploy ? deploy.deployId : 'unknown'} to=${previousGood.deployId}`);
 
   try {
     if (platform === 'vercel') {
@@ -253,8 +268,88 @@ export function executeRollback(environment, projectDir) {
     delete state.recentDeploys[environment];
     saveDeployState(state);
 
+    logAction(`ROLLBACK SUCCESS: ${environment} platform=${platform}`);
     return { success: true, platform, error: null };
   } catch (err) {
+    logAction(`ROLLBACK FAILED: ${environment} platform=${platform} error=${err.message}`);
     return { success: false, platform, error: err.message };
+  }
+}
+
+/**
+ * Check health status from synthetic-metrics.db and trigger rollback if needed.
+ * Reads the synthetic monitor's SQLite DB directly for recent probe data.
+ *
+ * @param {string} projectDir - Project root directory
+ * @param {string} environment - Environment to check ('staging' | 'production')
+ * @returns {Promise<{rolledBack: boolean, previousDeployId: string|null, reason: string|null}>}
+ */
+export async function checkAndRollback(projectDir, environment) {
+  if (!projectDir || !environment) {
+    throw new Error('checkAndRollback requires projectDir and environment');
+  }
+
+  const metricsDbPath = path.join(projectDir, '.claude', 'state', 'synthetic-metrics.db');
+
+  // Check if synthetic metrics DB exists
+  if (!fs.existsSync(metricsDbPath)) {
+    return { rolledBack: false, previousDeployId: null, reason: null };
+  }
+
+  let Database;
+  try {
+    const mod = await import('better-sqlite3');
+    Database = mod.default;
+  } catch {
+    return { rolledBack: false, previousDeployId: null, reason: null };
+  }
+
+  let db;
+  try {
+    db = new Database(metricsDbPath, { readonly: true });
+    db.pragma('busy_timeout = 3000');
+  } catch {
+    return { rolledBack: false, previousDeployId: null, reason: null };
+  }
+
+  try {
+    // Get the last 3 probes for this environment
+    const recentProbes = db.prepare(`
+      SELECT healthy, endpoint FROM health_probes
+      WHERE environment = ?
+      ORDER BY timestamp DESC LIMIT 3
+    `).all(environment);
+
+    // Need at least 3 probes, all unhealthy
+    if (recentProbes.length < 3 || !recentProbes.every(p => p.healthy === 0)) {
+      return { rolledBack: false, previousDeployId: null, reason: null };
+    }
+
+    // All 3 recent probes are failures — check rollback conditions
+    const failResult = recordFailure(environment);
+    if (!failResult.shouldRollback) {
+      logAction(`checkAndRollback: ${environment} has failures but rollback conditions not met (deploy age: ${failResult.deployAge}s, failures: ${failResult.consecutiveFailures})`);
+      return { rolledBack: false, previousDeployId: failResult.previousGoodDeploy, reason: null };
+    }
+
+    // Execute rollback
+    logAction(`checkAndRollback: ${environment} — triggering rollback (${failResult.consecutiveFailures} failures, deploy ${failResult.deployAge}s old)`);
+    const rollbackResult = executeRollback(environment, projectDir);
+
+    if (rollbackResult.success) {
+      return {
+        rolledBack: true,
+        previousDeployId: failResult.previousGoodDeploy,
+        reason: `${failResult.consecutiveFailures} consecutive probe failures within ${failResult.deployAge}s of deploy`,
+      };
+    }
+
+    return {
+      rolledBack: false,
+      previousDeployId: failResult.previousGoodDeploy,
+      reason: `Rollback attempted but failed: ${rollbackResult.error}`,
+    };
+  } finally {
+    try { db.close(); } catch { /* cleanup */ }
   }
 }
