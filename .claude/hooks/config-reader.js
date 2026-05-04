@@ -80,6 +80,7 @@ const DEFAULTS = {
   environment_parity: 360,                     // 6 hours
   vulnerability_scan: 1440,                    // daily (24 hours)
   load_test: 360,                              // 6 hours (only runs during promotion)
+  auto_rollback_check: 2,                      // 2 minutes
 };
 
 /**

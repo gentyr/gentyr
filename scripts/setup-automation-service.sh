@@ -492,6 +492,7 @@ MCP_DAEMON_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-mcp-daemon.plist"
 PREVIEW_WATCHER_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-preview-watcher.plist"
 SESSION_ACTIVITY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-session-activity-broadcaster.plist"
 LIVE_FEED_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-live-feed-daemon.plist"
+SYNTHETIC_MONITOR_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-synthetic-monitor.plist"
 LAUNCHD_UID=$(id -u)
 LAUNCHD_DOMAIN="gui/$LAUNCHD_UID"
 
@@ -836,6 +837,59 @@ EOF
     log_warn "Live feed daemon script not found — skipping."
   fi
 
+  # --- Synthetic Monitor Daemon (KeepAlive, probes health endpoints) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/synthetic-monitor.js" ]; then
+    cat > "$SYNTHETIC_MONITOR_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-synthetic-monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/synthetic-monitor.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/synthetic-monitor.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/synthetic-monitor.log</string>
+</dict>
+</plist>
+EOF
+
+    if launchd_load "$SYNTHETIC_MONITOR_PLIST_FILE" "com.local.gentyr-synthetic-monitor"; then
+      log_info "Synthetic monitor daemon loaded (KeepAlive, RunAtLoad)."
+    else
+      log_warn "Synthetic monitor daemon FAILED to load — check: launchctl list | grep gentyr-synthetic-monitor"
+    fi
+  else
+    log_warn "Synthetic monitor script not found — skipping."
+  fi
+
   # --- Automation Service (10-min interval) ---
   # Create plist file
   cat > "$PLIST_FILE" << EOF
@@ -930,6 +984,11 @@ remove_macos() {
   rm -f "$LIVE_FEED_PLIST_FILE"
   log_info "Live feed daemon service removed."
 
+  # Unload and remove synthetic monitor daemon
+  launchd_unload "$SYNTHETIC_MONITOR_PLIST_FILE" "com.local.gentyr-synthetic-monitor"
+  rm -f "$SYNTHETIC_MONITOR_PLIST_FILE"
+  log_info "Synthetic monitor daemon service removed."
+
   # Unload and remove automation agent
   launchd_unload "$PLIST_FILE" "com.local.${SERVICE_NAME}"
   rm -f "$PLIST_FILE"
@@ -1002,6 +1061,27 @@ status_macos() {
     tail -5 "$PROJECT_DIR/.claude/preview-watcher.log"
   else
     echo "No preview watcher log file found yet."
+  fi
+
+  echo ""
+  echo "=== Synthetic Monitor Status (macOS) ==="
+  echo ""
+
+  if [ -f "$SYNTHETIC_MONITOR_PLIST_FILE" ]; then
+    echo "Synthetic monitor plist: $SYNTHETIC_MONITOR_PLIST_FILE (exists)"
+  else
+    echo "Synthetic monitor plist: $SYNTHETIC_MONITOR_PLIST_FILE (NOT FOUND)"
+  fi
+
+  echo "Synthetic monitor launchd:"
+  launchctl list | grep "gentyr-synthetic-monitor" || echo "  Synthetic monitor not loaded"
+
+  echo ""
+  if [ -f "$PROJECT_DIR/.claude/synthetic-monitor.log" ]; then
+    echo "Last 5 synthetic monitor log lines:"
+    tail -5 "$PROJECT_DIR/.claude/synthetic-monitor.log"
+  else
+    echo "No synthetic monitor log file found yet."
   fi
 
   echo ""
