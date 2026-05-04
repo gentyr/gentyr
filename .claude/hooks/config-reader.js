@@ -77,6 +77,9 @@ const DEFAULTS = {
   revival_compact_max_minutes: 30,             // max minutes since last compact for revival
   revival_compact_timeout_ms: 120000,          // timeout for compact command (ms)
   security_audit: 10080,                       // weekly (7 days)
+  environment_parity: 360,                     // 6 hours
+  vulnerability_scan: 1440,                    // daily (24 hours)
+  load_test: 360,                              // 6 hours (only runs during promotion)
 };
 
 /**

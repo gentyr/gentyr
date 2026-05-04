@@ -338,10 +338,10 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 - `agents/cicd-manager.md`: Lists BLOCKED patterns (DROP TABLE, DROP COLUMN, RENAME, etc.)
 
 **Orchestration layer**:
-- `migration-safety.js`: LLM-powered analysis provides detailed expand/contract fix suggestions
+- `migration-safety.js` (v2.0.0): Dual-layer analysis — Layer 1 is fast static regex matching for known destructive patterns (deterministic, instant); Layer 2 is LLM-powered per-file classification via `analyzeMigrations()` (Haiku) that catches context-dependent issues static regex misses (conditional DDL, stored procedures, complex ALTER chains). Static findings are authoritative — the LLM cannot downgrade a BLOCKED static finding. Each SQL operation is classified as SAFE, WARNING, or BLOCKED with expand/contract fix suggestions.
 
 **Enforcement layer**:
-- Preview-promoter agent EXITS without promoting when destructive patterns detected
+- Preview-promoter agent EXITS without promoting when any BLOCKED operation is detected (hard gate, not a warning); records full per-operation results in `migration-safety.json`
 - `staging-lock-guard.js`: Even if the promoter is somehow bypassed, staging is blocked
 - Auto-rollback (`auto-rollback.js`): If a bad migration somehow reaches staging, code is automatically reverted
 
@@ -1343,6 +1343,8 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 **`secrets-local-health.js` UserPromptSubmit hook**: Warns on every message (5-minute cooldown) if `secrets.local` is empty or missing keys referenced by secret profiles. Instructs agents to call `op_vault_map` + `populate_secrets_local` immediately, and instructs them to ask the CTO to run `npx gentyr sync` when entries are staged but not yet applied. Skipped in local mode and spawned sessions.
 
 **`pending-sync-notifier.js` UserPromptSubmit hook**: In interactive (CTO) sessions only, warns when any pending configuration files exist that require `npx gentyr sync` to apply. Checks all 4 pending file types: `secrets-local-pending.json`, `services-config-pending.json`, `mcp-servers-pending.json`, and `fly-config-pending.json`. Shows a `systemMessage` in the terminal listing each pending file and its contents — does NOT inject into model context. 10-minute cooldown. Skipped for spawned sessions.
+
+**`loadTest` section in `ServicesConfigSchema`**: Optional section in `services.json` enabling autocannon-based load testing during the promotion pipeline. Fields: `enabled` (boolean, default false), `duration` (seconds per route, 5–300, default 30), `connections` (concurrent connections per route, 1–500, default 50), `routes` (array of API paths to test, default `['/api/health', '/api/auth/session']`). When enabled, the promotion pipeline runs load tests against each configured route and records results. `autocannon` must be installed in the target project. Cooldown key `load_test` (default 360 minutes; only fires during promotion, not on every hourly cycle). Configured via `mcp__secret-sync__update_services_config`. Implementation: `.claude/hooks/lib/load-test-runner.js`.
 
 **`elastic` section in `ServicesConfigSchema`**: Optional section in `services.json` enabling centralized Elastic Cloud log shipping from all project components. Fields: `apiKey` (op:// ref, required), `cloudId` (op:// ref, Elastic Cloud), `endpoint` (op:// ref, Serverless — mutually exclusive with cloudId at runtime), `queryApiKey` (op:// ref, optional read-only key for querying), `enabled` (boolean, default true), `indexPrefix` (string, default `'logs'`; produces indices named `{prefix}-{service}-{date}`). Configured via `mcp__secret-sync__update_services_config`. Credentials for local dev and demos are added to `secrets.local` via `mcp__secret-sync__populate_secrets_local`. Deployment credentials (renderProduction, renderStaging, vercel) must be configured separately and synced via `/push-secrets`. Session briefing shows a one-line logging health status at login. Use `mcp__elastic-logs__verify_logging_config` to check configuration completeness across all environments.
 
