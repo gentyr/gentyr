@@ -68,15 +68,56 @@ export function assessRisk(filePath, projectDir = PROJECT_DIR) {
 }
 
 /**
+ * Determine a human-readable reason for a file's risk level.
+ *
+ * @param {string} filePath
+ * @param {string} risk
+ * @param {string} projectDir
+ * @returns {string}
+ */
+function getRiskReason(filePath, risk, projectDir) {
+  try {
+    const content = fs.readFileSync(path.join(projectDir, filePath), 'utf8');
+
+    if (risk === 'critical') {
+      if (/auth|session|token|password|credential/i.test(content) && /middleware|handler|guard/i.test(content)) {
+        return 'Contains authentication/authorization logic';
+      }
+      if (/payment|billing|invoice|subscription|charge/i.test(content)) {
+        return 'Contains payment/billing logic';
+      }
+    }
+    if (risk === 'high') {
+      if (/api\s*route|router\.(get|post|put|delete|patch)/i.test(content)) {
+        return 'Contains API route handlers';
+      }
+      if (/sql|query|exec|prepare/i.test(content)) {
+        return 'Contains database query logic';
+      }
+    }
+    if (risk === 'medium') {
+      return 'Contains exported functions (public API surface)';
+    }
+    return 'No high-risk patterns detected';
+  } catch {
+    return 'Unable to read file for risk assessment';
+  }
+}
+
+/**
  * Get coverage gaps with risk assessment.
  */
 export function getCoverageGaps(projectDir = PROJECT_DIR) {
   const { sourceFiles, uncovered } = mapSourceToTests(projectDir);
 
-  const gaps = uncovered.map(file => ({
-    file,
-    risk: assessRisk(file, projectDir),
-  }));
+  const gaps = uncovered.map(file => {
+    const risk = assessRisk(file, projectDir);
+    return {
+      file,
+      risk,
+      reason: getRiskReason(file, risk, projectDir),
+    };
+  });
 
   // Sort by risk (critical > high > medium > low)
   const riskOrder = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -89,5 +130,21 @@ export function getCoverageGaps(projectDir = PROJECT_DIR) {
       ? Math.round(((sourceFiles.length - uncovered.length) / sourceFiles.length) * 100)
       : 100,
     gaps,
+  };
+}
+
+/**
+ * Analyze test coverage for the project.
+ * Spec-compatible interface returning { covered, total, gaps }.
+ *
+ * @param {string} [projectDir] - Project root directory
+ * @returns {{ covered: number, total: number, gaps: Array<{ file: string, risk: string, reason: string }> }}
+ */
+export function analyzeTestCoverage(projectDir = PROJECT_DIR) {
+  const result = getCoverageGaps(projectDir);
+  return {
+    covered: result.total_source_files - result.uncovered_count,
+    total: result.total_source_files,
+    gaps: result.gaps,
   };
 }
