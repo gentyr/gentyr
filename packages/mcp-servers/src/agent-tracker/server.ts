@@ -5148,6 +5148,11 @@ async function submitBypassRequest(args: SubmitBypassRequestArgs): Promise<objec
 }
 
 async function resolveBypassRequest(args: ResolveBypassRequestArgs): Promise<object | ErrorResult> {
+  // Spawned sessions cannot resolve bypass requests — only the CTO interactive session can
+  if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    return { error: 'BLOCKED: Only the CTO interactive session can resolve bypass requests. Spawned agents cannot approve or reject bypass requests.' };
+  }
+
   let db: InstanceType<typeof Database> | undefined;
   try {
     db = getBypassDb();

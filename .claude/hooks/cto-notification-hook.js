@@ -990,7 +990,10 @@ async function main() {
   if (pendingBypassRequests.length > 0) {
     const bypassLines = [
       `URGENT — ${pendingBypassRequests.length} BYPASS REQUEST(S) NEED CTO DECISION`,
-      'Agents are BLOCKED and waiting. You MUST present these to the CTO using AskUserQuestion with approve/reject options for each request.',
+      '',
+      'CRITICAL RULE: You MUST NOT call resolve_bypass_request yourself. Only the CTO can approve or reject bypass requests.',
+      'You MUST use AskUserQuestion to present each request with Approve/Reject options. Wait for the CTO to choose before taking any action.',
+      'DO NOT auto-approve, auto-reject, or resolve these on your own — even if the decision seems obvious.',
       '---',
     ];
     for (let i = 0; i < pendingBypassRequests.length; i++) {
@@ -998,11 +1001,11 @@ async function main() {
       const age = req.created_at ? `${Math.round((Date.now() - new Date(req.created_at).getTime()) / 60000)}m ago` : '';
       bypassLines.push(`${i + 1}. [${req.id}] "${req.task_title || 'Unknown'}" (${req.category || 'general'})${age ? ` [${age}]` : ''}`);
       bypassLines.push(`   Summary: ${req.summary || 'No summary'}`);
-      bypassLines.push(`   Approve: mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "approved", context: "<your instructions>" })`);
-      bypassLines.push(`   Reject:  mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "rejected", context: "<reason>" })`);
+      bypassLines.push(`   To approve: CTO must explicitly say "approve" or select Approve via AskUserQuestion`);
+      bypassLines.push(`   To reject: CTO must explicitly say "reject" or select Reject via AskUserQuestion`);
       bypassLines.push('');
     }
-    bypassLines.push('INSTRUCTION: Before responding to the user\'s message, use AskUserQuestion to present each pending bypass request with Approve/Reject options. Include the request summary so the CTO can make an informed decision. If the user\'s message is unrelated, still mention the pending requests briefly.');
+    bypassLines.push('MANDATORY: Use AskUserQuestion NOW to present each pending bypass request to the CTO with Approve/Reject options. Include the summary. Do NOT call resolve_bypass_request until the CTO has made their choice. If the user\'s message is about something else, present the bypass requests FIRST, then address their message.');
     bypassBlock = bypassLines.join('\n');
   }
 
