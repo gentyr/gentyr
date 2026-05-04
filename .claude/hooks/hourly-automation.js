@@ -3694,6 +3694,100 @@ async function main() {
   });
 
   // =========================================================================
+  // DEFERRED ACTION AUTO-RESUME (gate-exempt, 5-minute cooldown)
+  // When a deferred protected action is completed/approved, auto-resolve the
+  // linked bypass request so the paused task can re-spawn. Also re-spawns
+  // tasks paused by protected action gates that have been waiting >5 minutes.
+  // =========================================================================
+  await runIfDue('deferred_action_resume', {
+    state, now,
+    stateKey: 'lastDeferredActionResumeCheck',
+    label: 'Deferred action auto-resume',
+    fn: async () => {
+      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+      if (!Database || !fs.existsSync(bypassDbPath)) return;
+
+      let db;
+      try {
+        db = new Database(bypassDbPath);
+        db.pragma('busy_timeout = 3000');
+      } catch { return; }
+
+      try {
+        // Check if deferred_actions table exists
+        const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deferred_actions'").get();
+        if (!tableExists) return;
+
+        // Find completed deferred actions that have linked pending bypass requests
+        const completedActions = db.prepare(`
+          SELECT da.id as action_id, da.server, da.tool, da.status as action_status,
+                 da.requester_task_type, da.requester_task_id, da.execution_result,
+                 bp.id as bypass_id, bp.status as bypass_status
+          FROM deferred_actions da
+          JOIN bypass_requests bp ON bp.task_id = da.requester_task_id
+            AND bp.task_type = da.requester_task_type
+          WHERE da.status IN ('completed', 'failed')
+            AND bp.status = 'pending'
+            AND da.executed_at > datetime('now', '-1 hour')
+        `).all();
+
+        let resolved = 0;
+        for (const row of completedActions) {
+          const context = row.action_status === 'completed'
+            ? `Auto-resolved: deferred action ${row.action_id} (${row.server}:${row.tool}) completed successfully. Task can resume.`
+            : `Auto-resolved: deferred action ${row.action_id} (${row.server}:${row.tool}) failed. Task will retry.`;
+          db.prepare(
+            "UPDATE bypass_requests SET status = 'approved', resolution_context = ?, resolved_at = datetime('now'), resolved_by = 'deferred-action-auto-resume' WHERE id = ? AND status = 'pending'"
+          ).run(context, row.bypass_id);
+          resolved++;
+          log(`Deferred action auto-resume: resolved bypass ${row.bypass_id} (action ${row.action_id} ${row.action_status})`);
+        }
+
+        // Also find pending bypass requests with category 'protected_action' older than 5 minutes
+        // whose parent persistent task or plan is completed/cancelled — auto-resolve them
+        const staleBypasses = db.prepare(`
+          SELECT id, task_type, task_id FROM bypass_requests
+          WHERE status = 'pending'
+            AND category = 'protected_action'
+            AND created_at < datetime('now', '-5 minutes')
+        `).all();
+
+        for (const bp of staleBypasses) {
+          // Check if the parent task is still active
+          let parentDone = false;
+          if (bp.task_type === 'persistent') {
+            const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+            if (fs.existsSync(ptDbPath)) {
+              try {
+                const ptDb = new Database(ptDbPath, { readonly: true });
+                const task = ptDb.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(bp.task_id);
+                if (task && ['completed', 'cancelled', 'failed'].includes(task.status)) {
+                  parentDone = true;
+                }
+                ptDb.close();
+              } catch { /* non-fatal */ }
+            }
+          }
+
+          if (parentDone) {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = 'Auto-cancelled: parent task is completed/cancelled', resolved_at = datetime('now') WHERE id = ? AND status = 'pending'"
+            ).run(bp.id);
+            log(`Deferred action auto-resume: cancelled stale bypass ${bp.id} (parent task done)`);
+            resolved++;
+          }
+        }
+
+        if (resolved > 0) {
+          debugLog('hourly-automation', 'deferred_action_resume', { resolved });
+        }
+      } finally {
+        try { db.close(); } catch { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
   // RATE LIMIT COOLDOWN RECOVERY (gate-exempt, 2-minute cooldown)
   // Checks for expired rate-limit cooldowns in blocker_diagnosis and
   // re-enqueues the persistent monitor for revival.
