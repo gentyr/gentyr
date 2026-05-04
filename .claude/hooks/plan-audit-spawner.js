@@ -130,7 +130,7 @@ process.stdin.on('end', async () => {
       hookType: HOOK_TYPES.PLAN_AUDITOR,
       tagContext: 'plan-auditor',
       source: 'plan-audit-spawner',
-      model: 'claude-haiku-4-5-20251001',
+      model: 'claude-sonnet-4-6',
       agent: 'plan-auditor',
       lane: 'audit',
       priority: 'normal',
