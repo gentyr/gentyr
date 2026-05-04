@@ -119,10 +119,24 @@ export const SetReservedSlotsArgsSchema = z.object({
 export const GetReservedSlotsArgsSchema = z.object({});
 
 export const SetFocusModeArgsSchema = z.object({
-  enabled: z.boolean().describe('Enable (true) or disable (false) focus mode'),
+  enabled: z.boolean().describe('Enable (true) or disable (false) focus mode. DEPRECATED — use set_automation_rate instead. Maps enabled=true to rate=none, enabled=false to rate=low.'),
 });
 
 export const GetFocusModeArgsSchema = z.object({});
+
+// ============================================================================
+// Automation Rate Schemas
+// ============================================================================
+
+export const AUTOMATION_RATE_VALUES = ['none', 'low', 'medium', 'high'] as const;
+export type AutomationRate = typeof AUTOMATION_RATE_VALUES[number];
+
+export const SetAutomationRateArgsSchema = z.object({
+  rate: z.enum(AUTOMATION_RATE_VALUES)
+    .describe('Automation rate level: none (blocks all automated spawns), low (5x slower, DEFAULT), medium (2x slower), high (baseline rates)'),
+});
+
+export const GetAutomationRateArgsSchema = z.object({});
 
 export const SetLockdownModeArgsSchema = z.object({
   enabled: z.boolean().describe('Enable (true) or disable (false) the interactive session lockdown'),
@@ -608,6 +622,8 @@ export type SetReservedSlotsArgs = z.infer<typeof SetReservedSlotsArgsSchema>;
 export type GetReservedSlotsArgs = z.infer<typeof GetReservedSlotsArgsSchema>;
 export type SetFocusModeArgs = z.infer<typeof SetFocusModeArgsSchema>;
 export type GetFocusModeArgs = z.infer<typeof GetFocusModeArgsSchema>;
+export type SetAutomationRateArgs = z.infer<typeof SetAutomationRateArgsSchema>;
+export type GetAutomationRateArgs = z.infer<typeof GetAutomationRateArgsSchema>;
 export type SetLockdownModeArgs = z.infer<typeof SetLockdownModeArgsSchema>;
 export type GetLockdownModeArgs = z.infer<typeof GetLockdownModeArgsSchema>;
 export type SetLocalModeArgs = z.infer<typeof SetLocalModeArgsSchema>;

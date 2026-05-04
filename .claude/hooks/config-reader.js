@@ -4,11 +4,14 @@
  * Centralized configuration for all automation cooldowns.
  * Reads from .claude/state/automation-config.json, falls back to hardcoded defaults on error.
  *
+ * Also manages the automation rate system (none/low/medium/high) which applies
+ * a multiplier to all non-infrastructure cooldowns.
+ *
  * Usage:
- *   import { getCooldown, getTimeout } from './config-reader.js';
+ *   import { getCooldown, getTimeout, getAutomationRate } from './config-reader.js';
  *   const cooldownMs = getCooldown('hourly_tasks', 55) * 60 * 1000;
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import * as fs from 'fs';
@@ -16,6 +19,141 @@ import * as path from 'path';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+const AUTOMATION_RATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-rate.json');
+
+// ============================================================================
+// Automation Rate System
+// ============================================================================
+
+/**
+ * Valid automation rate levels.
+ * - none: no automated agents spawn (blocks at enqueue)
+ * - low: automations run at very slow rates (5x slower than baseline)
+ * - medium: moderate rates (2x slower than baseline)
+ * - high: current baseline rates (multiplier 1x)
+ */
+export const AUTOMATION_RATES = ['none', 'low', 'medium', 'high'];
+
+/**
+ * Rate multipliers applied to non-infrastructure cooldowns.
+ * Infinity for 'none' means cooldowns are effectively infinite (never fires),
+ * but the actual blocking is done at the enqueue level in session-queue.js.
+ */
+export const RATE_MULTIPLIERS = {
+  none: Infinity,
+  low: 5,
+  medium: 2,
+  high: 1,
+};
+
+/**
+ * Infrastructure keys that are NOT multiplied by the automation rate.
+ * These are system maintenance operations that must run at fixed intervals
+ * regardless of the automation rate setting — they don't spawn agents or
+ * consume significant resources.
+ */
+export const INFRASTRUCTURE_KEYS = new Set([
+  'session_reviver',
+  'worktree_cleanup',
+  'report_auto_resolve',
+  'report_dedup',
+  'rate_limit_cooldown_check',
+  'rate_limit_cooldown_minutes',
+  'persistent_stale_pause_resume',
+  'persistent_heartbeat_stale_minutes',
+  'plan_orphan_detection',
+  'deferred_action_resume',
+  'self_heal_fix_check',
+  'self_heal_max_fix_attempts',
+  'self_heal_fix_task_timeout_minutes',
+  'session_hard_kill_minutes',
+  'crash_backoff_base_minutes',
+  'crash_backoff_max_minutes',
+  'context_pressure_suggestion_tokens',
+  'context_pressure_warning_tokens',
+  'context_pressure_critical_tokens',
+  'context_pressure_suggestion_minutes',
+  'context_pressure_warning_minutes',
+  'context_pressure_critical_minutes',
+  'context_pressure_nudge_cooldown_minutes',
+  'revival_compact_min_tokens',
+  'revival_compact_max_minutes',
+  'revival_compact_timeout_ms',
+  'screenshot_cleanup',
+  'auto_rollback_check',
+]);
+
+/**
+ * Get the current automation rate level.
+ * Reads from .claude/state/automation-rate.json, defaults to 'low'.
+ *
+ * @returns {'none' | 'low' | 'medium' | 'high'}
+ */
+export function getAutomationRate() {
+  try {
+    if (!fs.existsSync(AUTOMATION_RATE_PATH)) return 'low';
+    const content = fs.readFileSync(AUTOMATION_RATE_PATH, 'utf8');
+    const state = JSON.parse(content);
+    if (state && AUTOMATION_RATES.includes(state.rate)) {
+      return state.rate;
+    }
+    return 'low';
+  } catch (_) {
+    return 'low';
+  }
+}
+
+/**
+ * Get the full automation rate state (rate + metadata).
+ * @returns {{ rate: string, set_at: string|null, set_by: string|null }}
+ */
+export function getAutomationRateState() {
+  try {
+    if (!fs.existsSync(AUTOMATION_RATE_PATH)) {
+      return { rate: 'low', set_at: null, set_by: null };
+    }
+    const content = fs.readFileSync(AUTOMATION_RATE_PATH, 'utf8');
+    const state = JSON.parse(content);
+    if (state && AUTOMATION_RATES.includes(state.rate)) {
+      return {
+        rate: state.rate,
+        set_at: state.set_at || null,
+        set_by: state.set_by || null,
+      };
+    }
+    return { rate: 'low', set_at: null, set_by: null };
+  } catch (_) {
+    return { rate: 'low', set_at: null, set_by: null };
+  }
+}
+
+/**
+ * Set the automation rate level.
+ * Writes state to .claude/state/automation-rate.json.
+ *
+ * @param {'none' | 'low' | 'medium' | 'high'} rate
+ * @param {string} [setBy='cto']
+ * @returns {{ rate: string, set_at: string, set_by: string }}
+ */
+export function setAutomationRate(rate, setBy = 'cto') {
+  if (!AUTOMATION_RATES.includes(rate)) {
+    throw new Error(`Invalid automation rate: ${rate}. Must be one of: ${AUTOMATION_RATES.join(', ')}`);
+  }
+  const state = { rate, set_at: new Date().toISOString(), set_by: setBy };
+  const dir = path.dirname(AUTOMATION_RATE_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(AUTOMATION_RATE_PATH, JSON.stringify(state, null, 2));
+  return state;
+}
+
+/**
+ * Get the effective multiplier for the current automation rate.
+ * @returns {number}
+ */
+export function getAutomationRateMultiplier() {
+  const rate = getAutomationRate();
+  return RATE_MULTIPLIERS[rate] ?? 1;
+}
 
 // Hardcoded defaults (minutes) - used when config file is missing or corrupted
 const DEFAULTS = {
@@ -105,9 +243,11 @@ function readConfig() {
 
 /**
  * Get the effective cooldown for a given key.
- * Returns the value in minutes.
+ * Returns the value in minutes, multiplied by the automation rate multiplier
+ * unless the key is in the INFRASTRUCTURE_KEYS set.
  *
  * Priority: effective (dynamic) > defaults (config) > fallbackMinutes (hardcoded)
+ * Then: base value * rate multiplier (for non-infrastructure keys)
  *
  * @param {string} key - The cooldown key (e.g., 'hourly_tasks', 'task_runner')
  * @param {number} [fallbackMinutes] - Hardcoded fallback if config is unavailable
@@ -116,21 +256,28 @@ function readConfig() {
 export function getCooldown(key, fallbackMinutes) {
   const hardDefault = fallbackMinutes ?? DEFAULTS[key] ?? 55;
 
+  let baseCooldown = hardDefault;
+
   const config = readConfig();
-  if (!config) {
-    return hardDefault;
+  if (config) {
+    // Use effective (dynamically adjusted) value first, then defaults from config
+    if (config.effective && typeof config.effective[key] === 'number') {
+      baseCooldown = config.effective[key];
+    } else if (config.defaults && typeof config.defaults[key] === 'number') {
+      baseCooldown = config.defaults[key];
+    }
   }
 
-  // Use effective (dynamically adjusted) value first, then defaults from config
-  if (config.effective && typeof config.effective[key] === 'number') {
-    return config.effective[key];
+  // Apply automation rate multiplier to non-infrastructure keys
+  if (!INFRASTRUCTURE_KEYS.has(key)) {
+    const multiplier = getAutomationRateMultiplier();
+    if (multiplier === Infinity) {
+      return Infinity;
+    }
+    baseCooldown = baseCooldown * multiplier;
   }
 
-  if (config.defaults && typeof config.defaults[key] === 'number') {
-    return config.defaults[key];
-  }
-
-  return hardDefault;
+  return baseCooldown;
 }
 
 /**

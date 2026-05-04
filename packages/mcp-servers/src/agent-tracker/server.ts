@@ -40,6 +40,8 @@ import {
   GetReservedSlotsArgsSchema,
   SetFocusModeArgsSchema,
   GetFocusModeArgsSchema,
+  SetAutomationRateArgsSchema,
+  GetAutomationRateArgsSchema,
   SetLockdownModeArgsSchema,
   GetLockdownModeArgsSchema,
   SetLocalModeArgsSchema,
@@ -102,6 +104,8 @@ import {
   type GetReservedSlotsArgs,
   type SetFocusModeArgs,
   type GetFocusModeArgs,
+  type SetAutomationRateArgs,
+  type GetAutomationRateArgs,
   type SetLockdownModeArgs,
   type GetLockdownModeArgs,
   type SetLocalModeArgs,
@@ -2875,94 +2879,142 @@ async function getReservedSlots(_args: GetReservedSlotsArgs): Promise<object | E
 }
 
 // ============================================================================
-// Focus Mode Tool Implementations
+// Automation Rate Tool Implementations (replaces Focus Mode)
 // ============================================================================
 
-/**
- * Enable or disable focus mode.
- * Dynamically imports session-queue.js so the live module is used.
- */
-async function setFocusMode(args: SetFocusModeArgs): Promise<object | ErrorResult> {
-  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+const RATE_DESCRIPTIONS: Record<string, string> = {
+  none: 'No automated agents spawn. Only CTO-directed tasks, persistent monitors, and revivals are allowed.',
+  low: 'Automations run at very slow rates (5x slower than baseline). This is the DEFAULT.',
+  medium: 'Automations run at moderate rates (2x slower than baseline).',
+  high: 'Automations run at baseline rates (current/original speeds).',
+};
 
-  if (!fs.existsSync(queueModulePath)) {
-    return { error: `session-queue.js not found at ${queueModulePath}` };
+/**
+ * Set the automation rate level.
+ * Dynamically imports config-reader.js so the live module is used.
+ */
+async function setAutomationRateHandler(args: SetAutomationRateArgs): Promise<object | ErrorResult> {
+  const configReaderPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'config-reader.js');
+
+  if (!fs.existsSync(configReaderPath)) {
+    return { error: `config-reader.js not found at ${configReaderPath}` };
   }
 
   try {
-    const queueModule = await import(queueModulePath);
-    if (typeof queueModule.setFocusMode !== 'function') {
-      return { error: 'setFocusMode function not found in session-queue.js' };
+    const configModule = await import(configReaderPath);
+    if (typeof configModule.setAutomationRate !== 'function') {
+      return { error: 'setAutomationRate function not found in config-reader.js' };
     }
-    const state = queueModule.setFocusMode(args.enabled, 'mcp-tool');
+    const state = configModule.setAutomationRate(args.rate, 'mcp-tool');
     return {
       success: true,
-      enabled: state.enabled,
-      enabledAt: state.enabledAt,
-      enabledBy: state.enabledBy,
-      message: state.enabled
-        ? 'Focus mode ENABLED — only CTO-directed tasks, persistent monitors, and revivals can spawn.'
-        : 'Focus mode DISABLED — all automated spawning is unrestricted.',
+      rate: state.rate,
+      set_at: state.set_at,
+      set_by: state.set_by,
+      description: RATE_DESCRIPTIONS[state.rate] ?? 'Unknown rate level.',
+      message: `Automation rate set to '${state.rate}'. ${RATE_DESCRIPTIONS[state.rate] ?? ''}`,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { error: `Failed to set focus mode: ${message}` };
+    return { error: `Failed to set automation rate: ${message}` };
   }
 }
 
 /**
- * Get the current focus mode state.
- * Dynamically imports session-queue.js so the live module is used.
+ * Get the current automation rate state.
+ * Dynamically imports config-reader.js so the live module is used.
  */
-async function getFocusMode(_args: GetFocusModeArgs): Promise<object | ErrorResult> {
-  const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+async function getAutomationRateHandler(_args: GetAutomationRateArgs): Promise<object | ErrorResult> {
+  const configReaderPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'config-reader.js');
 
-  if (!fs.existsSync(queueModulePath)) {
-    return { error: `session-queue.js not found at ${queueModulePath}` };
+  if (!fs.existsSync(configReaderPath)) {
+    return { error: `config-reader.js not found at ${configReaderPath}` };
   }
 
   try {
-    const queueModule = await import(queueModulePath);
-    if (typeof queueModule.isFocusModeEnabled !== 'function') {
-      return { error: 'isFocusModeEnabled function not found in session-queue.js' };
+    const configModule = await import(configReaderPath);
+    if (typeof configModule.getAutomationRateState !== 'function') {
+      return { error: 'getAutomationRateState function not found in config-reader.js' };
     }
-    const enabled = queueModule.isFocusModeEnabled();
-
-    // Read the full state from the file for metadata
-    const focusModePath = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
-    let enabledAt: string | null = null;
-    let enabledBy: string | null = null;
-    if (fs.existsSync(focusModePath)) {
-      try {
-        const state = JSON.parse(fs.readFileSync(focusModePath, 'utf8'));
-        enabledAt = state.enabledAt ?? null;
-        enabledBy = state.enabledBy ?? null;
-      } catch (_) {
-        // Non-fatal — enabled is already read
-      }
-    }
+    const state = configModule.getAutomationRateState();
 
     return {
-      enabled,
-      enabledAt,
-      enabledBy,
-      description: enabled
-        ? 'Focus mode is ACTIVE — only CTO-directed tasks, persistent monitors, and revivals can spawn.'
-        : 'Focus mode is OFF — all automated spawning is unrestricted.',
-      allowedSources: enabled ? [
+      rate: state.rate,
+      set_at: state.set_at,
+      set_by: state.set_by,
+      description: RATE_DESCRIPTIONS[state.rate] ?? 'Unknown rate level.',
+      levels: {
+        none: RATE_DESCRIPTIONS.none,
+        low: RATE_DESCRIPTIONS.low,
+        medium: RATE_DESCRIPTIONS.medium,
+        high: RATE_DESCRIPTIONS.high,
+      },
+      multiplier: state.rate === 'none' ? 'Infinity (blocks at enqueue)' : String(configModule.RATE_MULTIPLIERS?.[state.rate] ?? 1) + 'x',
+      allowedWhenNone: state.rate === 'none' ? [
         'priority: cto or critical',
-        'lane: persistent, gate, or revival',
+        'lane: persistent, gate, audit, alignment, revival, or automated',
         'source: force-spawn-tasks',
         'source: persistent-task-spawner',
         'source: stop-continue-hook',
         'source: session-queue-reaper',
+        'source: sync-recycle',
         'metadata.persistentTaskId set',
       ] : null,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { error: `Failed to get focus mode: ${message}` };
+    return { error: `Failed to get automation rate: ${message}` };
   }
+}
+
+/**
+ * Backward-compat: Enable or disable focus mode via the rate system.
+ * enabled=true maps to rate='none', enabled=false maps to rate='low'.
+ */
+async function setFocusMode(args: SetFocusModeArgs): Promise<object | ErrorResult> {
+  const rate = args.enabled ? 'none' : 'low';
+  const result = await setAutomationRateHandler({ rate } as SetAutomationRateArgs);
+  if ('error' in result) return result;
+  return {
+    ...result,
+    // Also include focus-mode-shaped fields for backward compat
+    enabled: args.enabled,
+    enabledAt: (result as Record<string, unknown>).set_at,
+    enabledBy: (result as Record<string, unknown>).set_by,
+    message: args.enabled
+      ? 'Focus mode ENABLED (automation rate set to none) — only CTO-directed tasks, persistent monitors, and revivals can spawn. DEPRECATED: use set_automation_rate instead.'
+      : 'Focus mode DISABLED (automation rate set to low) — automations run at slow rates. DEPRECATED: use set_automation_rate instead.',
+  };
+}
+
+/**
+ * Backward-compat: Get the current focus mode state.
+ * Maps automation rate to focus mode semantics.
+ */
+async function getFocusMode(_args: GetFocusModeArgs): Promise<object | ErrorResult> {
+  const rateResult = await getAutomationRateHandler({} as GetAutomationRateArgs);
+  if ('error' in rateResult) return rateResult;
+  const rate = (rateResult as Record<string, unknown>).rate as string;
+  const enabled = rate === 'none';
+  return {
+    enabled,
+    enabledAt: (rateResult as Record<string, unknown>).set_at,
+    enabledBy: (rateResult as Record<string, unknown>).set_by,
+    description: enabled
+      ? 'Focus mode is ACTIVE (automation rate: none) — only CTO-directed tasks, persistent monitors, and revivals can spawn. DEPRECATED: use get_automation_rate instead.'
+      : `Focus mode is OFF (automation rate: ${rate}). DEPRECATED: use get_automation_rate instead.`,
+    automationRate: rate,
+    allowedSources: enabled ? [
+      'priority: cto or critical',
+      'lane: persistent, gate, audit, alignment, revival, or automated',
+      'source: force-spawn-tasks',
+      'source: persistent-task-spawner',
+      'source: stop-continue-hook',
+      'source: session-queue-reaper',
+      'source: sync-recycle',
+      'metadata.persistentTaskId set',
+    ] : null,
+  };
 }
 
 // ============================================================================
@@ -5813,14 +5865,26 @@ const tools: AnyToolHandler[] = [
     handler: getReservedSlots,
   },
   {
+    name: 'set_automation_rate',
+    description: 'Set the automation rate level. Controls how fast automated agents spawn: none (blocks all automated spawns), low (5x slower, DEFAULT), medium (2x slower), high (baseline rates). Replaces focus mode — rate=none is equivalent to focus mode enabled. Use /automation-rate slash command for interactive toggle.',
+    schema: SetAutomationRateArgsSchema,
+    handler: setAutomationRateHandler,
+  },
+  {
+    name: 'get_automation_rate',
+    description: 'Get the current automation rate level, including when it was set and what each level means. Replaces get_focus_mode.',
+    schema: GetAutomationRateArgsSchema,
+    handler: getAutomationRateHandler,
+  },
+  {
     name: 'set_focus_mode',
-    description: 'Enable or disable focus mode. When enabled, only CTO-directed tasks (priority: cto/critical), persistent task monitors (lane: persistent), session revivals (lane: revival/gate), manual CTO spawns (source: force-spawn-tasks), and children of persistent tasks are allowed to enqueue. All background automation is blocked. Use /focus-mode slash command for interactive toggle.',
+    description: 'DEPRECATED — use set_automation_rate instead. Backward-compat alias: enabled=true maps to rate=none, enabled=false maps to rate=low.',
     schema: SetFocusModeArgsSchema,
     handler: setFocusMode,
   },
   {
     name: 'get_focus_mode',
-    description: 'Get the current focus mode state, including when it was enabled and which sources are still allowed to spawn.',
+    description: 'DEPRECATED — use get_automation_rate instead. Backward-compat alias that returns focus mode semantics derived from the automation rate.',
     schema: GetFocusModeArgsSchema,
     handler: getFocusMode,
   },

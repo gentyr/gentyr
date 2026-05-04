@@ -1,71 +1,34 @@
 <!-- HOOK:GENTYR:focus-mode -->
-# /focus-mode - Toggle Focus Mode
+# /focus-mode — DEPRECATED, use /automation-rate
 
-Blocks ALL automated agent spawning except CTO-directed work, persistent task monitors,
-and session revivals. Use when you want to dedicate all queue slots and API quota to
-specific tasks without background automation interfering.
+Focus mode has been replaced by the automation rate system.
 
-## Step 1: Check Current State
+- `focus mode on` = `/automation-rate none`
+- `focus mode off` = `/automation-rate low`
 
-Call the `get_focus_mode` MCP tool on the `agent-tracker` server:
+## Step 1: Translate to Automation Rate
+
+If the user passed an argument:
+- `/focus-mode on` → call `mcp__agent-tracker__set_automation_rate({ rate: "none" })`
+- `/focus-mode off` → call `mcp__agent-tracker__set_automation_rate({ rate: "low" })`
+
+If no argument was provided (bare `/focus-mode`):
+1. Call `mcp__agent-tracker__get_automation_rate()` to check current state
+2. If current rate is `none`, set to `low` (toggle off)
+3. If current rate is anything else, set to `none` (toggle on)
+
+## Step 2: Show Result
+
+Display the result and inform the user about `/automation-rate`:
 
 ```
-mcp__agent-tracker__get_focus_mode()
-```
+[DEPRECATED] Focus mode has been replaced by /automation-rate.
 
-This returns `{ enabled, enabledAt, enabledBy, allowedSources }`.
+Automation rate set to: <rate>
 
-## Step 2: Toggle to Opposite State
-
-Based on the current state, toggle to the opposite using the `set_focus_mode` MCP tool:
-
-- If currently **ENABLED** → call `mcp__agent-tracker__set_focus_mode({ enabled: false })`
-- If currently **DISABLED** → call `mcp__agent-tracker__set_focus_mode({ enabled: true })`
-
-If the user passed an argument (`on` or `off`), use that instead of toggling:
-- `/focus-mode on` → call `mcp__agent-tracker__set_focus_mode({ enabled: true })`
-- `/focus-mode off` → call `mcp__agent-tracker__set_focus_mode({ enabled: false })`
-
-## Step 3: Show Result
-
-Display the new state clearly:
-
-**If focus mode is now ENABLED:**
-```
-Focus mode: ENABLED
-
-ALLOWED (will still spawn):
-  - CTO-priority sessions (priority: cto or critical)
-  - Persistent task monitors (lane: persistent)
-  - Session revivals (lane: revival)
-  - Task gate agents (lane: gate)
-  - Audit agents (lane: audit)
-  - Manual CTO spawns via /spawn-tasks (source: force-spawn-tasks)
-  - Persistent task spawner (source: persistent-task-spawner)
-  - Inline session revival (source: stop-continue-hook)
-  - Dead monitor revival (source: session-queue-reaper)
-  - Children of persistent tasks (metadata.persistentTaskId set)
-
-BLOCKED (will be rejected at enqueue):
-  - Hourly automation task runners
-  - Demo failure repair agents
-  - AI feedback agents
-  - Antipattern hunters
-  - Compliance checkers
-  - Lint fixers
-  - CLAUDE.md refactors
-  - Alert escalation agents
-  - Plan executors
-  - Workstream managers
-  - All other background automation
-
-Run /focus-mode again to disable.
-```
-
-**If focus mode is now DISABLED:**
-```
-Focus mode: DISABLED
-
-All automated agent spawning is now unrestricted.
-Background automation will resume on the next hourly cycle.
+Use /automation-rate [none|low|medium|high] for finer control:
+  none   — Blocks all automated spawns (= focus mode on)
+  low    — 5x slower (DEFAULT, = focus mode off)
+  medium — 2x slower
+  high   — Baseline rates
 ```

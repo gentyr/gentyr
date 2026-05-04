@@ -27,6 +27,8 @@ const AGENT_ID = process.env.CLAUDE_AGENT_ID || null;
 
 // DB paths
 const QUEUE_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+const AUTOMATION_RATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-rate.json');
+// Legacy path kept for reference only
 const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
 const LOCAL_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
 const USER_PROMPTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'user-prompts.db');
@@ -112,18 +114,31 @@ function truncate(str, maxLen) {
 }
 
 // ---------------------------------------------------------------------------
-// Data gathering: focus mode
+// Data gathering: automation rate
 // ---------------------------------------------------------------------------
 
-function getFocusModeState() {
+const VALID_AUTOMATION_RATES = ['none', 'low', 'medium', 'high'];
+
+function getAutomationRateState() {
   try {
-    if (!fs.existsSync(FOCUS_MODE_PATH)) return null;
-    const state = JSON.parse(fs.readFileSync(FOCUS_MODE_PATH, 'utf8'));
-    if (state.enabled === true) return state;
-    return null;
+    if (!fs.existsSync(AUTOMATION_RATE_PATH)) return { rate: 'low', set_at: null, set_by: null };
+    const state = JSON.parse(fs.readFileSync(AUTOMATION_RATE_PATH, 'utf8'));
+    if (state && VALID_AUTOMATION_RATES.includes(state.rate)) {
+      return { rate: state.rate, set_at: state.set_at || null, set_by: state.set_by || null };
+    }
+    return { rate: 'low', set_at: null, set_by: null };
   } catch (_) {
-    return null;
+    return { rate: 'low', set_at: null, set_by: null };
   }
+}
+
+// Backward compat shim — returns non-null only when rate is 'none'
+function getFocusModeState() {
+  const rateState = getAutomationRateState();
+  if (rateState.rate === 'none') {
+    return { enabled: true, enabledAt: rateState.set_at, enabledBy: rateState.set_by };
+  }
+  return null;
 }
 
 function getLocalModeState() {
@@ -608,10 +623,16 @@ function getGitActivity(hours = 2) {
 function buildInteractiveBriefing() {
   const lines = ['[DEPUTY-CTO SESSION BRIEFING]', ''];
 
-  // Focus mode notice (prominent — shown before queue state)
-  const focusMode = getFocusModeState();
-  if (focusMode) {
-    lines.push('[FOCUS MODE ACTIVE] Only CTO-directed tasks, persistent monitors, and revivals can spawn. Run /focus-mode to disable.');
+  // Automation rate notice (prominent — shown before queue state)
+  const rateState = getAutomationRateState();
+  if (rateState.rate === 'none') {
+    lines.push('[AUTOMATION RATE: NONE] All automated spawning is blocked. Only CTO-directed tasks, persistent monitors, and revivals can spawn. Run /automation-rate low to resume.');
+    lines.push('');
+  } else if (rateState.rate !== 'low') {
+    // Show non-default rates for visibility; 'low' is default and not shown
+    const label = rateState.rate.toUpperCase();
+    const multiplierDesc = rateState.rate === 'medium' ? '2x slower' : 'baseline speeds';
+    lines.push(`[Automation rate: ${label}] Automations running at ${multiplierDesc}. Run /automation-rate to change.`);
     lines.push('');
   }
 

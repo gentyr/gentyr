@@ -23,7 +23,7 @@ import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tr
 import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
 import { reapSyncPass, diagnoseSessionFailure } from './session-reaper.js';
-import { getCooldown } from '../config-reader.js';
+import { getCooldown, getAutomationRate, setAutomationRate as _setAutomationRate, getAutomationRateState } from '../config-reader.js';
 import { killProcessGroup, isClaudeProcess } from './process-tree.js';
 import { compactSessionIfNeeded } from './compact-session.js';
 import { auditEvent } from './session-audit.js';
@@ -50,6 +50,8 @@ import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
+// Legacy: focus-mode.json is replaced by automation-rate.json in config-reader.js
+// The FOCUS_MODE_PATH is kept for backward compat cleanup only.
 const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
 
 // Lane sub-limits
@@ -371,39 +373,32 @@ export function setMaxConcurrentSessions(n) {
 }
 
 // ============================================================================
-// Focus Mode
+// Automation Rate (replaces Focus Mode)
 // ============================================================================
 
 /**
- * Check whether focus mode is currently enabled.
- * Reads from disk synchronously; returns false on any error.
+ * Backward-compat: Check whether focus mode is currently enabled.
+ * Maps to automation rate: rate === 'none' means focus mode is enabled.
  * @returns {boolean}
  */
 export function isFocusModeEnabled() {
-  try {
-    if (!fs.existsSync(FOCUS_MODE_PATH)) return false;
-    const state = JSON.parse(fs.readFileSync(FOCUS_MODE_PATH, 'utf8'));
-    return state.enabled === true;
-  } catch (_) {
-    return false;
-  }
+  return getAutomationRate() === 'none';
 }
 
 /**
- * Enable or disable focus mode.
- * Writes state to disk and emits an audit event.
+ * Backward-compat: Enable or disable focus mode via the rate system.
+ * enabled=true maps to rate='none', enabled=false maps to rate='low' (the default).
  * @param {boolean} enabled
  * @param {string} [enabledBy='cto']
  * @returns {{ enabled: boolean, enabledAt: string, enabledBy: string }}
  */
 export function setFocusMode(enabled, enabledBy = 'cto') {
-  const state = { enabled, enabledAt: new Date().toISOString(), enabledBy };
-  const dir = path.dirname(FOCUS_MODE_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(FOCUS_MODE_PATH, JSON.stringify(state, null, 2));
-  log(`Focus mode ${enabled ? 'ENABLED' : 'DISABLED'} by ${enabledBy}`);
-  auditEvent(enabled ? 'focus_mode_enabled' : 'focus_mode_disabled', { enabledBy });
-  return state;
+  const rate = enabled ? 'none' : 'low';
+  const rateState = _setAutomationRate(rate, enabledBy);
+  log(`Automation rate set to '${rate}' (focus mode compat: ${enabled ? 'ENABLED' : 'DISABLED'}) by ${enabledBy}`);
+  auditEvent(enabled ? 'automation_rate_none' : 'automation_rate_low', { rate, enabledBy });
+  // Return a focus-mode-shaped object for backward compat
+  return { enabled, enabledAt: rateState.set_at, enabledBy: rateState.set_by };
 }
 
 /**
@@ -579,8 +574,9 @@ export function enqueueSession(spec) {
     spec = { ...spec, lane: 'automated' };
   }
 
-  // Focus mode gate: block non-CTO automated spawns
-  if (isFocusModeEnabled()) {
+  // Automation rate gate: when rate is 'none', block non-CTO automated spawns
+  // (same allowlist as the old focus mode)
+  if (getAutomationRate() === 'none') {
     const allowed =
       spec.priority === 'cto' || spec.priority === 'critical' ||
       spec.lane === 'persistent' || spec.lane === 'gate' || spec.lane === 'audit' || spec.lane === 'alignment' || spec.lane === 'revival' || spec.lane === 'automated' ||
@@ -592,9 +588,9 @@ export function enqueueSession(spec) {
       (spec.metadata && spec.metadata.persistentTaskId);
 
     if (!allowed) {
-      log(`Focus mode BLOCKED: "${spec.title}" (source: ${spec.source}, priority: ${spec.priority || 'normal'})`);
-      auditEvent('session_enqueue_blocked', { reason: 'focus_mode', title: spec.title, source: spec.source, priority: spec.priority || 'normal' });
-      return { queueId: null, blocked: 'focus_mode', title: spec.title };
+      log(`Automation rate NONE blocked: "${spec.title}" (source: ${spec.source}, priority: ${spec.priority || 'normal'})`);
+      auditEvent('session_enqueue_blocked', { reason: 'automation_rate_none', title: spec.title, source: spec.source, priority: spec.priority || 'normal' });
+      return { queueId: null, blocked: 'automation_rate_none', title: spec.title };
     }
   }
 
@@ -1574,7 +1570,7 @@ export function drainQueue() {
   const queued = db.prepare(`
     SELECT * FROM queue_items WHERE status = 'queued'
     ORDER BY
-      CASE lane WHEN 'revival' THEN 0 WHEN 'persistent' THEN 1 WHEN 'automated' THEN 2 WHEN 'gate' THEN 3 ELSE 4 END,
+      CASE lane WHEN 'revival' THEN 0 WHEN 'persistent' THEN 1 WHEN 'audit' THEN 2 WHEN 'automated' THEN 3 WHEN 'gate' THEN 4 ELSE 5 END,
       CASE priority WHEN 'cto' THEN 0 WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
       enqueued_at ASC
   `).all();
@@ -1593,15 +1589,17 @@ export function drainQueue() {
   for (const item of queued) {
     if (item.lane === 'persistent' || item.lane === 'automated') {
       // Persistent and automated lanes have no capacity limit — spawn immediately
+    } else if (item.lane === 'audit') {
+      // Audit lane: top priority — skips queue, no capacity limit, independent of standard slots.
+      // Sub-limit still applies to prevent runaway auditor spawning.
+      if (auditRunning + auditSpawnedThisDrain >= AUDIT_LANE_LIMIT) {
+        continue; // Skip, audit sub-limit reached
+      }
+      // Audit lane bypasses all other checks (capacity, memory pressure) — falls through to spawn directly
     } else if (item.lane === 'gate') {
       // Gate lane has its own sub-limit (tracked separately from main capacity)
       if (gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
         continue; // Skip, gate full
-      }
-    } else if (item.lane === 'audit') {
-      // Audit lane has its own sub-limit (independent auditors, signal-excluded)
-      if (auditRunning + auditSpawnedThisDrain >= AUDIT_LANE_LIMIT) {
-        continue; // Skip, audit full
       }
     } else if (item.lane === 'alignment') {
       // Alignment lane for user-alignment spot-checks (spawned by global deputy-CTO monitor)
@@ -1637,16 +1635,30 @@ export function drainQueue() {
       }
     }
 
-    // Memory pressure check
-    const memCheck = shouldAllowSpawn({
-      priority: item.priority,
-      context: `session-queue:${item.source}`,
-    });
-    if (!memCheck.allowed) {
-      result.memoryBlocked++;
-      log(`Memory pressure blocked ${item.id}: ${memCheck.reason}`);
-      debugLog('session-queue', 'drain_memory_blocked', { queueId: item.id, priority: item.priority, pressure: memCheck.pressure });
-      continue; // Skip this item, try next (might be higher priority)
+    // Memory pressure check — audit lane bypasses (top priority, preempts if needed)
+    if (item.lane === 'audit') {
+      const memCheck = shouldAllowSpawn({ priority: 'critical', context: `session-queue:audit` });
+      if (!memCheck.allowed) {
+        // Audit sessions preempt the lowest-priority running session to make room
+        try {
+          const preempted = preemptLowestPriority(db);
+          if (preempted) {
+            log(`Audit session ${item.id} preempted ${preempted.id} (${preempted.title}) to free memory`);
+          }
+        } catch (_) { /* non-fatal — proceed anyway */ }
+      }
+      // Always allow audit lane regardless of memory pressure
+    } else {
+      const memCheck = shouldAllowSpawn({
+        priority: item.priority,
+        context: `session-queue:${item.source}`,
+      });
+      if (!memCheck.allowed) {
+        result.memoryBlocked++;
+        log(`Memory pressure blocked ${item.id}: ${memCheck.reason}`);
+        debugLog('session-queue', 'drain_memory_blocked', { queueId: item.id, priority: item.priority, pressure: memCheck.pressure });
+        continue; // Skip this item, try next (might be higher priority)
+      }
     }
 
     // Workstream dependency check — skip items whose blocker tasks are not yet completed
@@ -2385,7 +2397,8 @@ export function getQueueStatus() {
     maxConcurrent,
     reservedSlots,
     reservedSlotsRestore,
-    focusMode: isFocusModeEnabled(),
+    automationRate: getAutomationRate(),
+    focusMode: isFocusModeEnabled(), // backward compat: true when rate is 'none'
     localMode: isLocalModeEnabled(),
     running: activeRunning.length,
     standardRunning,
