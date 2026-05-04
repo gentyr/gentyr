@@ -1304,6 +1304,20 @@ persona-feedback, product-manager, run-feedback
 
 **Architecture** — `packages/cto-dashboard-live/` (real-time Ink/React TUI, polls 3s). Page 1: Observe (sessions + activity stream). Page 2: Demos & Tests (scenarios, branch selector, launch/stop, display lock preemption). Page 3: Plans (phases, tasks, audit info, progress bars). Page 4: Specs (category navigator). Page 5: Feed (AI commentary from live-feed.db).
 
+### 16.6 Token Usage Tracking (Per-Agent-Type)
+
+**Purpose** — Track and display how many tokens different automated session types consume, enabling cost visibility and optimization.
+
+**Architecture** — Two layers in `packages/cto-dashboard/src/utils/`:
+- **Global usage** (`data-reader.ts:getTokenUsage(hours)`) — Sums input/output/cache_read/cache_creation tokens across ALL sessions in last N hours. Parses session JSONL `message.usage` fields. Displayed as QuotaBars (5h/7d) + cache hit rate on CTO Dashboard Page 1 and in the CTO notification hook status line.
+- **Per-agent-type usage** (`automated-instances.ts:getAutomationTokenUsage()`) — Scans session JSONL files modified in last 24h. Extracts `[Automation][agent-type]` or `[Task][agent-type]` prefix from first user message to classify the session. Sums all `message.usage` token fields (input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens) per session. Rolls up raw agent types into display names via `INSTANCE_DEFINITIONS` map. Returns `Record<string, number>` (display name → total tokens).
+
+**Display** — `AutomatedInstances` component on CTO Dashboard Page 1 renders `tokensByType` as a horizontal bar chart showing relative token consumption by agent type (e.g., "Task Runner: 48K", "Lint Checker: 7.2K"). Sorted descending by token count.
+
+**Key Files** — `packages/cto-dashboard/src/utils/automated-instances.ts` (getAutomationTokenUsage, lines 519-604), `packages/cto-dashboard/src/utils/data-reader.ts` (getTokenUsage, lines 475-530), `packages/cto-dashboard/src/components/AutomatedInstances.tsx` (bar chart rendering), `packages/cto-dashboard/src/components/QuotaBar.tsx` (progress bar widget).
+
+**Test Coverage** — `automated-instances.test.ts`: dedicated `getAutomationTokenUsage - Session JSONL parsing` describe block (structural + behavioral tests). `AutomatedInstances.test.tsx`: 12 tests for token bar chart rendering (empty state, entries, sorting, tip text).
+
 ---
 
 ## 17. Enforcement Doctrine
