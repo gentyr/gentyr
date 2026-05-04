@@ -575,6 +575,11 @@ export const RequestSelfCompactArgsSchema = z.object({
 });
 export type RequestSelfCompactArgs = z.infer<typeof RequestSelfCompactArgsSchema>;
 
+export const CheckDeferredActionArgsSchema = z.object({
+  action_id: z.string().min(1).describe('The deferred action ID returned by the protected-action-gate'),
+});
+export type CheckDeferredActionArgs = z.infer<typeof CheckDeferredActionArgsSchema>;
+
 // ============================================================================
 // Type Definitions
 // ============================================================================

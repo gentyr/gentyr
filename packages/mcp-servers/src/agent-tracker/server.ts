@@ -134,6 +134,8 @@ import {
   type ResolveBlockingItemArgs,
   type GetBlockingSummaryArgs,
   type StageMcpServerArgs,
+  type CheckDeferredActionArgs,
+  CheckDeferredActionArgsSchema,
   type AcquireSharedResourceArgs,
   type ReleaseSharedResourceArgs,
   type RenewSharedResourceArgs,
@@ -2642,13 +2644,19 @@ async function getSessionQueueStatus(_args: GetSessionQueueStatusArgs): Promise<
       memoryPressure = { pressure: mem.pressure, freeMB: mem.freeMB };
     } catch { /* non-fatal — module may not exist */ }
 
+    // Separate running counts: automated sessions don't consume standard slots
+    const automatedRunning = aliveRunning.filter(r => r.lane === 'automated').length;
+    const standardRunning = aliveRunning.filter(r => !['gate', 'persistent', 'audit', 'automated'].includes(r.lane ?? '')).length;
+
     return {
       hasData: true,
       maxConcurrent,
       reservedSlots,
       reservedSlotsRestore,
       running: aliveRunning.length,
-      availableSlots: Math.max(0, maxConcurrent - aliveRunning.length),
+      standardRunning,
+      automatedRunning,
+      availableSlots: Math.max(0, maxConcurrent - standardRunning),
       memoryPressure,
       queuedItems: queuedRows.map(item => ({
         id: item.id,
@@ -6067,6 +6075,42 @@ const tools: AnyToolHandler[] = [
     description: 'Get a compact summary of active blocking queue items: total count, counts by blocking_level (plan/persistent_task/task), and age of the oldest active item. Fast — suitable for notification hooks.',
     schema: GetBlockingSummaryArgsSchema,
     handler: getBlockingSummary,
+  },
+  // Deferred protected action polling
+  {
+    name: 'check_deferred_action',
+    description: 'Poll the status of a deferred protected action. Spawned agents call this every 30 seconds to wait for CTO approval. Returns status (pending/approved/executing/completed/failed/expired/cancelled), and when completed, the execution_result.',
+    schema: CheckDeferredActionArgsSchema,
+    handler: async (args: CheckDeferredActionArgs) => {
+      try {
+        const db = getBypassDb(); // deferred_actions is in the same DB
+        const action = db.prepare(
+          'SELECT id, server, tool, status, execution_result, execution_error, created_at, approved_at, executed_at FROM deferred_actions WHERE id = ?'
+        ).get(args.action_id) as { id: string; server: string; tool: string; status: string; execution_result: string | null; execution_error: string | null; created_at: string; approved_at: string | null; executed_at: string | null } | undefined;
+        if (!action) {
+          return { error: `Deferred action not found: ${args.action_id}` };
+        }
+        return {
+          id: action.id,
+          server: action.server,
+          tool: action.tool,
+          status: action.status,
+          execution_result: action.execution_result ? JSON.parse(action.execution_result) : null,
+          execution_error: action.execution_error,
+          created_at: action.created_at,
+          approved_at: action.approved_at,
+          executed_at: action.executed_at,
+          hint: action.status === 'pending' ? 'Action awaiting CTO approval. Poll again in 30 seconds.' :
+                action.status === 'completed' ? 'Action executed successfully. You may proceed with the result.' :
+                action.status === 'failed' ? 'Action execution failed. Check execution_error for details.' :
+                action.status === 'approved' ? 'CTO approved — action is being executed. Poll again in 10 seconds.' :
+                action.status === 'executing' ? 'Action is currently executing. Poll again in 10 seconds.' :
+                `Action is ${action.status}. No further polling needed.`,
+        };
+      } catch (err) {
+        return { error: `Failed to check deferred action: ${(err as Error).message}` };
+      }
+    },
   },
   // Self-compaction
   {

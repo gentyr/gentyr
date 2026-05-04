@@ -790,10 +790,13 @@ async function main() {
         console.error(`  Tool:   ${mcpInfo.tool}`);
         console.error(`  Code:   ${deferred.code}`);
         console.error('');
+        console.error(`  Action ID: ${deferred.id}`);
         console.error('  A deferred execution request already exists for this exact action.');
         console.error('  The CTO will be notified at their next interactive session.');
-        console.error('  Continue with other work — this action will execute automatically');
-        console.error('  when the CTO approves it.');
+        console.error('');
+        console.error('  NEXT STEPS: Either call submit_bypass_request (pause and wait for CTO),');
+        console.error('  or poll mcp__agent-tracker__check_deferred_action({ action_id: "' + deferred.id + '" })');
+        console.error('  every 30 seconds. Do NOT exit silently.');
         console.error('══════════════════════════════════════════════════════════════════════');
         console.error('');
       } else {
@@ -811,12 +814,23 @@ async function main() {
           argsStr.forEach(line => console.error(`    ${line}`));
           console.error('');
         }
+        console.error(`  Action ID: ${deferred.id}`);
         console.error('  This action has been registered as a deferred protected action.');
         console.error('  The CTO will see it in their next session briefing and can approve');
         console.error(`  by typing: ${protection.phrase} ${deferred.code}`);
         console.error('');
-        console.error('  The action will be executed automatically upon approval.');
-        console.error('  You do NOT need to retry — continue with other work.');
+        console.error('  NEXT STEPS (choose based on your task type):');
+        console.error('');
+        console.error('  Option A — PAUSE AND WAIT (recommended for standalone tasks):');
+        console.error('    Call submit_bypass_request with category "protected_action", summary describing');
+        console.error('    what you need approved, then call summarize_work and exit.');
+        console.error('    The CTO will approve the deferred action, then resume your task.');
+        console.error('');
+        console.error('  Option B — POLL (for persistent monitors or long-running sessions):');
+        console.error('    Poll mcp__agent-tracker__check_deferred_action({ action_id: "' + deferred.id + '" })');
+        console.error('    every 30 seconds until status is "completed" or "failed".');
+        console.error('');
+        console.error('  Do NOT exit silently or move on — this action requires CTO approval to proceed.');
         console.error('══════════════════════════════════════════════════════════════════════');
         console.error('');
       }
