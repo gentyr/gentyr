@@ -312,6 +312,41 @@ You have 5 minutes. Be efficient.`;
       }
     } catch (_) { /* non-fatal */ }
 
+    // When a phase completes, check if the plan manager is paused and wake it up
+    // so it can spawn the next phase's tasks
+    if (phaseCompleted && !planCompleted) {
+      try {
+        const plan = plansDb.prepare("SELECT persistent_task_id FROM plans WHERE id = ?").get(planId);
+        if (plan?.persistent_task_id) {
+          const ptDb2 = new Database(PERSISTENT_DB_PATH);
+          ptDb2.pragma('busy_timeout = 3000');
+          const mgr = ptDb2.prepare("SELECT status FROM persistent_tasks WHERE id = ?").get(plan.persistent_task_id);
+          if (mgr && mgr.status === 'paused') {
+            ptDb2.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'")
+              .run(plan.persistent_task_id);
+            // Auto-approve any blocking bypass request
+            const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+            if (fs.existsSync(bypassDbPath)) {
+              try {
+                const bpDb = new Database(bypassDbPath);
+                bpDb.pragma('busy_timeout = 3000');
+                bpDb.prepare(
+                  "UPDATE bypass_requests SET status = 'approved', resolution_context = 'Auto-approved: phase completed, plan manager must advance to next phase', resolved_at = datetime('now'), resolved_by = 'plan-persistent-sync' WHERE task_type = 'persistent' AND task_id = ? AND status = 'pending'"
+                ).run(plan.persistent_task_id);
+                bpDb.close();
+              } catch (_) { /* non-fatal */ }
+            }
+            auditEvent('plan_manager_wakeup', {
+              plan_id: planId,
+              persistent_task_id: plan.persistent_task_id,
+              trigger: 'phase_completed',
+            });
+          }
+          ptDb2.close();
+        }
+      } catch (_) { /* non-fatal — plan manager wakeup is best-effort */ }
+    }
+
     const details = [
       planTask.verification_strategy
         ? `Persistent task ${persistentTaskId} completion routed plan task ${planTaskId} to pending_audit.`

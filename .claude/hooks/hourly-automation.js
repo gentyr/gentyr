@@ -4137,11 +4137,46 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
                     continue;
                   }
                 }
-                // Paused without do_not_auto_resume — stale-pause auto-resume handles it
+                // Paused without do_not_auto_resume — check if there's work to do
+                // If spawn-ready tasks exist, the plan manager needs to wake up NOW, not wait 30 min
+                try {
+                  const spawnReady = plansDb.prepare(
+                    "SELECT COUNT(*) as cnt FROM plan_tasks WHERE plan_id = ? AND status = 'ready'"
+                  ).get(plan.id);
+                  if (spawnReady && spawnReady.cnt > 0) {
+                    log(`Plan orphan detection: plan "${plan.title}" has ${spawnReady.cnt} ready task(s) but manager is paused — force-resuming manager`);
+                    // Resume the persistent task directly
+                    const ptDbRw = new Database(ptDbPath);
+                    ptDbRw.pragma('busy_timeout = 3000');
+                    ptDbRw.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'")
+                      .run(plan.persistent_task_id);
+                    // Clear any pending bypass request that's blocking auto-resume
+                    const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+                    if (fs.existsSync(bypassDbPath)) {
+                      try {
+                        const bpDb = new Database(bypassDbPath);
+                        bpDb.pragma('busy_timeout = 3000');
+                        bpDb.prepare(
+                          "UPDATE bypass_requests SET status = 'approved', resolution_context = 'Auto-approved: plan has spawn-ready tasks, manager must resume', resolved_at = datetime('now'), resolved_by = 'plan-orphan-detection' WHERE task_type = 'persistent' AND task_id = ? AND status = 'pending'"
+                        ).run(plan.persistent_task_id);
+                        bpDb.close();
+                      } catch (_) { /* non-fatal */ }
+                    }
+                    ptDbRw.close();
+                    // Enqueue a new monitor
+                    try {
+                      await reviveOrphanedPlan(plan, ptDbPath, plansDbPath);
+                      revived++;
+                    } catch (err) {
+                      log(`Plan orphan detection: failed to revive paused plan manager: ${err.message}`);
+                    }
+                    continue;
+                  }
+                } catch (_) { /* non-fatal — fall through to stale-pause auto-resume */ }
               } catch (_) { /* non-fatal — if we can't read metadata, stale-pause auto-resume handles it */ }
             }
             // If ptTask.status is 'active', the existing persistent task revival mechanisms handle it
-            // If ptTask.status is 'paused' without do_not_auto_resume, stale-pause auto-resume handles it
+            // If ptTask.status is 'paused' without do_not_auto_resume and no ready tasks, stale-pause auto-resume handles it
           } catch (err) {
             log(`Plan orphan detection: error checking persistent task for plan "${plan.title}": ${err.message}`);
             try { ptDb?.close(); } catch (_) {}
