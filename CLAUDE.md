@@ -1500,7 +1500,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
 | 1. Hooks | 88 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
-| 2. Agent Definitions | 21 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
+| 2. Agent Definitions | 23 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
@@ -1622,7 +1622,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 |------|---------|
 | stop-continue-hook.js | Gate session stop, check unfinished work, trigger revival |
 
-### Shared Hook Libraries (hooks/lib/ — 36 modules)
+### Shared Hook Libraries (hooks/lib/ — 38 modules)
 
 Key modules consumed by hooks:
 - `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
@@ -1657,8 +1657,10 @@ Key modules consumed by hooks:
 - `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
 - `auditor-prompt.js` — Single source of truth for building auditor session specs. Exports `buildAuditorSessionSpec()` consumed by `universal-audit-spawner.js` (first spawn) and `session-queue.js` Step 1b.5 (revival spawn). Internally calls `resolveAuditTools(taskType)` to dispatch across three task types: `'todo'` (universal-auditor + todo-db tools), `'persistent'` (universal-auditor + persistent-task tools), `'plan'` (plan-auditor + plan-orchestrator tools).
 - `load-test-runner.js` — Lightweight autocannon-based load test runner. Reads route configuration from `services.json` (`loadTest` section), runs load tests per route, and returns structured performance results. `autocannon` must be installed in the target project. Used by the promotion pipeline when `loadTest.enabled: true`.
+- `ai-compatibility-check.js` — LLM-powered (Haiku) dependency upgrade compatibility validator. Fetches npm registry metadata and changelogs, analyzes project usage patterns, and classifies upgrades as compatible/risky with specific breaking-change identification. Returns `{ compatible, risks, recommendation }`.
+- `ai-pr-decomposition.js` — LLM-powered (Haiku) large-PR decomposer. When a PR exceeds 3000 lines, suggests how to split commits into independently-promotable groups by feature/concern. Returns `{ groups }` with each group's commits, rationale, and suggested branch name.
 
-### Agent Definitions (22 shared)
+### Agent Definitions (23 shared)
 
 | Agent | Model | Purpose | Key Constraints |
 |-------|-------|---------|----------------|
@@ -1684,6 +1686,7 @@ Key modules consumed by hooks:
 | workstream-manager | haiku | Queue dependency analysis | Read-only |
 | staging-reviewer | sonnet | Staging reactive review (antipattern, code-quality, user-alignment, spec-compliance) | Read-only reviewer; spawns code-writer sub-agents for fixes |
 | cicd-manager | sonnet | Deployment, promotion, rollback, release infrastructure | Single authority for CI/CD pipeline; does NOT edit source code |
+| security-auditor | sonnet | OWASP Top 10 code security review (Injection, Auth, XSS, CSRF, IDOR, SSRF, Misconfiguration, Data Exposure) | Read-only; does NOT fix issues, reports via agent-reports; reviews recent git history |
 
 ### MCP Servers (~38 servers)
 
