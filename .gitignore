@@ -35,9 +35,10 @@ TEST_COVERAGE_REPORT.md
 .claude/worktrees/
 .claude/playwright-health.json
 
-# Claude session data (plan mode files, demo recordings, investigations)
+# Claude session data (plan mode files, demo recordings, screenshots, investigations)
 .claude/plans/
 .claude/recordings/
+.claude/screenshots/
 .claude/investigations/
 
 # User-local Claude instructions

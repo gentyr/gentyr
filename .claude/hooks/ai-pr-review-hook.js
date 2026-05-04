@@ -1,26 +1,29 @@
 #!/usr/bin/env node
 /**
- * AI PR Review Hook
+ * PostToolUse Hook: AI PR Code Review
  *
- * PostToolUse hook for Bash. When a `gh pr create` command results in a PR URL,
- * spawns a Haiku-tier AI reviewer that reads the diff, checks for security issues,
- * logic errors, performance concerns, and API contract changes.
+ * Fires after Bash tool calls. Detects PR creation (gh pr create command or
+ * GitHub PR URL in output) and spawns a Haiku-tier reviewer in the gate lane
+ * to analyze the diff for security, logic, performance, and API contract issues.
  *
- * The reviewer posts findings as PR comments and adds labels.
- * Critical findings block merge via the "review-pending" label.
+ * Detection logic:
+ *   1. Check if the Bash output contains a GitHub PR URL
+ *   2. Check if the command was `gh pr create`
+ *   3. If neither, fast-exit
  *
- * @version 1.0.0
+ * PostToolUse hooks MUST always exit 0 (the tool already ran, blocking is meaningless).
+ *
+ * @version 2.0.0
  */
 
 import { enqueueSession } from './lib/session-queue.js';
-import { HOOK_TYPES } from './agent-tracker.js';
+import { AGENT_TYPES, HOOK_TYPES } from './agent-tracker.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const NOOP = JSON.stringify({ continue: true });
 
-// Cooldown: don't re-review the same PR within 5 minutes
-const COOLDOWN_MS = 5 * 60 * 1000;
-const _recentReviews = new Map();
+// PR URL pattern: https://github.com/<owner>/<repo>/pull/<number>
+const PR_URL_REGEX = /https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/;
 
 async function main() {
   let input = '';
@@ -36,96 +39,128 @@ async function main() {
     return;
   }
 
-  // Only fire on Bash tool calls
+  // Fast-exit: only fire on Bash tool calls
   if (event?.tool_name !== 'Bash') {
     process.stdout.write(NOOP);
     return;
   }
 
   const command = event?.tool_input?.command || '';
+  const toolResponse = typeof event?.tool_response === 'string'
+    ? event.tool_response
+    : JSON.stringify(event?.tool_response || '');
 
-  // Only fire on gh pr create commands
-  if (!command.includes('gh pr create')) {
+  // Fast-exit: check if there is any PR URL in the output OR if command was gh pr create
+  const isGhPrCreate = command.includes('gh pr create');
+  const prUrlMatch = toolResponse.match(PR_URL_REGEX);
+
+  if (!isGhPrCreate && !prUrlMatch) {
     process.stdout.write(NOOP);
     return;
   }
 
-  // Look for a PR URL in the response
-  const toolResponse = typeof event?.tool_response === 'string'
-    ? event.tool_response
-    : JSON.stringify(event?.tool_response || '');
-  const prUrlMatch = toolResponse.match(/https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  // If we have gh pr create but no URL in output, the command may have failed — skip
   if (!prUrlMatch) {
     process.stdout.write(NOOP);
     return;
   }
 
-  const repoSlug = prUrlMatch[1];
-  const prNumber = prUrlMatch[2];
+  const repoSlug = prUrlMatch[1]; // e.g. "owner/repo"
+  const prNumber = prUrlMatch[2]; // e.g. "123"
   const prUrl = prUrlMatch[0];
 
-  // Cooldown check
-  const cooldownKey = `${repoSlug}#${prNumber}`;
-  const lastReview = _recentReviews.get(cooldownKey);
-  if (lastReview && Date.now() - lastReview < COOLDOWN_MS) {
-    process.stdout.write(NOOP);
-    return;
-  }
-  _recentReviews.set(cooldownKey, Date.now());
-
-  // Don't spawn reviewer for the gentyr repo itself (meta-reviews are noisy)
-  if (repoSlug.endsWith('/gentyr')) {
-    process.stdout.write(NOOP);
-    return;
-  }
-
-  // Enqueue AI review agent
+  // Enqueue AI review agent in the gate lane
   try {
-    const prompt = [
-      `[Automation][ai-pr-reviewer][AGENT:{AGENT_ID}]`,
-      `## AI Code Review for PR #${prNumber}`,
-      ``,
-      `Review the diff for PR #${prNumber} (${prUrl}).`,
-      ``,
-      `1. Get the diff: \`gh pr diff ${prNumber}\``,
-      `2. Analyze for:`,
-      `   - **Security**: SQL injection, XSS, auth bypass, CSRF, hardcoded secrets`,
-      `   - **Logic errors**: off-by-one, race conditions, null/undefined handling, unhandled promise rejections`,
-      `   - **Performance**: N+1 queries, unbounded loops, missing pagination, memory leaks`,
-      `   - **API contract**: breaking changes to public interfaces, missing input validation`,
-      `3. If you find CRITICAL issues (security vulnerabilities, data loss risks):`,
-      `   - Post a PR comment: \`gh pr comment ${prNumber} --body "AI Review: ..."\``,
-      `   - Add label: \`gh pr edit ${prNumber} --add-label "review-pending"\``,
-      `4. If the code is clean or only has minor observations:`,
-      `   - Add label: \`gh pr edit ${prNumber} --add-label "ai-reviewed"\``,
-      `5. Call summarize_work when done.`,
-      ``,
-      `Keep the review concise. Only flag genuine issues — not style preferences.`,
-      `Do NOT block PRs for minor style issues, missing comments, or subjective preferences.`,
-      `Only add "review-pending" for security, data loss, or correctness issues.`,
-    ].join('\n');
-
     enqueueSession({
-      title: `[AI Review] PR #${prNumber}`,
-      agentType: 'ai-pr-reviewer',
-      hookType: HOOK_TYPES.HOURLY_AUTOMATION,
-      tagContext: `ai-pr-review-${prNumber}`,
+      title: `AI code review: PR #${prNumber} (${repoSlug})`,
+      agentType: AGENT_TYPES.AI_PR_REVIEWER,
+      hookType: HOOK_TYPES.AI_PR_REVIEW,
+      tagContext: `ai-pr-review-${repoSlug}-${prNumber}`,
       source: 'ai-pr-review-hook',
       priority: 'normal',
       lane: 'gate',
       model: 'claude-haiku-4-5-20251001',
-      buildPrompt: (agentId) => prompt.replace('{AGENT_ID}', agentId),
-      metadata: { prNumber, prUrl, repoSlug },
+      ttlMs: 5 * 60 * 1000, // 5-minute TTL
       projectDir: PROJECT_DIR,
+      metadata: { prNumber, prUrl, repoSlug },
+      buildPrompt: (agentId) => buildReviewPrompt(agentId, prNumber, prUrl, repoSlug),
     });
-  } catch (err) {
-    // Non-fatal — don't block the parent agent
-    try {
-      process.stderr.write(`[ai-pr-review-hook] Failed to enqueue: ${err.message}\n`);
-    } catch { /* truly non-fatal */ }
-  }
 
-  process.stdout.write(NOOP);
+    process.stdout.write(JSON.stringify({
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: `AI code review spawned for PR #${prNumber}. The review agent will post comments if critical issues are found.`,
+      },
+    }));
+  } catch (err) {
+    // Non-fatal — do not block the parent agent
+    try {
+      process.stderr.write(`[ai-pr-review-hook] Failed to enqueue review: ${err.message}\n`);
+    } catch { /* truly non-fatal */ }
+    process.stdout.write(NOOP);
+  }
+}
+
+/**
+ * Build the review prompt for the Haiku agent.
+ */
+function buildReviewPrompt(agentId, prNumber, prUrl, repoSlug) {
+  return `[Automation][ai-pr-reviewer][AGENT:${agentId}] You are an AI code reviewer.
+
+## Task: Review PR #${prNumber}
+
+Repository: ${repoSlug}
+URL: ${prUrl}
+
+## Steps
+
+1. Get the diff:
+\`\`\`bash
+gh pr diff ${prNumber}
+\`\`\`
+
+2. Analyze the diff for these 4 categories:
+
+   **Security**: SQL injection, XSS, auth bypass, SSRF, path traversal, hardcoded secrets, insecure deserialization
+   **Logic errors**: off-by-one, race conditions, null/undefined handling, infinite loops, unhandled promise rejections
+   **Performance**: N+1 queries, unbounded loops, missing indexes, large allocations, memory leaks, missing pagination
+   **API contract changes**: breaking public interfaces, removed endpoints, changed response shapes, missing input validation
+
+3. Based on your findings:
+
+   **If CRITICAL issues found** (security vulnerabilities, data loss risks, correctness bugs):
+   - Post a PR comment with your findings:
+     \`\`\`bash
+     gh pr comment ${prNumber} --body "## AI Code Review
+
+     **Status: CRITICAL issues found**
+
+     <your findings here, organized by category>
+
+     ---
+     *Automated review by GENTYR AI PR Reviewer*"
+     \`\`\`
+   - Add the review-pending label:
+     \`\`\`bash
+     gh pr edit ${prNumber} --add-label "review-pending"
+     \`\`\`
+
+   **If code is clean** (no critical issues, only minor observations):
+   - Add the ai-reviewed label:
+     \`\`\`bash
+     gh pr edit ${prNumber} --add-label "ai-reviewed"
+     \`\`\`
+
+4. Call mcp__todo-db__summarize_work with your review results.
+
+## Guidelines
+
+- Only flag genuine issues — not style preferences or subjective opinions.
+- Do NOT add "review-pending" for minor style issues, missing comments, or naming preferences.
+- Only "review-pending" for: security vulnerabilities, data loss risks, correctness bugs, or breaking API changes.
+- Keep the review concise and actionable. Each finding should explain WHY it is a problem and suggest a fix.
+- If the diff is very large, focus on the most critical files first (security-sensitive code, public APIs, database operations).`;
 }
 
 main().catch(() => {

@@ -213,11 +213,18 @@ Run `/cto-report` in any GENTYR-managed project to see the live version.
      │ Staging Health        7           2h9m          +80% slower                  │
      │ Preview Promotion     1           5h18m         +80% slower                  │
      │ Staging Promotion     0           18h42m        +80% slower                  │
+     │ Staging Review        2           42m           -                            │
      │ ───────────────────────────────────────────────────────────────────          │
      │ Pre-Commit Hook       18          on commit     +80% slower                  │
      │ Test Suite            5           on failure    +80% slower                  │
      │ Compliance (Hook)     11          on change     baseline                     │
      │ Todo Maintenance      7           on change     +80% slower                  │
+     │ Demo Repair           1           on failure    -                            │
+     │ Persistent Monitor    6           on demand     -                            │
+     │ Universal Auditor     4           on demand     -                            │
+     │ Plan Auditor          2           on demand     -                            │
+     │ Task Gate             3           on demand     -                            │
+     │ Session Revival       5           on demand     -                            │
      │                                                                              │
      │ Usage Target: 90%  |  Current Projected: 2%  |  Adjusting: → stable          │
      │                                                                              │

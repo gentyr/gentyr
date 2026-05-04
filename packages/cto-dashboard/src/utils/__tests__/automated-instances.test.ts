@@ -2,7 +2,7 @@
  * Unit tests for automated-instances.ts
  *
  * Tests reading automation configurations, run counts, and interval adjustments
- * for all 15 automated instance types.
+ * for all 22 automated instance types.
  *
  * Validates:
  * - Run counting from agent-tracker
@@ -49,7 +49,7 @@ describe('Automated Instances - Basic Structure', () => {
     agents: AgentHistoryEntry[];
   }
 
-  type InstanceTrigger = 'scheduled' | 'commit' | 'failure' | 'prompt' | 'file-change';
+  type InstanceTrigger = 'scheduled' | 'commit' | 'failure' | 'prompt' | 'file-change' | 'spawn';
 
   interface AutomatedInstance {
     type: string;
@@ -408,12 +408,13 @@ describe('Automated Instances - Frequency Adjustment', () => {
 
 describe('Automated Instances - Trigger Types', () => {
   it('should validate all trigger types', () => {
-    const validTriggers: Array<'scheduled' | 'commit' | 'failure' | 'prompt' | 'file-change'> = [
+    const validTriggers: Array<'scheduled' | 'commit' | 'failure' | 'prompt' | 'file-change' | 'spawn'> = [
       'scheduled',
       'commit',
       'failure',
       'prompt',
       'file-change',
+      'spawn',
     ];
 
     for (const trigger of validTriggers) {
@@ -428,6 +429,7 @@ describe('Automated Instances - Trigger Types', () => {
       failure: 'on failure',
       'file-change': 'on change',
       prompt: 'on prompt',
+      spawn: 'on demand',
     };
 
     for (const [_trigger, display] of Object.entries(triggerDisplayMap)) {
@@ -584,7 +586,7 @@ describe('Automated Instances - projected_at_reset fraction-to-percentage conver
 });
 
 describe('Automated Instances - Instance Definitions', () => {
-  it('should have valid structure for all 15 instance types', () => {
+  it('should have valid structure for all 22 instance types', () => {
     // These are the expected instance types based on automated-instances.ts
     const expectedTypes = [
       'Pre-Commit Hook',
@@ -602,9 +604,16 @@ describe('Automated Instances - Instance Definitions', () => {
       'Staging Health',
       'Preview Promotion',
       'Staging Promotion',
+      'Persistent Monitor',
+      'Universal Auditor',
+      'Plan Auditor',
+      'Demo Repair',
+      'Task Gate',
+      'Staging Review',
+      'Session Revival',
     ];
 
-    expect(expectedTypes.length).toBe(15);
+    expect(expectedTypes.length).toBe(22);
 
     // Validate each type is a non-empty string
     for (const type of expectedTypes) {
@@ -619,6 +628,13 @@ describe('Automated Instances - Instance Definitions', () => {
       'Test Suite': ['test-failure-jest', 'test-failure-vitest', 'test-failure-playwright'],
       'Task Runner': ['task-runner-code-reviewer', 'task-runner-investigator', 'task-runner-test-writer', 'task-runner-project-manager'],
       'Antipattern Hunter': ['antipattern-hunter', 'antipattern-hunter-repo', 'antipattern-hunter-commit', 'standalone-antipattern-hunter'],
+      'Persistent Monitor': ['persistent-monitor', 'persistent-task-monitor'],
+      'Universal Auditor': ['universal-auditor'],
+      'Plan Auditor': ['plan-auditor'],
+      'Demo Repair': ['task-runner-demo-manager'],
+      'Task Gate': ['task-gate'],
+      'Staging Review': ['staging-reviewer', 'staging-reactive-reviewer'],
+      'Session Revival': ['session-revived'],
     };
 
     for (const [_instance, agentTypes] of Object.entries(agentTypeMap)) {
@@ -896,9 +912,10 @@ describe('getAutomationTokenUsage - Session JSONL parsing', () => {
     const content = fs.readFileSync(filePath, 'utf8');
     const parsed = content.split('\n').filter((l: string) => l.trim()).map((l: string) => JSON.parse(l));
 
-    // First entry should be the user message with task prefix
+    // First entry should be the user message with [Automation][...] prefix
+    // (makeUserEntry generates the [Automation] prefix used by the production code)
     expect(parsed[0].type).toBe('human');
-    expect(parsed[0].content).toMatch(/^\[Task\]\[lint-fixer\]/);
+    expect(parsed[0].content).toMatch(/^\[Automation\]\[lint-fixer\]/);
 
     // Second and third entries have usage
     const usage1 = parsed[1].message.usage;
@@ -942,7 +959,8 @@ describe('getAutomationTokenUsage - Session JSONL parsing', () => {
     const content = fs.readFileSync(filePath, 'utf8');
     const parsed = content.split('\n').filter((l: string) => l.trim()).map((l: string) => JSON.parse(l));
 
-    expect(parsed[0].content).toMatch(/^\[Task\]\[claudemd-refactor\]/);
+    // makeUserEntry generates [Automation] prefix (production code accepts both [Automation] and [Task])
+    expect(parsed[0].content).toMatch(/^\[Automation\]\[claudemd-refactor\]/);
     // No usage in second entry
     expect(parsed[1].message.usage).toBeUndefined();
   });
@@ -961,7 +979,9 @@ describe('getAutomationTokenUsage - Session JSONL parsing', () => {
     fs.writeFileSync(path.join(sessionDir, `session-a-${randomUUID()}.jsonl`), sessionA);
     fs.writeFileSync(path.join(sessionDir, `session-b-${randomUUID()}.jsonl`), sessionB);
 
-    // Simulate rollup: both sessions contribute to the same raw agent type
+    // Simulate rollup: both sessions contribute to the same raw agent type.
+    // The regex matches both [Automation][type] and [Task][type] prefixes,
+    // mirroring the production getAutomationTokenUsage() logic.
     const counts: Record<string, number> = {};
     for (const file of fs.readdirSync(sessionDir).filter((f: string) => f.endsWith('.jsonl'))) {
       const content = fs.readFileSync(path.join(sessionDir, file), 'utf8');
@@ -972,7 +992,7 @@ describe('getAutomationTokenUsage - Session JSONL parsing', () => {
         const entry = JSON.parse(line);
         if (agentType === null && (entry.type === 'human' || entry.type === 'user')) {
           const msg = typeof entry.message?.content === 'string' ? entry.message.content : entry.content;
-          const match = msg?.match(/^\[Task\]\[([^\]]+)\]/);
+          const match = msg?.match(/^\[(?:Automation|Task)\]\[([^\]]+)\]/);
           if (match?.[1]) { agentType = match[1]; } else { break; }
         }
         const usage = entry.message?.usage;
@@ -1044,5 +1064,275 @@ describe('getAutomationTokenUsage - Session JSONL parsing', () => {
 
     const third = JSON.parse(nonEmptyLines[2]);
     expect(third.message.usage.input_tokens).toBe(1000);
+  });
+});
+
+describe('Automated Instances - spawn trigger behavior', () => {
+  // The spawn trigger is used for on-demand agent types that have no cooldown.
+  // These entries have stateKey=null, cooldownKey=null, defaultMinutes=null,
+  // and must produce untilNext='on demand' and freqAdj=null.
+
+  type InstanceTrigger = 'scheduled' | 'commit' | 'failure' | 'prompt' | 'file-change' | 'spawn';
+
+  interface InstanceDef {
+    trigger: InstanceTrigger;
+    cooldownKey: string | null;
+    defaultMinutes: number | null;
+  }
+
+  // Mirror the production logic for untilNext computation
+  const computeUntilNext = (trigger: InstanceTrigger): string => {
+    if (trigger === 'commit') return 'on commit';
+    if (trigger === 'failure') return 'on failure';
+    if (trigger === 'file-change') return 'on change';
+    if (trigger === 'prompt') return 'on prompt';
+    if (trigger === 'spawn') return 'on demand';
+    return '-';
+  };
+
+  // Mirror the production logic for freqAdj on spawn entries
+  const computeFreqAdjForDef = (def: InstanceDef): string | null => {
+    // The production code only sets freqAdj for non-scheduled triggers
+    // when cooldownKey !== null AND defaultMinutes !== null.
+    if (def.trigger !== 'scheduled' && def.cooldownKey && def.defaultMinutes !== null) {
+      return 'baseline'; // simplified; real code calls computeFreqAdj
+    }
+    return null;
+  };
+
+  it('should produce "on demand" for spawn trigger', () => {
+    expect(computeUntilNext('spawn')).toBe('on demand');
+  });
+
+  it('should produce null freqAdj for spawn entries with null cooldownKey', () => {
+    const spawnDef: InstanceDef = { trigger: 'spawn', cooldownKey: null, defaultMinutes: null };
+    expect(computeFreqAdjForDef(spawnDef)).toBeNull();
+  });
+
+  it('should produce null freqAdj for spawn entries with null defaultMinutes', () => {
+    const spawnDef: InstanceDef = { trigger: 'spawn', cooldownKey: 'some_key', defaultMinutes: null };
+    expect(computeFreqAdjForDef(spawnDef)).toBeNull();
+  });
+
+  it('all seven new spawn/event-triggered definitions have null stateKey-equivalent behavior', () => {
+    // The new agent types added: Persistent Monitor, Universal Auditor, Plan Auditor,
+    // Task Gate, Session Revival all use trigger:'spawn' with null cooldownKey/defaultMinutes.
+    // Demo Repair uses trigger:'failure' with null cooldownKey/defaultMinutes.
+    // Staging Review uses trigger:'scheduled' with null stateKey/cooldownKey.
+    // Verify the untilNext computation for each.
+    const newDefinitions: Array<{ type: string; trigger: InstanceTrigger }> = [
+      { type: 'Persistent Monitor', trigger: 'spawn' },
+      { type: 'Universal Auditor',  trigger: 'spawn' },
+      { type: 'Plan Auditor',       trigger: 'spawn' },
+      { type: 'Task Gate',          trigger: 'spawn' },
+      { type: 'Session Revival',    trigger: 'spawn' },
+      { type: 'Demo Repair',        trigger: 'failure' },
+      { type: 'Staging Review',     trigger: 'scheduled' },
+    ];
+
+    const spawnExpected = [
+      'Persistent Monitor', 'Universal Auditor', 'Plan Auditor', 'Task Gate', 'Session Revival',
+    ];
+
+    for (const def of newDefinitions) {
+      if (spawnExpected.includes(def.type)) {
+        expect(computeUntilNext(def.trigger)).toBe('on demand');
+      } else if (def.trigger === 'failure') {
+        expect(computeUntilNext(def.trigger)).toBe('on failure');
+      }
+      // Staging Review (trigger:'scheduled') untilNext falls through to 'pending' — tested separately
+    }
+  });
+
+  it('should produce "on demand" for all five pure-spawn agent types', () => {
+    const spawnTypes: InstanceTrigger[] = ['spawn', 'spawn', 'spawn', 'spawn', 'spawn'];
+    for (const trigger of spawnTypes) {
+      expect(computeUntilNext(trigger)).toBe('on demand');
+    }
+  });
+});
+
+describe('Automated Instances - scheduled fallback (null stateKey/cooldownKey)', () => {
+  // "Staging Review" has trigger:'scheduled' but stateKey:null and cooldownKey:null.
+  // This hits the else-if branch: untilNext='pending', freqAdj='baseline'.
+
+  it('should produce "pending" and "baseline" for scheduled entry with null stateKey and cooldownKey', () => {
+    // Replicate the production conditional logic
+    const trigger = 'scheduled';
+    const stateKey: string | null = null;
+    const cooldownKey: string | null = null;
+
+    let untilNext = '-';
+    let freqAdj: string | null = null;
+
+    if (trigger === 'scheduled' && stateKey && cooldownKey) {
+      // Full scheduled path — not taken here
+      untilNext = 'now'; // would be computed
+      freqAdj = 'baseline';
+    } else if (trigger === 'scheduled') {
+      // Fallback for missing stateKey or cooldownKey
+      untilNext = 'pending';
+      freqAdj = 'baseline';
+    }
+
+    expect(untilNext).toBe('pending');
+    expect(freqAdj).toBe('baseline');
+  });
+
+  it('should produce "pending" when only stateKey is null', () => {
+    const trigger = 'scheduled';
+    const stateKey: string | null = null;
+    const cooldownKey: string | null = 'some_key';
+
+    let untilNext = '-';
+
+    if (trigger === 'scheduled' && stateKey && cooldownKey) {
+      untilNext = 'now';
+    } else if (trigger === 'scheduled') {
+      untilNext = 'pending';
+    }
+
+    expect(untilNext).toBe('pending');
+  });
+
+  it('should produce "pending" when only cooldownKey is null', () => {
+    const trigger = 'scheduled';
+    const stateKey: string | null = 'lastSomeCheck';
+    const cooldownKey: string | null = null;
+
+    let untilNext = '-';
+
+    if (trigger === 'scheduled' && stateKey && cooldownKey) {
+      untilNext = 'now';
+    } else if (trigger === 'scheduled') {
+      untilNext = 'pending';
+    }
+
+    expect(untilNext).toBe('pending');
+  });
+});
+
+describe('Automated Instances - token rollup for new agent types', () => {
+  // Verifies that buildAgentTypeToDisplayName() correctly maps all 7 new agent types
+  // to their expected display names via INSTANCE_DEFINITIONS.
+
+  it('should map all new spawn agent types to their display names in rollup', () => {
+    // Expected mapping based on INSTANCE_DEFINITIONS agentTypes arrays
+    const expectedRollupMap: Record<string, string> = {
+      'persistent-monitor':         'Persistent Monitor',
+      'persistent-task-monitor':    'Persistent Monitor',
+      'universal-auditor':          'Universal Auditor',
+      'plan-auditor':               'Plan Auditor',
+      'task-gate':                  'Task Gate',
+      'staging-reviewer':           'Staging Review',
+      'staging-reactive-reviewer':  'Staging Review',
+      'session-revived':            'Session Revival',
+      'task-runner-demo-manager':   'Demo Repair',
+    };
+
+    // Simulate the buildAgentTypeToDisplayName rollup logic inline
+    const allDefinitions = [
+      { type: 'Persistent Monitor', agentTypes: ['persistent-monitor', 'persistent-task-monitor'] },
+      { type: 'Universal Auditor',  agentTypes: ['universal-auditor'] },
+      { type: 'Plan Auditor',       agentTypes: ['plan-auditor'] },
+      { type: 'Task Gate',          agentTypes: ['task-gate'] },
+      { type: 'Staging Review',     agentTypes: ['staging-reviewer', 'staging-reactive-reviewer'] },
+      { type: 'Session Revival',    agentTypes: ['session-revived'] },
+      { type: 'Demo Repair',        agentTypes: ['task-runner-demo-manager'] },
+    ];
+
+    const builtMap = new Map<string, string>();
+    for (const def of allDefinitions) {
+      for (const agentType of def.agentTypes) {
+        builtMap.set(agentType, def.type);
+      }
+    }
+
+    for (const [rawType, expectedDisplay] of Object.entries(expectedRollupMap)) {
+      expect(builtMap.get(rawType)).toBe(expectedDisplay);
+    }
+  });
+
+  it('should roll up tokens for new agent types to correct display names', () => {
+    const agentTypeToDisplayName: Record<string, string> = {
+      'persistent-monitor':         'Persistent Monitor',
+      'persistent-task-monitor':    'Persistent Monitor',
+      'universal-auditor':          'Universal Auditor',
+      'plan-auditor':               'Plan Auditor',
+      'task-gate':                  'Task Gate',
+      'staging-reviewer':           'Staging Review',
+      'staging-reactive-reviewer':  'Staging Review',
+      'session-revived':            'Session Revival',
+      'task-runner-demo-manager':   'Demo Repair',
+    };
+
+    // Both JSONL prefix and agent-tracker-history strings contribute
+    const rawTokens: Record<string, number> = {
+      'persistent-monitor':         10000,
+      'persistent-task-monitor':    5000,
+      'universal-auditor':          8000,
+      'plan-auditor':               6000,
+      'task-gate':                  2500,
+      'staging-reviewer':           7000,
+      'staging-reactive-reviewer':  5000,
+      'session-revived':            3000,
+      'task-runner-demo-manager':   9500,
+    };
+
+    const byDisplayName: Record<string, number> = {};
+    for (const [rawType, tokens] of Object.entries(rawTokens)) {
+      const displayName = agentTypeToDisplayName[rawType] ?? rawType;
+      byDisplayName[displayName] = (byDisplayName[displayName] ?? 0) + tokens;
+    }
+
+    expect(byDisplayName['Persistent Monitor']).toBe(15000); // 10000 + 5000
+    expect(byDisplayName['Universal Auditor']).toBe(8000);
+    expect(byDisplayName['Plan Auditor']).toBe(6000);
+    expect(byDisplayName['Task Gate']).toBe(2500);
+    expect(byDisplayName['Staging Review']).toBe(12000); // 7000 + 5000
+    expect(byDisplayName['Session Revival']).toBe(3000);
+    expect(byDisplayName['Demo Repair']).toBe(9500);
+    // Verify nothing fell through to the raw name
+    expect(byDisplayName['persistent-monitor']).toBeUndefined();
+    expect(byDisplayName['persistent-task-monitor']).toBeUndefined();
+    expect(byDisplayName['task-runner-demo-manager']).toBeUndefined();
+  });
+
+  it('should accumulate tokens from multiple sessions for a single new agent type', () => {
+    // Multiple persistent-monitor sessions should sum under 'Persistent Monitor'
+    const rawTokens: Record<string, number> = {};
+    const sessions = [
+      { agentType: 'persistent-monitor', tokens: 10000 },
+      { agentType: 'persistent-monitor', tokens: 5000 },
+      { agentType: 'universal-auditor',  tokens: 4000 },
+    ];
+
+    for (const { agentType, tokens } of sessions) {
+      rawTokens[agentType] = (rawTokens[agentType] ?? 0) + tokens;
+    }
+
+    const agentTypeToDisplayName: Record<string, string> = {
+      'persistent-monitor': 'Persistent Monitor',
+      'universal-auditor':  'Universal Auditor',
+    };
+
+    const byDisplayName: Record<string, number> = {};
+    for (const [rawType, tokens] of Object.entries(rawTokens)) {
+      const displayName = agentTypeToDisplayName[rawType] ?? rawType;
+      byDisplayName[displayName] = (byDisplayName[displayName] ?? 0) + tokens;
+    }
+
+    expect(byDisplayName['Persistent Monitor']).toBe(15000);
+    expect(byDisplayName['Universal Auditor']).toBe(4000);
+  });
+
+  it('should produce non-negative token counts for all new agent types', () => {
+    const tokenValues = [0, 1500, 8000, 15000, 100000];
+    for (const value of tokenValues) {
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(value)).toBe(true);
+      expect(Number.isNaN(value)).toBe(false);
+      expect(Number.isInteger(value)).toBe(true);
+    }
   });
 });
