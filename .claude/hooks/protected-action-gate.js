@@ -839,10 +839,34 @@ async function main() {
       console.error('[protected-action-gate] Warning: Could not create deferred action, falling back to standard block.');
     }
 
-    // Block the tool call regardless — the deferred system handles execution
+    // Block the tool call with actionable instructions for the spawned agent.
+    // The permissionDecisionReason is the ONLY text the agent sees (stderr is invisible to it).
     if (deferred) {
       logBlockedAction(mcpInfo.server, mcpInfo.tool, 'deferred for CTO approval');
-      blockAndExit();
+
+      const taskId = process.env.GENTYR_PERSISTENT_TASK_ID || process.env.GENTYR_TASK_ID || null;
+      const taskType = process.env.GENTYR_PERSISTENT_TASK_ID ? 'persistent' : (process.env.GENTYR_TASK_ID ? 'todo' : null);
+
+      const reason = [
+        `PROTECTED ACTION BLOCKED: ${mcpInfo.server}:${mcpInfo.tool} requires CTO approval.`,
+        `A deferred action has been created (ID: ${deferred.id}, code: ${deferred.code}).`,
+        `The CTO will see this in their session briefing and can approve by typing: ${protection.phrase} ${deferred.code}`,
+        `The tool call will execute automatically after approval — you do NOT need to retry it.`,
+        '',
+        `YOU MUST NOW: Call submit_bypass_request with these exact arguments:`,
+        `  task_type: "${taskType || 'todo'}"`,
+        `  task_id: "${taskId || '<your task ID>'}"`,
+        `  category: "protected_action"`,
+        `  summary: "Blocked on ${mcpInfo.server}:${mcpInfo.tool} — deferred action ${deferred.id} awaiting CTO approval (${protection.phrase} ${deferred.code})"`,
+        `  details: "The deferred action will auto-execute when approved. Resume this task after approval."`,
+        `Then call summarize_work and exit. Do NOT continue working — this action requires CTO approval.`,
+      ].join('\n');
+
+      process.stdout.write(JSON.stringify({
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      }));
+      process.exit(0);
     }
     // If deferred creation failed, fall through to standard block message below
   }

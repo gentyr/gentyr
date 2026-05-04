@@ -57,6 +57,34 @@ const GATE_LANE_LIMIT = 5;
 const AUDIT_LANE_LIMIT = 5;
 const ALIGNMENT_LANE_LIMIT = 3;
 
+// Automated sources — sessions from these sources are auto-promoted to the 'automated' lane
+// which has NO concurrency limit (like 'persistent'). They still go through the queue for
+// tracking/dedup/audit, but don't consume standard concurrency slots.
+const AUTOMATED_SOURCES = new Set([
+  'hourly-automation',
+  'demo-failure-spawner',
+  'ai-pr-review-hook',
+  'antipattern-hunter-hook',
+  'compliance-checker',
+  'hooks-feedback-launcher',
+  'workstream-spawner',
+  'schema-mapper-hook',
+  'plan-executor',
+  'todo-maintenance',
+  'jest-failure-reporter',
+  'vitest-failure-reporter',
+  'playwright-failure-reporter',
+  'ci-monitoring',
+  'merge-chain-monitor',
+  'deploy-event-monitor',
+  'auto-rollback',
+  'rate-limit-cooldown-recovery',
+  'session-reviver',
+  'drain-step-1d',
+  'drain-audit-orphan-recovery',
+  'session-reaper-audit-revival',
+]);
+
 /**
  * Parse a SQLite datetime string as UTC.
  * SQLite's datetime('now') produces "YYYY-MM-DD HH:MM:SS" (UTC, no Z suffix).
@@ -68,7 +96,10 @@ function parseSqliteDatetime(str) {
   if (str.includes('T')) return new Date(str); // Already ISO 8601
   return new Date(str.replace(' ', 'T') + 'Z');
 }
-// Persistent lane has no limit — monitors always spawn immediately and are auto-revived on death.
+// Persistent and automated lanes have no limit — spawn immediately.
+// Persistent monitors are auto-revived on death. Automated sessions are background
+// system processes (triage, demo repair, antipattern, etc.) that should never be
+// blocked by the standard concurrency cap.
 
 // Default TTL for queued items (30 minutes)
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
@@ -444,7 +475,7 @@ function isPidAlive(pid) {
  * @param {string} [spec.resumeSessionId] - For --resume spawns
  * @param {string} [spec.spawnType='fresh'] - 'fresh' or 'resume'
  * @param {string} [spec.priority='normal'] - 'cto'|'critical'|'urgent'|'normal'|'low'
- * @param {string} [spec.lane='standard'] - 'revival'|'gate'|'standard'
+ * @param {string} [spec.lane='standard'] - 'revival'|'gate'|'automated'|'standard' (auto-promoted to 'automated' for AUTOMATED_SOURCES)
  * @param {string[]} [spec.extraArgs] - Additional CLI args
  * @param {object} [spec.extraEnv] - Additional env vars
  * @param {string} [spec.projectDir] - Project directory
@@ -541,11 +572,18 @@ export function enqueueSession(spec) {
     }
   }
 
+  // Auto-promote to automated lane for known automation sources.
+  // Only promotes when lane is 'standard' (or unset) — respects explicit lane assignments
+  // (persistent, gate, audit, etc.). The automated lane has no concurrency limit.
+  if ((!spec.lane || spec.lane === 'standard') && AUTOMATED_SOURCES.has(spec.source)) {
+    spec = { ...spec, lane: 'automated' };
+  }
+
   // Focus mode gate: block non-CTO automated spawns
   if (isFocusModeEnabled()) {
     const allowed =
       spec.priority === 'cto' || spec.priority === 'critical' ||
-      spec.lane === 'persistent' || spec.lane === 'gate' || spec.lane === 'audit' || spec.lane === 'alignment' || spec.lane === 'revival' ||
+      spec.lane === 'persistent' || spec.lane === 'gate' || spec.lane === 'audit' || spec.lane === 'alignment' || spec.lane === 'revival' || spec.lane === 'automated' ||
       spec.source === 'force-spawn-tasks' ||
       spec.source === 'persistent-task-spawner' ||
       spec.source === 'stop-continue-hook' ||
@@ -1523,7 +1561,8 @@ export function drainQueue() {
   } catch (_) { /* non-fatal — port allocator may not be available */ }
 
   // Step 3: Count running items by lane (suspended items do NOT count toward capacity)
-  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent', 'audit')").get().cnt;
+  // Automated lane is excluded — automated sessions don't consume standard concurrency slots
+  const standardRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent', 'audit', 'automated')").get().cnt;
   const gateRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'gate'").get().cnt;
   const auditRunning = db.prepare("SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane = 'audit'").get().cnt;
   const maxConcurrent = getMaxConcurrentSessions();
@@ -1535,7 +1574,7 @@ export function drainQueue() {
   const queued = db.prepare(`
     SELECT * FROM queue_items WHERE status = 'queued'
     ORDER BY
-      CASE lane WHEN 'revival' THEN 0 WHEN 'persistent' THEN 1 WHEN 'gate' THEN 2 ELSE 3 END,
+      CASE lane WHEN 'revival' THEN 0 WHEN 'persistent' THEN 1 WHEN 'automated' THEN 2 WHEN 'gate' THEN 3 ELSE 4 END,
       CASE priority WHEN 'cto' THEN 0 WHEN 'critical' THEN 1 WHEN 'urgent' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
       enqueued_at ASC
   `).all();
@@ -1552,8 +1591,8 @@ export function drainQueue() {
   let persistentSpawnedThisDrain = 0;
 
   for (const item of queued) {
-    if (item.lane === 'persistent') {
-      // Persistent lane has no capacity limit — monitors always spawn immediately
+    if (item.lane === 'persistent' || item.lane === 'automated') {
+      // Persistent and automated lanes have no capacity limit — spawn immediately
     } else if (item.lane === 'gate') {
       // Gate lane has its own sub-limit (tracked separately from main capacity)
       if (gateRunning + gateSpawnedThisDrain >= GATE_LANE_LIMIT) {
@@ -1657,8 +1696,8 @@ export function drainQueue() {
         auditSpawnedThisDrain++;
       } else if (item.lane === 'alignment') {
         alignmentSpawnedThisDrain++;
-      } else if (item.lane === 'persistent') {
-        persistentSpawnedThisDrain++;
+      } else if (item.lane === 'persistent' || item.lane === 'automated') {
+        persistentSpawnedThisDrain++; // automated shares persistent counter (no limit)
       } else {
         standardSpawnedThisDrain++;
       }
@@ -1673,7 +1712,7 @@ export function drainQueue() {
   // Step 6: Resume suspended sessions if capacity available
   try {
     const currentRunning = db.prepare(
-      "SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')"
+      "SELECT COUNT(*) as cnt FROM queue_items WHERE status = 'running' AND lane NOT IN ('gate', 'persistent', 'automated')"
     ).get().cnt;
     if (currentRunning < maxConcurrent) {
       const slotsAvailable = maxConcurrent - currentRunning;
@@ -1938,7 +1977,7 @@ function spawnQueueItem(db, item) {
 function preemptLowestPriority(db, incomingItem) {
   const candidate = db.prepare(`
     SELECT id, pid, priority, agent_type, title, spawned_at FROM queue_items
-    WHERE status = 'running' AND lane NOT IN ('gate', 'persistent')
+    WHERE status = 'running' AND lane NOT IN ('gate', 'persistent', 'automated')
       AND priority IN ('low', 'normal', 'urgent')
     ORDER BY
       CASE priority WHEN 'low' THEN 0 WHEN 'normal' THEN 1 WHEN 'urgent' THEN 2 END ASC,
@@ -2006,7 +2045,7 @@ export async function preemptForCtoTask(ctoQueueId, projectDir) {
     SELECT id, pid, agent_id, title, agent_type, hook_type, cwd, project_dir,
            worktree_path, metadata, spawned_at, priority, lane
     FROM queue_items
-    WHERE status = 'running' AND lane NOT IN ('gate', 'persistent') AND priority != 'cto'
+    WHERE status = 'running' AND lane NOT IN ('gate', 'persistent', 'automated') AND priority != 'cto'
     ORDER BY
       CASE priority WHEN 'low' THEN 0 WHEN 'normal' THEN 1
                     WHEN 'urgent' THEN 2 WHEN 'critical' THEN 3 ELSE 4 END,
@@ -2337,6 +2376,10 @@ export function getQueueStatus() {
     try { reservedSlotsRestore = JSON.parse(restoreRow.value); } catch (_) { /* non-fatal */ }
   }
 
+  // Separate running counts: automated sessions don't consume standard slots
+  const automatedRunning = activeRunning.filter(r => r.lane === 'automated').length;
+  const standardRunning = activeRunning.filter(r => !['gate', 'persistent', 'audit', 'automated'].includes(r.lane || 'standard')).length;
+
   return {
     hasData: true,
     maxConcurrent,
@@ -2345,8 +2388,10 @@ export function getQueueStatus() {
     focusMode: isFocusModeEnabled(),
     localMode: isLocalModeEnabled(),
     running: activeRunning.length,
+    standardRunning,
+    automatedRunning,
     suspended: suspendedItems.length,
-    availableSlots: Math.max(0, maxConcurrent - activeRunning.length),
+    availableSlots: Math.max(0, maxConcurrent - standardRunning),
     queuedItems: queuedItems.map(item => ({
       id: item.id,
       title: item.title,
