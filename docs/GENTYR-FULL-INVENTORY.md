@@ -1267,7 +1267,7 @@ monitor (continuous loop), status (one-shot), triage
 plan, plan-progress, plan-timeline, plan-audit, plan-sessions
 
 ### 15.5 Configuration Commands (8)
-concurrent-sessions, configure-personas, focus-mode, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
+automation-rate, concurrent-sessions, configure-personas, focus-mode (deprecated alias), lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
 
 ### 15.6 Operations Commands (6)
 cto-dashboard, deputy-cto, promote-to-prod, show, workstream, overdrive-gentyr
@@ -1294,7 +1294,7 @@ persona-feedback, product-manager, run-feedback
 
 ### 16.3 Session Briefing (at login)
 
-**Architecture** — `session-briefing.js` (1,219 lines) SessionStart hook. Injects: queue state, CTO bypass requests, blocking queue, active persona profile, focus mode, paused task breakdown, branch drift, deferred protected actions, plans progress, persistent task health. For spawned agents: task context, git activity, worktree layout, freshness.
+**Architecture** — `session-briefing.js` (1,219 lines) SessionStart hook. Injects: queue state, CTO bypass requests, blocking queue, active persona profile, automation rate (prominent when `none`), paused task breakdown, branch drift, deferred protected actions, plans progress, persistent task health. For spawned agents: task context, git activity, worktree layout, freshness.
 
 ### 16.4 CTO Notification Hook (every prompt)
 
@@ -2137,15 +2137,27 @@ Maxes all automation cooldowns to minimum (5-10 min range) for 1 hour. State sto
 
 ---
 
-## 48. Focus Mode
+## 48. Automation Rate System (replaces Focus Mode)
 
-**Purpose** — Restrict session spawning to essential work when CTO needs concentrated focus.
+**Purpose** — Control how aggressively background automations run via 4 static presets.
 
 ### 48.1 Architecture
-State: `.claude/state/focus-mode.json`. Gate inside enqueueSession(): returns `{ blocked: 'focus_mode' }` immediately for non-essential spawns.
+State: `.claude/state/automation-rate.json` (`{ rate, set_at, set_by }`). Default: `low`. The rate multiplier is applied inside `getCooldown()` in `config-reader.js` to all non-infrastructure cooldown keys. Infrastructure keys (session_reviver, worktree_cleanup, persistent_heartbeat_stale_minutes, report_auto_resolve, etc. — 28 keys in `INFRASTRUCTURE_KEYS` set) pass through unmodified.
 
-### 48.2 What Passes Through
-Priority: cto/critical. Lanes: persistent/gate/audit/revival. Sources: force-spawn-tasks, persistent-task-spawner, stop-continue-hook, session-queue-reaper, sync-recycle. Items with metadata.persistentTaskId. MCP tools: set_focus_mode, get_focus_mode. Slash command: /focus-mode (toggles).
+### 48.2 Rate Levels
+
+| Rate | Multiplier | Effect |
+|------|-----------|--------|
+| `none` | Blocked | No automated agents spawn — gate in `enqueueSession()` returns `{ blocked: 'automation_rate_none' }` |
+| `low` | 5x | **DEFAULT** — Conservative automation (e.g., task_runner every 20h instead of 4h) |
+| `medium` | 2x | Moderate (e.g., task_runner every 8h) |
+| `high` | 1x | Baseline rates (original behavior) |
+
+### 48.3 What Passes Through `none`
+Same allowlist as the former focus mode: priority cto/critical, lanes persistent/gate/audit/revival, sources force-spawn-tasks/persistent-task-spawner/stop-continue-hook/session-queue-reaper/sync-recycle, items with metadata.persistentTaskId.
+
+### 48.4 MCP Tools & Slash Command
+`set_automation_rate({ rate })` and `get_automation_rate()` on agent-tracker server. `set_focus_mode` / `get_focus_mode` preserved as backward-compat aliases (enabled=true → none, enabled=false → low). Slash command: `/automation-rate [none|low|medium|high]`. `/focus-mode` redirects to `/automation-rate`.
 
 ---
 
@@ -2874,7 +2886,8 @@ GitHub, Cloudflare, Supabase, Vercel, Render, Codecov, Resend, Elastic Cloud, 1P
 - autonomous-mode.json — 18 feature toggles
 - automation-config.json — 55+ cooldown parameters
 - hourly-automation-state.json — last-run timestamps
-- focus-mode.json — focus mode state
+- automation-rate.json — automation rate preset (none/low/medium/high, default: low)
+- focus-mode.json — DEPRECATED (automation-rate.json supersedes)
 - local-mode.json — local prototyping mode
 - staging-lock.json — production release lock
 - port-allocations.json — per-worktree port blocks
