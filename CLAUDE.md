@@ -861,7 +861,7 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 **Status values**: `queued`, `spawning`, `running`, `suspended`, `completed`, `failed`, `cancelled`.
 
-**Lane sub-limits**: The `gate` lane (Haiku gate agents) is capped at 5 concurrent regardless of the global limit.
+**Lane sub-limits**: The `gate` lane (Haiku gate agents) is capped at 5 concurrent regardless of the global limit. The `automated` lane has no concurrency limit — 22 background automation sources (`hourly-automation`, `demo-failure-spawner`, `antipattern-hunter-hook`, `session-reviver`, `drain-step-1d`, `session-reaper-audit-revival`, and others) are auto-promoted from `standard` to `automated` on enqueue via `AUTOMATED_SOURCES` in `session-queue.js`. Automated sessions do not consume standard concurrency slots, so background system work never blocks CTO-directed tasks. Only auto-promoted when the incoming `spec.lane` is unset or `standard` — explicit lane assignments (`persistent`, `gate`, `audit`, etc.) are always respected.
 
 **Default TTL**: Queued items expire after 30 minutes if not drained.
 
@@ -870,7 +870,7 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 **Inline preemption** (`preemptLowestPriority()`): When a `cto` or `critical` item is dequeued and the queue is at capacity, `drainQueue()` suspends the lowest-priority running session via SIGTSTP instead of waiting for a free slot. The suspended session's status is set to `suspended` (does not count toward the global concurrency limit). After the high-priority session completes and capacity frees up, Step 6 of `drainQueue()` resumes suspended sessions via SIGCONT. If a session dies while suspended, its linked TODO task is reset to `pending`. Emits `session_suspended` and `session_preempted` audit events. Unlike the legacy `preemptForCtoTask()` (which killed and re-enqueued), this is non-destructive — the session resumes from exactly where it stopped.
 
 **5 MCP tools** (on `agent-tracker` server):
-- `get_session_queue_status` — running items (with PID liveness), queued items, suspended items, capacity info, memory pressure level, and 24h throughput; check `memoryPressure` field when items are queued but not spawning
+- `get_session_queue_status` — running items (with PID liveness), queued items, suspended items, capacity info, memory pressure level, and 24h throughput; check `memoryPressure` field when items are queued but not spawning. Returns `standardRunning` (sessions consuming concurrency slots) and `automatedRunning` (automated-lane sessions, no slot cost) separately; `availableSlots` is computed from `standardRunning` only
 - `set_max_concurrent_sessions` — update global limit (1–50); takes effect on next drain cycle
 - `cancel_queued_session` — cancel a queued (not yet running) item by queue ID
 - `drain_session_queue` — trigger an immediate drain; returns `memoryBlocked` count if memory pressure prevented spawning
@@ -888,7 +888,7 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 **Reserved Pool Slots** (`getReservedSlots`/`setReservedSlots`): An integer number of concurrency slots (0–10) that are held back for priority-eligible sessions (`cto`, `critical`, `urgent`). Non-priority-eligible items see `maxConcurrent - reservedSlots` as their effective cap, while priority-eligible items always see the full `maxConcurrent`. `isPriorityEligible()` determines eligibility based on item priority. **Auto-activate**: When the `persistent-task-spawner.js` hook fires on `activate_persistent_task` or `resume_persistent_task`, it sets 2 reserved slots to ensure the newly spawned monitor and any urgent follow-up agents are never blocked by low-priority queue traffic. **Auto-deactivate**: `hourly-automation.js` resets reserved slots to 0 when no persistent tasks are `active` or `paused`. **Auto-restore timer**: `setReservedSlots(n, { restoreAfterMinutes: N })` persists a restore record in `queue_config`; `drainQueue()` (Step 2.5) checks and auto-restores to the prior default after the timer elapses. **2 MCP tools** (on `agent-tracker` server): `set_reserved_slots` (set count + optional auto-restore timer) and `get_reserved_slots` (read current value and pending restore info). Reported in `get_session_queue_status` under `reservedSlots` and `reservedSlotsRestore`.
 
-**Focus Mode**: Blocks all automated agent spawning except CTO-directed work, persistent task monitors, and session revivals. State persisted at `.claude/state/focus-mode.json`. Gate applied inside `enqueueSession()` — blocked spawns return `{ queueId: null, blocked: 'focus_mode' }` immediately. **Allowed through focus mode**: `priority: cto/critical`, `lane: persistent/gate/revival`, `source: force-spawn-tasks/persistent-task-spawner/stop-continue-hook/session-queue-reaper/sync-recycle`, and any item with `metadata.persistentTaskId` set. **2 MCP tools** (on `agent-tracker` server): `set_focus_mode` (enable/disable) and `get_focus_mode` (read state + list of allowed sources). **Session briefing**: When focus mode is active, a prominent notice appears at the top of the interactive session briefing. **Slash command**: `/focus-mode` — reads current state and toggles to the opposite. Reported in `get_session_queue_status` under `focusMode`.
+**Focus Mode**: Blocks all automated agent spawning except CTO-directed work, persistent task monitors, and session revivals. State persisted at `.claude/state/focus-mode.json`. Gate applied inside `enqueueSession()` — blocked spawns return `{ queueId: null, blocked: 'focus_mode' }` immediately. **Allowed through focus mode**: `priority: cto/critical`, `lane: persistent/gate/revival/automated`, `source: force-spawn-tasks/persistent-task-spawner/stop-continue-hook/session-queue-reaper/sync-recycle`, and any item with `metadata.persistentTaskId` set. **2 MCP tools** (on `agent-tracker` server): `set_focus_mode` (enable/disable) and `get_focus_mode` (read state + list of allowed sources). **Session briefing**: When focus mode is active, a prominent notice appears at the top of the interactive session briefing. **Slash command**: `/focus-mode` — reads current state and toggles to the opposite. Reported in `get_session_queue_status` under `focusMode`.
 
 ### Session Reaper
 
@@ -1029,6 +1029,8 @@ Agents blocked by access, authorization, or resource constraints can pause thems
 Extends the protected action gate system for spawned (non-interactive) agents. When a spawned agent hits a protected action block, the system stores the exact tool call (server, tool, args) in a persistent DB with HMAC signatures rather than requiring the agent to wait interactively. The CTO sees pending deferred actions in the session briefing and can approve them hours later — the system executes the tool call automatically via HTTP POST to the MCP shared daemon with no agent session required.
 
 **Key distinction from standard protected actions**: Standard approvals require the requesting agent to retry the tool call after CTO approval (synchronous, interactive). Deferred approvals are fire-and-forget — the requesting agent exits immediately, and the tool call executes autonomously when approved (asynchronous, non-interactive).
+
+**Spawned agent gate response**: When `protected-action-gate.js` creates a deferred action for a spawned agent, it outputs a `permissionDecision: 'deny'` response (not `process.exit(1)`) with `permissionDecisionReason` containing the deferred action ID, approval code, the exact `APPROVE <phrase> <code>` CTO incantation, and the exact `submit_bypass_request` arguments the agent must call before exiting. This ensures spawned agents always file a bypass request so the CTO can unblock stalled work — previously agents would die silently with zero context.
 
 **DB**: `deferred_actions` table in `.claude/state/bypass-requests.db` (shared with `bypass_requests` table). Fields: `id`, `server`, `tool`, `args` (JSON), `args_hash` (SHA256 of args), `code` (6-char approval code), `phrase`, `pending_hmac`, `approved_hmac`, `status` (`pending`/`approved`/`executing`/`completed`/`failed`/`expired`/`cancelled`), `requester_agent_id`, `requester_session_id`, `requester_task_type`, `requester_task_id`, `execution_result`, `execution_error`, timestamps.
 
@@ -1814,7 +1816,7 @@ Seven sequential gate checks before insertion:
 | 6 | Bypass request guard | Pending CTO bypass request for this task | `blocked: 'bypass_request'` |
 | 7 | Focus mode gate | Focus mode enabled + not an allowed source/priority | `blocked: 'focus_mode'` |
 
-**Focus mode allows through:** `cto`/`critical` priority, `persistent`/`gate`/`audit`/`revival` lanes, `force-spawn-tasks`/`persistent-task-spawner`/`stop-continue-hook`/`session-queue-reaper`/`sync-recycle` sources, or items with `persistentTaskId`.
+**Focus mode allows through:** `cto`/`critical` priority, `persistent`/`gate`/`audit`/`revival`/`automated` lanes, `force-spawn-tasks`/`persistent-task-spawner`/`stop-continue-hook`/`session-queue-reaper`/`sync-recycle` sources, or items with `persistentTaskId`.
 
 After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 
@@ -1847,6 +1849,7 @@ After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 | Lane | Capacity Rule |
 |------|--------------|
 | `persistent` | No limit — always spawns |
+| `automated` | No limit — background system sessions (22 auto-promoted sources) |
 | `gate` | Sub-limit: 5 |
 | `audit` | Sub-limit: 5 |
 | `standard`/`revival` | Global `maxConcurrent` minus `reservedSlots` (for non-priority-eligible items) |
