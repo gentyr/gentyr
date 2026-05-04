@@ -1499,7 +1499,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 87 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 88 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 21 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
@@ -1545,7 +1545,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | gate-confirmation-enforcer.js | `mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task` | Block task completion while `pending_audit` is active; prevents bypassing the audit gate |
 | signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |
 
-#### PostToolUse (35 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (36 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1558,6 +1558,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | monitor-reminder.js | `""` (all) | Remind monitors to check sub-task status |
 | uncommitted-change-monitor.js | `Write,Edit` | Warn after 5 uncommitted file edits |
 | pr-auto-merge-nudge.js | `Bash` | Nudge to self-merge after PR creation |
+| ai-pr-review-hook.js | `Bash` | Spawn Haiku gate agent to review PR diff on every PR creation; posts PR comments for critical findings, adds ai-reviewed label when clean (5-min TTL, gate lane) |
 | plan-merge-tracker.js | `Bash` | Auto-advance plan tasks on PR merge |
 | strict-infra-nudge-hook.js | `Bash` | Redirect agents from Bash infra commands to MCP tools |
 | urgent-task-spawner.js | `create_task` | Auto-spawn urgent tasks |
