@@ -18,7 +18,7 @@ const AUTOMATION_CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'autom
 // Types
 // ============================================================================
 
-export type InstanceTrigger = 'scheduled' | 'commit' | 'failure' | 'prompt' | 'file-change';
+export type InstanceTrigger = 'scheduled' | 'commit' | 'failure' | 'prompt' | 'file-change' | 'spawn';
 
 export interface AutomatedInstance {
   type: string;                          // Display name
@@ -220,6 +220,63 @@ const INSTANCE_DEFINITIONS: Array<{
     cooldownKey: 'staging_promotion',
     defaultMinutes: 1200,
   },
+  // --- Spawned agent types (event-triggered, no cooldown) ---
+  {
+    type: 'Persistent Monitor',
+    agentTypes: ['persistent-monitor', 'persistent-task-monitor'],
+    trigger: 'spawn',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: null,
+  },
+  {
+    type: 'Universal Auditor',
+    agentTypes: ['universal-auditor'],
+    trigger: 'spawn',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: null,
+  },
+  {
+    type: 'Plan Auditor',
+    agentTypes: ['plan-auditor'],
+    trigger: 'spawn',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: null,
+  },
+  {
+    type: 'Demo Repair',
+    agentTypes: ['task-runner-demo-manager'],
+    trigger: 'failure',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: null,
+  },
+  {
+    type: 'Task Gate',
+    agentTypes: ['task-gate'],
+    trigger: 'spawn',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: null,
+  },
+  {
+    type: 'Staging Review',
+    agentTypes: ['staging-reviewer', 'staging-reactive-reviewer'],
+    trigger: 'scheduled',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: 60,
+  },
+  {
+    type: 'Session Revival',
+    agentTypes: ['session-revived'],
+    trigger: 'spawn',
+    stateKey: null,
+    cooldownKey: null,
+    defaultMinutes: null,
+  },
 ];
 
 // ============================================================================
@@ -258,6 +315,8 @@ export function getAutomatedInstances(): AutomatedInstancesData {
       untilNext = 'on change';
     } else if (def.trigger === 'prompt') {
       untilNext = 'on prompt';
+    } else if (def.trigger === 'spawn') {
+      untilNext = 'on demand';
     } else if (def.trigger === 'scheduled' && def.stateKey && def.cooldownKey) {
       const lastRun = state[def.stateKey];
       const effectiveMinutes = config.effective?.[def.cooldownKey] ?? def.defaultMinutes ?? 0;
