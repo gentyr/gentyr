@@ -1148,6 +1148,7 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 | rate_limit_cooldown_check | 2 min | Clear expired rate-limit cooldowns |
 | self_heal_fix_check | 5 min | Check fix task completion, resolve/escalate |
 | deferred_action_resume | 5 min | Auto-resolve bypass requests when linked deferred action completes; cancel stale protected_action bypasses whose parent is done |
+| paused_task_triage | 10 min | Spawn deputy-cto to evaluate paused persistent tasks: resume if safe, escalate if needs CTO |
 | plan_orphan_detection | 10 min | Revive active plans with dead managers |
 | report_auto_resolve | 2 min | Match merged PRs to pending reports |
 | report_dedup | 30 min | Deduplicate similar reports |
@@ -1369,9 +1370,9 @@ Persistent Monitor and Staging Review include two agent type strings because the
 
 Files: staging-lock-guard.js, main-tree-commit-guard.js, interactive-lockdown-guard.js, credential-file-guard.js, branch-checkout-guard.js, block-no-verify.js, gate-confirmation-enforcer.js, signal-compliance-gate.js, `.claude/protection-key`
 
-### 17.3 HMAC CTO Bypass Mechanism
+### 17.3 Unified CTO Decision System
 
-**Architecture** — Agent hits block → calls submit_bypass_request → 6-char code generated (deputy-cto.db) → CTO types `APPROVE BYPASS <code>` → bypass-approval-hook.js reads code, computes HMAC-SHA256 with protection-key, writes signed token → token consumed on use (one-time, 5-min expiry). Spawned sessions CANNOT use bypass (server-side guard).
+**Architecture** — Agent presents decision via AskUserQuestion → CTO types natural language → agent calls `record_cto_decision` (verifies CTO typed it by scanning session JSONL, computes HMAC with protection-key) → downstream action tools call `consumeCtoDecision()` to verify + consume the one-time proof. 5 decision types: bypass_request, protected_action, lockdown_toggle, release_signoff, staging_override. Spawned sessions blocked from `record_cto_decision` AND `resolve_bypass_request`. Legacy `APPROVE BYPASS <code>` pattern preserved as fallback during transition. See Section 51 for full architecture.
 
 ### 17.4 Deferred Protected Actions
 
@@ -2197,28 +2198,45 @@ Agent-tracker server tool for polling deferred action status. Returns: id, serve
 
 ---
 
-## 51. HMAC-Powered CTO Authorization System (Complete)
+## 51. Unified CTO Decision System
+
+**Purpose** — One pattern for all CTO approvals: agent presents → CTO types natural language → `record_cto_decision` verifies the CTO actually typed it → downstream action proceeds. Eliminates 6 separate approval mechanisms.
 
 ### 51.1 Core Security Architecture
-- `.claude/protection-key` — root-owned, base64-encoded HMAC signing key
+- `.claude/protection-key` — root-owned, base64-encoded 256-bit HMAC signing key
 - Agents CANNOT read this file (credential-file-guard blocks access)
-- Only the bypass-approval-hook.js (root-owned, runs in hook process) can read it
+- `record_cto_decision` and hook processes are the only readers
 - Constant-time comparison (crypto.timingSafeEqual) throughout
+- Domain separator: `'cto-decision'` + `decision_type` prevents cross-context replay
 
-### 51.2 Bypass Request Flow (6 steps)
-1. Agent hits enforcement block (PreToolUse hook denies action)
-2. Agent calls `submit_bypass_request(task_type, task_id, category, summary, details)`
-3. System generates 6-char code, stores in deputy-cto.db
-4. CTO sees request in session briefing + cto-notification-hook
-5. CTO types: `APPROVE BYPASS <6-char-code>`
-6. bypass-approval-hook.js:
-   - Reads code from DB
-   - Computes HMAC-SHA256 with protection-key
-   - Writes signed approval token
-   - Token is ONE-TIME USE (consumed on verification)
-   - Spawned sessions CANNOT use bypass (server-side guard)
+### 51.2 Decision Flow (Universal)
+1. Agent presents decision to CTO via `AskUserQuestion` (with Approve/Reject options)
+2. CTO types natural language response (e.g., "approved, ship it")
+3. Agent calls `record_cto_decision({ decision_type, reference_id, verbatim_text })`
+4. Tool finds session JSONL via `cto-approval-proof.js:findCurrentSessionJsonl()`
+5. TOCTOU defense: JSONL snapshotted before verification
+6. `verifyQuoteInJsonl(snapshot, verbatim_text)` — scans for exact substring in human messages
+7. HMAC-SHA256 computed with protection-key + domain separator + decision_type
+8. Inserted into `cto_decisions` table (status: `verified`)
+9. Agent calls downstream action (e.g., `resolve_bypass_request`)
+10. Downstream calls `consumeCtoDecision(type, reference_id)` — verifies HMAC, transitions to `consumed` (one-time use)
 
-### 51.3 What's Protected (Enforcement Hooks)
+### 51.3 Decision Types
+
+| Type | What needs approval | Consumer tool | Cascade |
+|------|---------------------|---------------|---------|
+| `bypass_request` | Agent blocked, needs CTO authorization | `resolve_bypass_request` | Persistent task resumed → plan task + plan auto-resumed |
+| `protected_action` | Protected MCP tool call (deploy, SQL) | `protected-action-approval-hook.js` | Deferred action auto-executed |
+| `lockdown_toggle` | Disable interactive lockdown | `set_lockdown_mode` | Lockdown disabled |
+| `release_signoff` | Production release CTO approval | `record_cto_approval` (release-ledger) | Release proceeds |
+| `staging_override` | Override staging lock during release | `create_promotion_bypass` | Staging merge allowed |
+
+### 51.4 Server-Side Enforcement
+- `record_cto_decision` — blocks `CLAUDE_SPAWNED_SESSION=true` (only interactive CTO)
+- `resolve_bypass_request` — blocks spawned sessions AND requires `consumeCtoDecision('bypass_request', request_id)` before processing; returns 3-step instructions on failure
+- `cto-notification-hook.js` — injects MANDATORY AskUserQuestion instruction into model context when pending decisions exist
+
+### 51.5 What's Protected (Enforcement Hooks)
 - staging-lock-guard.js — blocks staging merges unless GENTYR_PROMOTION_PIPELINE=true
 - interactive-lockdown-guard.js — blocks file edits in CTO sessions
 - main-tree-commit-guard.js — blocks git ops on protected branches
@@ -2228,27 +2246,43 @@ Agent-tracker server tool for polling deferred action status. Returns: id, serve
 - branch-checkout-guard.js — blocks branch switching in main tree
 - block-no-verify.js — blocks --no-verify on git commands
 
-### 51.4 Deferred Protected Action Execution (Async)
+### 51.6 Deferred Protected Action Execution (Async)
 - For spawned agents that can't wait interactively
 - Tool call (server, tool, args) stored with HMAC signatures
 - CTO approves hours later → system executes via HTTP POST to MCP daemon
 - args_hash binding prevents bait-and-switch
-- pending_hmac verified before marking approved
-- approved_hmac verified before execution
+- pending_hmac / approved_hmac verified before execution
 - Tier 1 only (shared daemon, HTTP transport)
+- `deferred_action_resume` automation (5-min cycle) auto-resolves linked bypass requests
 
-### 51.5 Release-Level Cryptographic Approval
+### 51.7 Release-Level Cryptographic Approval
 - record_cto_approval: only interactive CTO sessions can sign off
 - HMAC-SHA256 = hash(releaseId | sessionId | approvalText | fileHash | "cto-release-approval")
 - TOCTOU defense: JSONL archived before verification
-- Domain separator prevents cross-context replay
 - Three tiers: cto (HMAC), deputy (HMAC), automated (no HMAC)
 
-### 51.6 Lockdown Toggle Security
-- set_lockdown_mode({ enabled: false }) requires valid HMAC token
-- Token written by bypass-approval-hook after CTO types "APPROVE BYPASS <code>"
-- lib/bypass-approval-token.js verifies via constant-time comparison
-- Spawned sessions cannot call set_lockdown_mode({ enabled: false })
+### 51.8 Legacy Compatibility (Transition Period)
+- Old `APPROVE BYPASS <6-char-code>` pattern still works via `bypass-approval-hook.js`
+- Will be deprecated once unified system is validated
+- Both paths coexist — old codes consume tokens directly, new path requires `record_cto_decision`
+
+### 51.9 Data Model
+- **cto_decisions** table (in bypass-requests.db): id, decision_type, reference_id, verbatim_text, session_id, session_jsonl_hash, hmac, status (verified|consumed|expired), consumed_at, created_at
+- **Key files**: `packages/mcp-servers/src/agent-tracker/server.ts` (record_cto_decision, check_cto_decision, consumeCtoDecision), `.claude/hooks/lib/cto-approval-proof.js` (verifyQuoteInJsonl, findCurrentSessionJsonl, computeFileHash), `.claude/hooks/cto-notification-hook.js` (presentation layer)
+
+### 51.10 Paused Task Triage (Deputy-CTO Automation)
+`paused_task_triage` block in `hourly-automation.js` — gate-exempt, 10-minute cooldown. Queries paused persistent tasks (excluding `do_not_auto_resume` flag). Spawns deputy-cto agent to evaluate each: resume if the blocking condition cleared, escalate to CTO if human decision needed. Deputy-CTO gains `resume_persistent_task` + `cancel_persistent_task` tools for this authority.
+
+**Pause hierarchy** (3 levels, 1 root):
+```
+Plan (paused) → Plan Task (paused) → Persistent Task (paused) ← ROOT
+                                        └── Todo Task (pending + bypass guard)
+```
+Triage targets persistent tasks because resuming them cascades via `propagateResumeToPlan()`:
+- Plan task: paused → in_progress
+- Blocking queue entries: active → resolved
+- Plan: paused → active (if no other paused tasks remain)
+- Monitor re-enqueued at critical priority
 
 ---
 
@@ -2450,6 +2484,7 @@ Agent-tracker server tool for polling deferred action status. Returns: id, serve
 | rate_limit_cooldown_check | 2 min | — |
 | self_heal_fix_check | 5 min | — |
 | deferred_action_resume | 5 min | — |
+| paused_task_triage | 10 min | — |
 | plan_orphan_detection | 10 min | — |
 | version_watch | 5 min | — |
 | triage_check | 30 min | — |
