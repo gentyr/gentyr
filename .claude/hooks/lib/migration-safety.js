@@ -8,12 +8,20 @@
  * Destructive changes (DROP, RENAME, etc.) are blocked until the old schema
  * is fully unused in production.
  *
- * @version 1.0.0
+ * Two analysis layers:
+ * 1. Static regex analysis (fast, deterministic) — catches known destructive patterns
+ * 2. LLM-powered analysis (thorough, per-file) — catches context-dependent issues
+ *    that regex misses (e.g., conditional DDL, stored procedures, complex ALTER chains)
+ *
+ * @version 2.0.0
  */
 
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
 /**
  * Destructive migration patterns — these BLOCK promotion.
@@ -80,10 +88,11 @@ const WARNING_PATTERNS = [
  * Extract migration files from the git diff between two branches.
  *
  * Looks for files matching common migration path patterns:
- * - **/migrations/**
- * - **/migrate/**
- * - *.sql (in common locations)
- * - supabase/migrations/**
+ * - any-path/migrations/any-file
+ * - any-path/migrate/any-file
+ * - db/*.sql
+ * - schema*.sql
+ * - supabase/migrations/any-file
  *
  * @param {string} projectDir - Project root directory
  * @param {string} baseBranch - Base branch (e.g., 'origin/staging')
@@ -301,4 +310,321 @@ Confirm or refute the static analysis findings. Are there any additional backwar
     summary: parts.join(' '),
     llmVerification,
   };
+}
+
+/**
+ * JSON schema for the per-file LLM analysis output.
+ * Each migration file is analyzed for individual SQL operations.
+ */
+const ANALYZE_MIGRATIONS_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: {
+    operations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          sql: { type: 'string', description: 'The SQL statement or operation being analyzed' },
+          classification: {
+            type: 'string',
+            enum: ['SAFE', 'WARNING', 'BLOCKED'],
+            description: 'SAFE = additive/harmless, WARNING = safe but may lock table, BLOCKED = breaks backward compatibility',
+          },
+          reason: { type: 'string', description: 'Why this operation has this classification' },
+          fixSuggestion: { type: 'string', description: 'How to make this operation backward-compatible using expand/contract' },
+        },
+        required: ['sql', 'classification', 'reason'],
+      },
+    },
+  },
+  required: ['operations'],
+});
+
+const ANALYZE_SYSTEM_PROMPT = `You are a database migration backward-compatibility analyzer.
+
+Your job is to classify each SQL operation in a migration file for backward compatibility.
+
+A migration is backward-compatible if the PREVIOUS version of the application code can still function correctly after the migration runs. This is critical for safe rollback: if a deploy is rolled back, the old code must work with the new schema.
+
+Classification rules:
+- BLOCKED: The operation breaks backward compatibility. Old code WILL fail after this runs.
+  Examples: DROP TABLE, DROP COLUMN, RENAME COLUMN/TABLE, SET NOT NULL (old code may insert NULLs), ALTER TYPE (old code expects old type)
+- WARNING: The operation is safe but has operational risk (e.g., table locks).
+  Examples: CREATE INDEX without CONCURRENTLY (locks table), large data backfill
+- SAFE: The operation is additive and old code is unaffected.
+  Examples: ADD COLUMN (with default or nullable), ADD TABLE, ADD INDEX CONCURRENTLY, INSERT/UPDATE data, CREATE FUNCTION
+
+For BLOCKED operations, provide a fixSuggestion using the expand/contract pattern:
+- DROP COLUMN → Deploy code that stops using it → wait → DROP in cleanup migration
+- RENAME → ADD new → backfill → deploy code using new → DROP old later
+- SET NOT NULL → Deploy code that never inserts NULL → backfill NULLs → add constraint later
+- ALTER TYPE → ADD new column with target type → backfill → deploy code using new → DROP old later
+
+Be conservative: when in doubt, classify as BLOCKED rather than SAFE.
+Extract EVERY distinct SQL operation from the file. Do not skip any.`;
+
+/**
+ * LLM-powered per-file migration analysis.
+ *
+ * Sends each migration file to Haiku for structured analysis, classifying
+ * every SQL operation as SAFE, WARNING, or BLOCKED with reasons and fix suggestions.
+ *
+ * Falls back to static analysis alone if the LLM is unavailable.
+ *
+ * @param {Array<{path: string, content: string}>} migrationFiles - Migration files to analyze
+ * @param {string} [projectDir] - Project root directory (defaults to PROJECT_DIR)
+ * @returns {Promise<{safe: boolean, results: Array<{file: string, operations: Array<{sql: string, classification: string, reason: string, fixSuggestion?: string}>}>}>}
+ */
+export async function analyzeMigrations(migrationFiles, projectDir) {
+  if (!Array.isArray(migrationFiles)) {
+    throw new Error('analyzeMigrations requires an array of migration files');
+  }
+
+  if (migrationFiles.length === 0) {
+    return { safe: true, results: [] };
+  }
+
+  const resolvedDir = projectDir || PROJECT_DIR;
+  const results = [];
+  let overallSafe = true;
+
+  // Run static analysis first as baseline
+  const staticFindings = staticAnalysis(migrationFiles);
+  const staticByFile = new Map();
+  for (const finding of staticFindings) {
+    if (!staticByFile.has(finding.file)) {
+      staticByFile.set(finding.file, []);
+    }
+    staticByFile.get(finding.file).push(finding);
+  }
+
+  // Try to load LLM client
+  let callLLMStructured = null;
+  try {
+    const llmClient = await import('./llm-client.js');
+    callLLMStructured = llmClient.callLLMStructured;
+  } catch {
+    // LLM unavailable — fall back to static analysis only
+  }
+
+  for (const file of migrationFiles) {
+    if (!file || !file.path || !file.content) continue;
+
+    // Attempt LLM analysis
+    let llmOperations = null;
+    if (callLLMStructured) {
+      try {
+        const truncatedContent = file.content.slice(0, 4000);
+        const prompt = `Analyze this database migration file for backward-compatibility.
+
+File: ${file.path}
+
+\`\`\`sql
+${truncatedContent}
+\`\`\`
+
+Classify every SQL operation in this file.`;
+
+        const llmResult = await callLLMStructured(
+          prompt,
+          ANALYZE_SYSTEM_PROMPT,
+          ANALYZE_MIGRATIONS_SCHEMA,
+          { timeout: 30000 }
+        );
+
+        if (llmResult && Array.isArray(llmResult.operations)) {
+          llmOperations = llmResult.operations;
+        }
+      } catch {
+        // LLM call failed for this file — fall through to static fallback
+      }
+    }
+
+    if (llmOperations) {
+      // Use LLM results — validate classifications
+      const operations = llmOperations.map(op => {
+        if (!op.sql || !op.classification || !op.reason) {
+          throw new Error(
+            `LLM returned invalid operation for file ${file.path}: missing required fields (sql, classification, reason)`
+          );
+        }
+        const classification = op.classification.toUpperCase();
+        if (!['SAFE', 'WARNING', 'BLOCKED'].includes(classification)) {
+          throw new Error(
+            `LLM returned invalid classification "${op.classification}" for file ${file.path}. Must be SAFE, WARNING, or BLOCKED.`
+          );
+        }
+        return {
+          sql: op.sql,
+          classification,
+          reason: op.reason,
+          ...(op.fixSuggestion ? { fixSuggestion: op.fixSuggestion } : {}),
+        };
+      });
+
+      // Cross-validate: if static analysis found a BLOCKED pattern that LLM missed,
+      // add it. Static analysis is deterministic — it must never be overridden by LLM.
+      const fileStaticFindings = staticByFile.get(file.path) || [];
+      for (const finding of fileStaticFindings) {
+        if (finding.severity === 'critical') {
+          const alreadyCaught = operations.some(
+            op => op.classification === 'BLOCKED' && op.sql.toUpperCase().includes(finding.pattern.split(' ')[0])
+          );
+          if (!alreadyCaught) {
+            operations.push({
+              sql: finding.pattern,
+              classification: 'BLOCKED',
+              reason: `${finding.risk} (detected by static analysis)`,
+              fixSuggestion: finding.fix,
+            });
+          }
+        }
+      }
+
+      const hasBlocked = operations.some(op => op.classification === 'BLOCKED');
+      if (hasBlocked) overallSafe = false;
+
+      results.push({ file: file.path, operations });
+    } else {
+      // Fall back to static analysis for this file
+      const fileStaticFindings = staticByFile.get(file.path) || [];
+
+      if (fileStaticFindings.length === 0) {
+        // No static findings — mark the whole file as SAFE with a single entry
+        results.push({
+          file: file.path,
+          operations: [{
+            sql: '(entire file)',
+            classification: 'SAFE',
+            reason: 'No destructive patterns detected by static analysis. LLM unavailable for deeper analysis.',
+          }],
+        });
+      } else {
+        const operations = fileStaticFindings.map(finding => ({
+          sql: finding.pattern,
+          classification: finding.severity === 'critical' ? 'BLOCKED' : 'WARNING',
+          reason: finding.risk,
+          fixSuggestion: finding.fix,
+        }));
+
+        const hasBlocked = operations.some(op => op.classification === 'BLOCKED');
+        if (hasBlocked) overallSafe = false;
+
+        results.push({ file: file.path, operations });
+      }
+    }
+  }
+
+  return { safe: overallSafe, results };
+}
+
+// ---------------------------------------------------------------------------
+// Self-test — runs when this file is executed directly: node migration-safety.js
+// ---------------------------------------------------------------------------
+if (import.meta.url === `file://${fileURLToPath(import.meta.url).replace(/\\/g, '/')}` ||
+    process.argv[1] === fileURLToPath(import.meta.url)) {
+  (async () => {
+    const testFiles = [
+      {
+        path: 'supabase/migrations/001_safe.sql',
+        content: `
+CREATE TABLE users (id uuid PRIMARY KEY, name TEXT);
+ALTER TABLE users ADD COLUMN email TEXT;
+INSERT INTO users (id, name) VALUES ('abc', 'test');
+CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
+        `.trim(),
+      },
+      {
+        path: 'supabase/migrations/002_dangerous.sql',
+        content: `
+ALTER TABLE users DROP COLUMN email;
+ALTER TABLE users RENAME COLUMN name TO display_name;
+ALTER TABLE users ALTER COLUMN display_name SET NOT NULL;
+CREATE INDEX idx_users_display_name ON users(display_name);
+        `.trim(),
+      },
+      {
+        path: 'supabase/migrations/003_type_change.sql',
+        content: `
+ALTER TABLE users ALTER COLUMN id TYPE BIGINT;
+DROP TABLE legacy_data;
+        `.trim(),
+      },
+    ];
+
+    console.log('=== Migration Safety Self-Test ===\n');
+
+    // Test 1: Static analysis
+    console.log('--- Test 1: Static Analysis ---');
+    const staticResults = staticAnalysis(testFiles);
+    const criticalCount = staticResults.filter(f => f.severity === 'critical').length;
+    const warningCount = staticResults.filter(f => f.severity === 'warning').length;
+    console.log(`  Found ${criticalCount} critical, ${warningCount} warning findings`);
+
+    // Expected: DROP COLUMN, RENAME COLUMN, SET NOT NULL, ALTER TYPE, DROP TABLE = 5 critical
+    // Expected: CREATE INDEX (without CONCURRENTLY in file 002) = 1 warning
+    if (criticalCount !== 5) {
+      console.error(`  FAIL: Expected 5 critical findings, got ${criticalCount}`);
+      console.error('  Details:', JSON.stringify(staticResults.filter(f => f.severity === 'critical').map(f => f.pattern), null, 2));
+      process.exit(1);
+    }
+    if (warningCount !== 1) {
+      console.error(`  FAIL: Expected 1 warning finding, got ${warningCount}`);
+      process.exit(1);
+    }
+    console.log('  PASS: Static analysis correctly identified all patterns\n');
+
+    // Test 2: Safe file detection
+    console.log('--- Test 2: Safe File Only ---');
+    const safeOnly = staticAnalysis([testFiles[0]]);
+    if (safeOnly.length !== 0) {
+      console.error(`  FAIL: Expected 0 findings for safe file, got ${safeOnly.length}`);
+      process.exit(1);
+    }
+    console.log('  PASS: Safe file produced no findings\n');
+
+    // Test 3: analyzeMigrations without LLM (static fallback)
+    console.log('--- Test 3: analyzeMigrations (static fallback) ---');
+    const analyzeResult = await analyzeMigrations(testFiles);
+    if (analyzeResult.safe !== false) {
+      console.error('  FAIL: Expected safe=false for files with BLOCKED patterns');
+      process.exit(1);
+    }
+    if (analyzeResult.results.length !== 3) {
+      console.error(`  FAIL: Expected 3 file results, got ${analyzeResult.results.length}`);
+      process.exit(1);
+    }
+
+    const blockedOps = analyzeResult.results.flatMap(r => r.operations).filter(op => op.classification === 'BLOCKED');
+    if (blockedOps.length < 5) {
+      console.error(`  FAIL: Expected at least 5 BLOCKED operations, got ${blockedOps.length}`);
+      process.exit(1);
+    }
+    console.log(`  PASS: analyzeMigrations returned safe=false with ${blockedOps.length} BLOCKED operations\n`);
+
+    // Test 4: Empty input
+    console.log('--- Test 4: Empty Input ---');
+    const emptyResult = await analyzeMigrations([]);
+    if (emptyResult.safe !== true || emptyResult.results.length !== 0) {
+      console.error('  FAIL: Expected safe=true and empty results for empty input');
+      process.exit(1);
+    }
+    console.log('  PASS: Empty input returns safe=true\n');
+
+    // Test 5: Input validation
+    console.log('--- Test 5: Input Validation ---');
+    let threw = false;
+    try {
+      await analyzeMigrations('not an array');
+    } catch (err) {
+      if (err.message.includes('requires an array')) threw = true;
+    }
+    if (!threw) {
+      console.error('  FAIL: Expected error for non-array input');
+      process.exit(1);
+    }
+    console.log('  PASS: Non-array input throws descriptive error\n');
+
+    console.log('=== All self-tests passed ===');
+  })();
 }

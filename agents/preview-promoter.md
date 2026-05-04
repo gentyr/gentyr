@@ -59,23 +59,31 @@ Get the full diff for quality review:
 git diff origin/staging..origin/preview
 ```
 
-### Step 1.5: Migration Safety Check
+### Step 1.5: Migration Safety Check (Backward-Compatible Enforcement)
+
+This step uses `migration-safety.js` (at `.claude/hooks/lib/migration-safety.js`), which provides two analysis layers: fast static regex matching and LLM-powered per-file analysis via `analyzeMigrations()`.
 
 Check for database migrations in the diff:
-1. `git diff --name-only origin/staging..origin/preview | grep -iE 'migration'`
-2. If migration files exist, check each for backward-incompatible patterns:
-   - **BLOCKED (stop promotion)**: DROP TABLE, DROP COLUMN, RENAME, ALTER TYPE, SET NOT NULL
-   - **WARNING (continue)**: CREATE INDEX without CONCURRENTLY
-3. If any BLOCKED pattern found:
-   - Record findings in `migration-safety.json` in the artifact directory
-   - Report via `report_to_deputy_cto`: include the file, line, pattern, and the expand/contract fix steps
-   - Call `summarize_work` and EXIT without promoting
-4. If only warnings or no migrations: record in `migration-safety.json` and continue
+1. List migration files: `git diff --name-only origin/staging..origin/preview | grep -iE 'migration|migrate|\.sql$'`
+2. If migration files exist, read each file's content and run the dual-layer analysis:
+   - **Layer 1 (static)**: Regex patterns detect known destructive SQL (deterministic, instant)
+   - **Layer 2 (LLM)**: `analyzeMigrations()` sends each file to Haiku for structured classification of every SQL operation as SAFE, WARNING, or BLOCKED with expand/contract fix suggestions
+   - Static analysis findings are authoritative — the LLM cannot downgrade a BLOCKED static finding to SAFE
+3. Classification rules:
+   - **BLOCKED (stop promotion)**: DROP TABLE, DROP COLUMN, RENAME COLUMN/TABLE, ALTER TYPE, SET NOT NULL
+   - **WARNING (continue with note)**: CREATE INDEX without CONCURRENTLY
+   - **SAFE**: ADD COLUMN, ADD TABLE, INSERT/UPDATE data, CREATE INDEX CONCURRENTLY
+4. If any BLOCKED operation is found in any file:
+   - Record the full results (every file, every operation, every classification) in `migration-safety.json` in the artifact directory
+   - Report via `report_to_deputy_cto`: include the file path, the BLOCKED SQL, the reason, and the specific expand/contract fix steps from the `fixSuggestion` field
+   - Call `summarize_work` and **EXIT without promoting** — this is a hard gate, not a warning
+5. If only warnings or no migrations: record in `migration-safety.json` and continue
 
 The expand/contract pattern for common operations:
 - **DROP COLUMN**: Deploy code that stops using it → wait → DROP in cleanup migration
 - **RENAME**: ADD new → backfill → deploy code using new → DROP old later
 - **SET NOT NULL**: Deploy code that never inserts NULL → backfill NULLs → add constraint later
+- **ALTER TYPE**: ADD new column with target type → backfill → deploy code using new → DROP old later
 
 ### Step 2: Quality Review
 
