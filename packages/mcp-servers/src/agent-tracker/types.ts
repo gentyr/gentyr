@@ -595,6 +595,36 @@ export const CheckDeferredActionArgsSchema = z.object({
 export type CheckDeferredActionArgs = z.infer<typeof CheckDeferredActionArgsSchema>;
 
 // ============================================================================
+// CTO Decision System Schemas
+// ============================================================================
+
+export const CTO_DECISION_TYPES = [
+  'bypass_request',
+  'protected_action',
+  'lockdown_toggle',
+  'release_signoff',
+  'staging_override',
+] as const;
+
+export const RecordCtoDecisionArgsSchema = z.object({
+  decision_type: z.enum(CTO_DECISION_TYPES)
+    .describe('Category of decision being recorded'),
+  decision_id: z.string().min(1)
+    .describe('ID of the thing being decided (bypass request ID, deferred action code, release ID, etc.)'),
+  verbatim_text: z.string().min(5).max(2000)
+    .describe('The CTO verbatim approval/rejection text — copied EXACTLY as they typed it'),
+  session_id: z.string().optional()
+    .describe('Current session ID (auto-detected from env if omitted)'),
+});
+export type RecordCtoDecisionArgs = z.infer<typeof RecordCtoDecisionArgsSchema>;
+
+export const CheckCtoDecisionArgsSchema = z.object({
+  decision_id: z.string().min(1).describe('The decision_id (bypass request ID, action code, etc.) to check'),
+  decision_type: z.enum(CTO_DECISION_TYPES).optional().describe('Filter by decision type'),
+});
+export type CheckCtoDecisionArgs = z.infer<typeof CheckCtoDecisionArgsSchema>;
+
+// ============================================================================
 // Type Definitions
 // ============================================================================
 

@@ -41,6 +41,8 @@ allowedTools:
   - mcp__persistent-task__get_persistent_task
   - mcp__persistent-task__amend_persistent_task
   - mcp__persistent-task__pause_persistent_task
+  - mcp__persistent-task__resume_persistent_task
+  - mcp__persistent-task__cancel_persistent_task
 disallowedTools:
   - Edit
   - Write

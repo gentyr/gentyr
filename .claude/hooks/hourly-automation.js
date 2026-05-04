@@ -3694,6 +3694,102 @@ async function main() {
   });
 
   // =========================================================================
+  // PAUSED TASK TRIAGE — DEPUTY-CTO (gate-exempt, 10-minute cooldown)
+  // Spawns a deputy-cto session to evaluate paused persistent tasks.
+  // The deputy-cto decides: resume (safe), or escalate to CTO (needs input).
+  // =========================================================================
+  await runIfDue('paused_task_triage', {
+    state, now,
+    stateKey: 'lastPausedTaskTriageRun',
+    label: 'Paused task triage (deputy-cto)',
+    fn: async () => {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (!Database || !fs.existsSync(ptDbPath)) return;
+
+      let ptDb;
+      try {
+        ptDb = new Database(ptDbPath, { readonly: true });
+      } catch { return; }
+
+      try {
+        const paused = ptDb.prepare(
+          "SELECT id, title, metadata, status FROM persistent_tasks WHERE status = 'paused'"
+        ).all();
+
+        // Filter out tasks with do_not_auto_resume
+        const triageable = paused.filter(t => {
+          try {
+            const meta = JSON.parse(t.metadata || '{}');
+            return !meta.do_not_auto_resume;
+          } catch { return true; }
+        });
+
+        if (triageable.length === 0) return;
+
+        // Check if a triage session is already running
+        const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+        if (fs.existsSync(queueDbPath)) {
+          try {
+            const qDb = new Database(queueDbPath, { readonly: true });
+            const existing = qDb.prepare(
+              "SELECT id FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND title LIKE '%Paused task triage%'"
+            ).get();
+            qDb.close();
+            if (existing) {
+              log('Paused task triage: already running, skipping');
+              return;
+            }
+          } catch { /* non-fatal */ }
+        }
+
+        const taskList = triageable.map(t => `- ${t.id}: "${t.title}"`).join('\n');
+
+        const { enqueueSession } = await import(
+          path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js')
+        );
+
+        enqueueSession({
+          title: `[Deputy-CTO] Paused task triage (${triageable.length} tasks)`,
+          agentType: 'deputy-cto-triage',
+          hookType: 'hourly-automation',
+          tagContext: 'paused-task-triage',
+          source: 'hourly-automation',
+          priority: 'normal',
+          lane: 'automated',
+          agent: 'deputy-cto',
+          ttlMs: 10 * 60 * 1000, // 10 min TTL
+          projectDir: PROJECT_DIR,
+          prompt: `[Automation][paused-task-triage][AGENT:{AGENT_ID}]
+
+## Paused Task Triage
+
+${triageable.length} paused persistent task(s) need evaluation:
+
+${taskList}
+
+For EACH task:
+1. Read the task: mcp__persistent-task__get_persistent_task({ id: "<task_id>", include_amendments: true })
+2. Check if it has a pending bypass request: mcp__agent-tracker__list_bypass_requests({ status: "pending" })
+3. Check if the blocking condition has been resolved (e.g., credential issue fixed, deployment completed)
+
+DECISIONS:
+- If the task can be SAFELY RESUMED (no pending bypass, blocking condition resolved): call mcp__persistent-task__resume_persistent_task({ id: "<task_id>" })
+- If the task NEEDS CTO INPUT (ambiguous situation, policy decision, conflicting requirements): call mcp__agent-tracker__submit_bypass_request with category "paused_task_escalation" and a clear summary of what the CTO needs to decide
+- If the task's parent plan or objective is COMPLETED/CANCELLED: cancel the task via mcp__persistent-task__cancel_persistent_task
+
+Do NOT resume tasks that have pending bypass requests — those are waiting for CTO decisions.
+After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
+        });
+
+        log(`Paused task triage: spawned deputy-cto for ${triageable.length} tasks`);
+        debugLog('hourly-automation', 'paused_task_triage', { triageableCount: triageable.length });
+      } finally {
+        try { ptDb.close(); } catch (_) { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
   // DEFERRED ACTION AUTO-RESUME (gate-exempt, 5-minute cooldown)
   // When a deferred protected action is completed/approved, auto-resolve the
   // linked bypass request so the paused task can re-spawn. Also re-spawns

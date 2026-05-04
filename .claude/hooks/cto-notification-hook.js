@@ -1005,7 +1005,12 @@ async function main() {
       bypassLines.push(`   To reject: CTO must explicitly say "reject" or select Reject via AskUserQuestion`);
       bypassLines.push('');
     }
-    bypassLines.push('MANDATORY: Use AskUserQuestion NOW to present each pending bypass request to the CTO with Approve/Reject options. Include the summary. Do NOT call resolve_bypass_request until the CTO has made their choice. If the user\'s message is about something else, present the bypass requests FIRST, then address their message.');
+    bypassLines.push('MANDATORY WORKFLOW:');
+    bypassLines.push('1. Use AskUserQuestion NOW to present each pending bypass request to the CTO with Approve/Reject options.');
+    bypassLines.push('2. After the CTO responds, call record_cto_decision({ decision_type: "bypass_request", decision_id: "<request_id>", verbatim_text: "<CTO exact words>" })');
+    bypassLines.push('3. ONLY THEN call resolve_bypass_request({ request_id: "<id>", decision: "approved"/"rejected", context: "<CTO words>" })');
+    bypassLines.push('');
+    bypassLines.push('If the user\'s message is about something else, present the bypass requests FIRST, then address their message.');
     bypassBlock = bypassLines.join('\n');
   }
 

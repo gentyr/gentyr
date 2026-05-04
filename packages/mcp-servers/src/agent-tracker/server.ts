@@ -140,6 +140,10 @@ import {
   type StageMcpServerArgs,
   type CheckDeferredActionArgs,
   CheckDeferredActionArgsSchema,
+  type RecordCtoDecisionArgs,
+  RecordCtoDecisionArgsSchema,
+  type CheckCtoDecisionArgs,
+  CheckCtoDecisionArgsSchema,
   type AcquireSharedResourceArgs,
   type ReleaseSharedResourceArgs,
   type RenewSharedResourceArgs,
@@ -5037,6 +5041,24 @@ function getBypassDb(): InstanceType<typeof Database> {
     );
     CREATE INDEX IF NOT EXISTS idx_blocking_queue_status ON blocking_queue(status);
   `);
+  // CTO decisions table (unified approval system)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cto_decisions (
+      id TEXT PRIMARY KEY,
+      decision_type TEXT NOT NULL,
+      decision_id TEXT NOT NULL,
+      verbatim_text TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      session_file_hash TEXT,
+      hmac TEXT,
+      status TEXT NOT NULL DEFAULT 'verified',
+      consumed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override')),
+      CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_cto_decisions_lookup ON cto_decisions(decision_type, decision_id, status);
+  `);
   // Migration: add propagation_context column if absent (non-fatal)
   try {
     const cols = db.prepare("PRAGMA table_info(bypass_requests)").all() as Array<{ name: string }>;
@@ -5207,6 +5229,129 @@ async function submitBypassRequest(args: SubmitBypassRequestArgs): Promise<objec
   }
 }
 
+// ============================================================================
+// CTO Decision System
+// ============================================================================
+
+function computeDecisionHmac(keyBase64: string, decisionType: string, decisionId: string, verbatimText: string, sessionId: string, fileHash: string): string {
+  const keyBuffer = Buffer.from(keyBase64, 'base64');
+  return crypto.createHmac('sha256', keyBuffer)
+    .update([decisionType, decisionId, verbatimText, sessionId, fileHash, 'cto-decision'].join('|'))
+    .digest('hex');
+}
+
+function consumeCtoDecision(db: InstanceType<typeof Database>, decisionType: string, decisionId: string): { id: string; verbatim_text: string; session_id: string } | null {
+  const row = db.prepare(
+    "SELECT * FROM cto_decisions WHERE decision_type = ? AND decision_id = ? AND status = 'verified' ORDER BY created_at DESC LIMIT 1"
+  ).get(decisionType, decisionId) as { id: string; verbatim_text: string; session_id: string; session_file_hash: string; hmac: string } | undefined;
+  if (!row) return null;
+
+  // Verify HMAC before consuming
+  const keyPath = path.join(PROJECT_DIR, '.claude', 'protection-key');
+  try {
+    const keyBase64 = fs.readFileSync(keyPath, 'utf-8').trim();
+    const expected = computeDecisionHmac(keyBase64, decisionType, decisionId, row.verbatim_text, row.session_id, row.session_file_hash);
+    const a = Buffer.from(row.hmac, 'hex');
+    const b = Buffer.from(expected, 'hex');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      db.prepare("DELETE FROM cto_decisions WHERE id = ?").run(row.id);
+      return null; // Forged
+    }
+  } catch {
+    return null; // Protection key missing — fail-closed
+  }
+
+  db.prepare("UPDATE cto_decisions SET status = 'consumed', consumed_at = datetime('now') WHERE id = ?").run(row.id);
+  return { id: row.id, verbatim_text: row.verbatim_text, session_id: row.session_id };
+}
+
+async function recordCtoDecision(args: RecordCtoDecisionArgs): Promise<object | ErrorResult> {
+  if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    return { error: 'BLOCKED: Only the CTO interactive session can record CTO decisions.' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    // Load cto-approval-proof.js for JSONL verification
+    const proofModule = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'cto-approval-proof.js'));
+
+    // Find current session JSONL
+    const sessionId = args.session_id || process.env.CLAUDE_SESSION_ID || '';
+    const jsonlResult = proofModule.findCurrentSessionJsonl(PROJECT_DIR);
+    if (!jsonlResult || !jsonlResult.jsonlPath) {
+      return { error: 'Cannot locate current session JSONL file. Ensure CLAUDE_SESSION_ID is set or session files exist.' };
+    }
+
+    // Snapshot JSONL (TOCTOU defense)
+    const snapshotPath = path.join(PROJECT_DIR, '.claude', 'state', `cto-decision-snapshot-${Date.now()}.jsonl`);
+    fs.copyFileSync(jsonlResult.jsonlPath, snapshotPath);
+
+    try {
+      // Verify verbatim quote exists in session
+      const quoteResult = proofModule.verifyQuoteInJsonl(snapshotPath, args.verbatim_text);
+      if (!quoteResult || !quoteResult.found) {
+        return { error: 'Verbatim text not found in session JSONL. The CTO must type the approval/rejection BEFORE you call this tool. Copy their EXACT words.' };
+      }
+
+      // Compute HMAC proof
+      const fileHash = proofModule.computeFileHash(snapshotPath);
+      const keyPath = path.join(PROJECT_DIR, '.claude', 'protection-key');
+      let keyBase64: string;
+      try {
+        keyBase64 = fs.readFileSync(keyPath, 'utf-8').trim();
+      } catch {
+        return { error: 'G001 FAIL-CLOSED: Protection key missing at .claude/protection-key' };
+      }
+
+      const effectiveSessionId = jsonlResult.sessionId || sessionId;
+      const hmac = computeDecisionHmac(keyBase64, args.decision_type, args.decision_id, args.verbatim_text, effectiveSessionId, fileHash);
+
+      // Insert decision
+      db = getBypassDb();
+      const id = 'ctod-' + crypto.randomUUID().slice(0, 12);
+      db.prepare(`INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'verified', datetime('now'))`).run(
+        id, args.decision_type, args.decision_id, args.verbatim_text, effectiveSessionId, fileHash, hmac
+      );
+
+      return {
+        id,
+        status: 'verified',
+        decision_type: args.decision_type,
+        decision_id: args.decision_id,
+        message: `CTO decision recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. You may now call the appropriate resolution tool (e.g., resolve_bypass_request).`,
+      };
+    } finally {
+      try { fs.unlinkSync(snapshotPath); } catch { /* non-fatal */ }
+    }
+  } catch (err) {
+    return { error: `Failed to record CTO decision: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function checkCtoDecision(args: CheckCtoDecisionArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+    const query = args.decision_type
+      ? "SELECT id, decision_type, decision_id, status, created_at, consumed_at FROM cto_decisions WHERE decision_id = ? AND decision_type = ? ORDER BY created_at DESC LIMIT 1"
+      : "SELECT id, decision_type, decision_id, status, created_at, consumed_at FROM cto_decisions WHERE decision_id = ? ORDER BY created_at DESC LIMIT 1";
+    const row = args.decision_type
+      ? db.prepare(query).get(args.decision_id, args.decision_type)
+      : db.prepare(query).get(args.decision_id);
+    if (!row) {
+      return { found: false, message: 'No CTO decision found for this ID.' };
+    }
+    return { found: true, ...(row as Record<string, unknown>) };
+  } catch (err) {
+    return { error: `Failed to check CTO decision: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
 async function resolveBypassRequest(args: ResolveBypassRequestArgs): Promise<object | ErrorResult> {
   // Spawned sessions cannot resolve bypass requests — only the CTO interactive session can
   if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
@@ -5227,6 +5372,21 @@ async function resolveBypassRequest(args: ResolveBypassRequestArgs): Promise<obj
     if (request.status !== 'pending') {
       return { error: `Bypass request is already ${request.status}. Only pending requests can be resolved.` };
     }
+
+    // Require a verified CTO decision (natural-language proof)
+    const ctoDecision = consumeCtoDecision(db, 'bypass_request', args.request_id);
+    if (!ctoDecision) {
+      return {
+        error: 'CTO decision required. Before calling resolve_bypass_request, you MUST:\n' +
+          '1. Present the bypass request to the CTO via AskUserQuestion\n' +
+          '2. Wait for the CTO to type their approval/rejection\n' +
+          '3. Call record_cto_decision({ decision_type: "bypass_request", decision_id: "' + args.request_id + '", verbatim_text: "<CTO exact words>" })\n' +
+          '4. Then call resolve_bypass_request again.',
+      };
+    }
+
+    // Use the CTO's verbatim text as the resolution context (override args.context)
+    const resolvedContext = args.context || ctoDecision.verbatim_text;
 
     // Check if the underlying task still exists and is in a valid state
     if (request.task_type === 'persistent') {
@@ -5280,7 +5440,7 @@ async function resolveBypassRequest(args: ResolveBypassRequestArgs): Promise<obj
     // Resolve the request
     db.prepare(
       "UPDATE bypass_requests SET status = ?, resolution_context = ?, resolved_at = datetime('now'), resolved_by = 'cto' WHERE id = ?"
-    ).run(args.decision, args.context, request.id);
+    ).run(args.decision, resolvedContext, request.id);
 
     // Handle approval — resume the task
     if (args.decision === 'approved') {
@@ -6176,6 +6336,19 @@ const tools: AnyToolHandler[] = [
       }
     },
   },
+  // CTO Decision System
+  {
+    name: 'record_cto_decision',
+    description: 'Record a verified CTO decision. The CTO must have ALREADY typed their approval/rejection in chat. This tool verifies the verbatim text exists in the session JSONL (proving the CTO actually typed it), computes an HMAC proof, and stores the decision. Call this AFTER the CTO responds to AskUserQuestion, BEFORE calling resolve_bypass_request or other action tools.',
+    schema: RecordCtoDecisionArgsSchema,
+    handler: recordCtoDecision,
+  },
+  {
+    name: 'check_cto_decision',
+    description: 'Check the status of a CTO decision by decision_id. Returns whether a verified decision exists for a given bypass request, protected action, etc.',
+    schema: CheckCtoDecisionArgsSchema,
+    handler: checkCtoDecision,
+  },
   // Self-compaction
   {
     name: 'request_self_compact',
@@ -6187,7 +6360,7 @@ const tools: AnyToolHandler[] = [
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '9.4.0',  // Added blocking_queue table and list/resolve/summary tools
+  version: '9.5.0',  // Unified CTO decision system: record_cto_decision, check_cto_decision
   tools,
 });
 
