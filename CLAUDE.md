@@ -1622,7 +1622,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 |------|---------|
 | stop-continue-hook.js | Gate session stop, check unfinished work, trigger revival |
 
-### Shared Hook Libraries (hooks/lib/ — 35 modules)
+### Shared Hook Libraries (hooks/lib/ — 36 modules)
 
 Key modules consumed by hooks:
 - `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
@@ -1656,6 +1656,7 @@ Key modules consumed by hooks:
 - `cto-approval-proof.js` — CTO release approval cryptographic proof: `verifyQuoteInJsonl` (line-by-line JSONL scan for verbatim quote), `computeApprovalHmac` (HMAC-SHA256 with `cto-release-approval` domain separator), `verifyApprovalHmac` (constant-time verification), `computeFileHash` (SHA-256), `findCurrentSessionJsonl` (session discovery — encodes project path by replacing all non-alphanumeric chars with dashes to match canonical `~/.claude/projects/` directory naming). Consumed by `record_cto_approval` tool on release-ledger server. **TOCTOU defense**: `record_cto_approval` copies the live JSONL to a stable snapshot first, then verifies the quote and hashes the snapshot (not the live file), ensuring the archived hash matches the verified content. **Spawned-session guard**: `record_cto_approval` blocks `CLAUDE_SPAWNED_SESSION=true` sessions — only interactive CTO sessions can sign off releases. **`approval_text` minimum**: 10 characters (enforced by Zod schema) to ensure a substantive audit trail
 - `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
 - `auditor-prompt.js` — Single source of truth for building auditor session specs. Exports `buildAuditorSessionSpec()` consumed by `universal-audit-spawner.js` (first spawn) and `session-queue.js` Step 1b.5 (revival spawn). Internally calls `resolveAuditTools(taskType)` to dispatch across three task types: `'todo'` (universal-auditor + todo-db tools), `'persistent'` (universal-auditor + persistent-task tools), `'plan'` (plan-auditor + plan-orchestrator tools).
+- `load-test-runner.js` — Lightweight autocannon-based load test runner. Reads route configuration from `services.json` (`loadTest` section), runs load tests per route, and returns structured performance results. `autocannon` must be installed in the target project. Used by the promotion pipeline when `loadTest.enabled: true`.
 
 ### Agent Definitions (22 shared)
 
