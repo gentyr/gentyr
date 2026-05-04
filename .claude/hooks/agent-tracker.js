@@ -70,6 +70,7 @@ export const AGENT_TYPES = {
   PERSISTENT_TASK_MONITOR: 'persistent-task-monitor',
   PLAN_AUDITOR: 'plan-auditor',
   TASK_RUNNER: 'task-runner',
+  AI_PR_REVIEWER: 'ai-pr-reviewer',
 };
 
 /**
@@ -92,6 +93,7 @@ export const HOOK_TYPES = {
   WORKSTREAM_SPAWNER: 'workstream-spawner',
   PERSISTENT_TASK_MONITOR: 'persistent-task-monitor',
   PLAN_AUDITOR: 'plan-auditor',
+  AI_PR_REVIEW: 'ai-pr-review',
 };
 
 /**
