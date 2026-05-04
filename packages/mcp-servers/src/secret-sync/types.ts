@@ -370,6 +370,19 @@ export const ServicesConfigSchema = z.object({
     'Canary deployment configuration. When enabled, production releases deploy to a small traffic percentage first, ' +
     'monitor error rates, and auto-rollback on degradation. Requires environments.production.baseUrl to be configured.'
   ),
+  loadTest: z.object({
+    enabled: z.boolean().default(false)
+      .describe('Enable/disable load testing during promotion pipeline'),
+    duration: z.number().int().min(5).max(300).default(30)
+      .describe('Duration of each load test run in seconds'),
+    connections: z.number().int().min(1).max(500).default(50)
+      .describe('Number of concurrent connections per route'),
+    routes: z.array(z.string()).default(['/api/health', '/api/auth/session'])
+      .describe('API routes to load test'),
+  }).optional().describe(
+    'Load test configuration using autocannon. When enabled, load tests run during the promotion pipeline ' +
+    'to verify endpoint performance under simulated traffic. autocannon must be installed in the target project.'
+  ),
   releaseApprovalTier: z.enum(['cto', 'deputy', 'automated']).default('cto').optional().describe(
     'Who can sign off production releases. ' +
     '"cto" (default) = only interactive CTO sessions. ' +
