@@ -132,13 +132,24 @@ After pushing but BEFORE creating the PR, run the pre-merge quality gate:
    If there are warnings (non-scoped failures), note them as informational.
 
 6. Create PR: `gh pr create --base preview --head "$(git branch --show-current)" --title "<title>" --body "<summary>"`
-7. Wait for CI checks:
+7. **Wait for CI checks (CI Fix Loop)**:
    ```bash
    gh pr checks <number> --watch --fail-on-fail
    ```
-   - If CI fails: report failures, DO NOT merge, call summarize_work and exit
+   - If CI passes: proceed to merge (step 8)
    - If no required checks configured (command exits immediately): proceed to merge
    - Timeout: if checks haven't completed in 10 minutes, report timeout and exit
+   - **If CI fails**: Enter the CI Fix Loop (up to 5 iterations):
+     1. Run `gh pr checks <number>` to identify which checks failed
+     2. Diagnose each failure (read the Actions log via `gh run view <run-id> --log-failed`)
+     3. Fix the failing code, stage specific files, and push a fix commit
+     4. Wait for CI to re-run: `gh pr checks <number> --watch --fail-on-fail`
+     5. If CI still fails, repeat from step 1 (max 5 total iterations)
+     6. After 5 failed attempts, escalate with "I'm stuck" via `mcp__agent-reports__report_to_deputy_cto`:
+        - Which checks are still failing
+        - What you tried in each iteration
+        - Why you cannot resolve the failures
+        Do NOT merge a PR with failing CI. Do NOT ask the CTO to approve it.
 8. Self-merge (after CI passes): `gh pr merge <number> --squash --delete-branch`
    - Do NOT wait for review. Do NOT create a deputy-CTO task. Merge after CI passes.
    - If merge fails (conflict), rebase: `git pull --rebase origin preview` and retry.
