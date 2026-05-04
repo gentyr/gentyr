@@ -627,7 +627,7 @@ The Persistent Task System orchestrates long-running, amendment-driven monitorin
 
 **Key Files** — `.claude/hooks/lib/bypass-guard.js` (88 lines): checkBypassBlock(), getBypassResolutionContext()
 
-**MCP Tools** — `submit_bypass_request` (agent-facing, pauses task), `resolve_bypass_request` (CTO-facing, approves/rejects), `list_bypass_requests` (by status, auto-cancels stale)
+**MCP Tools** — `submit_bypass_request` (agent-facing, pauses task), `resolve_bypass_request` (CTO-facing, approves/rejects; **spawned-session guard** blocks `CLAUDE_SPAWNED_SESSION=true` server-side — only the CTO interactive session can resolve), `list_bypass_requests` (by status, auto-cancels stale), `check_deferred_action` (poll deferred protected action status: pending/approved/executing/completed/failed)
 
 **Integration Points** — session-queue (blocks revival when pending), session-briefing (displays to CTO), persistent-task-spawner (resume triggers propagateResumeToPlan), cto-notification-hook (status line shows N BLOCKING)
 
@@ -1147,6 +1147,7 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 | persistent_stale_pause_resume | 5 min | Resume tasks paused >30 min |
 | rate_limit_cooldown_check | 2 min | Clear expired rate-limit cooldowns |
 | self_heal_fix_check | 5 min | Check fix task completion, resolve/escalate |
+| deferred_action_resume | 5 min | Auto-resolve bypass requests when linked deferred action completes; cancel stale protected_action bypasses whose parent is done |
 | plan_orphan_detection | 10 min | Revive active plans with dead managers |
 | report_auto_resolve | 2 min | Match merged PRs to pending reports |
 | report_dedup | 30 min | Deduplicate similar reports |
@@ -1329,7 +1330,7 @@ Files: staging-lock-guard.js, main-tree-commit-guard.js, interactive-lockdown-gu
 
 ### 17.4 Deferred Protected Actions
 
-**Architecture** — Spawned agents hit protected-action-gate.js → tool call (server, tool, args) stored in bypass-requests.db with HMAC signatures → CTO sees in briefing → types `APPROVE <phrase> <code>` → protected-action-approval-hook.js verifies both HMACs → executes via HTTP POST to MCP daemon. Tier 1 only. Domain separation ('deferred-pending'/'deferred-approved'). Timing-safe comparison. args_hash binding prevents bait-and-switch.
+**Architecture** — Spawned agents hit protected-action-gate.js → tool call (server, tool, args) stored in bypass-requests.db with HMAC signatures → agent told to pause (submit_bypass_request) or poll (check_deferred_action) → CTO sees in briefing → types `APPROVE <phrase> <code>` → protected-action-approval-hook.js verifies both HMACs → executes via HTTP POST to MCP daemon → deferred_action_resume automation (5-min cycle) auto-resolves linked bypass request → task re-spawns. Tier 1 only. Domain separation ('deferred-pending'/'deferred-approved'). Timing-safe comparison. args_hash binding prevents bait-and-switch. `resolve_bypass_request` has server-side spawned-session guard (CLAUDE_SPAWNED_SESSION=true blocked).
 
 ---
 
@@ -2126,10 +2127,16 @@ add_dependency, remove_dependency, list_dependencies, get_queue_context, reorder
 Defines which MCP tool calls require approval. Per-server, per-tool granularity. Categories: destructive, external-visible, irreversible.
 
 ### 50.2 Protected Action Gate (PreToolUse)
-`protected-action-gate.js` (195 lines) intercepts MCP calls matching config. Interactive: prompts synchronously. Spawned: stores as deferred action with HMAC signatures, exits with instructions.
+`protected-action-gate.js` (195 lines) intercepts MCP calls matching config. Interactive: prompts synchronously. Spawned: stores as deferred action with HMAC signatures, blocks the tool call, and presents two options: (A) call `submit_bypass_request` with category `protected_action` to pause the task and wait for CTO approval, or (B) poll `check_deferred_action` every 30 seconds (for persistent monitors). Agents are instructed NOT to exit silently.
 
 ### 50.3 Deferred Protected Actions
 DB: deferred_actions table in bypass-requests.db. Lifecycle: pending→approved→executing→completed/failed. Tier 1 only (HTTP execution via daemon). HMAC domain separation: 'deferred-pending'/'deferred-approved'. args_hash binding. CTO sees in briefing, types `APPROVE <phrase> <code>`. `deferred-action-executor.js` (399 lines) handles MCP HTTP execution with timing-safe comparison.
+
+### 50.4 Deferred Action Auto-Resume (Hourly Automation)
+`deferred_action_resume` block in `hourly-automation.js` (5-minute cooldown, gate-exempt). Two functions: (1) When a deferred action reaches `completed` or `failed` status, auto-resolves the linked `pending` bypass request so the paused task can re-spawn naturally. (2) Cancels stale `protected_action` bypass requests older than 5 minutes whose parent persistent task is already `completed`/`cancelled`/`failed`. Reads from bypass-requests.db (deferred_actions JOIN bypass_requests) and cross-checks persistent-tasks.db for parent status.
+
+### 50.5 check_deferred_action MCP Tool
+Agent-tracker server tool for polling deferred action status. Returns: id, server, tool, status, execution_result (parsed JSON), execution_error, timestamps, and a `hint` field with next-step guidance per status. Used by spawned agents waiting for CTO approval of protected actions. Reads from bypass-requests.db deferred_actions table.
 
 ---
 
@@ -2308,9 +2315,10 @@ DB: deferred_actions table in bypass-requests.db. Lifecycle: pending→approved�
 - request_preapproved_bypass, activate_preapproved_bypass, list_preapproved_bypasses
 - create_promotion_bypass (CTO-only: time-window for commits)
 
-### 54.5 Protected Action Approval (4 tools)
+### 54.5 Protected Action Approval (5 tools)
 - list_pending_action_requests, get_protected_action_request
 - approve_protected_action, deny_protected_action
+- check_deferred_action (agent-facing: poll status of deferred action pending CTO approval)
 
 ### 54.6 System Operations (6 tools)
 - list_protections, get_merge_chain_status
@@ -2384,6 +2392,7 @@ DB: deferred_actions table in bypass-requests.db. Lifecycle: pending→approved�
 | persistent_stale_pause_resume | 5 min | — |
 | rate_limit_cooldown_check | 2 min | — |
 | self_heal_fix_check | 5 min | — |
+| deferred_action_resume | 5 min | — |
 | plan_orphan_detection | 10 min | — |
 | version_watch | 5 min | — |
 | triage_check | 30 min | — |
