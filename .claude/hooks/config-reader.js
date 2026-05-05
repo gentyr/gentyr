@@ -82,6 +82,7 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'screenshot_cleanup',
   'auto_rollback_check',
   'fly_image_freshness',
+  'global_monitor_health',
 ]);
 
 /**
@@ -221,6 +222,7 @@ const DEFAULTS = {
   load_test: 360,                              // 6 hours (only runs during promotion)
   auto_rollback_check: 2,                      // 2 minutes
   fly_image_freshness: 60,                     // 1 hour
+  global_monitor_health: 5,                    // 5 minutes
 };
 
 /**

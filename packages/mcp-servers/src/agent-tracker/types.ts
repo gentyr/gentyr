@@ -174,6 +174,7 @@ export const AUTOMATION_TOGGLE_KEYS = [
   'orphanProcessReaperEnabled',
   'staleWorkDetectorEnabled',
   'previewPromotionEnabled',
+  'globalMonitorEnabled',
 ] as const;
 
 export type AutomationToggleKey = typeof AUTOMATION_TOGGLE_KEYS[number];

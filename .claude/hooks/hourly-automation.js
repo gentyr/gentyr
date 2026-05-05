@@ -4159,6 +4159,208 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
   });
 
   // =========================================================================
+  // GLOBAL DEPUTY-CTO MONITOR HEALTH (gate-exempt, 5-minute cooldown)
+  // Ensures a persistent task with task_type='global_monitor' exists and
+  // has a running monitor session. Auto-creates the task and spawns a
+  // monitor if missing. Opt-out via globalMonitorEnabled: false toggle.
+  // =========================================================================
+  await runIfDue('global_monitor_health', {
+    state, now,
+    stateKey: 'lastGlobalMonitorHealthRun',
+    label: 'Global monitor health',
+    fn: async () => {
+      // Check automation toggle — opt-out only when explicitly false
+      const toggleValue = config.globalMonitorEnabled;
+      if (toggleValue === false) {
+        debugLog('hourly-automation', 'global_monitor_health', { skipped: true, reason: 'toggle_disabled' });
+        return;
+      }
+
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (!Database) {
+        log('Global monitor health: better-sqlite3 unavailable — skipping');
+        return;
+      }
+
+      // Ensure the DB file exists (persistent-task server creates it on first use)
+      if (!fs.existsSync(ptDbPath)) {
+        log('Global monitor health: persistent-tasks.db does not exist yet — skipping');
+        return;
+      }
+
+      let ptDb;
+      try {
+        ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+      } catch (err) {
+        log(`Global monitor health: DB open failed: ${err.message}`);
+        return;
+      }
+
+      try {
+        // Look for an existing global_monitor persistent task
+        // metadata is stored as JSON string — use LIKE for the task_type field
+        const existingTask = ptDb.prepare(
+          "SELECT id, title, status, metadata, monitor_pid FROM persistent_tasks WHERE metadata LIKE '%\"task_type\":\"global_monitor\"%' LIMIT 1"
+        ).get();
+
+        if (existingTask) {
+          // Task exists — check its status
+          if (existingTask.status === 'paused' || existingTask.status === 'cancelled' || existingTask.status === 'completed' || existingTask.status === 'failed') {
+            // CTO explicitly stopped it or it was paused by circuit breaker — do not re-create
+            debugLog('hourly-automation', 'global_monitor_health', { taskId: existingTask.id, status: existingTask.status, action: 'skip_terminal' });
+            return;
+          }
+
+          if (existingTask.status === 'active') {
+            // Task is active — verify a monitor is queued/running in session-queue.db
+            const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+            if (!fs.existsSync(queueDbPath)) {
+              // No session queue yet — enqueue the monitor
+              log(`Global monitor health: session-queue.db missing — enqueuing monitor for "${existingTask.title}"`);
+            } else {
+              try {
+                const queueDb = new Database(queueDbPath, { readonly: true });
+                const existing = queueDb.prepare(
+                  "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND metadata LIKE ?"
+                ).get(`%"persistentTaskId":"${existingTask.id}"%`);
+                queueDb.close();
+                if (existing && existing.cnt > 0) {
+                  debugLog('hourly-automation', 'global_monitor_health', { taskId: existingTask.id, action: 'monitor_alive' });
+                  return; // Monitor is already running or queued — nothing to do
+                }
+              } catch (_) { /* non-fatal — proceed to enqueue */ }
+            }
+
+            // Monitor is missing — enqueue a new one
+            log(`Global monitor health: active task "${existingTask.title}" has no running monitor — re-enqueuing`);
+            try {
+              const { prompt, extraEnv, metadata, agent } = await buildRevivalPrompt(existingTask, 'global_monitor_health');
+              const result = enqueueSession({
+                title: `[Global Monitor] Deputy-CTO Alignment Monitor`,
+                agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+                hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+                tagContext: 'global-monitor',
+                source: 'hourly-automation',
+                priority: 'critical',
+                lane: 'persistent',
+                ttlMs: 0,
+                prompt,
+                projectDir: PROJECT_DIR,
+                extraEnv: { ...extraEnv, GENTYR_DEPUTY_CTO_MONITOR: 'true' },
+                metadata: { ...metadata, task_type: 'global_monitor' },
+                agent: 'deputy-cto',
+              });
+              log(`Global monitor health: enqueued monitor (queueId: ${result.queueId})`);
+              try { auditEvent('global_monitor_revived', { task_id: existingTask.id }); } catch (_) { /* non-fatal */ }
+            } catch (err) {
+              log(`Global monitor health: failed to enqueue monitor: ${err.message}`);
+            }
+            return;
+          }
+
+          // status is 'draft' — this shouldn't happen for auto-created tasks, but handle it
+          debugLog('hourly-automation', 'global_monitor_health', { taskId: existingTask.id, status: existingTask.status, action: 'skip_draft' });
+          return;
+        }
+
+        // No global_monitor task exists — create one and enqueue the monitor
+        log('Global monitor health: no global_monitor persistent task found — creating one');
+        const taskId = randomUUID();
+        const nowIso = new Date().toISOString();
+        const metadata = JSON.stringify({
+          task_type: 'global_monitor',
+          do_not_complete: true,
+        });
+
+        ptDb.prepare(
+          `INSERT INTO persistent_tasks (id, title, description, outcome_criteria, status, metadata, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`
+        ).run(
+          taskId,
+          'Global Deputy-CTO Monitor',
+          'Continuous alignment monitoring of all active sessions. Dispatches user-alignment sub-agents to verify work matches CTO intent. Detects zombies, stuck audit gates, and drifting agents.',
+          'Never completes — runs continuously while enabled.',
+          metadata,
+          nowIso,
+          nowIso,
+        );
+
+        // Insert an 'activated' event
+        ptDb.prepare(
+          "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'activated', ?, datetime('now'))"
+        ).run(randomUUID(), taskId, JSON.stringify({ reason: 'auto_created_by_hourly_automation' }));
+
+        log(`Global monitor health: created persistent task ${taskId} — enqueuing monitor`);
+
+        // Build the initial prompt for the global monitor
+        const monitorPrompt = [
+          'You are the Global Deputy-CTO Monitor.',
+          '',
+          '## Your Persistent Task',
+          `Task ID: ${taskId}`,
+          'Title: Global Deputy-CTO Monitor',
+          '',
+          '## Mission',
+          'You operate in continuous alignment monitoring mode (GENTYR_DEPUTY_CTO_MONITOR=true).',
+          'Your job is to ensure all active sessions are aligned with CTO intent.',
+          '',
+          '## Cycle',
+          'On each 5-minute cycle:',
+          '1. Enumerate active tasks and persistent tasks',
+          '2. Dispatch user-alignment sub-agents (max 3 concurrent in alignment lane) to verify work matches CTO intent',
+          '3. Read alignment results and send corrective signals to drifting agents',
+          '4. Detect zombies (sessions alive >2h with no recent tool calls)',
+          '5. Oversee stuck audit gates',
+          '6. Call heartbeat on your persistent task',
+          '',
+          '## Escalation Framework',
+          '- Minor drift: send a signal to the agent (~50%)',
+          '- Moderate misalignment: create a correction task (~35%)',
+          '- Significant drift or systemic issues: submit_bypass_request (~15%)',
+          '',
+          '## Signal Throttling',
+          'Max 1 signal per agent per 30 minutes.',
+          'If >5 signals are firing per hour, self-pause and escalate a diagnostic report to the CTO.',
+          '',
+          '## Important',
+          '- This task has do_not_complete=true — never complete it',
+          '- Use heartbeat to stay alive',
+          '- You are a deputy-cto agent with GENTYR_DEPUTY_CTO_MONITOR=true',
+        ].join('\n');
+
+        const result = enqueueSession({
+          title: `[Global Monitor] Deputy-CTO Alignment Monitor`,
+          agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+          hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+          tagContext: 'global-monitor',
+          source: 'hourly-automation',
+          priority: 'critical',
+          lane: 'persistent',
+          ttlMs: 0,
+          prompt: monitorPrompt,
+          projectDir: PROJECT_DIR,
+          extraEnv: {
+            GENTYR_DEPUTY_CTO_MONITOR: 'true',
+            GENTYR_PERSISTENT_TASK_ID: taskId,
+          },
+          metadata: {
+            persistentTaskId: taskId,
+            task_type: 'global_monitor',
+          },
+          agent: 'deputy-cto',
+        });
+
+        log(`Global monitor health: enqueued initial monitor (queueId: ${result.queueId})`);
+        try { auditEvent('global_monitor_created', { task_id: taskId, queue_id: result.queueId }); } catch (_) { /* non-fatal */ }
+        debugLog('hourly-automation', 'global_monitor_health', { taskId, action: 'created_and_enqueued' });
+      } finally {
+        try { ptDb.close(); } catch (_) { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
   // ENABLED CHECK — session revival still ran above even if disabled
   // =========================================================================
   if (!config.enabled) {

@@ -563,6 +563,73 @@ function getPersistentTaskState() {
 }
 
 // ---------------------------------------------------------------------------
+// Data gathering: global monitor state
+// ---------------------------------------------------------------------------
+
+function getGlobalMonitorState() {
+  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+  if (!Database || !fs.existsSync(ptDbPath)) return null;
+
+  try {
+    const db = new Database(ptDbPath, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+
+    // Find the global_monitor persistent task
+    const task = db.prepare(
+      "SELECT id, status, monitor_pid, last_heartbeat, metadata FROM persistent_tasks WHERE metadata LIKE '%\"task_type\":\"global_monitor\"%' LIMIT 1"
+    ).get();
+
+    db.close();
+
+    if (!task) {
+      // Check if it's toggled off
+      try {
+        const configPath = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
+        if (fs.existsSync(configPath)) {
+          const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+          if (cfg.globalMonitorEnabled === false) {
+            return { state: 'disabled' };
+          }
+        }
+      } catch (_) { /* non-fatal */ }
+      return { state: 'inactive' };
+    }
+
+    if (task.status === 'active') {
+      let alive = false;
+      if (task.monitor_pid) {
+        try { process.kill(task.monitor_pid, 0); alive = true; } catch (_) { /* dead */ }
+      }
+      return {
+        state: alive ? 'active' : 'active_no_pid',
+        taskId: task.id,
+        pid: task.monitor_pid,
+        lastHeartbeat: task.last_heartbeat,
+      };
+    }
+
+    if (task.status === 'paused') {
+      return { state: 'paused', taskId: task.id };
+    }
+
+    // cancelled, completed, failed, draft
+    // Check toggle
+    try {
+      const configPath = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
+      if (fs.existsSync(configPath)) {
+        const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (cfg.globalMonitorEnabled === false) {
+          return { state: 'disabled' };
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+    return { state: 'inactive', taskId: task.id, taskStatus: task.status };
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data gathering: current task details (for spawned sessions)
 // ---------------------------------------------------------------------------
 
@@ -993,6 +1060,23 @@ function buildInteractiveBriefing() {
       for (const t of ptState.pausedTasks) {
         lines.push(`  "${truncate(t.title, 50)}" — ${t.pauseReason} paused`);
       }
+    }
+  }
+
+  // Global monitor status
+  const globalMonitor = getGlobalMonitorState();
+  if (globalMonitor) {
+    if (globalMonitor.state === 'active') {
+      const hbStr = globalMonitor.lastHeartbeat ? elapsedStr(globalMonitor.lastHeartbeat) + ' ago' : 'never';
+      lines.push(`Global monitor: ACTIVE (pid ${globalMonitor.pid}, last heartbeat ${hbStr})`);
+    } else if (globalMonitor.state === 'active_no_pid') {
+      lines.push('Global monitor: ACTIVE (monitor DEAD — will be revived automatically)');
+    } else if (globalMonitor.state === 'paused') {
+      lines.push('Global monitor: PAUSED (resume via /global-monitor on)');
+    } else if (globalMonitor.state === 'disabled') {
+      lines.push('Global monitor: DISABLED (toggle via /global-monitor on)');
+    } else if (globalMonitor.state === 'inactive') {
+      lines.push('Global monitor: INACTIVE (will auto-create on next automation cycle)');
     }
   }
 

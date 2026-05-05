@@ -3252,6 +3252,7 @@ const AUTOMATION_TOGGLE_DESCRIPTIONS: Record<string, { description: string; defa
   staleTaskCleanupEnabled:            { description: 'Stale task cleanup', defaultEnabled: true },
   orphanProcessReaperEnabled:         { description: 'Orphan process reaper', defaultEnabled: true },
   staleWorkDetectorEnabled:           { description: 'Stale work detector', defaultEnabled: true },
+  globalMonitorEnabled:               { description: 'Global deputy-CTO alignment monitor (always-on persistent session)', defaultEnabled: true },
 };
 
 function readAutonomousModeConfig(): Record<string, unknown> {
