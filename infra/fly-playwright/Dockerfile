@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcups2 libdrm2 libxkbcommon0 libatspi2.0-0 libxcomposite1 \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
     libcairo2 libasound2 libwayland-client0 \
+    # code-server: kerberos native module build dependency (fallback when prebuild-install download fails)
+    libgssapi-krb5-2 \
     # Recording (Xvfb + ffmpeg) and utilities
     xvfb ffmpeg unclutter xdotool jq git curl \
     && rm -rf /var/lib/apt/lists/*
