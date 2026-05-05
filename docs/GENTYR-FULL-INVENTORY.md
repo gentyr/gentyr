@@ -1149,6 +1149,7 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 | self_heal_fix_check | 5 min | Check fix task completion, resolve/escalate |
 | deferred_action_resume | 5 min | Auto-resolve bypass requests when linked deferred action completes; cancel stale protected_action bypasses whose parent is done |
 | paused_task_triage | 10 min | Spawn deputy-cto to evaluate paused persistent tasks: resume if safe, escalate if needs CTO |
+| global_monitor_health | 5 min | Auto-create/revive global deputy-CTO monitor persistent task (opt-out via globalMonitorEnabled toggle) |
 | plan_orphan_detection | 10 min | Revive active plans with dead managers |
 | report_auto_resolve | 2 min | Match merged PRs to pending reports |
 | report_dedup | 30 min | Deduplicate similar reports |
@@ -1261,8 +1262,8 @@ demo, demo-all, demo-interactive, demo-autonomous, demo-bulk, demo-session, demo
 ### 15.2 Task & Agent Commands (5)
 spawn-tasks, persistent-task, persistent-tasks, task-queue, session-queue
 
-### 15.3 Monitoring Commands (3)
-monitor (continuous loop), status (one-shot), triage
+### 15.3 Monitoring Commands (4)
+monitor (continuous loop), status (one-shot), triage, global-monitor (toggle always-on deputy-CTO alignment monitor)
 
 ### 15.4 Plan Commands (5)
 plan, plan-progress, plan-timeline, plan-audit, plan-sessions
@@ -2387,6 +2388,44 @@ Triage targets persistent tasks because resuming them cascades via `propagateRes
 
 ---
 
+## 53b. Global Deputy-CTO Monitor
+
+**Purpose** — Always-on persistent session that continuously monitors all agent activity for alignment drift, zombie sessions, and stuck audit gates. Opt-out (enabled by default).
+
+### 53b.1 Architecture
+- **Auto-spawn**: `global_monitor_health` block in `hourly-automation.js` (gate-exempt, 5-minute cooldown). Creates a persistent task with `metadata: { task_type: "global_monitor", do_not_complete: true }` if none exists. Re-enqueues if the task is `active` but has no running/queued monitor. Respects CTO decisions (skips if paused/cancelled/completed).
+- **Persistent across restarts**: Uses the persistent task system — `requeueDeadPersistentMonitor()`, crash-loop circuit breaker, heartbeat-stale detection, and the revival daemon all apply automatically.
+- **Agent**: `deputy-cto` agent in Global Monitor Mode (triggered by `GENTYR_DEPUTY_CTO_MONITOR=true` env var). Runs in the `persistent` lane at `critical` priority.
+
+### 53b.2 Monitor Cycle (every 5 minutes)
+1. **Orient**: `list_project_summaries` for global agent activity overview
+2. **Enumerate**: `list_tasks(in_progress)` + `list_persistent_tasks(active)` for all active work
+3. **Alignment dispatch**: Search user prompts for CTO intent, spawn `user-alignment` sub-agents in `alignment` lane (max 3 concurrent) for unchecked work
+4. **Read alignment results**: Misalignment → send corrective signal. Significant drift → `submit_bypass_request` on the affected task
+5. **Zombie detection**: Sessions >2h with no recent tool calls → kill
+6. **Audit gate oversight**: Tasks stuck in `pending_audit` >10 min → auditor may have died
+7. **Heartbeat and sleep**
+
+### 53b.3 Configuration & Control
+- **Toggle**: `globalMonitorEnabled` in `autonomous-mode.json` (default: `true`). Set via `set_automation_toggle({ feature: 'globalMonitorEnabled', enabled: false })` or `/global-monitor off`.
+- **Slash command**: `/global-monitor [on|off]` — bare shows status, `on` enables + activates task, `off` disables + pauses task.
+- **Session briefing**: Shows "Global monitor: ACTIVE (pid XXXX, last heartbeat Xm ago)" or "DISABLED" in CTO login briefing.
+
+### 53b.4 Key Files
+- `.claude/hooks/hourly-automation.js` — `global_monitor_health` runIfDue block
+- `agents/deputy-cto.md` — Global Monitor Mode section
+- `.claude/hooks/alignment-monitor-briefing.js` — PostToolUse hook injecting cycle reminders (every 5 tool calls)
+- `.claude/hooks/session-briefing.js` — `getGlobalMonitorState()` for CTO display
+- `.claude/commands/global-monitor.md` — slash command
+
+### 53b.5 Escalation Framework
+- Minor drift (~50%): corrective signal to the drifting agent
+- Moderate misalignment (~35%): self-created correction task
+- Significant drift (~15%): `submit_bypass_request` on the affected task for CTO attention
+- Signal throttling: max 1 signal per agent per 30 minutes; self-pauses if >5 signals/hour
+
+---
+
 ## 54. Deputy-CTO Server (34 Tools — Complete)
 
 ### 54.1 Question Management (10 tools)
@@ -2459,7 +2498,7 @@ Triage targets persistent tasks because resuming them cascades via `propagateRes
 - Protected action approval flow
 - Deployment flow (merge chain)
 - Slash command reference
-- 18 automation toggles
+- 19 automation toggles (including globalMonitorEnabled)
 - Persona profiles
 - Playwright/demo best practices
 - Shared resource registry
@@ -2485,6 +2524,7 @@ Triage targets persistent tasks because resuming them cascades via `propagateRes
 | self_heal_fix_check | 5 min | — |
 | deferred_action_resume | 5 min | — |
 | paused_task_triage | 10 min | — |
+| global_monitor_health | 5 min | globalMonitorEnabled (default: true) |
 | plan_orphan_detection | 10 min | — |
 | version_watch | 5 min | — |
 | triage_check | 30 min | — |
