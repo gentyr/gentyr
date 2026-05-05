@@ -284,6 +284,11 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_items(status);
     CREATE INDEX IF NOT EXISTS idx_queue_priority ON queue_items(priority, lane, enqueued_at);
     CREATE INDEX IF NOT EXISTS idx_queue_worktree ON queue_items(worktree_path) WHERE worktree_path IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_plan_manager
+      ON queue_items(json_extract(metadata, '$.planId'))
+      WHERE lane = 'persistent'
+        AND status IN ('queued', 'running', 'spawning')
+        AND json_extract(metadata, '$.isPlanManager') = 1;
 
     CREATE TABLE IF NOT EXISTS queue_config (
       key TEXT PRIMARY KEY,
@@ -920,35 +925,41 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
     return;
   }
 
-  // Plan-level dedup: if this task serves a plan, check if ANY monitor for the same plan
-  // is already queued/running (regardless of persistentTaskId). Prevents duplicate monitors
-  // when reviveOrphanedPlan() created multiple persistent tasks for the same plan.
+  // Early task fetch: used for plan-level dedup below AND reused as `task` later to avoid
+  // opening persistent-tasks.db twice. Fetches full row (not just metadata).
+  let taskEarly = null;
   try {
     const ptDbPath2 = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
     if (fs.existsSync(ptDbPath2)) {
       const ptDbRo = new Database(ptDbPath2, { readonly: true });
       ptDbRo.pragma('busy_timeout = 3000');
-      const taskRow = ptDbRo.prepare("SELECT metadata FROM persistent_tasks WHERE id = ?").get(taskId);
+      taskEarly = ptDbRo.prepare("SELECT id, title, status, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?").get(taskId);
       ptDbRo.close();
-      if (taskRow?.metadata) {
-        const taskMeta = JSON.parse(taskRow.metadata);
-        if (taskMeta.plan_id && taskMeta.plan_id === taskMeta.plan_id) {
-          // Only apply plan-level dedup for plan MANAGERS (title starts with "Plan Manager:")
-          // Plan task monitors share the same plan_id but must not block each other
-          const isPlanManager = task.title && task.title.startsWith('Plan Manager:');
-          if (isPlanManager) {
-            const planExisting = db.prepare(
-              "SELECT id, status FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.planId') = ? AND json_extract(metadata, '$.isPlanManager') = 1 LIMIT 1"
-            ).get(taskMeta.plan_id);
-            if (planExisting) {
-              log(`[persistent-revival] Skipped revival for ${taskId}: plan manager for plan ${taskMeta.plan_id} already ${planExisting.status} in queue (${planExisting.id})`);
-              return;
-            }
+    }
+  } catch (_) { /* non-fatal — taskEarly stays null, second DB read below handles it */ }
+
+  // Plan-level dedup: if this task serves a plan, check if ANY monitor for the same plan
+  // is already queued/running (regardless of persistentTaskId). Prevents duplicate monitors
+  // when reviveOrphanedPlan() created multiple persistent tasks for the same plan.
+  try {
+    if (taskEarly?.metadata) {
+      const taskMeta = JSON.parse(taskEarly.metadata);
+      if (taskMeta.plan_id) {
+        // Only apply plan-level dedup for plan MANAGERS (title starts with "Plan Manager:")
+        // Plan task monitors share the same plan_id but must not block each other
+        const isPlanManager = taskEarly.title && taskEarly.title.startsWith('Plan Manager:');
+        if (isPlanManager) {
+          const planExisting = db.prepare(
+            "SELECT id, status FROM queue_items WHERE lane = 'persistent' AND status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.planId') = ? AND json_extract(metadata, '$.isPlanManager') = 1 LIMIT 1"
+          ).get(taskMeta.plan_id);
+          if (planExisting) {
+            log(`[persistent-revival] Skipped revival for ${taskId}: plan manager for plan ${taskMeta.plan_id} already ${planExisting.status} in queue (${planExisting.id})`);
+            return;
           }
         }
       }
     }
-  } catch (_) { /* non-fatal — fall through to persistentTaskId-based dedup */ }
+  } catch (_) { /* non-fatal — fall through */ }
 
   // Crash-loop circuit breaker: cap at 3 hard revivals per task in the last 10 minutes
   // Heartbeat-stale revivals are excluded from this count — they're routine recovery, not crashes.
@@ -1004,13 +1015,15 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
     return;
   }
 
-  // Check if task is still active
-  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-  if (!fs.existsSync(ptDbPath)) return;
-
-  const ptDb = new Database(ptDbPath, { readonly: true });
-  const task = ptDb.prepare("SELECT id, title, status, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?").get(taskId);
-  ptDb.close();
+  // Check if task is still active (reuse early fetch; fallback to fresh read if it failed)
+  let task = taskEarly;
+  if (!task) {
+    const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (!fs.existsSync(ptDbPath)) return;
+    const ptDb = new Database(ptDbPath, { readonly: true });
+    task = ptDb.prepare("SELECT id, title, status, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?").get(taskId);
+    ptDb.close();
+  }
 
   if (!task || task.status !== 'active') {
     log(`[persistent-revival] Skipped revival for ${taskId}: task ${!task ? 'not found' : `status='${task.status}' (must be active)`}`);
@@ -1100,48 +1113,57 @@ Persistent Task ID: ${taskId}`;
   } catch (_) { /* non-fatal */ }
 
   const id = generateQueueId();
-  db.prepare(`
-    INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
-      tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env,
-      project_dir, worktree_path, metadata, source, agent, expires_at)
-    VALUES (?, 'queued', 'critical', 'persistent', ?, ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
-  `).run(
-    id,
-    spawnType,
-    `[Persistent] Monitor revival: ${task.title}`,
-    AGENT_TYPES.PERSISTENT_TASK_MONITOR,
-    HOOK_TYPES.PERSISTENT_TASK_MONITOR,
-    prompt,
-    resumeSessionId,
-    JSON.stringify(['--disallowedTools', 'Edit,Write,NotebookEdit']),
-    JSON.stringify((() => {
-      const env = { GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' };
-      // Preserve plan-manager env vars if this is a plan-manager persistent task
-      try {
-        const taskMeta2 = task.metadata ? JSON.parse(task.metadata) : {};
-        if (taskMeta2.plan_id) {
-          env.GENTYR_PLAN_MANAGER = 'true';
-          env.GENTYR_PLAN_ID = taskMeta2.plan_id;
-        }
-      } catch (_) { /* non-fatal */ }
-      return env;
-    })()),
-    PROJECT_DIR,
-    JSON.stringify((() => {
-      const meta = { persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' };
-      // Include planId and isPlanManager so plan-level dedup only blocks duplicate plan managers
-      try {
-        const taskMeta3 = task.metadata ? JSON.parse(task.metadata) : {};
-        if (taskMeta3.plan_id) {
-          meta.planId = taskMeta3.plan_id;
-          meta.isPlanManager = task.title && task.title.startsWith('Plan Manager:') ? true : false;
-        }
-      } catch (_) { /* non-fatal */ }
-      return meta;
-    })()),
-    'session-queue-reaper',
-    agentDef,
-  );
+  try {
+    db.prepare(`
+      INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
+        tag_context, prompt, model, cwd, mcp_config, resume_session_id, extra_args, extra_env,
+        project_dir, worktree_path, metadata, source, agent, expires_at)
+      VALUES (?, 'queued', 'critical', 'persistent', ?, ?, ?, ?, 'persistent-monitor', ?, NULL, NULL, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
+    `).run(
+      id,
+      spawnType,
+      `[Persistent] Monitor revival: ${task.title}`,
+      AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+      HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+      prompt,
+      resumeSessionId,
+      JSON.stringify(['--disallowedTools', 'Edit,Write,NotebookEdit']),
+      JSON.stringify((() => {
+        const env = { GENTYR_PERSISTENT_TASK_ID: taskId, GENTYR_PERSISTENT_MONITOR: 'true' };
+        // Preserve plan-manager env vars if this is a plan-manager persistent task
+        try {
+          const taskMeta2 = task.metadata ? JSON.parse(task.metadata) : {};
+          if (taskMeta2.plan_id) {
+            env.GENTYR_PLAN_MANAGER = 'true';
+            env.GENTYR_PLAN_ID = taskMeta2.plan_id;
+          }
+        } catch (_) { /* non-fatal */ }
+        return env;
+      })()),
+      PROJECT_DIR,
+      JSON.stringify((() => {
+        const meta = { persistentTaskId: taskId, revivalReason: reapReason === 'stale_heartbeat' ? 'heartbeat_stale_revival' : 'immediate_reaper_revival' };
+        // Include planId and isPlanManager so plan-level dedup only blocks duplicate plan managers
+        try {
+          const taskMeta3 = task.metadata ? JSON.parse(task.metadata) : {};
+          if (taskMeta3.plan_id) {
+            meta.planId = taskMeta3.plan_id;
+            meta.isPlanManager = task.title && task.title.startsWith('Plan Manager:') ? true : false;
+          }
+        } catch (_) { /* non-fatal */ }
+        return meta;
+      })()),
+      'session-queue-reaper',
+      agentDef,
+    );
+  } catch (insertErr) {
+    // UNIQUE constraint violation from idx_unique_plan_manager — another process won the race
+    if (insertErr.code === 'SQLITE_CONSTRAINT_UNIQUE' || (insertErr.message && insertErr.message.includes('UNIQUE constraint failed'))) {
+      log(`[persistent-revival] UNIQUE constraint blocked duplicate plan manager insert for ${taskId} — another revival won the race`);
+      return;
+    }
+    throw insertErr;
+  }
 
   auditEvent('session_enqueued', {
     queue_id: id,

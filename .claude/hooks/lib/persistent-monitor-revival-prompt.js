@@ -142,7 +142,12 @@ ${demoInstructions}${strictInfraInstructions}`;
   };
   // Include planId so plan-level dedup in enqueueSession/requeueDeadPersistentMonitor can
   // detect duplicate monitors for the same plan across different persistentTaskId values
-  if (planId) metadata.planId = planId;
+  if (planId) {
+    metadata.planId = planId;
+    if (task.title && task.title.startsWith('Plan Manager:')) {
+      metadata.isPlanManager = true;
+    }
+  }
   if (releaseId) metadata.releaseId = releaseId;
 
   const agent = planId ? 'plan-manager' : 'persistent-monitor';

@@ -312,6 +312,7 @@ async function main() {
       metadata: {
         persistentTaskId: ptId,
         planId,
+        isPlanManager: true,
       },
     });
 

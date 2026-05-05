@@ -1014,7 +1014,7 @@ The Persistent Task System orchestrates long-running, amendment-driven monitorin
 
 ---
 
-## 12. Hook System (87 JS files)
+## 12. Hook System (89 JS files)
 
 The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks intercept Claude Code tool execution at five lifecycle points and run Node.js scripts that can block actions, inject context, spawn agents, or log audit events. Agents cannot bypass hooks.
 
@@ -1032,7 +1032,7 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 
 ---
 
-### 12.2 PostToolUse Hooks (35) — React, Inject Context, Spawn
+### 12.2 PostToolUse Hooks (36) — React, Inject Context, Spawn
 
 **Purpose** — Execute after tool completes. Inject additionalContext into model, spawn agents, update state. Never blocks.
 
@@ -1040,7 +1040,7 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 
 **Key Files** (most critical): signal-reader.js (reads inter-agent signals every tool call), urgent-task-spawner.js (660 lines, immediate spawn for urgent tasks), persistent-task-briefing.js (400 lines, injects task state every tool call), context-pressure-hook.js (291 lines, monitors token count/age), universal-audit-spawner.js (223 lines, spawns auditor on task completion)
 
-**Full list**: signal-reader, worktree-freshness-check, agent-comms-reminder, alignment-reminder, persistent-task-briefing, progress-tracker, monitor-reminder, uncommitted-change-monitor, pr-auto-merge-nudge, plan-merge-tracker, strict-infra-nudge-hook, urgent-task-spawner, task-gate-spawner, workstream-spawner, persistent-task-linker, orchestration-guidance-hook, project-manager-reminder, worktree-cleanup-gate, plan-work-tracker, session-completion-gate, workstream-dep-satisfier, demo-failure-spawner, demo-remote-enforcement, long-command-warning, persistent-task-spawner, plan-persistent-sync, plan-activation-spawner, plan-audit-spawner, screenshot-reminder, context-pressure-hook, release-artifact-collector, release-completion-hook, universal-audit-spawner, alignment-monitor-briefing
+**Full list**: signal-reader, worktree-freshness-check, agent-comms-reminder, alignment-reminder, persistent-task-briefing, progress-tracker, monitor-reminder, uncommitted-change-monitor, pr-auto-merge-nudge, plan-merge-tracker, strict-infra-nudge-hook, urgent-task-spawner, task-gate-spawner, workstream-spawner, persistent-task-linker, orchestration-guidance-hook, project-manager-reminder, worktree-cleanup-gate, plan-work-tracker, session-completion-gate, workstream-dep-satisfier, demo-failure-spawner, demo-remote-enforcement, long-command-warning, persistent-task-spawner, plan-persistent-sync, plan-activation-spawner, plan-audit-spawner, screenshot-reminder, context-pressure-hook, release-artifact-collector, release-completion-hook, universal-audit-spawner, alignment-monitor-briefing, bypass-request-router
 
 ---
 
@@ -1562,6 +1562,16 @@ After Section 6 completion: Fill gaps only (idempotent backfill) vs Full rebuild
 **Architecture** — FTS5 virtual table in agent-tracker DB indexes user messages from session JSONL. UUIDs: `up-{sessionId[0:8]}-{hash}-{lineNumber}`. Tasks carry `user_prompt_uuids` linking to original CTO prompts. `user-alignment` agent verifies implementations match intent.
 
 **MCP Tools** (3): get_user_prompt, search_user_prompts, list_user_prompts
+
+### 22.4 Structured HOLD/UNBLOCK Signals (PRs #595, #597, #598)
+
+**Purpose** — Automated agent coordination: plan managers send structured HOLD signals referencing a blocker task; the system auto-UNBLOCKs when the blocker completes or is superseded — no CTO intervention needed.
+
+**Solution 1 — Structured signal metadata**: Signals carry a typed `metadata` field. `resolveHoldSignals()` and `findActiveHolds()` exports in session-signals.js. When a HOLD's referenced blocker task completes, the system auto-sends an UNBLOCK signal to the held agent. `signal-reader.js` formats HOLD/UNBLOCK signals distinctly in injected context.
+
+**Solution 2 — Task supersessions**: `task_supersessions` table in `workstream.db`. MCP tools: `register_supersession` (declare that task B supersedes task A), `list_supersessions`. `workstream-dep-satisfier.js` PostToolUse hook auto-resolves holds when the blocker task is superseded (not just completed).
+
+**Solution 3 — Stale wait watchdog**: `stale-wait-watchdog.js` PostToolUse hook detects agents stuck waiting too long (no stage change + high tool call count since last stage change). Uses `lastStageChangeAt` and `toolCallsSinceStageChange` fields added to `progress-tracker.js`. Configurable thresholds via `automation-config.json`.
 
 ---
 
@@ -2398,33 +2408,48 @@ Triage targets persistent tasks because resuming them cascades via `propagateRes
 - **Agent**: `deputy-cto` agent in Global Monitor Mode (triggered by `GENTYR_DEPUTY_CTO_MONITOR=true` env var). Runs in the `persistent` lane at `critical` priority.
 
 ### 53b.2 Monitor Cycle (every 5 minutes)
-1. **Orient**: `list_project_summaries` for global agent activity overview
-2. **Enumerate**: `list_tasks(in_progress)` + `list_persistent_tasks(active)` for all active work
-3. **Alignment dispatch**: Search user prompts for CTO intent, spawn `user-alignment` sub-agents in `alignment` lane (max 3 concurrent) for unchecked work
-4. **Read alignment results**: Misalignment → send corrective signal. Significant drift → `submit_bypass_request` on the affected task
-5. **Zombie detection**: Sessions >2h with no recent tool calls → kill
-6. **Audit gate oversight**: Tasks stuck in `pending_audit` >10 min → auditor may have died
-7. **Heartbeat and sleep**
+1. **Bypass request triage** (HIGHEST PRIORITY): Handle `BYPASS_REQUEST` directive signals delivered by `bypass-request-router.js`. Auto-approve (~40%), auto-reject (~10%), or escalate to CTO (~50%) via the 3 exclusive deputy tools. Monitor has ~5 minutes before the CTO sees unescalated requests.
+2. **Orient**: `list_project_summaries` for global agent activity overview
+3. **Enumerate**: `list_tasks(in_progress)` + `list_persistent_tasks(active)` for all active work
+4. **Alignment dispatch**: Search user prompts for CTO intent, spawn `user-alignment` sub-agents in `alignment` lane (max 3 concurrent) for unchecked work
+5. **Read alignment results**: Misalignment → send corrective signal. Significant drift → `submit_bypass_request` on the affected task
+6. **Zombie detection**: Sessions >2h with no recent tool calls → kill
+7. **Audit gate oversight**: Tasks stuck in `pending_audit` >10 min → auditor may have died
+8. **Heartbeat and sleep**
 
 ### 53b.3 Configuration & Control
 - **Toggle**: `globalMonitorEnabled` in `autonomous-mode.json` (default: `true`). Set via `set_automation_toggle({ feature: 'globalMonitorEnabled', enabled: false })` or `/global-monitor off`.
 - **Slash command**: `/global-monitor [on|off]` — bare shows status, `on` enables + activates task, `off` disables + pauses task.
 - **Session briefing**: Shows "Global monitor: ACTIVE (pid XXXX, last heartbeat Xm ago)" or "DISABLED" in CTO login briefing.
 
-### 53b.4 Key Files
+### 53b.4 Bypass Request Routing
+
+**Purpose** — Route bypass requests to the global monitor BEFORE the CTO sees them, giving the monitor a 5-minute triage window.
+
+**Architecture**:
+- `bypass-request-router.js` (PostToolUse on `submit_bypass_request`): Checks if the global monitor is active (persistent-tasks.db + session-queue.db + PID liveness). If active, sends a `BYPASS_REQUEST` directive signal to the monitor's agent ID via `sendSignal()`. If not active, does nothing (CTO sees immediately).
+- `session-briefing.js`: `getPendingBypassRequests()` applies a 5-minute grace period when the global monitor is active — hides requests younger than 5 minutes UNLESS `deputy_escalated = 1`.
+- `cto-notification-hook.js`: `getPendingBypassRequests()` applies the same grace period filter. `isGlobalMonitorActive()` helper checks persistent-tasks.db + PID liveness.
+- The monitor receives bypass requests passively via `signal-reader.js` (injected on the next tool call) — no polling needed.
+
+**Flow**: Agent calls `submit_bypass_request` → hook sends directive signal to monitor → monitor triages (approve/reject/escalate) → if unresolved after 5 minutes, CTO sees it.
+
+### 53b.5 Key Files
 - `.claude/hooks/hourly-automation.js` — `global_monitor_health` runIfDue block
+- `.claude/hooks/bypass-request-router.js` — PostToolUse hook routing bypass requests to monitor
 - `agents/deputy-cto.md` — Global Monitor Mode section
 - `.claude/hooks/alignment-monitor-briefing.js` — PostToolUse hook injecting cycle reminders (every 5 tool calls)
-- `.claude/hooks/session-briefing.js` — `getGlobalMonitorState()` for CTO display
+- `.claude/hooks/session-briefing.js` — `getGlobalMonitorState()` for CTO display + grace period filtering
+- `.claude/hooks/cto-notification-hook.js` — `isGlobalMonitorActive()` + grace period filtering
 - `.claude/commands/global-monitor.md` — slash command
 
-### 53b.5 Escalation Framework
+### 53b.6 Escalation Framework
 - Minor drift (~50%): corrective signal to the drifting agent
 - Moderate misalignment (~35%): self-created correction task
 - Significant drift (~15%): `submit_bypass_request` on the affected task for CTO attention
 - Signal throttling: max 1 signal per agent per 30 minutes; self-pauses if >5 signals/hour
 
-### 53b.6 Deputy Bypass Resolution (3 exclusive MCP tools)
+### 53b.7 Deputy Bypass Resolution (3 exclusive MCP tools)
 
 The global monitor can approve bypass requests and deferred actions WITHOUT CTO intervention, acting as a delegated authority for routine decisions.
 
