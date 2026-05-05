@@ -200,17 +200,16 @@ process.stdin.on('end', async () => {
       }
     }
 
-    // === Direct HOLD Resolution ===
-    // Resolve any HOLD signals where the completed task is the blocker
-    try {
-      const { resolveHoldSignals } = await import(path.join(path.dirname(new URL(import.meta.url).pathname), 'lib', 'session-signals.js'));
-      const holdResults = await resolveHoldSignals(completedTaskId, { projectDir: PROJECT_DIR });
-      if (holdResults && holdResults.resolved > 0) {
-        log(`Resolved ${holdResults.resolved} HOLD signal(s) for completed task ${completedTaskId}`);
-      }
-    } catch (err) {
-      log(`Warning: could not resolve HOLD signals: ${err.message}`);
+  // === Direct HOLD Resolution ===
+  try {
+    const { resolveHoldSignals } = await import('./lib/session-signals.js');
+    const holdResult = resolveHoldSignals(completedTaskId, { resolution: 'completed' });
+    if (holdResult.resolved > 0) {
+      log(`Resolved ${holdResult.resolved} HOLD signal(s) for completed task ${completedTaskId}`);
     }
+  } catch (holdErr) {
+    log(`Warning: could not resolve HOLD signals for ${completedTaskId}: ${holdErr.message}`);
+  }
 
     // === Supersession Resolution ===
     // If the completed task is a superseding task, resolve the supersession
@@ -258,15 +257,15 @@ process.stdin.on('end', async () => {
 
         log(`Supersession ${sup.id} resolved: ${completedTaskId} supersedes ${sup.original_task_id}. ${deps.length} deps satisfied.`);
 
-        // Resolve HOLDs on the original task (superseded task agents unblocked)
+        // Resolve HOLD signals on the original task
         try {
-          const { resolveHoldSignals } = await import(path.join(path.dirname(new URL(import.meta.url).pathname), 'lib', 'session-signals.js'));
-          const holdResults = await resolveHoldSignals(sup.original_task_id, { projectDir: PROJECT_DIR });
-          if (holdResults && holdResults.resolved > 0) {
-            log(`Resolved ${holdResults.resolved} HOLD signal(s) for superseded task ${sup.original_task_id}`);
-          }
-        } catch (err) {
-          log(`Warning: could not resolve HOLD signals for superseded task: ${err.message}`);
+          const { resolveHoldSignals } = await import('./lib/session-signals.js');
+          resolveHoldSignals(sup.original_task_id, {
+            resolution: 'superseded',
+            supersededBy: completedTaskId,
+          });
+        } catch (holdErr) {
+          log(`Warning: could not resolve HOLD signals for ${sup.original_task_id}: ${holdErr.message}`);
         }
       }
     } catch (err) {
