@@ -291,6 +291,27 @@ When Fly.io is configured (`fly` section in `services.json`), headless demos aut
 
 **Image freshness**: The Fly.io Docker image contains `remote-runner.sh`, system dependencies, and Playwright. Target project code is cloned fresh from git on each run, but if GENTYR's `infra/fly-playwright/Dockerfile` or `remote-runner.sh` changes (e.g., after `npx gentyr sync` or framework updates), the image must be rebuilt with `deploy_fly_image({ force: true })`. `get_fly_status()` returns `imageStale: true` when the deployed image is outdated. Session briefing shows image age and staleness warnings at login. Do NOT ignore `imageStale` warnings — stale images cause systematic demo failures.
 
+**Remote execution resources**: Each scenario has a `compute_size` field: `"standard"` (4GB, default) or `"large"` (8GB). If a demo fails with OOM (exit code 137, `oom_detected: true` in check_demo_result), increase to large: `update_demo_scenario({ id: "...", compute_size: "large" })`. `check_demo_result` automatically detects OOM and includes a `compute_size_suggestion` field with the exact fix command.
+
+**Background services on remote machines**: Demos that need additional services (code-server, ttyd, LiveCodes, etc.) should register a background prerequisite — these run on remote machines automatically via the prerequisite system:
+```
+register_prerequisite({
+  scope: 'scenario',
+  scenario_id: "...",
+  command: "npx code-server --port 7682 --auth none",
+  health_check: "curl -sf http://localhost:7682",
+  run_as_background: true,
+})
+```
+Prerequisites with `run_as_background: true` are started before the test and health-checked. The remote execution environment supports any Node.js-based service.
+
+**What requires `remote_eligible: false`** (local-only execution):
+- Chrome-bridge scenarios (require Unix domain socket to local Chrome extension)
+- Extension demos that load unpacked Chrome extensions
+- Scenarios requiring macOS-specific system interactions (Finder, native dialogs)
+
+Everything else — including headed demos, dev servers, code-server, and custom background services — runs on remote machines.
+
 **Remote-First Execution Rule (MANDATORY for spawned agents)**:
 Spawned agents MUST use remote execution for all demo runs unless the scenario requires chrome-bridge or has `remote_eligible=false`. Sequential local `run_demo` calls are an anti-pattern. For 2+ scenarios, use `run_demo_batch({ scenario_ids: [...], remote: true, recorded: true })` — this runs scenarios CONCURRENTLY across multiple Fly.io machines. Do NOT run demos locally "to debug" — remote produces identical output. The only valid reasons for `remote: false` are: (1) CTO explicitly requests live viewing, (2) chrome-bridge/extension interaction required.
 
@@ -300,6 +321,12 @@ Spawned agents MUST use remote execution for all demo runs unless the scenario r
 - Need real Chrome/extension? → local only (`remote: false`)
 - CTO watching live? → local headed (`remote: false`, slash command sets this)
 - Never: sequential local `run_demo` calls for multiple scenarios
+
+**Agent troubleshooting tree**:
+- Demo failed with `oom_detected: true`? → `update_demo_scenario({ id, compute_size: "large" })`
+- Demo needs a background service? → `register_prerequisite({ run_as_background: true, ... })`
+- Demo needs real Chrome extension socket? → `update_demo_scenario({ id, remote_eligible: false })`
+- All other demos → remote execution (headed or headless)
 
 ### Shared Resource Registry (Headed Mode and Infrastructure Coordination)
 

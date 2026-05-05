@@ -2425,6 +2425,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   let remoteRoutingWarning = '';
   let executionTargetResult: { target: 'local' | 'remote' | 'steel'; reason: string } | null = null;
   let steelOnlySessionId: string | undefined; // Set when stealth-only Steel session created (for cleanup in local path)
+  let scenarioComputeSize: 'standard' | 'large' | undefined;
+  let computeSizeUsed: 'standard' | 'large' = 'standard';
   remoteRoutingBlock: {
     // Resolve Fly.io config (may be absent — Steel-only scenarios don't need it)
     const flyConfig = getFlyConfigFromServices();
@@ -2461,13 +2463,15 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         if (fs.existsSync(feedbackDbPath)) {
           const scenarioDb = new Database(feedbackDbPath, { readonly: true });
           try {
-            const scenarioRow = scenarioDb.prepare('SELECT headed, remote_eligible, stealth_required, dual_instance FROM demo_scenarios WHERE id = ?')
-              .get(args.scenario_id) as { headed: number | null; remote_eligible: number | null; stealth_required: number | null; dual_instance: number | null } | undefined;
+            const scenarioRow = scenarioDb.prepare('SELECT headed, remote_eligible, stealth_required, dual_instance, compute_size FROM demo_scenarios WHERE id = ?')
+              .get(args.scenario_id) as { headed: number | null; remote_eligible: number | null; stealth_required: number | null; dual_instance: number | null; compute_size: string | null } | undefined;
             if (scenarioRow?.headed === 1) scenarioHeaded = true;
             if (scenarioRow?.remote_eligible === 0) remoteEligible = false;
             else if (scenarioRow?.remote_eligible === 1) remoteEligible = true;
             if (scenarioRow?.stealth_required === 1) stealthRequired = true;
             if (scenarioRow?.dual_instance === 1) dualInstance = true;
+            if (scenarioRow?.compute_size === 'large') scenarioComputeSize = 'large';
+            else if (scenarioRow?.compute_size === 'standard') scenarioComputeSize = 'standard';
           } catch { /* column may not exist */ }
           scenarioDb.close();
         }
@@ -2490,6 +2494,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
     } catch { /* non-fatal */ }
 
+    // Per-scenario compute_size: 'large' = 8192MB, 'standard'/null = use global per-mode default
+    computeSizeUsed = scenarioComputeSize === 'large' ? 'large' : 'standard';
+
     try {
       const [executionTargetMod, flyRunnerMod] = await Promise.all([
         import('./execution-target.js'),
@@ -2500,7 +2507,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
       // Read per-mode RAM config (state file, always writable, no sync needed)
       const ramConfig = readFlyMachineConfig();
-      const effectiveRam = args.headless ? ramConfig.machineRamHeadless : ramConfig.machineRamHeaded;
+      const globalRam = args.headless ? ramConfig.machineRamHeadless : ramConfig.machineRamHeaded;
+      // Per-scenario compute_size override: 'large' = 8192MB, otherwise use global default
+      const COMPUTE_SIZE_RAM = { standard: 4096, large: 8192 } as const;
+      const effectiveRam = scenarioComputeSize === 'large' ? COMPUTE_SIZE_RAM.large : globalRam;
 
       const machineConfig = flyAvailable ? {
         apiToken: resolvedFlyToken,
@@ -2641,6 +2651,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               steel_session_id: session.sessionId,
               dual_instance: true,
               execution_target: 'steel',
+              compute_size_used: computeSizeUsed,
             };
             demoRuns.set(syntheticPid, steelDemoState);
             persistDemoRuns();
@@ -2868,6 +2879,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         fly_machine_id: handle.machineId,
         fly_app_name: handle.appName,
         run_id: runId,
+        compute_size_used: computeSizeUsed,
       };
       // Attach image staleness warning so check_demo_result can surface it
       if (imageStalenessWarning) {
@@ -3275,6 +3287,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       success_pause_ms: args.headless ? 0 : (args.success_pause_ms ?? 0),
       run_id: runId,
       telemetry_dir: telemetryDir,
+      compute_size_used: computeSizeUsed,
     };
     if (windowRecorder) {
       demoState.window_recorder_pid = windowRecorder.pid;
@@ -4230,6 +4243,38 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         }
       }
 
+      // ── Remote OOM detection ──
+      let remoteOomDetected = false;
+      let remoteComputeSizeSuggestion: string | undefined;
+      if (remoteStatus === 'failed') {
+        const oomPatterns = /out of memory|oom|cannot allocate|killed.*signal 9|SIGKILL/i;
+        if (remoteExitCode === 137 || oomPatterns.test(remoteStderrTail)) {
+          remoteOomDetected = true;
+        }
+        if (!remoteOomDetected) {
+          try {
+            const machineLogPath = path.join(destDir, 'fly-machine.log');
+            if (fs.existsSync(machineLogPath)) {
+              const machineLog = fs.readFileSync(machineLogPath, 'utf-8');
+              if (/oom.killer|Out of memory|Killed process/i.test(machineLog)) {
+                remoteOomDetected = true;
+              }
+            }
+          } catch { /* non-fatal */ }
+        }
+        if (remoteOomDetected) {
+          const currentSize = entry.compute_size_used || 'standard';
+          if (currentSize !== 'large') {
+            remoteComputeSizeSuggestion = `Demo was killed (likely OOM — exit code ${remoteExitCode}). ` +
+              `Current: ${currentSize} (4GB). ` +
+              `Fix: update_demo_scenario({ id: "${entry.scenario_id}", compute_size: "large" })`;
+          } else {
+            remoteComputeSizeSuggestion = `Demo was killed (likely OOM — exit code ${remoteExitCode}) even at large (8GB). ` +
+              `Investigate memory usage — the demo may have a memory leak.`;
+          }
+        }
+      }
+
       return {
         status: remoteStatus,
         pid,
@@ -4260,6 +4305,9 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         fly_machine_id: entry.fly_machine_id,
         fly_region: remoteMachineConfig.region,
         ...(artifactErrors.length > 0 ? { artifact_errors: artifactErrors } : {}),
+        oom_detected: remoteOomDetected || undefined,
+        compute_size_suggestion: remoteComputeSizeSuggestion,
+        compute_size_used: entry.compute_size_used,
         // Include machine diagnostics for crash analysis
         ...((() => {
           try {
@@ -4736,6 +4784,40 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     }
   }
 
+  // ── OOM detection: exit 137 = SIGKILL (typically OOM killer), or stderr/log patterns ──
+  let oomDetected = false;
+  let computeSizeSuggestion: string | undefined;
+  if (entry.status === 'failed') {
+    const oomPatterns = /out of memory|oom|cannot allocate|killed.*signal 9|SIGKILL/i;
+    const stderrContent = entry.stderr_tail || '';
+    if (entry.exit_code === 137 || oomPatterns.test(stderrContent)) {
+      oomDetected = true;
+    }
+    // For remote demos, also check fly-machine.log for OOM killer signals
+    if (!oomDetected && entry.remote && entry.artifacts_dest_dir) {
+      try {
+        const machineLogPath = path.join(entry.artifacts_dest_dir, 'fly-machine.log');
+        if (fs.existsSync(machineLogPath)) {
+          const machineLog = fs.readFileSync(machineLogPath, 'utf-8');
+          if (/oom.killer|Out of memory|Killed process/i.test(machineLog)) {
+            oomDetected = true;
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+    if (oomDetected) {
+      const currentSize = entry.compute_size_used || 'standard';
+      if (currentSize !== 'large') {
+        computeSizeSuggestion = `Demo was killed (likely OOM — exit code ${entry.exit_code ?? 'unknown'}). ` +
+          `Current: ${currentSize} (4GB). ` +
+          `Fix: update_demo_scenario({ id: "${entry.scenario_id}", compute_size: "large" })`;
+      } else {
+        computeSizeSuggestion = `Demo was killed (likely OOM — exit code ${entry.exit_code ?? 'unknown'}) even at large (8GB). ` +
+          `Investigate memory usage — the demo may have a memory leak.`;
+      }
+    }
+  }
+
   // Compute stale warning — computeStaleWarning() internally checks status === 'running'/'interrupted'
   // and returns undefined for terminal statuses, so it's safe to call unconditionally.
   const staleWarning = computeStaleWarning(pid);
@@ -4772,6 +4854,9 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     telemetry_dir: entry.telemetry_dir,
     telemetry_summary: entry.telemetry_dir ? readTelemetrySummaryInline(entry.telemetry_dir) : undefined,
     stale_warning: staleWarning,
+    oom_detected: oomDetected || undefined,
+    compute_size_suggestion: computeSizeSuggestion,
+    compute_size_used: entry.compute_size_used,
     message,
   };
 

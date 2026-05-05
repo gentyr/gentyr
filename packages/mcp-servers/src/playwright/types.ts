@@ -366,6 +366,12 @@ export interface CheckDemoResultResult {
   telemetry_summary?: { console_count: number; network_count: number; error_count: number; perf_entries: number; metric_samples: number };
   /** Warning emitted when a running demo has not been polled for an extended period */
   stale_warning?: string;
+  /** True when OOM (out-of-memory) was detected as the likely failure cause */
+  oom_detected?: boolean;
+  /** Actionable suggestion for resolving OOM failures (includes exact MCP tool call) */
+  compute_size_suggestion?: string;
+  /** Which compute_size was used for this run ('standard' = 4GB, 'large' = 8GB) */
+  compute_size_used?: 'standard' | 'large';
   message: string;
 }
 
@@ -424,6 +430,8 @@ export interface DemoRunState {
   telemetry_dir?: string;
   /** Warning when Fly.io image is stale (Dockerfile or remote-runner.sh changed since last deploy) */
   image_staleness_warning?: string;
+  /** Which compute_size was used for this run ('standard' = 4GB, 'large' = 8GB) */
+  compute_size_used?: 'standard' | 'large';
 }
 
 export interface StopDemoResult {

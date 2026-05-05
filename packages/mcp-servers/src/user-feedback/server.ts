@@ -453,6 +453,13 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN telemetry INTEGER NOT NULL DEFAULT 0");
     }
 
+    // Auto-migration: add compute_size column (per-scenario remote RAM override)
+    try {
+      db.prepare("SELECT compute_size FROM demo_scenarios LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE demo_scenarios ADD COLUMN compute_size TEXT DEFAULT NULL");
+    }
+
     // Auto-migration: create demo_prerequisites table if missing
     try {
       db.prepare("SELECT id FROM demo_prerequisites LIMIT 0").run();
@@ -619,6 +626,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       stealth_required: record.stealth_required === 1,
       dual_instance: record.dual_instance === 1,
       telemetry: record.telemetry === 1,
+      compute_size: (record.compute_size === 'standard' || record.compute_size === 'large') ? record.compute_size : null,
       created_at: record.created_at,
       updated_at: record.updated_at,
       persona_name: personaName,
@@ -1493,8 +1501,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     try {
       db.prepare(`
-        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, stealth_required, dual_instance, telemetry, created_at, created_timestamp, updated_at, env_vars)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, stealth_required, dual_instance, telemetry, compute_size, created_at, created_timestamp, updated_at, env_vars)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         args.persona_id,
@@ -1509,6 +1517,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         args.stealth_required ? 1 : 0,
         args.dual_instance ? 1 : 0,
         args.telemetry ? 1 : 0,
+        args.compute_size ?? null,
         created_at,
         created_timestamp,
         created_at,
@@ -1563,6 +1572,7 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.stealth_required !== undefined) { updates.push('stealth_required = ?'); params.push(args.stealth_required ? 1 : 0); }
     if (args.dual_instance !== undefined) { updates.push('dual_instance = ?'); params.push(args.dual_instance ? 1 : 0); }
     if (args.telemetry !== undefined) { updates.push('telemetry = ?'); params.push(args.telemetry ? 1 : 0); }
+    if (args.compute_size !== undefined) { updates.push('compute_size = ?'); params.push(args.compute_size); }
     if (args.env_vars !== undefined) {
       if (args.env_vars === null) {
         updates.push('env_vars = ?'); params.push(null);
