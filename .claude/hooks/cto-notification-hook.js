@@ -492,8 +492,34 @@ let _bypassRequestsCacheTime = 0;
 const BYPASS_REQUESTS_CACHE_TTL_MS = 60000;
 
 /**
+ * Check if the global deputy-CTO monitor session is currently active.
+ * Lightweight: persistent-tasks.db only + PID liveness check.
+ */
+function isGlobalMonitorActive() {
+  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+  if (!Database || !fs.existsSync(ptDbPath)) return false;
+  try {
+    const db = new Database(ptDbPath, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    const task = db.prepare(
+      "SELECT status, monitor_pid FROM persistent_tasks WHERE metadata LIKE '%\"task_type\":\"global_monitor\"%' LIMIT 1"
+    ).get();
+    db.close();
+    if (!task || task.status !== 'active') return false;
+    if (task.monitor_pid) {
+      try { process.kill(task.monitor_pid, 0); return true; } catch (_) { return false; }
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * Get pending bypass requests with full details for CTO action.
  * Uses a 60-second cache to avoid querying the DB on every prompt.
+ * When the global monitor is active, hides requests < 5 min old (grace period)
+ * unless the monitor explicitly escalated them.
  * Returns array of { id, task_title, category, summary, created_at } or empty array.
  */
 function getPendingBypassRequests() {
@@ -518,11 +544,33 @@ function getPendingBypassRequests() {
       _bypassRequestsCacheTime = now;
       return _bypassRequestsCache;
     }
-    const rows = db.prepare(
-      "SELECT id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
-    ).all();
+
+    // Try with deputy_escalated column; fall back if column doesn't exist yet
+    let rows;
+    try {
+      rows = db.prepare(
+        "SELECT id, task_title, category, summary, created_at, deputy_escalated FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
+      ).all();
+    } catch (_) {
+      rows = db.prepare(
+        "SELECT id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
+      ).all();
+    }
     db.close();
-    _bypassRequestsCache = rows || [];
+
+    rows = rows || [];
+
+    // Grace period: if global monitor is active, hide requests < 5 min old
+    if (rows.length > 0 && isGlobalMonitorActive()) {
+      const GRACE_PERIOD_MS = 5 * 60 * 1000;
+      rows = rows.filter(req => {
+        if (req.deputy_escalated === 1) return true;
+        const age = now - new Date(req.created_at).getTime();
+        return age >= GRACE_PERIOD_MS;
+      });
+    }
+
+    _bypassRequestsCache = rows;
     _bypassRequestsCacheTime = now;
     return _bypassRequestsCache;
   } catch (_) {

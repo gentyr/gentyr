@@ -6831,8 +6831,6 @@ async function screenshotExtensionTab(args: ScreenshotExtensionTabArgs): Promise
 
 const DEMO_BATCHES_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-batches.json');
 const demoBatches = new Map<string, DemoBatchState>();
-const demoBatchAutoKillTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const DEMO_BATCH_AUTO_KILL_MS = 120_000; // 2 min between polls
 
 function loadPersistedDemoBatches(): void {
   try {
@@ -6858,41 +6856,6 @@ function persistDemoBatches(): void {
     fs.writeFileSync(DEMO_BATCHES_PATH, JSON.stringify(entries, null, 2));
   } catch {
     // Non-fatal
-  }
-}
-
-function autoKillBatch(batchId: string): void {
-  demoBatchAutoKillTimers.delete(batchId);
-  const state = demoBatches.get(batchId);
-  if (!state || state.status !== 'running') return;
-
-  if (state.current_pid) {
-    try { process.kill(-state.current_pid, 'SIGTERM'); } catch { /* already dead */ }
-  }
-
-  state.status = 'stopped';
-  state.ended_at = new Date().toISOString();
-  // Mark remaining pending scenarios as skipped
-  for (const s of state.scenarios) {
-    if (s.status === 'pending' || s.status === 'running') s.status = 'skipped';
-  }
-  state.progress.skipped = state.scenarios.filter(s => s.status === 'skipped').length;
-  persistDemoBatches();
-}
-
-function resetBatchAutoKillTimer(batchId: string): void {
-  const existing = demoBatchAutoKillTimers.get(batchId);
-  if (existing) clearTimeout(existing);
-  const timer = setTimeout(() => autoKillBatch(batchId), DEMO_BATCH_AUTO_KILL_MS);
-  timer.unref();
-  demoBatchAutoKillTimers.set(batchId, timer);
-}
-
-function clearBatchAutoKillTimer(batchId: string): void {
-  const existing = demoBatchAutoKillTimers.get(batchId);
-  if (existing) {
-    clearTimeout(existing);
-    demoBatchAutoKillTimers.delete(batchId);
   }
 }
 
@@ -7470,7 +7433,6 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
     // Non-fatal
   }
 
-  clearBatchAutoKillTimer(state.batch_id);
   persistDemoBatches();
 }
 
@@ -7570,7 +7532,6 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
 
   demoBatches.set(batchId, state);
   persistDemoBatches();
-  resetBatchAutoKillTimer(batchId);
 
   // Determine remote-eligible scenarios
   const remoteScenarioIds = new Set<string>();
@@ -7662,7 +7623,6 @@ function checkDemoBatchResult(args: CheckDemoBatchResultArgs): CheckDemoBatchRes
     if (progress) {
       state.progress.current_scenario = progress.current_test ?? state.progress.current_scenario;
     }
-    resetBatchAutoKillTimer(batch_id);
   }
 
   const durationSec = state.ended_at
@@ -7741,7 +7701,6 @@ function stopDemoBatch(args: StopDemoBatchArgs): StopDemoBatchResult {
   }
   state.progress.skipped = state.scenarios.filter(s => s.status === 'skipped').length;
 
-  clearBatchAutoKillTimer(batch_id);
   persistDemoBatches();
 
   return {
