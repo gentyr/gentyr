@@ -116,6 +116,33 @@ async function main() {
  * @returns {string}
  */
 function formatSignal(sig, agentId) {
+  // Check for structured signal types first (HOLD/UNBLOCK) — these get specialized formatting
+  if (sig.type === 'HOLD' && sig.metadata && sig.metadata.blocker_task_id) {
+    const taskId = sig.metadata.blocker_task_id;
+    const reason = sig.metadata.reason || sig.message;
+    return [
+      `[HOLD — BLOCKED ON TASK ${taskId}]`,
+      `From: ${sig.from_agent_type} agent${sig.from_task_title ? ` working on "${sig.from_task_title}"` : ''}`,
+      `Blocker: task ${taskId}`,
+      `Reason: ${reason}`,
+      sig.metadata.auto_unblock !== false ? 'The system will auto-send UNBLOCK when this task completes or is superseded.' : '',
+      'DO NOT proceed with your primary work until you receive an UNBLOCK signal for this task.',
+      `Acknowledge: mcp__agent-tracker__acknowledge_signal({ signal_id: "${sig.id}" })`,
+    ].filter(Boolean).join('\n');
+  }
+
+  if (sig.type === 'UNBLOCK' && sig.metadata && sig.metadata.blocker_task_id) {
+    const taskId = sig.metadata.blocker_task_id;
+    const resolution = sig.metadata.resolution || 'completed';
+    const supersededBy = sig.metadata.superseded_by;
+    return [
+      '[UNBLOCK — PROCEED IMMEDIATELY]',
+      `Your blocker (task ${taskId}) has been resolved: ${resolution}${supersededBy ? ` (superseded by task ${supersededBy})` : ''}.`,
+      'RESUME your primary work NOW. Do not continue waiting.',
+      `Acknowledge: mcp__agent-tracker__acknowledge_signal({ signal_id: "${sig.id}" })`,
+    ].join('\n');
+  }
+
   const typeLabel = sig.type ? ` [${sig.type}]` : '';
   switch (sig.tier) {
     case 'note':

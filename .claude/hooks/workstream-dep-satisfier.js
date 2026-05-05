@@ -200,6 +200,78 @@ process.stdin.on('end', async () => {
       }
     }
 
+    // === Resolve HOLD signals for completed task ===
+    try {
+      const { resolveHoldSignals } = await import('./lib/session-signals.js');
+      const holdResult = resolveHoldSignals(completedTaskId, { resolution: 'completed' });
+      if (holdResult.resolved > 0) {
+        log(`Resolved ${holdResult.resolved} HOLD signal(s) for completed task ${completedTaskId}`);
+      }
+    } catch (err) {
+      log(`Warning: could not resolve HOLD signals for ${completedTaskId}: ${err.message}`);
+    }
+
+    // === Supersession Resolution ===
+    // If the completed task is a superseding task, resolve the supersession
+    // and unblock agents waiting on the original task
+    try {
+      const now2 = new Date().toISOString();
+
+      // Find active supersessions where this task is the superseding one
+      let supersessions = [];
+      try {
+        supersessions = wsDb.prepare(
+          "SELECT id, original_task_id, superseding_task_id FROM task_supersessions WHERE superseding_task_id = ? AND status = 'active'"
+        ).all(completedTaskId);
+      } catch (tableErr) {
+        // Table may not exist in old DBs — non-fatal
+        if (!tableErr.message.includes('no such table')) {
+          throw tableErr;
+        }
+      }
+
+      for (const sup of supersessions) {
+        // 1. Mark supersession resolved
+        wsDb.prepare("UPDATE task_supersessions SET status = 'resolved', resolved_at = ? WHERE id = ?").run(now2, sup.id);
+
+        // 2. Satisfy any queue_dependencies on the original task
+        const deps = wsDb.prepare(
+          "SELECT id, blocked_task_id FROM queue_dependencies WHERE blocker_task_id = ? AND status = 'active'"
+        ).all(sup.original_task_id);
+
+        for (const dep of deps) {
+          wsDb.prepare("UPDATE queue_dependencies SET status = 'satisfied', satisfied_at = ? WHERE id = ?").run(now2, dep.id);
+          if (dep.blocked_task_id) {
+            unblockedTaskIds.push(dep.blocked_task_id);
+          }
+        }
+
+        // 3. Record the change
+        const supChangeId = generateChangeId();
+        wsDb.prepare(
+          'INSERT INTO workstream_changes (id, change_type, queue_id, task_id, details, reasoning, agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        ).run(supChangeId, 'supersession_resolved', null, completedTaskId,
+          JSON.stringify({ supersession_id: sup.id, original_task_id: sup.original_task_id }),
+          `Superseding task ${completedTaskId} completed, resolving supersession of ${sup.original_task_id}`,
+          process.env.CLAUDE_AGENT_ID || 'system', now2);
+
+        log(`Supersession ${sup.id} resolved: ${completedTaskId} supersedes ${sup.original_task_id}. ${deps.length} deps satisfied.`);
+
+        try {
+          const { resolveHoldSignals } = await import('./lib/session-signals.js');
+          resolveHoldSignals(sup.original_task_id, {
+            resolution: 'superseded',
+            supersededBy: completedTaskId,
+          });
+        } catch (err) {
+          log(`Warning: could not resolve HOLD signals for ${sup.original_task_id}: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      log(`Warning: supersession resolution error: ${err.message}`);
+      // Non-fatal — the task already completed
+    }
+
     wsDb.close();
 
     if (unblockedTaskIds.length === 0) {

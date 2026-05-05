@@ -174,6 +174,14 @@ async function main() {
   progress.lastToolCall = { name: toolName, inputPreview, at: now };
   progress.updatedAt = now;
 
+  // Increment tool calls since last stage change (for stale-wait detection)
+  progress.toolCallsSinceStageChange = (progress.toolCallsSinceStageChange || 0) + 1;
+
+  // Initialize lastStageChangeAt on first write if not already set
+  if (!progress.lastStageChangeAt) {
+    progress.lastStageChangeAt = progress.createdAt || now;
+  }
+
   // Detect stage transitions from Task/Agent tool calls
   if ((toolName === 'Task' || toolName === 'Agent') && toolInput) {
     const subagentType = toolInput.subagent_type || toolInput.subagentType;
@@ -203,6 +211,10 @@ async function main() {
         progress.pipeline.totalStages = stages.length;
       }
 
+      // Reset stale-wait tracking on stage transition
+      progress.lastStageChangeAt = now;
+      progress.toolCallsSinceStageChange = 0;
+
       progress.pipeline.progressPercent = computeProgress(stages);
     }
   }
@@ -218,6 +230,10 @@ async function main() {
     }
     progress.pipeline.currentStage = null;
     progress.pipeline.progressPercent = 100;
+
+    // Reset stale-wait tracking on completion
+    progress.lastStageChangeAt = now;
+    progress.toolCallsSinceStageChange = 0;
   }
 
   writeProgress(progress);

@@ -390,6 +390,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/stale-demo-warning.js",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/stale-wait-watchdog.js",
+            "timeout": 5
           }
         ]
       },

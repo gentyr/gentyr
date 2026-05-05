@@ -29,6 +29,8 @@ import {
   ReorderItemArgsSchema,
   RecordAssessmentArgsSchema,
   GetChangeLogArgsSchema,
+  RegisterSupersessionArgsSchema,
+  ListSupersessionsArgsSchema,
   type AddDependencyArgs,
   type RemoveDependencyArgs,
   type ListDependenciesArgs,
@@ -36,6 +38,8 @@ import {
   type ReorderItemArgs,
   type RecordAssessmentArgs,
   type GetChangeLogArgs,
+  type RegisterSupersessionArgs,
+  type ListSupersessionsArgs,
   type QueueDependencyRecord,
   type DependencyListItem,
   type QueueItemContext,
@@ -48,6 +52,10 @@ import {
   type RecordAssessmentResult,
   type GetChangeLogResult,
   type ChangeLogItem,
+  type RegisterSupersessionResult,
+  type RegisterSupersessionExistsResult,
+  type ListSupersessionsResult,
+  type TaskSupersessionRecord,
 } from './types.js';
 
 // ============================================================================
@@ -91,6 +99,19 @@ CREATE TABLE IF NOT EXISTS workstream_changes (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_wsc_created ON workstream_changes(created_at);
+
+CREATE TABLE IF NOT EXISTS task_supersessions (
+  id TEXT PRIMARY KEY,
+  original_task_id TEXT NOT NULL,
+  superseding_task_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  UNIQUE(original_task_id, superseding_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_super_original ON task_supersessions(original_task_id, status);
+CREATE INDEX IF NOT EXISTS idx_super_superseding ON task_supersessions(superseding_task_id, status);
 `;
 
 // ============================================================================
@@ -828,6 +849,136 @@ async function handleGetChangeLog(
 }
 
 // ============================================================================
+// Tool: register_supersession
+// ============================================================================
+
+async function handleRegisterSupersession(
+  args: RegisterSupersessionArgs
+): Promise<RegisterSupersessionResult | RegisterSupersessionExistsResult | ErrorResult> {
+  const { original_task_id, superseding_task_id, reason } = args;
+
+  if (original_task_id === superseding_task_id) {
+    return { error: 'A task cannot supersede itself' };
+  }
+
+  const db = ensureDb();
+
+  // Check for existing (dedup)
+  const existing = db
+    .prepare(
+      'SELECT id, status FROM task_supersessions WHERE original_task_id = ? AND superseding_task_id = ?'
+    )
+    .get(original_task_id, superseding_task_id) as { id: string; status: string } | undefined;
+
+  if (existing) {
+    return {
+      exists: true,
+      id: existing.id,
+      status: existing.status,
+      message: 'Supersession already registered',
+    };
+  }
+
+  const id = `sup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const ts = now();
+
+  db.prepare(
+    'INSERT INTO task_supersessions (id, original_task_id, superseding_task_id, reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(id, original_task_id, superseding_task_id, reason, 'active', ts);
+
+  // Record change
+  const changeId = newChangeId();
+  db.prepare(
+    'INSERT INTO workstream_changes (id, change_type, queue_id, task_id, details, reasoning, agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    changeId,
+    'supersession_registered',
+    null,
+    superseding_task_id,
+    JSON.stringify({ supersession_id: id, original_task_id, superseding_task_id }),
+    reason,
+    process.env['CLAUDE_AGENT_ID'] || 'unknown',
+    ts
+  );
+
+  // Check if superseding task is already completed — if so, resolve immediately
+  let immediateResolution = false;
+  try {
+    if (fs.existsSync(TODO_DB_PATH)) {
+      let todoDb: Database.Database | null = null;
+      try {
+        todoDb = openReadonlyDb(TODO_DB_PATH);
+        const task = todoDb
+          .prepare('SELECT status FROM tasks WHERE id = ?')
+          .get(superseding_task_id) as { status: string } | undefined;
+        if (task && task.status === 'completed') {
+          // Superseding task already done — resolve immediately
+          db.prepare(
+            "UPDATE task_supersessions SET status = 'resolved', resolved_at = ? WHERE id = ?"
+          ).run(ts, id);
+
+          // Also satisfy any queue_dependencies on the original task
+          const deps = db
+            .prepare(
+              "SELECT id FROM queue_dependencies WHERE blocker_task_id = ? AND status = 'active'"
+            )
+            .all(original_task_id) as Array<{ id: string }>;
+          for (const dep of deps) {
+            db.prepare(
+              "UPDATE queue_dependencies SET status = 'satisfied', satisfied_at = ? WHERE id = ?"
+            ).run(ts, dep.id);
+          }
+
+          immediateResolution = true;
+        }
+      } finally {
+        todoDb?.close();
+      }
+    }
+  } catch {
+    // Non-fatal — supersession still registered
+  }
+
+  return {
+    id,
+    original_task_id,
+    superseding_task_id,
+    status: immediateResolution ? 'resolved' : 'active',
+    immediate_resolution: immediateResolution,
+    message: immediateResolution
+      ? 'Supersession registered and immediately resolved (superseding task already completed)'
+      : 'Supersession registered. Will auto-resolve when superseding task completes.',
+  };
+}
+
+// ============================================================================
+// Tool: list_supersessions
+// ============================================================================
+
+async function handleListSupersessions(
+  args: ListSupersessionsArgs
+): Promise<ListSupersessionsResult> {
+  const db = ensureDb();
+  let query = 'SELECT * FROM task_supersessions WHERE 1=1';
+  const params: Array<string | number> = [];
+
+  if (args.task_id) {
+    query += ' AND (original_task_id = ? OR superseding_task_id = ?)';
+    params.push(args.task_id, args.task_id);
+  }
+  if (args.status) {
+    query += ' AND status = ?';
+    params.push(args.status);
+  }
+
+  query += ' ORDER BY created_at DESC LIMIT ?';
+  params.push(args.limit ?? 20);
+
+  const rows = db.prepare(query).all(...params) as TaskSupersessionRecord[];
+  return { count: rows.length, supersessions: rows };
+}
+
+// ============================================================================
 // Tool Registration
 // ============================================================================
 
@@ -880,6 +1031,20 @@ const tools: AnyToolHandler[] = [
       'Get the workstream change history. Returns dependency additions/removals, priority changes, and assessments ordered by most recent first. Task titles are resolved from todo.db.',
     schema: GetChangeLogArgsSchema,
     handler: handleGetChangeLog,
+  },
+  {
+    name: 'register_supersession',
+    description:
+      'Register that one task supersedes another. When the superseding task completes, agents waiting on the original task are automatically unblocked via dependency satisfaction.',
+    schema: RegisterSupersessionArgsSchema,
+    handler: handleRegisterSupersession,
+  },
+  {
+    name: 'list_supersessions',
+    description:
+      'List task supersession relationships. Filter by task_id (shows both directions) or status.',
+    schema: ListSupersessionsArgsSchema,
+    handler: handleListSupersessions,
   },
 ];
 

@@ -3604,6 +3604,8 @@ async function sendSessionSignal(args: SendSessionSignalArgs): Promise<object | 
       tier: args.tier,
       message: args.message,
       projectDir: PROJECT_DIR,
+      type: args.type || undefined,
+      metadata: args.metadata || undefined,
     });
 
     return { success: true, signal };
