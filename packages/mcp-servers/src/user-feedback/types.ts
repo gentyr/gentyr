@@ -386,6 +386,8 @@ export const CreateScenarioArgsSchema = z.object({
     .describe('Whether this scenario requires dual-instance mode (Fly.io + Steel in parallel). Fly.io runs Playwright; Steel provides the stealth browser connected via bridge.'),
   telemetry: z.coerce.boolean().optional().default(false)
     .describe('Enable maximum telemetry capture for this scenario.'),
+  compute_size: z.enum(['standard', 'large']).optional()
+    .describe('Remote execution size. "standard" = 4GB RAM (default). "large" = 8GB RAM. Use large for OOM-prone scenarios.'),
 });
 
 export const UpdateScenarioArgsSchema = z.object({
@@ -412,6 +414,8 @@ export const UpdateScenarioArgsSchema = z.object({
     .describe('Whether this scenario requires dual-instance mode (Fly.io + Steel).'),
   telemetry: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
     .describe('Enable/disable maximum telemetry capture for this scenario.'),
+  compute_size: z.enum(['standard', 'large']).nullable().optional()
+    .describe('Remote execution size. "standard" = 4GB RAM (default). "large" = 8GB RAM. Set to null to clear (revert to default).'),
 });
 
 export const DeleteScenarioArgsSchema = z.object({
@@ -452,6 +456,7 @@ export interface ScenarioRecord {
   stealth_required: number; // SQLite boolean (0/1)
   dual_instance: number; // SQLite boolean (0/1)
   telemetry: number; // SQLite boolean (0/1)
+  compute_size: string | null; // 'standard' | 'large' | null (null = standard)
   created_at: string;
   created_timestamp: string;
   updated_at: string;
@@ -475,6 +480,7 @@ export interface ScenarioResult {
   stealth_required: boolean;
   dual_instance: boolean;
   telemetry: boolean;
+  compute_size: 'standard' | 'large' | null;
   created_at: string;
   updated_at: string;
   persona_name?: string;
