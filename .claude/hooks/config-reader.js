@@ -83,6 +83,9 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'auto_rollback_check',
   'fly_image_freshness',
   'global_monitor_health',
+  'stale_wait_detection_minutes',
+  'stale_wait_escalation_minutes',
+  'stale_wait_tool_call_threshold',
 ]);
 
 /**
@@ -223,6 +226,9 @@ const DEFAULTS = {
   auto_rollback_check: 2,                      // 2 minutes
   fly_image_freshness: 60,                     // 1 hour
   global_monitor_health: 5,                    // 5 minutes
+  stale_wait_detection_minutes: 8,             // minutes before first stale-wait nudge
+  stale_wait_escalation_minutes: 5,            // minutes after detection before instruction signal
+  stale_wait_tool_call_threshold: 20,          // minimum non-progress tool calls to trigger
 };
 
 /**

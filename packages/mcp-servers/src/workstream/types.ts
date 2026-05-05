@@ -89,6 +89,18 @@ export const GetChangeLogArgsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional().default(50).describe('Max records to return (default 50)'),
 });
 
+export const RegisterSupersessionArgsSchema = z.object({
+  original_task_id: z.string().min(1).describe('Task ID being superseded'),
+  superseding_task_id: z.string().min(1).describe('Task ID that supersedes the original'),
+  reason: z.string().min(10).describe('Why this task supersedes the original (min 10 chars)'),
+});
+
+export const ListSupersessionsArgsSchema = z.object({
+  task_id: z.string().optional().describe('Filter by task ID (matches both original and superseding)'),
+  status: z.enum(['active', 'resolved']).optional().describe('Filter by status'),
+  limit: z.number().min(1).max(100).optional().describe('Max results (default 20)'),
+});
+
 // ============================================================================
 // Inferred Arg Types
 // ============================================================================
@@ -100,6 +112,8 @@ export type GetQueueContextArgs = z.infer<typeof GetQueueContextArgsSchema>;
 export type ReorderItemArgs = z.infer<typeof ReorderItemArgsSchema>;
 export type RecordAssessmentArgs = z.infer<typeof RecordAssessmentArgsSchema>;
 export type GetChangeLogArgs = z.infer<typeof GetChangeLogArgsSchema>;
+export type RegisterSupersessionArgs = z.infer<typeof RegisterSupersessionArgsSchema>;
+export type ListSupersessionsArgs = z.infer<typeof ListSupersessionsArgsSchema>;
 
 // ============================================================================
 // Database Record Types
@@ -218,4 +232,35 @@ export interface ChangeLogItem {
 export interface GetChangeLogResult {
   changes: ChangeLogItem[];
   total: number;
+}
+
+export interface TaskSupersessionRecord {
+  id: string;
+  original_task_id: string;
+  superseding_task_id: string;
+  reason: string;
+  status: string;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export interface RegisterSupersessionResult {
+  id: string;
+  original_task_id: string;
+  superseding_task_id: string;
+  status: string;
+  immediate_resolution: boolean;
+  message: string;
+}
+
+export interface RegisterSupersessionExistsResult {
+  exists: true;
+  id: string;
+  status: string;
+  message: string;
+}
+
+export interface ListSupersessionsResult {
+  count: number;
+  supersessions: TaskSupersessionRecord[];
 }

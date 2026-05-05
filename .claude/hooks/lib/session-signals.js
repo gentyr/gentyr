@@ -143,7 +143,7 @@ function atomicWriteJson(filePath, data) {
  * @param {string} [opts.projectDir]
  * @returns {object} The created signal
  */
-export function sendSignal({ fromAgentId, fromAgentType, fromTaskTitle, toAgentId, toAgentType, tier, message, projectDir, type }) {
+export function sendSignal({ fromAgentId, fromAgentType, fromTaskTitle, toAgentId, toAgentType, tier, message, projectDir, type, metadata }) {
   if (!fromAgentId) throw new Error('sendSignal: fromAgentId is required');
   if (!toAgentId) throw new Error('sendSignal: toAgentId is required');
   if (!tier) throw new Error('sendSignal: tier is required');
@@ -166,6 +166,7 @@ export function sendSignal({ fromAgentId, fromAgentType, fromTaskTitle, toAgentI
     to_agent_type: toAgentType || 'unknown',
     tier,
     type: type || null,
+    metadata: metadata || null,
     message,
     created_at: now,
     read_at: null,
@@ -557,4 +558,123 @@ export function cleanupOldSignals(maxAgeHours = 24, projectDir) {
   }
 
   return { deletedFiles, trimmedLog };
+}
+
+// ============================================================================
+// HOLD/UNBLOCK Coordination
+// ============================================================================
+
+/**
+ * Find all HOLD signals referencing a blocker task and send UNBLOCK to the waiting agents.
+ * Called by workstream-dep-satisfier when a task completes or is superseded.
+ *
+ * @param {string} blockerTaskId - The task ID that was blocking
+ * @param {object} [opts] - Options
+ * @param {string} [opts.projectDir]
+ * @param {string} [opts.resolution] - How it was resolved: 'completed', 'superseded', 'cancelled'
+ * @param {string} [opts.supersededBy] - If resolution is 'superseded', the superseding task ID
+ * @returns {{ resolved: number, signals: object[] }} Count of UNBLOCK signals sent
+ */
+export function resolveHoldSignals(blockerTaskId, opts = {}) {
+  if (!blockerTaskId) throw new Error('resolveHoldSignals: blockerTaskId is required');
+
+  const { projectDir, resolution = 'completed', supersededBy } = opts;
+  const signalDir = getSignalDir(projectDir);
+  if (!fs.existsSync(signalDir)) return { resolved: 0, signals: [] };
+
+  let files;
+  try {
+    files = fs.readdirSync(signalDir).filter(f => f.endsWith('.json'));
+  } catch (err) {
+    console.error('[session-signals] resolveHoldSignals readdir error:', err.message);
+    throw err;
+  }
+
+  const unblockSignals = [];
+
+  for (const file of files) {
+    const filePath = path.join(signalDir, file);
+    let signal;
+    try {
+      signal = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch {
+      // Skip malformed signal files
+      continue;
+    }
+
+    // Only process HOLD signals with matching blocker_task_id and auto_unblock enabled
+    if (signal.type !== 'HOLD') continue;
+    if (!signal.metadata || !signal.metadata.blocker_task_id) continue;
+    if (signal.metadata.blocker_task_id !== blockerTaskId) continue;
+    if (signal.metadata.auto_unblock === false) continue;
+
+    // Send UNBLOCK to the agent that received the HOLD
+    try {
+      const unblock = sendSignal({
+        fromAgentId: 'system',
+        fromAgentType: 'system',
+        fromTaskTitle: '',
+        toAgentId: signal.to_agent_id,
+        toAgentType: signal.to_agent_type,
+        tier: 'instruction',
+        type: 'UNBLOCK',
+        metadata: {
+          blocker_task_id: blockerTaskId,
+          resolution,
+          superseded_by: supersededBy || null,
+          original_hold_id: signal.id,
+        },
+        message: `UNBLOCK: Task ${blockerTaskId} resolved (${resolution}${supersededBy ? ` by ${supersededBy}` : ''}). Proceed with your primary work immediately.`,
+        projectDir,
+      });
+      unblockSignals.push(unblock);
+    } catch (err) {
+      console.error(`[session-signals] resolveHoldSignals failed to send UNBLOCK to ${signal.to_agent_id}:`, err.message);
+      // Non-fatal: continue resolving other holds
+    }
+  }
+
+  return { resolved: unblockSignals.length, signals: unblockSignals };
+}
+
+/**
+ * Find all unresolved HOLD signals targeting a specific agent.
+ * Used by agents to check if they have active blockers.
+ *
+ * @param {string} agentId
+ * @param {string} [projectDir]
+ * @returns {object[]} Array of HOLD signal objects
+ */
+export function findActiveHolds(agentId, projectDir) {
+  if (!agentId) throw new Error('findActiveHolds: agentId is required');
+
+  const signalDir = getSignalDir(projectDir);
+  if (!fs.existsSync(signalDir)) return [];
+
+  let files;
+  try {
+    files = fs.readdirSync(signalDir).filter(f => f.startsWith(`${agentId}-`) && f.endsWith('.json'));
+  } catch (err) {
+    console.error('[session-signals] findActiveHolds readdir error:', err.message);
+    throw err;
+  }
+
+  const holds = [];
+
+  for (const file of files) {
+    const filePath = path.join(signalDir, file);
+    let signal;
+    try {
+      signal = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch {
+      // Skip malformed files
+      continue;
+    }
+
+    if (signal.type === 'HOLD' && signal.to_agent_id === agentId) {
+      holds.push(signal);
+    }
+  }
+
+  return holds;
 }

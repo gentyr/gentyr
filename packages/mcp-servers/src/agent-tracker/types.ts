@@ -222,6 +222,10 @@ export const SendSessionSignalArgsSchema = z.object({
   message: z.string().min(1).describe('The message to send to the target agent'),
   tier: z.enum(SIGNAL_TIER_VALUES)
     .describe('Signal tier: note (FYI), instruction (Deputy-CTO urgent), directive (CTO mandatory)'),
+  type: z.enum(['HOLD', 'UNBLOCK', 'SUPERSEDE_NOTICE']).optional()
+    .describe('Structured signal subtype for machine-readable coordination'),
+  metadata: z.record(z.unknown()).optional()
+    .describe('Structured metadata for HOLD/UNBLOCK coordination (e.g., blocker_task_id, resolution)'),
 });
 
 export const BroadcastSignalArgsSchema = z.object({
