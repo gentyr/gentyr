@@ -2424,6 +2424,35 @@ Triage targets persistent tasks because resuming them cascades via `propagateRes
 - Significant drift (~15%): `submit_bypass_request` on the affected task for CTO attention
 - Signal throttling: max 1 signal per agent per 30 minutes; self-pauses if >5 signals/hour
 
+### 53b.6 Deputy Bypass Resolution (3 exclusive MCP tools)
+
+The global monitor can approve bypass requests and deferred actions WITHOUT CTO intervention, acting as a delegated authority for routine decisions.
+
+**3-layer identity verification** (`verifyGlobalMonitorIdentity()`):
+1. `process.env.GENTYR_DEPUTY_CTO_MONITOR === 'true'` — env var injected at spawn
+2. `process.env.CLAUDE_QUEUE_ID` → session-queue.db → verify `metadata.task_type === 'global_monitor'`
+3. Queue item's `metadata.persistentTaskId` → persistent-tasks.db → verify persistent task has `task_type: 'global_monitor'`
+
+All 3 layers must pass. No other session — not even another deputy-cto sub-agent — can call these tools.
+
+**Tools (on agent-tracker server):**
+
+| Tool | Purpose | Restrictions |
+|------|---------|-------------|
+| `deputy_resolve_bypass_request` | Approve/reject bypass requests without CTO | Records `resolved_by: 'deputy-cto-monitor'`. Same downstream cascade as CTO resolution (resume persistent task, propagate to plan). |
+| `deputy_approve_deferred_action` | Approve + execute deferred protected actions | Blocked for CTO-only servers/tools: `release-ledger`, `set_lockdown_mode`, `sign_off_release`, `cancel_release`, `record_cto_approval`, tools with "staging" in name. |
+| `deputy_escalate_to_cto` | Explicitly mark a request as needing CTO | Sets `deputy_escalated=1`, `escalation_reason`, `escalation_urgency` (routine/important/critical). Shows prominently in CTO briefing. |
+
+**CTO-only actions** (deputy CANNOT approve):
+- Any action on the `release-ledger` server
+- `set_lockdown_mode`, `sign_off_release`, `cancel_release`, `record_cto_approval`
+- Any tool with "staging" in the name
+
+**DB columns** (auto-migrated in bypass-requests.db):
+- `deputy_escalated` INTEGER DEFAULT 0
+- `escalation_reason` TEXT
+- `escalation_urgency` TEXT
+
 ---
 
 ## 54. Deputy-CTO Server (34 Tools — Complete)
