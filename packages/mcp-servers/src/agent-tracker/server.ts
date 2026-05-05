@@ -5287,8 +5287,8 @@ async function recordCtoDecision(args: RecordCtoDecisionArgs): Promise<object | 
     fs.copyFileSync(jsonlResult.jsonlPath, snapshotPath);
 
     try {
-      // Verify verbatim quote exists in session
-      const quoteResult = proofModule.verifyQuoteInJsonl(snapshotPath, args.verbatim_text);
+      // Verify verbatim quote exists in session (verifyQuoteInJsonl is async)
+      const quoteResult = await proofModule.verifyQuoteInJsonl(snapshotPath, args.verbatim_text);
       if (!quoteResult || !quoteResult.found) {
         return { error: 'Verbatim text not found in session JSONL. The CTO must type the approval/rejection BEFORE you call this tool. Copy their EXACT words.' };
       }
