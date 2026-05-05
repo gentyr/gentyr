@@ -277,17 +277,19 @@ When Fly.io is configured (`fly` section in `services.json`), headless demos aut
 - Display lock contended + headless-eligible → remote (contention bypass)
 - `remote: true` → forced remote
 - `remote: false` → forced local
-- Headed, chrome-bridge, or extension demos → always local
+- Chrome-bridge or extension demos → always local (headed demos run on Fly.io via Xvfb + ffmpeg)
 
 **Same interface**: Progress reporting, `check_demo_result`, `stop_demo`, and artifact retrieval work identically for remote runs. The `execution_target` field in the response indicates where it ran. Remote runs return a synthetic negative PID.
 
-**Not available for**: headed demos (window recording requires local display), chrome-bridge scenarios (require real Chrome with extension socket), extension demos (require loaded extension).
+**Not available for**: chrome-bridge scenarios (require real Chrome with extension socket), extension demos (require loaded extension). Headed demos are fully supported on Fly.io via Xvfb + ffmpeg recording.
 
 **Batch parallelization**: `run_demo_batch` with `headless: true` (default) can run multiple scenarios simultaneously across Fly.io machines, limited by `fly.maxConcurrentMachines` (default 3).
 
 **Cost control**: Machines auto-stop on completion, have a 30-minute hard kill safety net, and `maxConcurrentMachines` caps concurrent usage. `get_fly_status` tool shows current machine count and health. `get_fly_status` also returns `imageDeployed` — if `false`, no Docker image has been deployed to the Fly app and remote execution will fail. When `remote: true` is explicit, the error surfaces directly. When auto-routed, `check_demo_result` includes `remote_routing_warning` explaining the fallback to local. Fix: call `deploy_fly_image()` to build and push the image (runs in background, poll `get_fly_status()` to confirm), or re-run `/setup-fly`.
 
 **Image deployment requirement**: After `/setup-fly`, the Fly.io provisioning script must run to build and push the Docker image to `registry.fly.io/<appName>:latest`. Without this, `spawnRemoteMachine` fails and demos fall back to local execution. The `run_demo` response includes `remote_routing_warning` when this fallback occurs, and `check_demo_result` surfaces it in the result.
+
+**Image freshness**: The Fly.io Docker image contains `remote-runner.sh`, system dependencies, and Playwright. Target project code is cloned fresh from git on each run, but if GENTYR's `infra/fly-playwright/Dockerfile` or `remote-runner.sh` changes (e.g., after `npx gentyr sync` or framework updates), the image must be rebuilt with `deploy_fly_image({ force: true })`. `get_fly_status()` returns `imageStale: true` when the deployed image is outdated. Session briefing shows image age and staleness warnings at login. Do NOT ignore `imageStale` warnings — stale images cause systematic demo failures.
 
 **Remote-First Execution Rule (MANDATORY for spawned agents)**:
 Spawned agents MUST use remote execution for all demo runs unless the scenario requires chrome-bridge or has `remote_eligible=false`. Sequential local `run_demo` calls are an anti-pattern. For 2+ scenarios, use `run_demo_batch({ scenario_ids: [...], remote: true, recorded: true })` — this runs scenarios CONCURRENTLY across multiple Fly.io machines. Do NOT run demos locally "to debug" — remote produces identical output. The only valid reasons for `remote: false` are: (1) CTO explicitly requests live viewing, (2) chrome-bridge/extension interaction required.

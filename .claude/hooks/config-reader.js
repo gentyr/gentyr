@@ -81,6 +81,7 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'revival_compact_timeout_ms',
   'screenshot_cleanup',
   'auto_rollback_check',
+  'fly_image_freshness',
 ]);
 
 /**
@@ -219,6 +220,7 @@ const DEFAULTS = {
   vulnerability_scan: 1440,                    // daily (24 hours)
   load_test: 360,                              // 6 hours (only runs during promotion)
   auto_rollback_check: 2,                      // 2 minutes
+  fly_image_freshness: 60,                     // 1 hour
 };
 
 /**

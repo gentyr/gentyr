@@ -20,6 +20,7 @@ import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
+import { checkImageStaleness } from './lib/fly-image-freshness.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const IS_SPAWNED = process.env.CLAUDE_SPAWNED_SESSION === 'true';
@@ -660,6 +661,29 @@ function buildInteractiveBriefing() {
           lines.push('Logging: Elastic Cloud disabled');
         }
         lines.push('');
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Fly.io image health (one-line, non-fatal)
+  if (!localMode) {
+    try {
+      const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+      if (fs.existsSync(servicesPath)) {
+        const svcConfig = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+        if (svcConfig?.fly && svcConfig.fly.enabled !== false) {
+          const freshness = checkImageStaleness(PROJECT_DIR);
+          if (freshness.hasMeta) {
+            if (freshness.stale) {
+              lines.push(`Fly.io: IMAGE STALE — Dockerfile or remote-runner.sh changed since last deploy (${freshness.ageHours}h ago). Run deploy_fly_image({ force: true })`);
+            } else {
+              lines.push(`Fly.io: image deployed ${freshness.ageHours}h ago | app: ${freshness.meta.appName}`);
+            }
+          } else {
+            lines.push('Fly.io: configured but no image metadata — run deploy_fly_image() or get_fly_status() to verify');
+          }
+          lines.push('');
+        }
       }
     } catch { /* non-fatal */ }
   }

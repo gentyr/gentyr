@@ -2816,6 +2816,29 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         }
       } catch { /* non-fatal — prerequisites won't run remotely */ }
 
+      // Check image freshness before remote spawn (non-blocking warning)
+      let imageStalenessWarning = '';
+      try {
+        const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-image-metadata.json');
+        if (fs.existsSync(metaPath)) {
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          const infraDirCandidates = [
+            path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright'),
+            path.join(PROJECT_DIR, 'infra', 'fly-playwright'),
+          ];
+          const infraDir = infraDirCandidates.find(d => fs.existsSync(d));
+          if (infraDir) {
+            const curDockerHash = crypto.createHash('sha256')
+              .update(fs.readFileSync(path.join(infraDir, 'Dockerfile'))).digest('hex');
+            const curRunnerHash = crypto.createHash('sha256')
+              .update(fs.readFileSync(path.join(infraDir, 'remote-runner.sh'))).digest('hex');
+            if (curDockerHash !== meta.dockerfileHash || curRunnerHash !== meta.remoteRunnerHash) {
+              imageStalenessWarning = `WARNING: Fly.io image is stale (Dockerfile or remote-runner.sh changed since last deploy at ${meta.deployedAt}). Results may be unreliable. Run deploy_fly_image({ force: true }) to rebuild.`;
+            }
+          }
+        }
+      } catch { /* non-fatal, don't block the demo */ }
+
       const handle = await spawnRemoteMachine(machineConfig, {
         gitRemote,
         gitRef,
@@ -2846,6 +2869,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         fly_app_name: handle.appName,
         run_id: runId,
       };
+      // Attach image staleness warning so check_demo_result can surface it
+      if (imageStalenessWarning) {
+        remoteDemoState.image_staleness_warning = imageStalenessWarning;
+      }
       demoRuns.set(syntheticPid, remoteDemoState);
       persistDemoRuns();
 
@@ -4449,6 +4476,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           failure_frames: failureFrames1,
           analysis_guidance: analysisGuidance1,
           ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
+          ...(entry.image_staleness_warning ? { image_staleness_warning: entry.image_staleness_warning } : {}),
           message: entry.status === 'passed'
             ? `Demo completed successfully in ${durationSec}s (process terminated after suite completion).${degradedSuffix}`
             : `Demo failed in ${durationSec}s — ${entry.failure_summary}. Process terminated after suite completion.`,
@@ -4602,6 +4630,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         failure_frames: failureFrames2,
         analysis_guidance: analysisGuidance2,
         ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
+        ...(entry.image_staleness_warning ? { image_staleness_warning: entry.image_staleness_warning } : {}),
         message: statusMsg,
       };
     }
@@ -4738,6 +4767,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     failure_frames: failureFramesFinal,
     analysis_guidance: analysisGuidanceFinal,
     ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
+    ...(entry.image_staleness_warning ? { image_staleness_warning: entry.image_staleness_warning } : {}),
     run_id: entry.run_id,
     telemetry_dir: entry.telemetry_dir,
     telemetry_summary: entry.telemetry_dir ? readTelemetrySummaryInline(entry.telemetry_dir) : undefined,
@@ -8305,11 +8335,52 @@ const tools: AnyToolHandler[] = [
           // Non-fatal — Tigris is optional
         }
 
+        // Check image staleness via infrastructure file hashes (best-effort, non-fatal)
+        let imageMetadata: Record<string, unknown> | null = null;
+        let imageStale = false;
+        let imageAgeHours: number | null = null;
+        let imageStaleReason = '';
+        try {
+          const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-image-metadata.json');
+          if (fs.existsSync(metaPath)) {
+            imageMetadata = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+            // Compute current hashes of infra files
+            const infraDirCandidates = [
+              path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright'),
+              path.join(PROJECT_DIR, 'infra', 'fly-playwright'),
+            ];
+            const infraDir = infraDirCandidates.find(d => fs.existsSync(d));
+            if (infraDir && imageMetadata) {
+              const currentDockerfileHash = crypto.createHash('sha256')
+                .update(fs.readFileSync(path.join(infraDir, 'Dockerfile'))).digest('hex');
+              const currentRunnerHash = crypto.createHash('sha256')
+                .update(fs.readFileSync(path.join(infraDir, 'remote-runner.sh'))).digest('hex');
+              const dockerChanged = currentDockerfileHash !== (imageMetadata as Record<string, string>).dockerfileHash;
+              const runnerChanged = currentRunnerHash !== (imageMetadata as Record<string, string>).remoteRunnerHash;
+              imageStale = dockerChanged || runnerChanged;
+              if (imageStale) {
+                const changed: string[] = [];
+                if (dockerChanged) changed.push('Dockerfile');
+                if (runnerChanged) changed.push('remote-runner.sh');
+                imageStaleReason = `Changed since last deploy: ${changed.join(', ')}. Run deploy_fly_image({ force: true }) to rebuild.`;
+              }
+            }
+            if (imageMetadata) {
+              const deployedMs = new Date((imageMetadata as Record<string, string>).deployedAt).getTime();
+              imageAgeHours = Math.round((Date.now() - deployedMs) / 3600000);
+            }
+          }
+        } catch { /* non-fatal */ }
+
         return JSON.stringify({
           configured: true,
           enabled: true,
           healthy: imageDeployed === false ? false : healthy,
           imageDeployed,
+          imageStale,
+          imageAgeHours,
+          ...(imageMetadata ? { imageMetadata } : {}),
+          ...(imageStaleReason ? { imageStaleReason } : {}),
           appName: flyConfig.appName,
           region: flyConfig.region,
           machineSize: flyConfig.machineSize,
@@ -8417,6 +8488,7 @@ const tools: AnyToolHandler[] = [
         '--region', flySection.region || 'iad',
       ], {
         cwd: PROJECT_DIR,
+        env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
         detached: true,
         stdio: ['ignore', logFd, logFd],
       });

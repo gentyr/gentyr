@@ -172,6 +172,24 @@ flyctl deploy \
 success "App '$APP_NAME' deployed successfully"
 
 # ---------------------------------------------------------------------------
+# Write image metadata (consumed by GENTYR staleness detection)
+# ---------------------------------------------------------------------------
+METADATA_FILE="${CLAUDE_PROJECT_DIR:-.}/.claude/state/fly-image-metadata.json"
+mkdir -p "$(dirname "$METADATA_FILE")"
+cat > "$METADATA_FILE" <<EOJSON
+{
+  "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "appName": "$APP_NAME",
+  "region": "$REGION",
+  "dockerfileHash": "$(shasum -a 256 "$SCRIPT_DIR/Dockerfile" | cut -d' ' -f1)",
+  "remoteRunnerHash": "$(shasum -a 256 "$SCRIPT_DIR/remote-runner.sh" | cut -d' ' -f1)",
+  "flyTomlTemplateHash": "$(shasum -a 256 "$SCRIPT_DIR/fly.toml.template" | cut -d' ' -f1)",
+  "gitSha": "$(git rev-parse HEAD 2>/dev/null || echo 'unknown')"
+}
+EOJSON
+success "Image metadata written to $METADATA_FILE"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
