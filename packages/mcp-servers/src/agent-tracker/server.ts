@@ -144,6 +144,12 @@ import {
   RecordCtoDecisionArgsSchema,
   type CheckCtoDecisionArgs,
   CheckCtoDecisionArgsSchema,
+  DeputyResolveBypassRequestArgsSchema,
+  type DeputyResolveBypassRequestArgs,
+  DeputyApproveDeferredActionArgsSchema,
+  type DeputyApproveDeferredActionArgs,
+  DeputyEscalateToCtoArgsSchema,
+  type DeputyEscalateToCtoArgs,
   type AcquireSharedResourceArgs,
   type ReleaseSharedResourceArgs,
   type RenewSharedResourceArgs,
@@ -5060,11 +5066,20 @@ function getBypassDb(): InstanceType<typeof Database> {
     );
     CREATE INDEX IF NOT EXISTS idx_cto_decisions_lookup ON cto_decisions(decision_type, decision_id, status);
   `);
-  // Migration: add propagation_context column if absent (non-fatal)
+  // Migration: add columns if absent (non-fatal)
   try {
     const cols = db.prepare("PRAGMA table_info(bypass_requests)").all() as Array<{ name: string }>;
     if (!cols.some(c => c.name === 'propagation_context')) {
       db.exec("ALTER TABLE bypass_requests ADD COLUMN propagation_context TEXT");
+    }
+    if (!cols.some(c => c.name === 'deputy_escalated')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN deputy_escalated INTEGER DEFAULT 0");
+    }
+    if (!cols.some(c => c.name === 'escalation_reason')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN escalation_reason TEXT");
+    }
+    if (!cols.some(c => c.name === 'escalation_urgency')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN escalation_urgency TEXT");
     }
   } catch { /* best-effort migration */ }
   return db;
@@ -5348,6 +5363,526 @@ async function checkCtoDecision(args: CheckCtoDecisionArgs): Promise<object | Er
     return { found: true, ...(row as Record<string, unknown>) };
   } catch (err) {
     return { error: `Failed to check CTO decision: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+// ============================================================================
+// Deputy-CTO Monitor Bypass Resolution System
+// ============================================================================
+
+/**
+ * CTO-only deferred action servers/tools — the deputy monitor CANNOT approve these.
+ */
+const CTO_ONLY_DEFERRED_SERVERS = new Set(['release-ledger']);
+const CTO_ONLY_DEFERRED_TOOLS = new Set([
+  'set_lockdown_mode',
+  'sign_off_release',
+  'cancel_release',
+  'record_cto_approval',
+]);
+
+/**
+ * 3-layer identity verification for the Global Deputy-CTO Monitor.
+ *
+ * Layer 1: GENTYR_DEPUTY_CTO_MONITOR env var
+ * Layer 2: CLAUDE_QUEUE_ID -> session-queue.db -> metadata.task_type === 'global_monitor'
+ * Layer 3: metadata.persistentTaskId -> persistent-tasks.db -> metadata.task_type === 'global_monitor'
+ *
+ * All three layers must pass. Fail-closed on any error.
+ */
+function verifyGlobalMonitorIdentity(): { verified: boolean; error?: string } {
+  // Layer 1: env var check
+  if (process.env.GENTYR_DEPUTY_CTO_MONITOR !== 'true') {
+    return { verified: false, error: 'BLOCKED: This tool is restricted to the Global Deputy-CTO Monitor session. GENTYR_DEPUTY_CTO_MONITOR env var is not set.' };
+  }
+
+  // Layer 2: queue item verification
+  const queueId = process.env.CLAUDE_QUEUE_ID;
+  if (!queueId) {
+    return { verified: false, error: 'BLOCKED: No CLAUDE_QUEUE_ID — cannot verify session identity. Only the Global Monitor session can use this tool.' };
+  }
+
+  const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+  if (!fs.existsSync(queueDbPath)) {
+    return { verified: false, error: 'BLOCKED: Session queue database not found — cannot verify identity.' };
+  }
+
+  let queueDb: InstanceType<typeof Database> | undefined;
+  let queueMetadata: { task_type?: string; persistentTaskId?: string } | null = null;
+  try {
+    queueDb = openReadonlyDb(queueDbPath);
+    const queueItem = queueDb.prepare(
+      'SELECT metadata FROM queue_items WHERE id = ?'
+    ).get(queueId) as { metadata: string | null } | undefined;
+
+    if (!queueItem) {
+      return { verified: false, error: `BLOCKED: Queue item ${queueId} not found in session-queue.db.` };
+    }
+    if (!queueItem.metadata) {
+      return { verified: false, error: 'BLOCKED: Queue item has no metadata — cannot verify task_type.' };
+    }
+
+    try {
+      queueMetadata = JSON.parse(queueItem.metadata) as { task_type?: string; persistentTaskId?: string };
+    } catch {
+      return { verified: false, error: 'BLOCKED: Queue item metadata is not valid JSON.' };
+    }
+
+    if (queueMetadata?.task_type !== 'global_monitor') {
+      return { verified: false, error: `BLOCKED: Queue item task_type is "${queueMetadata?.task_type ?? 'undefined'}", expected "global_monitor". Only the Global Monitor can use this tool.` };
+    }
+  } catch (err) {
+    return { verified: false, error: `BLOCKED: Failed to read session-queue.db: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { queueDb?.close(); } catch { /* best-effort */ }
+  }
+
+  // Layer 3: persistent task cross-check
+  const persistentTaskId = queueMetadata?.persistentTaskId;
+  if (!persistentTaskId) {
+    return { verified: false, error: 'BLOCKED: Queue item metadata has no persistentTaskId — cannot cross-check identity.' };
+  }
+
+  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+  if (!fs.existsSync(ptDbPath)) {
+    return { verified: false, error: 'BLOCKED: Persistent tasks database not found — cannot cross-check identity.' };
+  }
+
+  let ptDb: InstanceType<typeof Database> | undefined;
+  try {
+    ptDb = openReadonlyDb(ptDbPath);
+    const ptTask = ptDb.prepare(
+      'SELECT metadata FROM persistent_tasks WHERE id = ?'
+    ).get(persistentTaskId) as { metadata: string | null } | undefined;
+
+    if (!ptTask) {
+      return { verified: false, error: `BLOCKED: Persistent task ${persistentTaskId} not found.` };
+    }
+    if (!ptTask.metadata) {
+      return { verified: false, error: 'BLOCKED: Persistent task has no metadata — cannot verify task_type.' };
+    }
+
+    let ptMetadata: { task_type?: string };
+    try {
+      ptMetadata = JSON.parse(ptTask.metadata) as { task_type?: string };
+    } catch {
+      return { verified: false, error: 'BLOCKED: Persistent task metadata is not valid JSON.' };
+    }
+
+    if (ptMetadata.task_type !== 'global_monitor') {
+      return { verified: false, error: `BLOCKED: Persistent task task_type is "${ptMetadata.task_type ?? 'undefined'}", expected "global_monitor". Only the Global Monitor can use this tool.` };
+    }
+  } catch (err) {
+    return { verified: false, error: `BLOCKED: Failed to read persistent-tasks.db: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { ptDb?.close(); } catch { /* best-effort */ }
+  }
+
+  return { verified: true };
+}
+
+/**
+ * Deputy-CTO Monitor: resolve a bypass request without CTO intervention.
+ * Uses the same downstream logic as resolveBypassRequest but skips the CTO decision requirement.
+ */
+async function deputyResolveBypassRequest(args: DeputyResolveBypassRequestArgs): Promise<object | ErrorResult> {
+  // Identity verification — 3-layer check
+  const identity = verifyGlobalMonitorIdentity();
+  if (!identity.verified) {
+    return { error: identity.error! };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    // Add deputy_escalated column if not present (auto-migration)
+    try {
+      const cols = db.prepare("PRAGMA table_info(bypass_requests)").all() as Array<{ name: string }>;
+      if (!cols.some(c => c.name === 'deputy_escalated')) {
+        db.exec("ALTER TABLE bypass_requests ADD COLUMN deputy_escalated INTEGER DEFAULT 0");
+      }
+      if (!cols.some(c => c.name === 'escalation_reason')) {
+        db.exec("ALTER TABLE bypass_requests ADD COLUMN escalation_reason TEXT");
+      }
+    } catch { /* best-effort migration */ }
+
+    const request = db.prepare(
+      'SELECT id, task_type, task_id, task_title, status, category, summary FROM bypass_requests WHERE id = ?'
+    ).get(args.request_id) as { id: string; task_type: string; task_id: string; task_title: string; status: string; category: string; summary: string } | undefined;
+
+    if (!request) {
+      return { error: `Bypass request not found: ${args.request_id}` };
+    }
+    if (request.status !== 'pending') {
+      return { error: `Bypass request is already ${request.status}. Only pending requests can be resolved.` };
+    }
+
+    // Check if the underlying task still exists and is in a valid state
+    if (request.task_type === 'persistent') {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath)) {
+        let ptDb2: InstanceType<typeof Database> | undefined;
+        try {
+          ptDb2 = openReadonlyDb(ptDbPath);
+          const task = ptDb2.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(request.task_id) as { status: string } | undefined;
+          if (!task) {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = 'Auto-cancelled: task no longer exists', resolved_at = datetime('now') WHERE id = ?"
+            ).run(request.id);
+            return { error: 'Task no longer exists. Bypass request has been auto-cancelled.', auto_cancelled: true };
+          }
+          if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = ?, resolved_at = datetime('now') WHERE id = ?"
+            ).run(`Auto-cancelled: task is ${task.status}`, request.id);
+            return { error: `Task is already ${task.status}. Bypass request has been auto-cancelled.`, auto_cancelled: true };
+          }
+        } finally {
+          try { ptDb2?.close(); } catch { /* best-effort */ }
+        }
+      }
+    } else {
+      const todoDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'todo.db');
+      if (fs.existsSync(todoDbPath)) {
+        let todoDb: InstanceType<typeof Database> | undefined;
+        try {
+          todoDb = openReadonlyDb(todoDbPath);
+          const task = todoDb.prepare('SELECT status FROM tasks WHERE id = ?').get(request.task_id) as { status: string } | undefined;
+          if (!task) {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = 'Auto-cancelled: task no longer exists', resolved_at = datetime('now') WHERE id = ?"
+            ).run(request.id);
+            return { error: 'Task no longer exists. Bypass request has been auto-cancelled.', auto_cancelled: true };
+          }
+          if (task.status === 'completed') {
+            db.prepare(
+              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = 'Auto-cancelled: task completed', resolved_at = datetime('now') WHERE id = ?"
+            ).run(request.id);
+            return { error: 'Task is already completed. Bypass request has been auto-cancelled.', auto_cancelled: true };
+          }
+        } finally {
+          try { todoDb?.close(); } catch { /* best-effort */ }
+        }
+      }
+    }
+
+    // Resolve the request — NO CTO decision required, deputy is the decision-maker
+    const resolvedContext = `[Deputy-CTO Monitor Decision] ${args.reasoning}`;
+    db.prepare(
+      "UPDATE bypass_requests SET status = ?, resolution_context = ?, resolved_at = datetime('now'), resolved_by = 'deputy-cto-monitor' WHERE id = ?"
+    ).run(args.decision, resolvedContext, request.id);
+
+    // Handle approval — resume the task (same logic as resolveBypassRequest)
+    if (args.decision === 'approved') {
+      if (request.task_type === 'persistent') {
+        const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+        if (fs.existsSync(ptDbPath)) {
+          let ptDb2: InstanceType<typeof Database> | undefined;
+          try {
+            ptDb2 = new Database(ptDbPath);
+            ptDb2.pragma('busy_timeout = 3000');
+            const result = ptDb2.prepare(
+              "UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'"
+            ).run(request.task_id);
+
+            if (result.changes > 0) {
+              ptDb2.prepare(
+                "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
+              ).run(
+                crypto.randomUUID(),
+                request.task_id,
+                JSON.stringify({ reason: 'deputy_bypass_approved', bypass_request_id: request.id }),
+              );
+            }
+          } finally {
+            try { ptDb2?.close(); } catch { /* best-effort */ }
+          }
+
+          // Enqueue a monitor revival via session-queue
+          try {
+            const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
+            if (fs.existsSync(queueModulePath)) {
+              const revivalPromptPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'persistent-monitor-revival-prompt.js');
+              if (fs.existsSync(revivalPromptPath)) {
+                const ptDbR = openReadonlyDb(ptDbPath);
+                const task = ptDbR.prepare('SELECT id, title, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?').get(request.task_id) as { id: string; title: string; metadata: string | null; monitor_session_id: string | null } | undefined;
+                ptDbR.close();
+
+                if (task) {
+                  const { buildPersistentMonitorRevivalPrompt } = await import(revivalPromptPath);
+                  const revival = await buildPersistentMonitorRevivalPrompt(task, 'deputy_bypass_approved', PROJECT_DIR);
+                  const queueModule = await import(queueModulePath);
+                  queueModule.enqueueSession({
+                    title: `[Persistent] Deputy bypass approved: ${task.title}`,
+                    agentType: 'persistent-task-monitor',
+                    hookType: 'persistent-task-monitor',
+                    tagContext: 'persistent-monitor',
+                    source: 'deputy-bypass-resolve',
+                    prompt: revival.prompt,
+                    priority: 'critical',
+                    lane: 'persistent',
+                    spawnType: task.monitor_session_id ? 'resume' : 'fresh',
+                    resumeSessionId: task.monitor_session_id || undefined,
+                    extraEnv: revival.extraEnv,
+                    metadata: { ...revival.metadata, persistentTaskId: request.task_id },
+                    agent: revival.agent,
+                    ttlMs: 0,
+                  });
+                }
+              }
+            }
+          } catch (err) {
+            process.stderr.write(`[deputy-bypass-resolve] Failed to enqueue revival: ${err instanceof Error ? err.message : String(err)}\n`);
+          }
+        }
+
+        // Back-propagate resume to plan layer
+        try {
+          const bypassRow = db.prepare('SELECT propagation_context FROM bypass_requests WHERE id = ?').get(args.request_id) as { propagation_context: string | null } | undefined;
+          if (bypassRow?.propagation_context) {
+            const ctx = JSON.parse(bypassRow.propagation_context) as { plan_task_id?: string; plan_id?: string };
+            if (ctx.plan_task_id) {
+              const pausePropagationPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
+              const { propagateResumeToPlan } = await import(pausePropagationPath) as { propagateResumeToPlan: (taskId: string) => { propagated: boolean } };
+              propagateResumeToPlan(request.task_id);
+            }
+          }
+        } catch { /* back-propagation is non-fatal */ }
+
+        return {
+          resolved: true,
+          request_id: request.id,
+          decision: 'approved',
+          resolved_by: 'deputy-cto-monitor',
+          task_type: request.task_type,
+          task_title: request.task_title,
+          message: `Deputy-CTO Monitor approved bypass request. Persistent task "${request.task_title}" has been set to active and a monitor session is being revived.`,
+        };
+      } else {
+        return {
+          resolved: true,
+          request_id: request.id,
+          decision: 'approved',
+          resolved_by: 'deputy-cto-monitor',
+          task_type: request.task_type,
+          task_title: request.task_title,
+          message: `Deputy-CTO Monitor approved bypass request. Todo task "${request.task_title}" will be picked up by the next spawn cycle.`,
+        };
+      }
+    }
+
+    // Handle rejection
+    return {
+      resolved: true,
+      request_id: request.id,
+      decision: 'rejected',
+      resolved_by: 'deputy-cto-monitor',
+      task_type: request.task_type,
+      task_title: request.task_title,
+      message: request.task_type === 'persistent'
+        ? `Deputy-CTO Monitor rejected bypass request. Persistent task "${request.task_title}" remains paused.`
+        : `Deputy-CTO Monitor rejected bypass request. Todo task "${request.task_title}" remains pending.`,
+    };
+  } catch (err) {
+    return { error: `Failed to resolve bypass request: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Deputy-CTO Monitor: approve a deferred protected action without CTO intervention.
+ * Only allows actions on Tier 1 servers that are NOT in the CTO_ONLY set.
+ */
+async function deputyApproveDeferredAction(args: DeputyApproveDeferredActionArgs): Promise<object | ErrorResult> {
+  // Identity verification — 3-layer check
+  const identity = verifyGlobalMonitorIdentity();
+  if (!identity.verified) {
+    return { error: identity.error! };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    const action = db.prepare(
+      'SELECT id, server, tool, args, args_hash, status, pending_hmac FROM deferred_actions WHERE id = ?'
+    ).get(args.action_id) as { id: string; server: string; tool: string; args: string; args_hash: string; status: string; pending_hmac: string } | undefined;
+
+    if (!action) {
+      return { error: `Deferred action not found: ${args.action_id}` };
+    }
+    if (action.status !== 'pending') {
+      return { error: `Deferred action is already ${action.status}. Only pending actions can be approved.` };
+    }
+
+    // CTO-only server check
+    if (CTO_ONLY_DEFERRED_SERVERS.has(action.server)) {
+      return {
+        error: `BLOCKED: Actions on the "${action.server}" server require CTO approval. The deputy monitor cannot approve this action. Escalate to the CTO using deputy_escalate_to_cto.`,
+      };
+    }
+
+    // CTO-only tool check
+    if (CTO_ONLY_DEFERRED_TOOLS.has(action.tool)) {
+      return {
+        error: `BLOCKED: The tool "${action.tool}" requires CTO approval. The deputy monitor cannot approve this action. Escalate to the CTO using deputy_escalate_to_cto.`,
+      };
+    }
+
+    // Tools with "staging" in the name are CTO-only
+    if (action.tool.toLowerCase().includes('staging')) {
+      return {
+        error: `BLOCKED: Tools involving staging operations ("${action.tool}") require CTO approval. Escalate to the CTO using deputy_escalate_to_cto.`,
+      };
+    }
+
+    // Execute the deferred action via the MCP daemon
+    // We need to: mark approved -> execute -> mark completed/failed
+    // Unlike the CTO flow, we don't use HMAC — the deputy's identity was verified by the 3-layer check above.
+    // We still transition atomically: pending -> approved -> executing -> completed/failed
+
+    // Mark as approved (set approved_by in execution_result context since the table doesn't have that column)
+    const approvedTransition = db.prepare(
+      "UPDATE deferred_actions SET status = 'approved', approved_at = datetime('now') WHERE id = ? AND status = 'pending'"
+    ).run(action.id);
+    if (approvedTransition.changes === 0) {
+      return { error: 'Failed to approve action — it may have been approved by another process.' };
+    }
+
+    // Mark as executing (atomic transition prevents double-execution)
+    const executingTransition = db.prepare(
+      "UPDATE deferred_actions SET status = 'executing' WHERE id = ? AND status = 'approved'"
+    ).run(action.id);
+    if (executingTransition.changes === 0) {
+      return { error: 'Failed to transition action to executing — it may have been picked up by another process.' };
+    }
+
+    // Parse args
+    let parsedArgs: object;
+    try {
+      parsedArgs = typeof action.args === 'string' ? JSON.parse(action.args) : action.args;
+    } catch {
+      db.prepare(
+        "UPDATE deferred_actions SET status = 'failed', execution_error = 'Failed to parse action arguments', executed_at = datetime('now') WHERE id = ?"
+      ).run(action.id);
+      return { error: 'Failed to parse deferred action arguments.' };
+    }
+
+    // Execute via MCP daemon
+    try {
+      const executorPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'deferred-action-executor.js');
+      const { executeMcpTool, isTier1Server } = await import(executorPath);
+
+      if (!isTier1Server(action.server)) {
+        db.prepare(
+          "UPDATE deferred_actions SET status = 'failed', execution_error = ?, executed_at = datetime('now') WHERE id = ?"
+        ).run(`Server "${action.server}" is not a Tier 1 server. Only Tier 1 servers can be executed via deferred actions.`, action.id);
+        return { error: `Server "${action.server}" is not a Tier 1 server. Deferred execution only supports Tier 1 (shared daemon) servers.` };
+      }
+
+      const result = await executeMcpTool(action.server, action.tool, parsedArgs);
+
+      if (result.success) {
+        db.prepare(
+          "UPDATE deferred_actions SET status = 'completed', execution_result = ?, executed_at = datetime('now') WHERE id = ?"
+        ).run(JSON.stringify({ ...result.result, approved_by: 'deputy-cto-monitor', reasoning: args.reasoning }), action.id);
+        return {
+          approved: true,
+          executed: true,
+          action_id: action.id,
+          server: action.server,
+          tool: action.tool,
+          approved_by: 'deputy-cto-monitor',
+          result: result.result,
+          message: `Deputy-CTO Monitor approved and executed deferred action: ${action.server}:${action.tool}`,
+        };
+      } else {
+        db.prepare(
+          "UPDATE deferred_actions SET status = 'failed', execution_error = ?, executed_at = datetime('now') WHERE id = ?"
+        ).run(result.error, action.id);
+        return {
+          approved: true,
+          executed: false,
+          action_id: action.id,
+          server: action.server,
+          tool: action.tool,
+          approved_by: 'deputy-cto-monitor',
+          error: result.error,
+          message: `Deputy-CTO Monitor approved the action but execution failed: ${result.error}`,
+        };
+      }
+    } catch (err) {
+      db.prepare(
+        "UPDATE deferred_actions SET status = 'failed', execution_error = ?, executed_at = datetime('now') WHERE id = ?"
+      ).run((err instanceof Error ? err.message : String(err)), action.id);
+      return { error: `Failed to execute deferred action: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  } catch (err) {
+    return { error: `Failed to approve deferred action: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Deputy-CTO Monitor: explicitly escalate a bypass request to the CTO.
+ * Marks the request with deputy_escalated=true so the CTO session briefing highlights it.
+ */
+async function deputyEscalateToCto(args: DeputyEscalateToCtoArgs): Promise<object | ErrorResult> {
+  // Identity verification — 3-layer check
+  const identity = verifyGlobalMonitorIdentity();
+  if (!identity.verified) {
+    return { error: identity.error! };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    // Ensure migration columns exist
+    try {
+      const cols = db.prepare("PRAGMA table_info(bypass_requests)").all() as Array<{ name: string }>;
+      if (!cols.some(c => c.name === 'deputy_escalated')) {
+        db.exec("ALTER TABLE bypass_requests ADD COLUMN deputy_escalated INTEGER DEFAULT 0");
+      }
+      if (!cols.some(c => c.name === 'escalation_reason')) {
+        db.exec("ALTER TABLE bypass_requests ADD COLUMN escalation_reason TEXT");
+      }
+      if (!cols.some(c => c.name === 'escalation_urgency')) {
+        db.exec("ALTER TABLE bypass_requests ADD COLUMN escalation_urgency TEXT");
+      }
+    } catch { /* best-effort migration */ }
+
+    const request = db.prepare(
+      'SELECT id, task_type, task_id, task_title, status, category, summary FROM bypass_requests WHERE id = ?'
+    ).get(args.request_id) as { id: string; task_type: string; task_id: string; task_title: string; status: string; category: string; summary: string } | undefined;
+
+    if (!request) {
+      return { error: `Bypass request not found: ${args.request_id}` };
+    }
+    if (request.status !== 'pending') {
+      return { error: `Bypass request is already ${request.status}. Only pending requests can be escalated.` };
+    }
+
+    // Mark as escalated by the deputy
+    db.prepare(
+      'UPDATE bypass_requests SET deputy_escalated = 1, escalation_reason = ?, escalation_urgency = ? WHERE id = ?'
+    ).run(args.reason, args.urgency, request.id);
+
+    return {
+      escalated: true,
+      request_id: request.id,
+      task_type: request.task_type,
+      task_title: request.task_title,
+      urgency: args.urgency,
+      message: `Bypass request for "${request.task_title}" has been escalated to the CTO (urgency: ${args.urgency}). The CTO will see this prominently in their next session briefing.`,
+    };
+  } catch (err) {
+    return { error: `Failed to escalate bypass request: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
     try { db?.close(); } catch { /* best-effort */ }
   }
@@ -6350,6 +6885,25 @@ const tools: AnyToolHandler[] = [
     schema: CheckCtoDecisionArgsSchema,
     handler: checkCtoDecision,
   },
+  // Deputy-CTO Monitor bypass resolution tools
+  {
+    name: 'deputy_resolve_bypass_request',
+    description: 'RESTRICTED TO GLOBAL DEPUTY-CTO MONITOR ONLY. Approve or reject a pending bypass request without CTO intervention. Uses 3-layer identity verification (env var + queue DB + persistent task DB) to ensure only the Global Monitor session can call this. Same downstream effects as resolve_bypass_request (resumes tasks, revives monitors, propagates to plans). Does NOT require record_cto_decision — the deputy IS the decision-maker.',
+    schema: DeputyResolveBypassRequestArgsSchema,
+    handler: deputyResolveBypassRequest,
+  },
+  {
+    name: 'deputy_approve_deferred_action',
+    description: 'RESTRICTED TO GLOBAL DEPUTY-CTO MONITOR ONLY. Approve and immediately execute a pending deferred protected action. Blocked for CTO-only actions: release-ledger server, set_lockdown_mode, sign_off_release, cancel_release, record_cto_approval, and tools with "staging" in the name. Uses the MCP shared daemon for execution. 3-layer identity verification enforced.',
+    schema: DeputyApproveDeferredActionArgsSchema,
+    handler: deputyApproveDeferredAction,
+  },
+  {
+    name: 'deputy_escalate_to_cto',
+    description: 'RESTRICTED TO GLOBAL DEPUTY-CTO MONITOR ONLY. Explicitly mark a pending bypass request as requiring CTO attention. Sets deputy_escalated=true and escalation_reason on the request, so it shows prominently in the CTO session briefing. Use this when the request is outside the deputy\'s authority or judgment.',
+    schema: DeputyEscalateToCtoArgsSchema,
+    handler: deputyEscalateToCto,
+  },
   // Self-compaction
   {
     name: 'request_self_compact',
@@ -6361,7 +6915,7 @@ const tools: AnyToolHandler[] = [
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '9.5.0',  // Unified CTO decision system: record_cto_decision, check_cto_decision
+  version: '9.6.0',  // Deputy-CTO Monitor bypass resolution: deputy_resolve_bypass_request, deputy_approve_deferred_action, deputy_escalate_to_cto
   tools,
 });
 

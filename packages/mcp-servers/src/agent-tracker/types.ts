@@ -626,6 +626,38 @@ export const CheckCtoDecisionArgsSchema = z.object({
 export type CheckCtoDecisionArgs = z.infer<typeof CheckCtoDecisionArgsSchema>;
 
 // ============================================================================
+// Deputy-CTO Monitor Bypass Resolution Schemas
+// ============================================================================
+
+export const DeputyResolveBypassRequestArgsSchema = z.object({
+  request_id: z.string().min(1)
+    .describe('Bypass request ID to resolve'),
+  decision: z.enum(['approved', 'rejected'])
+    .describe('Deputy decision: approve or reject the bypass request'),
+  reasoning: z.string().min(10)
+    .describe('Deputy reasoning for the decision (min 10 chars for audit trail)'),
+});
+export type DeputyResolveBypassRequestArgs = z.infer<typeof DeputyResolveBypassRequestArgsSchema>;
+
+export const DeputyApproveDeferredActionArgsSchema = z.object({
+  action_id: z.string().min(1)
+    .describe('Deferred action ID to approve'),
+  reasoning: z.string().min(10)
+    .describe('Deputy reasoning for approving this action (min 10 chars for audit trail)'),
+});
+export type DeputyApproveDeferredActionArgs = z.infer<typeof DeputyApproveDeferredActionArgsSchema>;
+
+export const DeputyEscalateToCtoArgsSchema = z.object({
+  request_id: z.string().min(1)
+    .describe('Bypass request ID to escalate to the CTO'),
+  reason: z.string().min(10)
+    .describe('Explanation of why CTO intervention is required'),
+  urgency: z.enum(['routine', 'important', 'critical'])
+    .describe('Urgency level: routine (next briefing), important (notify soon), critical (immediate attention)'),
+});
+export type DeputyEscalateToCtoArgs = z.infer<typeof DeputyEscalateToCtoArgsSchema>;
+
+// ============================================================================
 // Type Definitions
 // ============================================================================
 
