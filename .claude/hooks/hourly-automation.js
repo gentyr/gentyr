@@ -4137,46 +4137,11 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
                     continue;
                   }
                 }
-                // Paused without do_not_auto_resume — check if there's work to do
-                // If spawn-ready tasks exist, the plan manager needs to wake up NOW, not wait 30 min
-                try {
-                  const spawnReady = plansDb.prepare(
-                    "SELECT COUNT(*) as cnt FROM plan_tasks WHERE plan_id = ? AND status = 'ready'"
-                  ).get(plan.id);
-                  if (spawnReady && spawnReady.cnt > 0) {
-                    log(`Plan orphan detection: plan "${plan.title}" has ${spawnReady.cnt} ready task(s) but manager is paused — force-resuming manager`);
-                    // Resume the persistent task directly
-                    const ptDbRw = new Database(ptDbPath);
-                    ptDbRw.pragma('busy_timeout = 3000');
-                    ptDbRw.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'")
-                      .run(plan.persistent_task_id);
-                    // Clear any pending bypass request that's blocking auto-resume
-                    const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-                    if (fs.existsSync(bypassDbPath)) {
-                      try {
-                        const bpDb = new Database(bypassDbPath);
-                        bpDb.pragma('busy_timeout = 3000');
-                        bpDb.prepare(
-                          "UPDATE bypass_requests SET status = 'approved', resolution_context = 'Auto-approved: plan has spawn-ready tasks, manager must resume', resolved_at = datetime('now'), resolved_by = 'plan-orphan-detection' WHERE task_type = 'persistent' AND task_id = ? AND status = 'pending'"
-                        ).run(plan.persistent_task_id);
-                        bpDb.close();
-                      } catch (_) { /* non-fatal */ }
-                    }
-                    ptDbRw.close();
-                    // Enqueue a new monitor
-                    try {
-                      await reviveOrphanedPlan(plan, ptDbPath, plansDbPath);
-                      revived++;
-                    } catch (err) {
-                      log(`Plan orphan detection: failed to revive paused plan manager: ${err.message}`);
-                    }
-                    continue;
-                  }
-                } catch (_) { /* non-fatal — fall through to stale-pause auto-resume */ }
+                // Paused without do_not_auto_resume — stale-pause auto-resume handles it
               } catch (_) { /* non-fatal — if we can't read metadata, stale-pause auto-resume handles it */ }
             }
             // If ptTask.status is 'active', the existing persistent task revival mechanisms handle it
-            // If ptTask.status is 'paused' without do_not_auto_resume and no ready tasks, stale-pause auto-resume handles it
+            // If ptTask.status is 'paused' without do_not_auto_resume, stale-pause auto-resume handles it
           } catch (err) {
             log(`Plan orphan detection: error checking persistent task for plan "${plan.title}": ${err.message}`);
             try { ptDb?.close(); } catch (_) {}
@@ -4871,6 +4836,79 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         } catch (err) {
           log(`Auto-rollback check error for ${envName}: ${err.message}`);
         }
+      }
+    },
+  });
+
+  // =========================================================================
+  // FLY.IO IMAGE FRESHNESS CHECK (60min cooldown, gate-exempt)
+  // Detects when the Fly.io Docker image is stale (Dockerfile or
+  // remote-runner.sh changed since last deploy) and logs a warning.
+  // =========================================================================
+  await runIfDue('fly_image_freshness', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastFlyImageFreshnessCheck',
+    label: 'Fly.io image freshness (gate-exempt)',
+    localModeSkip: localMode,
+    fn: async () => {
+      try {
+        const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+        if (!fs.existsSync(servicesPath)) return;
+        const svcConfig = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+        if (!svcConfig?.fly || svcConfig.fly.enabled === false) return;
+
+        const { checkImageStaleness } = await import('./lib/fly-image-freshness.js');
+        const freshness = checkImageStaleness(PROJECT_DIR);
+
+        if (!freshness.hasMeta) {
+          log('Fly.io image: no metadata file — cannot check freshness');
+          return;
+        }
+
+        if (freshness.stale) {
+          const changedFiles = [];
+          if (freshness.changedFiles?.dockerfile) changedFiles.push('Dockerfile');
+          if (freshness.changedFiles?.remoteRunner) changedFiles.push('remote-runner.sh');
+          log(`Fly.io image STALE: ${changedFiles.join(', ')} changed since deploy at ${freshness.meta.deployedAt} (${freshness.ageHours}h ago). Run deploy_fly_image({ force: true }) to rebuild.`);
+
+          // File a deputy-CTO report for visibility
+          try {
+            if (Database) {
+              const reportsDbPath = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
+              if (fs.existsSync(reportsDbPath)) {
+                const reportsDb = new Database(reportsDbPath);
+                try {
+                  // Check if we already have a recent pending stale-image report (dedup)
+                  const existing = reportsDb.prepare(
+                    `SELECT id FROM reports WHERE title LIKE '%Fly.io image stale%' AND triage_status = 'pending' AND created_at > datetime('now', '-24 hours') LIMIT 1`
+                  ).get();
+                  if (!existing) {
+                    reportsDb.prepare(
+                      `INSERT INTO reports (id, title, summary, category, priority, reporting_agent, triage_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+                    ).run(
+                      randomUUID(),
+                      'Fly.io image stale — remote demos may fail',
+                      `The Fly.io Docker image was last deployed ${freshness.ageHours}h ago but ${changedFiles.join(' and ')} changed since then. Remote demo execution may produce incorrect results. Fix: call deploy_fly_image({ force: true }) to rebuild the image.`,
+                      'infrastructure',
+                      'high',
+                      'hourly-automation',
+                      'pending'
+                    );
+                    log('Filed deputy-CTO report for stale Fly.io image');
+                  }
+                } finally {
+                  reportsDb.close();
+                }
+              }
+            }
+          } catch (reportErr) {
+            log(`Failed to file stale image report (non-fatal): ${reportErr.message}`);
+          }
+        } else {
+          log(`Fly.io image: fresh (${freshness.ageHours}h old, app: ${freshness.meta.appName})`);
+        }
+      } catch (err) {
+        log(`Fly.io image freshness check error (non-fatal): ${err.message}`);
       }
     },
   });

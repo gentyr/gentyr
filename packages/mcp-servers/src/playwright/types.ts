@@ -422,6 +422,8 @@ export interface DemoRunState {
   last_polled_at?: number;
   run_id?: string;
   telemetry_dir?: string;
+  /** Warning when Fly.io image is stale (Dockerfile or remote-runner.sh changed since last deploy) */
+  image_staleness_warning?: string;
 }
 
 export interface StopDemoResult {
