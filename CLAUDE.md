@@ -664,13 +664,17 @@ Non-exempt task completions are independently audited to verify that work was ge
 
 ## Global Deputy-CTO Monitor
 
-An optional persistent deputy-CTO session operating in continuous alignment monitoring mode. When spawned with `GENTYR_DEPUTY_CTO_MONITOR=true` in its environment, the deputy-CTO runs a 5-minute polling loop: enumerates active tasks and persistent tasks, dispatches user-alignment sub-agents in the `alignment` session lane (sub-limit: 3 concurrent) to verify work matches CTO intent before code is written, reads alignment results, sends corrective signals to drifting agents, detects zombies (sessions alive >2h with no recent tool calls), and oversees stuck audit gates.
+An always-on persistent deputy-CTO session operating in continuous alignment monitoring mode. **Auto-spawned** by the `global_monitor_health` block in `hourly-automation.js` (5-minute cycle, gate-exempt). The automation auto-creates the persistent task (with `task_type: "global_monitor"`, `do_not_complete: true`) if none exists, and re-enqueues the monitor at `critical` priority in the `persistent` lane if it dies. No manual bootstrap required. Opt-**out** only: disable via `globalMonitorEnabled: false` automation toggle (or `/global-monitor off`). When spawned with `GENTYR_DEPUTY_CTO_MONITOR=true` in its environment, the deputy-CTO runs a 5-minute polling loop: enumerates active tasks and persistent tasks, dispatches user-alignment sub-agents in the `alignment` session lane (sub-limit: 3 concurrent) to verify work matches CTO intent before code is written, reads alignment results, sends corrective signals to drifting agents, detects zombies (sessions alive >2h with no recent tool calls), and oversees stuck audit gates.
 
 **Escalation framework**: Signals for minor drift (~50%), self-created correction tasks for moderate misalignment (~35%), and `submit_bypass_request` on the affected task for significant drift or systemic issues (~15%).
 
-**Bootstrap**: Create a persistent task with `metadata: { "task_type": "global_monitor", "do_not_complete": true }` and env `GENTYR_DEPUTY_CTO_MONITOR=true`. The `alignment-monitor-briefing.js` PostToolUse hook automatically delivers cross-session alignment summaries to the monitor session on each tool call.
+**Bypass request routing**: When any agent calls `submit_bypass_request`, the `bypass-request-router.js` PostToolUse hook checks if the global monitor is active. If so, it sends a `BYPASS_REQUEST` directive signal to the monitor, giving it ~5 minutes to triage the request before the CTO sees it. The CTO's `session-briefing.js` and `cto-notification-hook.js` apply a 5-minute grace period: pending requests younger than 5 minutes are hidden while the monitor is active. Requests explicitly escalated by the monitor (`deputy_escalated = 1`) bypass the grace period and appear to the CTO immediately. If the monitor is not active, requests appear to the CTO immediately (no grace period).
+
+**Deputy bypass resolution**: 3 exclusive MCP tools on the `agent-tracker` server — `deputy_resolve_bypass_request`, `deputy_approve_deferred_action`, `deputy_escalate_to_cto` — allow the global monitor to handle CTO bypass requests autonomously. Enforced by 3-layer identity verification (env var → session-queue.db metadata → persistent-tasks.db cross-check). CTO-only actions (release-ledger, lockdown, staging) are permanently blocked.
 
 **Signal throttling**: Max 1 signal per agent per 30 minutes. If >5 signals are firing per hour, the monitor self-pauses and escalates a diagnostic report to the CTO.
+
+**Lifecycle**: Runs in the `persistent` lane (no concurrency cap, always spawns immediately). Survives crashes via the persistent task revival system (circuit breaker, heartbeat-stale detection). The `alignment-monitor-briefing.js` PostToolUse hook delivers cross-session alignment summaries on each tool call.
 
 ## Task Category System
 
@@ -1516,7 +1520,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 88 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 89 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 23 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
@@ -1562,7 +1566,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | gate-confirmation-enforcer.js | `mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task` | Block task completion while `pending_audit` is active; prevents bypassing the audit gate |
 | signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |
 
-#### PostToolUse (36 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (37 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1601,6 +1605,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | release-completion-hook.js | `complete_persistent_task` | On release plan-manager completion: unlock staging, generate report, emit audit event, broadcast signal |
 | universal-audit-spawner.js | `complete_task,update_task_progress,complete_persistent_task` | Fire on task completion; when `gate_success_criteria` / `verification_strategy` set, transition to `pending_audit` and enqueue Haiku auditor in `audit` lane |
 | alignment-monitor-briefing.js | `""` (all) | Deliver cross-session alignment violation summaries to active deputy-CTO monitor sessions |
+| bypass-request-router.js | `submit_bypass_request` | Route bypass requests to global monitor via directive signal; CTO sees after 5-min grace period |
 
 #### SessionStart (9 hooks — set initial context)
 

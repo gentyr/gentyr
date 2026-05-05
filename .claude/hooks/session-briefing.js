@@ -403,10 +403,38 @@ function getPendingBypassRequests() {
   try {
     const db = new Database(BYPASS_DB_PATH, { readonly: true });
     db.pragma('busy_timeout = 1000');
-    const requests = db.prepare(
-      "SELECT id, task_type, task_id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
-    ).all();
+
+    // Try with deputy_escalated column; fall back if column doesn't exist yet
+    let requests;
+    try {
+      requests = db.prepare(
+        "SELECT id, task_type, task_id, task_title, category, summary, created_at, deputy_escalated FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
+      ).all();
+    } catch (_) {
+      requests = db.prepare(
+        "SELECT id, task_type, task_id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
+      ).all();
+    }
     db.close();
+
+    if (!requests || requests.length === 0) return null;
+
+    // Grace period: if global monitor is active, hide requests < 5 min old
+    // (the monitor gets a signal and has time to handle them first)
+    // Always show: requests >= 5 min old, or explicitly escalated by the monitor
+    const monitorState = getGlobalMonitorState();
+    const monitorActive = monitorState && (monitorState.state === 'active' || monitorState.state === 'active_no_pid');
+
+    if (monitorActive) {
+      const GRACE_PERIOD_MS = 5 * 60 * 1000;
+      const now = Date.now();
+      requests = requests.filter(req => {
+        if (req.deputy_escalated === 1) return true;
+        const age = now - new Date(req.created_at).getTime();
+        return age >= GRACE_PERIOD_MS;
+      });
+    }
+
     return requests.length > 0 ? requests : null;
   } catch (_) {
     return null;

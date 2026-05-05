@@ -624,6 +624,14 @@
         }]
       },
       {
+        "matcher": "mcp__agent-tracker__submit_bypass_request",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/bypass-request-router.js",
+          "timeout": 10
+        }]
+      },
+      {
         "matcher": "mcp__persistent-task__complete_persistent_task",
         "hooks": [{
           "type": "command",
