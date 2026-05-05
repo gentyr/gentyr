@@ -114,12 +114,22 @@ export function verifyApprovalHmac(keyBase64, proof) {
 // ============================================================================
 
 /**
- * Verify that a verbatim quote exists in a human/user message within a JSONL session file.
- * Reads the file line by line for memory efficiency.
+ * Verify that a verbatim quote exists in a CTO-originated message within a JSONL session file.
+ * Only matches text the CTO actually typed or selected — NOT agent-generated content.
+ *
+ * Matched sources (all require entry.type === 'human' or 'user'):
+ *  1. Raw user messages: direct CTO typing (text blocks or string content)
+ *  2. AskUserQuestion responses: CTO selecting an option (toolUseResult.answers values)
+ *  3. AskUserQuestion tool_result content string (contains the user's answer text)
+ *
+ * NOT matched (security):
+ *  - Assistant messages (type === 'assistant') — agent-generated
+ *  - Tool results from non-AskUserQuestion tools — contain agent/system output
+ *  - System messages — injected by hooks, not CTO-typed
  *
  * @param {string} jsonlPath - Path to the session JSONL file.
- * @param {string} quote - The exact text to find (substring match within a human message).
- * @returns {Promise<{ found: boolean, lineNumber?: number, timestamp?: string, lineContent?: string }>}
+ * @param {string} quote - The exact text to find (substring match within a CTO message).
+ * @returns {Promise<{ found: boolean, lineNumber?: number, timestamp?: string, lineContent?: string, source?: string }>}
  */
 export async function verifyQuoteInJsonl(jsonlPath, quote) {
   if (!fs.existsSync(jsonlPath)) {
@@ -137,36 +147,79 @@ export async function verifyQuoteInJsonl(jsonlPath, quote) {
     try {
       const entry = JSON.parse(line);
 
-      // Check human/user message types (Claude Code JSONL format)
+      // Only check human/user message types (Claude Code JSONL format)
       const type = entry.type || entry.role;
       if (type !== 'human' && type !== 'user') continue;
 
-      // Extract text content — handle both string and structured content
-      let text = '';
-      if (typeof entry.message?.content === 'string') {
-        text = entry.message.content;
-      } else if (typeof entry.content === 'string') {
-        text = entry.content;
-      } else if (Array.isArray(entry.message?.content)) {
-        text = entry.message.content
-          .filter(b => b.type === 'text')
-          .map(b => b.text)
-          .join('\n');
-      } else if (Array.isArray(entry.content)) {
-        text = entry.content
-          .filter(b => b.type === 'text')
-          .map(b => b.text)
-          .join('\n');
+      const contentArr = entry.message?.content || entry.content;
+
+      // Source 1: Check AskUserQuestion answers (toolUseResult.answers)
+      // This is the most reliable source — contains the exact option text the CTO selected
+      if (entry.toolUseResult?.answers) {
+        const answers = entry.toolUseResult.answers;
+        const answerValues = Object.values(answers);
+        for (const answer of answerValues) {
+          if (typeof answer === 'string' && answer.includes(quote)) {
+            rl.close();
+            fileStream.destroy();
+            return {
+              found: true,
+              lineNumber,
+              timestamp: entry.timestamp || entry.created_at || null,
+              lineContent: line.slice(0, 2000),
+              source: 'ask_user_question_answer',
+            };
+          }
+        }
       }
 
-      if (text.includes(quote)) {
+      // Source 2: Raw user messages (direct CTO typing)
+      // Only extract from text blocks and plain string content — NOT from tool_result blocks
+      // (tool_result blocks contain agent output being returned, not CTO-typed text)
+      let text = '';
+      if (typeof contentArr === 'string') {
+        text = contentArr;
+      } else if (Array.isArray(contentArr)) {
+        // Only text blocks (type === 'text') represent CTO-typed content
+        // tool_result blocks are agent responses being relayed — skip them for raw match
+        const textBlocks = contentArr.filter(b => b.type === 'text');
+        if (textBlocks.length > 0) {
+          text = textBlocks.map(b => b.text).join('\n');
+        } else {
+          // Source 3: AskUserQuestion tool_result content string
+          // When the user responds to AskUserQuestion, the response comes as:
+          // content: [{ type: "tool_result", content: "User has answered... \"=<answer>\"..." }]
+          // Only match these if they look like AskUserQuestion responses
+          for (const block of contentArr) {
+            if (block.type === 'tool_result' && typeof block.content === 'string') {
+              // AskUserQuestion responses start with "User has answered your questions:"
+              if (block.content.startsWith('User has answered')) {
+                if (block.content.includes(quote)) {
+                  rl.close();
+                  fileStream.destroy();
+                  return {
+                    found: true,
+                    lineNumber,
+                    timestamp: entry.timestamp || entry.created_at || null,
+                    lineContent: line.slice(0, 2000),
+                    source: 'ask_user_question_tool_result',
+                  };
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (text && text.includes(quote)) {
         rl.close();
         fileStream.destroy();
         return {
           found: true,
           lineNumber,
           timestamp: entry.timestamp || entry.created_at || null,
-          lineContent: line.slice(0, 2000), // Cap for storage
+          lineContent: line.slice(0, 2000),
+          source: 'user_message',
         };
       }
     } catch {
