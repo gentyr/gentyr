@@ -1077,6 +1077,81 @@ export async function isMachineAlive(
 }
 
 // ============================================================================
+// Exported: captureRunningMachineLogs
+// ============================================================================
+
+/**
+ * Capture diagnostic logs from a RUNNING machine into a local directory.
+ *
+ * This function is designed to be called periodically DURING the batch polling
+ * loop — not after the machine has died. Each step is non-fatal with individual
+ * 5s timeouts. Files are overwritten on each call so the most recent capture
+ * is always available.
+ *
+ * Total execution time: < 15s (3 parallel exec calls with 5s timeouts each,
+ * plus one NATS log stream fetch with 10s collection window).
+ *
+ * @returns Object indicating which captures succeeded
+ */
+export async function captureRunningMachineLogs(
+  handle: RemoteDemoHandle,
+  config: FlyConfig,
+  destDir: string,
+): Promise<{ stderr: boolean; stdout: boolean; machineLog: boolean }> {
+  await fsPromises.mkdir(destDir, { recursive: true });
+
+  const result = { stderr: false, stdout: false, machineLog: false };
+
+  // Run all three captures in parallel for speed
+  const [stderrResult, stdoutResult, machineLogResult] = await Promise.allSettled([
+    // 1. Capture last 5KB of stderr
+    (async (): Promise<void> => {
+      const buf = await execInMachine(handle, config, ['tail', '-c', '5000', '/app/.stderr.log'], 5_000);
+      const content = buf.toString('utf8');
+      if (content.length > 0) {
+        await fsPromises.writeFile(path.join(destDir, 'stderr.log'), content);
+        result.stderr = true;
+      }
+    })(),
+
+    // 2. Capture last 5KB of stdout
+    (async (): Promise<void> => {
+      const buf = await execInMachine(handle, config, ['tail', '-c', '5000', '/app/.stdout.log'], 5_000);
+      const content = buf.toString('utf8');
+      if (content.length > 0) {
+        await fsPromises.writeFile(path.join(destDir, 'stdout.log'), content);
+        result.stdout = true;
+      }
+    })(),
+
+    // 3. Capture NATS log stream (works while machine is alive)
+    (async (): Promise<void> => {
+      const logs = await fetchMachineLogs(handle, config);
+      if (logs.length > 0) {
+        await fsPromises.writeFile(path.join(destDir, 'fly-machine.log'), logs);
+        result.machineLog = true;
+      }
+    })(),
+  ]);
+
+  // Log any failures for debugging (non-fatal)
+  if (stderrResult.status === 'rejected') {
+    process.stderr.write(`[fly-runner] captureRunningMachineLogs stderr capture failed: ${stderrResult.reason instanceof Error ? stderrResult.reason.message : String(stderrResult.reason)}\n`);
+  }
+  if (stdoutResult.status === 'rejected') {
+    process.stderr.write(`[fly-runner] captureRunningMachineLogs stdout capture failed: ${stdoutResult.reason instanceof Error ? stdoutResult.reason.message : String(stdoutResult.reason)}\n`);
+  }
+  if (machineLogResult.status === 'rejected') {
+    process.stderr.write(`[fly-runner] captureRunningMachineLogs machineLog capture failed: ${machineLogResult.reason instanceof Error ? machineLogResult.reason.message : String(machineLogResult.reason)}\n`);
+  }
+
+  const captured = [result.stderr && 'stderr', result.stdout && 'stdout', result.machineLog && 'machineLog'].filter(Boolean);
+  process.stderr.write(`[fly-runner] captureRunningMachineLogs: captured [${captured.join(', ')}] to ${destDir}\n`);
+
+  return result;
+}
+
+// ============================================================================
 // Exported: listActiveMachines
 // ============================================================================
 

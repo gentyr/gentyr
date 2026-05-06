@@ -7232,6 +7232,9 @@ async function runRemoteBatchSequence(
         let batchArtifactsPulled = false;
 
         let scenarioTimedOut = false;
+        // Incremental log capture: capture logs every 30s while the machine is alive
+        // so that if it dies suddenly, the most recent 30s-old capture is in the artifact dir
+        let lastLogCaptureAt = 0;
         while (Date.now() < scenarioDeadline && await flyRunnerMod.isMachineAlive(handle, scenarioMachineConfig)) {
           // Check if artifacts are ready (sentinel written AFTER artifacts are copied)
           let batchReady = false;
@@ -7257,6 +7260,14 @@ async function runRemoteBatchSequence(
             break;
           }
 
+          // Incremental log capture every 30 seconds — guarantees diagnostic data
+          // even if the machine dies suddenly between polls. Each step is non-fatal
+          // with 5s individual timeouts, so total overhead is < 15s.
+          if (Date.now() - lastLogCaptureAt > 30_000) {
+            await flyRunnerMod.captureRunningMachineLogs(handle, scenarioMachineConfig, destDir).catch(() => {});
+            lastLogCaptureAt = Date.now();
+          }
+
           await new Promise(r => setTimeout(r, 10_000));
           if (state.status !== 'running') {
             await flyRunnerMod.stopRemoteMachine(handle, scenarioMachineConfig).catch(() => {});
@@ -7271,6 +7282,8 @@ async function runRemoteBatchSequence(
           scenarioTimedOut = true;
           const timeoutSec = Math.round(scenarioTimeoutMs / 1000);
           process.stderr.write(`[fly-runner] Batch: scenario ${batchScenario.scenario_id} timed out after ${timeoutSec}s — killing machine\n`);
+          // Final log capture before killing — last chance to get diagnostics
+          await flyRunnerMod.captureRunningMachineLogs(handle, scenarioMachineConfig, destDir).catch(() => {});
           await flyRunnerMod.stopRemoteMachine(handle, scenarioMachineConfig).catch(() => {});
           // Try to pull whatever artifacts exist before the machine is destroyed
           try { await flyRunnerMod.pullRemoteArtifacts(handle, scenarioMachineConfig, destDir); batchArtifactsPulled = true; } catch { /* non-fatal */ }
@@ -7544,6 +7557,7 @@ async function runRemoteBatchSequence(
           fs.mkdirSync(retryDestDir, { recursive: true });
           let retryArtifactsPulled = false;
           let retryTimedOut = false;
+          let retryLastLogCaptureAt = 0;
 
           while (Date.now() < retryDeadline && await flyRunnerMod.isMachineAlive(retryHandle, retryMachineConfig)) {
             let retryReady = false;
@@ -7564,6 +7578,13 @@ async function runRemoteBatchSequence(
               catch { /* non-fatal */ }
               break;
             }
+
+            // Incremental log capture every 30 seconds during retry polling
+            if (Date.now() - retryLastLogCaptureAt > 30_000) {
+              await flyRunnerMod.captureRunningMachineLogs(retryHandle, retryMachineConfig, retryDestDir).catch(() => {});
+              retryLastLogCaptureAt = Date.now();
+            }
+
             await new Promise(r => setTimeout(r, 10_000));
             if (state.status !== 'running') {
               await flyRunnerMod.stopRemoteMachine(retryHandle, retryMachineConfig).catch(() => {});
@@ -7575,6 +7596,8 @@ async function runRemoteBatchSequence(
           if (Date.now() >= retryDeadline && !retryArtifactsPulled) {
             retryTimedOut = true;
             process.stderr.write(`[fly-runner] Retry: scenario ${scenario.scenario_id} timed out — killing machine\n`);
+            // Final log capture before killing — last chance to get diagnostics
+            await flyRunnerMod.captureRunningMachineLogs(retryHandle, retryMachineConfig, retryDestDir).catch(() => {});
             await flyRunnerMod.stopRemoteMachine(retryHandle, retryMachineConfig).catch(() => {});
             try { await flyRunnerMod.pullRemoteArtifacts(retryHandle, retryMachineConfig, retryDestDir); retryArtifactsPulled = true; } catch { /* non-fatal */ }
           }
