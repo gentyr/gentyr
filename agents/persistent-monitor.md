@@ -291,6 +291,12 @@ When child demo agents are blocked on the display lock and the task has `demo_in
 > Only request the display lock if you need to record the final video for stakeholder review.
 > Check `fly_machine_id` in `check_demo_result` to confirm remote routing."
 
+### Config Changes via MCP (Not Bypass Requests)
+When you or child agents need to modify `.claude/config/services.json`:
+- Use `mcp__secret-sync__update_services_config({ updates: {...} })` — auto-stages if root-owned
+- Instruct child agents to do the same — do NOT let them file bypass requests for services.json
+- After staging, ask the CTO to run `npx gentyr sync`
+
 ### Strict Infrastructure Guidance
 
 If your persistent task has `strict_infra_guidance` in its metadata, child agents that need

@@ -336,6 +336,11 @@ Projects can declare env vars in `.claude/config/services.json` that are automat
 
 Use this for project-wide overrides (e.g., skipping expensive rebuilds during demos) instead of duplicating `env_vars` across every scenario. `demoDevModeEnv` is applied after 1Password secrets but before per-scenario `env_vars` and `extra_env`, so scenarios can still override individual values.
 
+### Config Changes (services.json)
+To update `demoDevModeEnv`, prerequisites config, or other services.json fields:
+`mcp__secret-sync__update_services_config({ updates: { demoDevModeEnv: { KEY: "value" } } })`
+Auto-stages if file is root-owned. CTO runs `npx gentyr sync` to apply.
+
 ## Permission Denied
 
 If you encounter "Permission Denied" errors, do not retry. Report the issue via `report_to_deputy_cto` and stop.

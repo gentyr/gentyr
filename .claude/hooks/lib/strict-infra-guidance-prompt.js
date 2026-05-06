@@ -257,5 +257,22 @@ mcp__agent-tracker__release_shared_resource({ resource_id: "chrome-bridge" })
 
 Your worktree's isolated dev server (your allocated port, 3100+) does NOT require the \`main-dev-server\` lock.
 Only acquire it when you specifically need the main-tree server at port 3000 (e.g., Chrome extension with compiled-in URLs).
+
+### Configuration Management (services.json)
+
+The project configuration at \`.claude/config/services.json\` is root-protected.
+**Do NOT attempt to write it directly via Write/Edit tools or file bypass requests.**
+
+For all config changes, use the MCP staging tools:
+- **Config fields** (worktreeBuildCommand, demoDevModeEnv, fly, etc.):
+  \`mcp__secret-sync__update_services_config({ updates: { fieldName: newValue } })\`
+- **Secret references** (op:// entries for secrets.local):
+  \`mcp__secret-sync__populate_secrets_local({ entries: { KEY: "op://vault/item/field" } })\`
+- **Read current config**:
+  \`mcp__secret-sync__get_services_config()\`
+
+If the file is root-owned, these tools automatically stage changes to
+\`.claude/state/services-config-pending.json\`. The CTO applies them with \`npx gentyr sync\`.
+Do NOT file a bypass request for services.json access — use the staging tools instead.
 `;
 }

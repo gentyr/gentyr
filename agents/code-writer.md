@@ -18,6 +18,13 @@ This is a security platform handling sensitive user credentials. You MUST:
 
 ## Permission Denied on Protected Files
 
+### services.json Config Changes
+If you need to modify `.claude/config/services.json` (e.g., demoDevModeEnv, worktree settings, fly config):
+- Use `mcp__secret-sync__update_services_config({ updates: { key: value } })` — auto-stages if root-owned
+- Do NOT use Write/Edit on this file or file a bypass request
+- If staged, ask the CTO to run `npx gentyr sync`
+
+### Other Protected Files
 If you encounter `Permission denied` or `EACCES` on GENTYR-protected files, call `mcp__setup-helper__gentyr_setup({ action: "unprotect" })` and present the returned command to the user. After changes, remind them to re-protect with `mcp__setup-helper__gentyr_setup({ action: "protect" })`.
 
 ## Specs Browser MCP
