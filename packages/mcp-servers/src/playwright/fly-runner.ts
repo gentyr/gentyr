@@ -615,42 +615,84 @@ export async function fetchMachineLogs(
   config: FlyConfig,
 ): Promise<string> {
   try {
+    // The Fly Machines API /logs endpoint is a NATS-backed SSE stream, not a
+    // request-response endpoint. We must read the stream incrementally and
+    // close it ourselves after collecting enough data or hitting a timeout.
+    // flyFetch creates its own AbortController for the initial connection,
+    // so we use a separate timer to abort the stream reader after collection.
+    const collectTimeoutMs = 10_000; // Collect logs for up to 10 seconds
+
     const response = await flyFetch(
       config,
-      `/apps/${handle.appName}/machines/${handle.machineId}/logs`,
-      { timeout: 15_000 },
+      `/apps/${handle.appName}/machines/${handle.machineId}/logs?nats=true`,
+      { timeout: collectTimeoutMs + 5_000 },
     );
 
-    const body = await response.text();
-    if (!body || !body.trim()) {
-      return '';
-    }
-
-    // The API returns newline-delimited JSON objects. Parse each line and
-    // format into a human-readable log with timestamps.
-    const lines = body.trim().split('\n');
     const formattedLines: string[] = [];
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+    try {
+      const reader = response.body?.getReader();
+      if (!reader) {
+        return '';
+      }
 
-      try {
-        const entry = JSON.parse(trimmed) as {
-          message?: string;
-          timestamp?: string;
-          level?: string;
-          instance?: string;
-          meta?: { instance?: string };
-        };
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const maxLines = 500;
+      const deadline = Date.now() + collectTimeoutMs;
 
-        const ts = entry.timestamp || '';
-        const level = entry.level ? `[${entry.level}]` : '';
-        const msg = entry.message || trimmed;
-        formattedLines.push(`${ts} ${level} ${msg}`.trim());
-      } catch {
-        // Not valid JSON — include raw line as-is
-        formattedLines.push(trimmed);
+      while (formattedLines.length < maxLines && Date.now() < deadline) {
+        // Race each read against the remaining time
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        const readPromise = reader.read();
+        const timeoutPromise = new Promise<{ done: true; value: undefined }>(resolve =>
+          setTimeout(() => resolve({ done: true, value: undefined }), remaining),
+        );
+        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE format: "data: {...}\n\n" — split on double newlines
+        const parts = buffer.split('\n');
+        buffer = parts.pop() || '';  // Keep incomplete line in buffer
+
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (!trimmed || trimmed === '') continue;
+
+          // Strip SSE "data: " prefix if present
+          const jsonStr = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed;
+          if (!jsonStr) continue;
+
+          try {
+            const entry = JSON.parse(jsonStr) as {
+              message?: string;
+              timestamp?: string;
+              level?: string;
+              instance?: string;
+            };
+
+            const ts = entry.timestamp || '';
+            const level = entry.level ? `[${entry.level}]` : '';
+            const msg = entry.message || jsonStr;
+            formattedLines.push(`${ts} ${level} ${msg}`.trim());
+          } catch {
+            // Not valid JSON — include raw if it looks like log content
+            if (jsonStr.length > 2 && !jsonStr.startsWith(':')) {
+              formattedLines.push(jsonStr);
+            }
+          }
+        }
+      }
+
+      reader.cancel().catch(() => {});
+    } catch (readErr: unknown) {
+      // AbortError is expected when our timer fires — that's normal collection end
+      const readMsg = readErr instanceof Error ? readErr.name : '';
+      if (readMsg !== 'AbortError') {
+        process.stderr.write(`[fly-runner] fetchMachineLogs stream read error: ${readMsg}\n`);
       }
     }
 
