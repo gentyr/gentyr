@@ -575,6 +575,75 @@ export async function pollRemoteProgressRaw(
 }
 
 // ============================================================================
+// Exported: fetchMachineLogs — retrieve stdout/stderr via Fly Machines API
+// ============================================================================
+
+/**
+ * Fetch machine logs via the Fly Machines API NATS log stream.
+ *
+ * Unlike `execInMachine()`, this works even after the machine has stopped or
+ * been destroyed — the NATS log stream retains stdout/stderr from the machine's
+ * last run. This makes it the reliable diagnostic source when machines die from
+ * OOM kills, crashes, or Fly preemption (exactly when logs are most needed).
+ *
+ * The endpoint returns newline-delimited JSON objects, each with at least:
+ *   { message: string; timestamp: string; level?: string; instance?: string }
+ *
+ * @returns Formatted log content string, or empty string on any error.
+ */
+export async function fetchMachineLogs(
+  handle: RemoteDemoHandle,
+  config: FlyConfig,
+): Promise<string> {
+  try {
+    const response = await flyFetch(
+      config,
+      `/apps/${handle.appName}/machines/${handle.machineId}/logs`,
+      { timeout: 15_000 },
+    );
+
+    const body = await response.text();
+    if (!body || !body.trim()) {
+      return '';
+    }
+
+    // The API returns newline-delimited JSON objects. Parse each line and
+    // format into a human-readable log with timestamps.
+    const lines = body.trim().split('\n');
+    const formattedLines: string[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      try {
+        const entry = JSON.parse(trimmed) as {
+          message?: string;
+          timestamp?: string;
+          level?: string;
+          instance?: string;
+          meta?: { instance?: string };
+        };
+
+        const ts = entry.timestamp || '';
+        const level = entry.level ? `[${entry.level}]` : '';
+        const msg = entry.message || trimmed;
+        formattedLines.push(`${ts} ${level} ${msg}`.trim());
+      } catch {
+        // Not valid JSON — include raw line as-is
+        formattedLines.push(trimmed);
+      }
+    }
+
+    return formattedLines.join('\n');
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[fly-runner] fetchMachineLogs non-fatal error: ${message}\n`);
+    return '';
+  }
+}
+
+// ============================================================================
 // Internal: execInMachine — run a command and return decoded stdout bytes
 // ============================================================================
 
@@ -736,20 +805,16 @@ export async function pullRemoteArtifacts(
     { remotePath: '/app/.devserver.log', localName: 'devserver.log' },
   ];
 
-  // Also capture the machine's system journal (dmesg + process list) for crash diagnosis
+  // Capture machine logs via Fly API (works even after machine death — OOM, crash, preemption)
   try {
-    const journalBuf = await execInMachine(handle, config, [
-      'sh', '-c',
-      'echo "=== dmesg (last 30 lines) ===" && dmesg 2>/dev/null | tail -30 && ' +
-      'echo "\\n=== process list ===" && ps aux --sort=-rss 2>/dev/null | head -20 && ' +
-      'echo "\\n=== memory ===" && cat /proc/meminfo 2>/dev/null | head -5 && ' +
-      'echo "\\n=== uptime ===" && uptime 2>/dev/null',
-    ], 10_000);
-    const journalPath = path.join(destDir, 'fly-machine.log');
-    await fsPromises.writeFile(journalPath, journalBuf);
-    artifacts.push({ localPath: journalPath, type: inferArtifactType(journalPath) });
+    const logs = await fetchMachineLogs(handle, config);
+    if (logs) {
+      const logPath = path.join(destDir, 'fly-machine.log');
+      await fsPromises.writeFile(logPath, logs);
+      artifacts.push({ localPath: logPath, type: inferArtifactType(logPath) });
+    }
   } catch {
-    // Non-fatal — machine may already be shutting down
+    // Non-fatal
   }
 
   // 15MB limit — base64 encoding adds ~33%, keeping well under exec API response limits
@@ -803,6 +868,24 @@ export async function pullRemoteArtifacts(
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[fly-runner] failed to write ${localName}: ${message}\n`);
+    }
+  }
+
+  // --- Step 2b: Guaranteed Fly API log fetch (fallback if pre-exec fetch missed) ---
+  // If the pre-exec fetch above didn't produce fly-machine.log (e.g., API was
+  // transiently unavailable), try again now. This guarantees we get the NATS log
+  // stream even when all exec-based pulls failed because the machine is dead.
+  const machineLogPath = path.join(destDir, 'fly-machine.log');
+  const machineLogExists = artifacts.some(a => path.basename(a.localPath) === 'fly-machine.log');
+  if (!machineLogExists) {
+    try {
+      const logs = await fetchMachineLogs(handle, config);
+      if (logs) {
+        await fsPromises.writeFile(machineLogPath, logs);
+        artifacts.push({ localPath: machineLogPath, type: inferArtifactType(machineLogPath) });
+      }
+    } catch {
+      // Non-fatal — best-effort fallback
     }
   }
 
