@@ -656,6 +656,16 @@ export const DeployFlyImageArgsSchema = z.object({
 });
 export type DeployFlyImageArgs = z.infer<typeof DeployFlyImageArgsSchema>;
 
+export const DeployProjectImageArgsSchema = z.object({
+  force: z.boolean().optional().default(false)
+    .describe('Rebuild even if a project image already exists in the registry.'),
+  git_ref: z.string().max(200).optional()
+    .describe('Git ref to build from (default: current branch). Must exist on the remote.'),
+  build_cmd: z.string().max(1000).optional()
+    .describe('Build command to run inside the image after install (e.g., "pnpm --recursive build"). Passed as BUILD_CMD build arg.'),
+});
+export type DeployProjectImageArgs = z.infer<typeof DeployProjectImageArgsSchema>;
+
 export const SetFlyMachineRamArgsSchema = z.object({
   machineRamHeadless: z.number().int().min(512).max(16384).optional()
     .describe('RAM in MB for headless remote demos (default: 2048). Headless skips Xvfb/ffmpeg, uses ~900MB.'),

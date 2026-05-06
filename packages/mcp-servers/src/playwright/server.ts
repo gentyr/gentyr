@@ -99,6 +99,8 @@ import {
   type GetFlyStatusArgs,
   DeployFlyImageArgsSchema,
   type DeployFlyImageArgs,
+  DeployProjectImageArgsSchema,
+  type DeployProjectImageArgs,
   SetFlyMachineRamArgsSchema,
   type SetFlyMachineRamArgs,
   GetFlyMachineRamArgsSchema,
@@ -137,6 +139,7 @@ interface FlyConfig {
   machineSize?: string;
   machineRam?: number;
   maxConcurrentMachines?: number;
+  projectImageEnabled?: boolean;
 }
 
 /** Simple string hash for generating synthetic PIDs for remote demo runs. */
@@ -179,6 +182,7 @@ function getFlyConfigFromServices(): FlyConfig | null {
       machineSize: typeof fly['machineSize'] === 'string' ? fly['machineSize'] : undefined,
       machineRam: typeof fly['machineRam'] === 'number' ? fly['machineRam'] : undefined,
       maxConcurrentMachines: typeof fly['maxConcurrentMachines'] === 'number' ? fly['maxConcurrentMachines'] : undefined,
+      projectImageEnabled: fly['projectImageEnabled'] === true,
     };
   } catch {
     return null;
@@ -2612,6 +2616,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         machineSize: flyConfig!.machineSize || 'shared-cpu-2x',
         machineRam: effectiveRam,
         maxConcurrentMachines: flyConfig!.maxConcurrentMachines || 3,
+        projectImageEnabled: flyConfig!.projectImageEnabled,
       } : null;
 
       let activeMachineCount = 0;
@@ -4083,6 +4088,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         machineSize: flyConfig.machineSize || 'shared-cpu-2x',
         machineRam: checkRamConfig.machineRamHeadless,
         maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+        projectImageEnabled: flyConfig.projectImageEnabled,
       };
       const remoteHandle = {
         machineId: entry.fly_machine_id,
@@ -5014,7 +5020,7 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
         const { stopRemoteMachine } = await import('./fly-runner.js');
         await stopRemoteMachine(
           { machineId: entry.fly_machine_id, appName: entry.fly_app_name || flyConfig.appName, region: flyConfig.region || 'iad', startedAt: new Date(entry.started_at).getTime() },
-          { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: readFlyMachineConfig().machineRamHeadless, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3 },
+          { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: readFlyMachineConfig().machineRamHeadless, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3, projectImageEnabled: flyConfig.projectImageEnabled },
         );
       }
     } catch (e) {
@@ -7045,6 +7051,7 @@ async function runRemoteBatchSequence(
     machineSize: flyConfig.machineSize || 'shared-cpu-2x',
     machineRam: batchEffectiveRam,
     maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+    projectImageEnabled: flyConfig.projectImageEnabled,
   };
 
   const maxConcurrent = flyConfig.maxConcurrentMachines || 3;
@@ -8522,6 +8529,8 @@ const tools: AnyToolHandler[] = [
         // and check for any deployment-* tag — the same pattern used by resolveAppImage().
         let imageDeployed: boolean | null = null;
         let imageMessage = '';
+        let projectImageDeployed: boolean | null = null;
+        let registryTags: string[] = [];
         try {
           const controller = new AbortController();
           const registryTimer = setTimeout(() => controller.abort(), 5000);
@@ -8536,9 +8545,12 @@ const tools: AnyToolHandler[] = [
           clearTimeout(registryTimer);
           if (registryResp.ok) {
             const data = (await registryResp.json()) as { tags?: string[] };
-            imageDeployed = !!(data.tags && data.tags.some((t: string) => t.startsWith('deployment-')));
+            registryTags = data.tags || [];
+            imageDeployed = registryTags.some((t: string) => t.startsWith('deployment-'));
+            projectImageDeployed = registryTags.some((t: string) => t.startsWith('project-'));
           } else {
             imageDeployed = false;
+            projectImageDeployed = false;
           }
           if (!imageDeployed) {
             imageMessage = 'No Docker image is deployed to the Fly app. Remote execution will fail until the image is built and pushed. Fix: call deploy_fly_image() to build and push the image.';
@@ -8546,6 +8558,7 @@ const tools: AnyToolHandler[] = [
         } catch {
           // Registry check is best-effort — don't fail the whole status report
           imageDeployed = null;
+          projectImageDeployed = null;
           imageMessage = 'Could not verify image deployment (registry API unreachable or timed out)';
         }
 
@@ -8602,6 +8615,38 @@ const tools: AnyToolHandler[] = [
           }
         } catch { /* non-fatal */ }
 
+        // Check project image staleness via lockfile hash comparison (best-effort, non-fatal)
+        let projectImageStale = false;
+        let projectImageStaleReason = '';
+        let projectImageMetadata: Record<string, unknown> | null = null;
+        let projectImageDeploying = false;
+        try {
+          const projectMetaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+          if (fs.existsSync(projectMetaPath)) {
+            projectImageMetadata = JSON.parse(fs.readFileSync(projectMetaPath, 'utf-8'));
+            if (projectImageMetadata) {
+              projectImageDeploying = (projectImageMetadata as Record<string, unknown>).deploying === true;
+              const storedHash = (projectImageMetadata as Record<string, string>).lockfileHash;
+              if (storedHash) {
+                // Compute current lockfile hash
+                const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
+                if (fs.existsSync(lockfilePath)) {
+                  const currentHash = crypto.createHash('sha256')
+                    .update(fs.readFileSync(lockfilePath))
+                    .digest('hex');
+                  if (currentHash !== storedHash) {
+                    projectImageStale = true;
+                    projectImageStaleReason = 'pnpm-lock.yaml has changed since the project image was built. Run deploy_project_image({ force: true }) to rebuild.';
+                  }
+                }
+              }
+            }
+          }
+        } catch { /* non-fatal */ }
+
+        // Read fly config's projectImageEnabled setting
+        const projectImageEnabled = flySection.projectImageEnabled === true;
+
         return JSON.stringify({
           configured: true,
           enabled: true,
@@ -8611,6 +8656,12 @@ const tools: AnyToolHandler[] = [
           imageAgeHours,
           ...(imageMetadata ? { imageMetadata } : {}),
           ...(imageStaleReason ? { imageStaleReason } : {}),
+          projectImageDeployed,
+          projectImageEnabled,
+          projectImageStale,
+          projectImageDeploying,
+          ...(projectImageMetadata ? { projectImageMetadata } : {}),
+          ...(projectImageStaleReason ? { projectImageStaleReason } : {}),
           appName: flyConfig.appName,
           region: flyConfig.region,
           machineSize: flyConfig.machineSize,
@@ -8733,6 +8784,298 @@ const tools: AnyToolHandler[] = [
         region: flySection.region || 'iad',
         logFile,
         message: `Deploying Docker image to ${flySection.appName} in background (PID ${child.pid}). This takes 3-10 minutes for the remote Docker build. Poll get_fly_status() to check when imageDeployed becomes true. Deploy log: ${logFile}`,
+      });
+    },
+  },
+  {
+    name: 'deploy_project_image',
+    description:
+      'Build and deploy a project-specific Fly.io Docker image with pre-installed dependencies. ' +
+      'Layers on top of the base image (from deploy_fly_image): clones the project repo, runs pnpm install, ' +
+      'installs Playwright browsers, and optionally runs a build command. Reduces cold start from ~90s to ~10s. ' +
+      'After deploying, set fly.projectImageEnabled=true in services.json via update_services_config to activate.',
+    schema: DeployProjectImageArgsSchema,
+    handler: async (args: DeployProjectImageArgs) => {
+      // 1. Read fly config
+      const flySection = getFlyConfigFromServices();
+      if (!flySection || !flySection.appName) {
+        return JSON.stringify({
+          success: false,
+          message: 'Fly.io not configured. Run /setup-fly first.',
+        });
+      }
+
+      // 2. Resolve API token
+      let apiToken: string;
+      try {
+        const { resolved, failedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flySection.apiToken });
+        if (failedKeys.length > 0) {
+          return JSON.stringify({
+            success: false,
+            message: 'FLY_API_TOKEN credential resolution failed. Check 1Password configuration.',
+          });
+        }
+        apiToken = resolved['FLY_API_TOKEN'];
+      } catch {
+        return JSON.stringify({
+          success: false,
+          message: 'Failed to resolve FLY_API_TOKEN from 1Password.',
+        });
+      }
+
+      // 3. Check if project image already exists (skip unless force)
+      if (!args.force) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 5000);
+          const resp = await fetch(
+            `https://registry.fly.io/v2/${flySection.appName}/tags/list`,
+            {
+              headers: { Authorization: `FlyV1 ${apiToken}` },
+              signal: controller.signal,
+            },
+          );
+          clearTimeout(timer);
+          if (resp.ok) {
+            const data = (await resp.json()) as { tags?: string[] };
+            if (data.tags && data.tags.some((t: string) => t.startsWith('project-'))) {
+              return JSON.stringify({
+                success: true,
+                alreadyDeployed: true,
+                message: `Project image already deployed to ${flySection.appName}. Use force: true to rebuild.`,
+              });
+            }
+          }
+        } catch { /* can't check — just deploy */ }
+      }
+
+      // 4. Resolve the base image tag (the project image FROMs this)
+      let baseImageTag: string;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        const resp = await fetch(
+          `https://registry.fly.io/v2/${flySection.appName}/tags/list`,
+          {
+            headers: { Authorization: `FlyV1 ${apiToken}` },
+            signal: controller.signal,
+          },
+        );
+        clearTimeout(timer);
+        if (resp.ok) {
+          const data = (await resp.json()) as { tags?: string[] };
+          const deployTags = (data.tags || [])
+            .filter((t: string) => t.startsWith('deployment-'))
+            .sort();
+          if (deployTags.length > 0) {
+            baseImageTag = `registry.fly.io/${flySection.appName}:${deployTags[deployTags.length - 1]}`;
+          } else {
+            return JSON.stringify({
+              success: false,
+              message: 'No base image found (no deployment-* tags). Run deploy_fly_image() first to build the base image.',
+            });
+          }
+        } else {
+          return JSON.stringify({
+            success: false,
+            message: 'Failed to query registry for base image tags. Ensure the Fly app exists and deploy_fly_image() has been run.',
+          });
+        }
+      } catch (err: unknown) {
+        return JSON.stringify({
+          success: false,
+          message: `Registry query failed: ${err instanceof Error ? err.message : String(err)}. Run deploy_fly_image() first.`,
+        });
+      }
+
+      // 5. Resolve git remote and ref
+      let gitRemote: string;
+      let gitRef: string;
+      try {
+        gitRemote = execSync('git remote get-url origin', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe' }).trim();
+      } catch {
+        return JSON.stringify({
+          success: false,
+          message: 'Could not determine git remote URL. Ensure the project is a git repo with an "origin" remote.',
+        });
+      }
+      // Convert SSH URLs to HTTPS for Docker build context
+      if (gitRemote.startsWith('git@')) {
+        gitRemote = gitRemote.replace(/^git@([^:]+):/, 'https://$1/');
+      }
+      if (args.git_ref) {
+        gitRef = args.git_ref;
+      } else {
+        try {
+          gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe' }).trim();
+        } catch {
+          gitRef = 'main';
+        }
+      }
+
+      // 6. Resolve GIT_AUTH_TOKEN from secrets if available
+      let gitAuthToken = '';
+      try {
+        const services = loadServicesConfig(path.join(PROJECT_DIR, '.claude', 'config', 'services.json'));
+        if (services?.secrets?.local) {
+          const tokenRef = services.secrets.local['GITHUB_TOKEN'] || services.secrets.local['GIT_AUTH_TOKEN'];
+          if (tokenRef && typeof tokenRef === 'string' && tokenRef.startsWith('op://')) {
+            gitAuthToken = opRead(tokenRef);
+          }
+        }
+      } catch { /* non-fatal — public repos work without token */ }
+
+      // 7. Find Dockerfile.project
+      const dockerfileCandidates = [
+        path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright', 'Dockerfile.project'),
+        path.join(PROJECT_DIR, 'infra', 'fly-playwright', 'Dockerfile.project'),
+      ];
+      const dockerfilePath = dockerfileCandidates.find(p => fs.existsSync(p));
+      if (!dockerfilePath) {
+        return JSON.stringify({
+          success: false,
+          message: 'Could not find Dockerfile.project. Ensure GENTYR is installed.',
+        });
+      }
+
+      // 8. Compute current lockfile hash for staleness detection
+      let lockfileHash = '';
+      try {
+        const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
+        if (fs.existsSync(lockfilePath)) {
+          lockfileHash = crypto.createHash('sha256')
+            .update(fs.readFileSync(lockfilePath))
+            .digest('hex');
+        }
+      } catch { /* non-fatal */ }
+
+      // 9. Compute git short SHA for image label
+      let gitShortSha = 'unknown';
+      try {
+        gitShortSha = execSync('git rev-parse --short HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe' }).trim();
+      } catch { /* non-fatal */ }
+
+      // 10. Check flyctl is available
+      try {
+        execSync('which flyctl', { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+      } catch {
+        return JSON.stringify({
+          success: false,
+          message: 'flyctl is not installed. Install it with: brew install flyctl',
+        });
+      }
+
+      // 11. Find or generate fly.toml for the deploy command
+      const flyTomlTemplateCandidates = [
+        path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright', 'fly.toml.template'),
+        path.join(PROJECT_DIR, 'infra', 'fly-playwright', 'fly.toml.template'),
+      ];
+      const flyTomlTemplate = flyTomlTemplateCandidates.find(p => fs.existsSync(p));
+      let flyTomlPath: string;
+      if (flyTomlTemplate) {
+        // Generate fly.toml from template with app name substituted
+        const tomlContent = fs.readFileSync(flyTomlTemplate, 'utf-8')
+          .replace(/\$\{?APP_NAME\}?/g, flySection.appName);
+        flyTomlPath = path.join(os.tmpdir(), `fly-project-image-${Date.now()}.toml`);
+        fs.writeFileSync(flyTomlPath, tomlContent);
+      } else {
+        return JSON.stringify({
+          success: false,
+          message: 'Could not find fly.toml.template. Ensure GENTYR is installed.',
+        });
+      }
+
+      // 12. Build deploy command with build args
+      const imageLabel = `project-${gitShortSha}`;
+      const buildArgs = [
+        'deploy',
+        '--app', flySection.appName,
+        '--config', flyTomlPath,
+        '--dockerfile', dockerfilePath,
+        '--build-arg', `BASE_IMAGE=${baseImageTag}`,
+        '--build-arg', `GIT_REMOTE=${gitRemote}`,
+        '--build-arg', `GIT_REF=${gitRef}`,
+        '--remote-only',
+        '--image-label', imageLabel,
+      ];
+      if (gitAuthToken) {
+        buildArgs.push('--build-arg', `GIT_TOKEN=${gitAuthToken}`);
+      }
+      if (args.build_cmd) {
+        buildArgs.push('--build-arg', `BUILD_CMD=${args.build_cmd}`);
+      }
+
+      // 13. Spawn in background (takes 5-15 minutes for remote build with install)
+      const logFile = path.join(PROJECT_DIR, '.claude', 'state', `fly-project-deploy-${Date.now()}.log`);
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+
+      const logFd = fs.openSync(logFile, 'w');
+      const child = spawn('flyctl', buildArgs, {
+        cwd: path.dirname(dockerfilePath),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+      });
+      child.unref();
+      fs.closeSync(logFd);
+
+      // 14. Store project image metadata for staleness detection
+      const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+      try {
+        const metadata = {
+          deployedAt: new Date().toISOString(),
+          deploying: true,
+          gitSha: gitShortSha,
+          gitRef,
+          lockfileHash,
+          baseImageTag,
+          imageLabel,
+          appName: flySection.appName,
+        };
+        fs.writeFileSync(metaPath, JSON.stringify(metadata, null, 2) + '\n');
+      } catch { /* non-fatal */ }
+
+      // 15. Set up a background watcher to update metadata when deploy completes
+      if (child.pid) {
+        const watcherScript = `
+          while kill -0 ${child.pid} 2>/dev/null; do sleep 5; done
+          EXIT_CODE=$(wait ${child.pid} 2>/dev/null; echo $?)
+          if [ "$EXIT_CODE" = "0" ] 2>/dev/null; then
+            node -e "
+              const fs = require('fs');
+              const p = '${metaPath.replace(/'/g, "\\'")}';
+              try {
+                const m = JSON.parse(fs.readFileSync(p, 'utf-8'));
+                m.deploying = false;
+                m.deployCompletedAt = new Date().toISOString();
+                fs.writeFileSync(p, JSON.stringify(m, null, 2) + '\\n');
+              } catch {}
+            "
+          fi
+        `;
+        const watcher = spawn('bash', ['-c', watcherScript], {
+          detached: true,
+          stdio: 'ignore',
+        });
+        watcher.unref();
+      }
+
+      return JSON.stringify({
+        success: true,
+        deploying: true,
+        pid: child.pid,
+        appName: flySection.appName,
+        baseImage: baseImageTag,
+        gitRef,
+        gitSha: gitShortSha,
+        imageLabel,
+        lockfileHash: lockfileHash || '<not computed>',
+        logFile,
+        message: `Deploying project image to ${flySection.appName} in background (PID ${child.pid}). ` +
+          `This takes 5-15 minutes (clone + pnpm install + browser install). ` +
+          `Poll get_fly_status() to check when projectImageDeployed becomes true. ` +
+          `After deploy completes, enable with: update_services_config({ updates: { fly: { projectImageEnabled: true } } }). ` +
+          `Deploy log: ${logFile}`,
       });
     },
   },
