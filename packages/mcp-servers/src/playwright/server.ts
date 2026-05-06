@@ -7390,6 +7390,298 @@ async function runRemoteBatchSequence(
     }));
   }
 
+  // ── Infra-failure retry phase ──
+  const INFRA_CLASSIFICATIONS = new Set(['oom', 'timeout', 'startup_failure', 'external_kill']);
+  const maxRetries = args.retry_infra_failures ?? 1;
+  if (maxRetries > 0 && state.status === 'running') {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const retriable = state.scenarios.filter(s =>
+        s.status === 'failed' && s.failure_classification != null && INFRA_CLASSIFICATIONS.has(s.failure_classification)
+      );
+      if (retriable.length === 0) break;
+
+      // Batch-level deadline: abort retries if exceeded
+      if (Date.now() >= batchDeadline) {
+        process.stderr.write(`[batch] Retry phase aborted — batch timeout exceeded\n`);
+        break;
+      }
+
+      process.stderr.write(`[batch] Retry ${attempt}/${maxRetries}: ${retriable.length} infra failure(s)\n`);
+
+      for (const scenario of retriable) {
+        if (state.status !== 'running') break;
+        if (Date.now() >= batchDeadline) break;
+
+        const originalFailure = scenario.failure_summary || 'unknown';
+        const wasOom = scenario.failure_classification === 'oom';
+
+        // Reset scenario for re-run
+        scenario.status = 'running';
+        scenario.failure_summary = undefined as any;
+        scenario.failure_classification = undefined;
+        scenario.failure_suggestion = undefined;
+        scenario.stderr_tail = undefined;
+        scenario.fly_machine_log = undefined;
+        state.progress.failed--;
+        state.progress.completed--;
+        persistDemoBatches();
+
+        try {
+          // Build env (same as original — resolve scenario env_vars + secrets.local)
+          const retryEnv: Record<string, string> = {};
+          try {
+            const feedbackDbPath = getUserFeedbackDbPath();
+            if (fs.existsSync(feedbackDbPath)) {
+              const db = new Database(feedbackDbPath, { readonly: true });
+              try {
+                const row = db.prepare('SELECT env_vars FROM demo_scenarios WHERE id = ?')
+                  .get(scenario.scenario_id) as { env_vars: string | null } | undefined;
+                if (row?.env_vars) {
+                  const envVars = JSON.parse(row.env_vars) as Record<string, string>;
+                  const { resolved, failedKeys: envFailed } = resolveOpReferencesStrict(envVars);
+                  if (envFailed.length === 0) Object.assign(retryEnv, resolved);
+                }
+              } catch { /* non-fatal */ }
+              db.close();
+            }
+          } catch { /* non-fatal */ }
+
+          try {
+            const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+            if (fs.existsSync(servicesPath)) {
+              const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+              if (services.secrets?.local) {
+                const { resolved: lr, failedKeys: lf } = resolveOpReferencesStrict(services.secrets.local as Record<string, string>);
+                if (lf.length === 0) Object.assign(retryEnv, lr);
+              }
+              if (services.demoDevModeEnv) Object.assign(retryEnv, services.demoDevModeEnv);
+            }
+          } catch { /* non-fatal */ }
+
+          if (process.env.GITHUB_TOKEN) retryEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
+          if (!retryEnv.GIT_AUTH_TOKEN && retryEnv.GITHUB_TOKEN) {
+            retryEnv.GIT_AUTH_TOKEN = retryEnv.GITHUB_TOKEN;
+          }
+
+          // Git info
+          let gitRemote = '', gitRef = 'main';
+          try {
+            gitRemote = execSync('git remote get-url origin', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+            if (gitRemote.startsWith('git@github.com:')) {
+              gitRemote = gitRemote.replace('git@github.com:', 'https://github.com/');
+            }
+            gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+            if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
+          } catch { /* non-fatal */ }
+
+          // Dev server config
+          let devServerCmd: string | undefined, devServerPort: number | undefined, devServerHealthCheck: string | undefined;
+          try {
+            const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+            if (fs.existsSync(servicesPath)) {
+              const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+              if (services.devServices) {
+                const first = Object.values(services.devServices)[0] as { filter?: string; command?: string; port?: number } | undefined;
+                if (first) {
+                  devServerCmd = first.filter ? `pnpm --filter ${first.filter} ${first.command || 'dev'}` : `pnpm ${first.command || 'dev'}`;
+                  devServerPort = first.port || 3000;
+                  devServerHealthCheck = `curl -sf http://localhost:${devServerPort}`;
+                }
+              }
+            }
+          } catch { /* non-fatal */ }
+
+          // Resolve test file and compute_size from scenario DB
+          let testFile = '';
+          let scenarioComputeSize: string | null = null;
+          try {
+            const feedbackDbPath = getUserFeedbackDbPath();
+            if (fs.existsSync(feedbackDbPath)) {
+              const db = new Database(feedbackDbPath, { readonly: true });
+              try {
+                const row = db.prepare('SELECT test_file, compute_size FROM demo_scenarios WHERE id = ?')
+                  .get(scenario.scenario_id) as { test_file: string | null; compute_size: string | null } | undefined;
+                if (row?.test_file) testFile = row.test_file;
+                if (row?.compute_size) scenarioComputeSize = row.compute_size;
+              } catch { /* */ }
+              db.close();
+            }
+          } catch { /* non-fatal */ }
+
+          // For OOM retries, force 'large' compute size (8192MB)
+          const retryRam = wasOom
+            ? COMPUTE_SIZE_RAM.large
+            : (scenarioComputeSize === 'large' ? COMPUTE_SIZE_RAM.large : baseMachineConfig.machineRam);
+          const retryMachineConfig = { ...baseMachineConfig, machineRam: retryRam };
+
+          // Generate new run ID for the retry
+          const retryScenarioSlug = (scenario.scenario_id || 'adhoc').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 30);
+          const retryRunId = `dr-${retryScenarioSlug}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+          scenario.run_id = retryRunId;
+
+          const retryHandle = await flyRunnerMod.spawnRemoteMachine(retryMachineConfig, {
+            gitRemote,
+            gitRef,
+            testFile,
+            env: retryEnv,
+            timeout: args.timeout ?? 1800000,
+            slowMo: args.slow_mo ?? 0,
+            headless: args.headless,
+            devServerCmd,
+            devServerPort,
+            devServerHealthCheck,
+            scenarioId: scenario.scenario_id,
+            runId: retryRunId,
+            servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
+            batchId: state.batch_id,
+          });
+
+          const retryStartedAt = Date.now();
+          const retryDeadline = retryStartedAt + scenarioTimeoutMs;
+
+          // Poll until machine stops — pull artifacts proactively
+          const retryDestDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-batch-${state.batch_id}-${scenario.scenario_id}-retry${attempt}`);
+          fs.mkdirSync(retryDestDir, { recursive: true });
+          let retryArtifactsPulled = false;
+          let retryTimedOut = false;
+
+          while (Date.now() < retryDeadline && await flyRunnerMod.isMachineAlive(retryHandle, retryMachineConfig)) {
+            let retryReady = false;
+            try {
+              await flyRunnerMod.execInMachine(retryHandle, retryMachineConfig, ['cat', '/app/.artifacts-ready'], 5_000);
+              retryReady = true;
+            } catch {
+              try {
+                const ecBuf = await flyRunnerMod.execInMachine(retryHandle, retryMachineConfig, ['cat', '/app/.exit-code'], 5_000);
+                if (ecBuf.toString('utf8').trim() !== '') {
+                  await new Promise(r => setTimeout(r, 15_000));
+                  retryReady = true;
+                }
+              } catch { /* still running */ }
+            }
+            if (retryReady) {
+              try { const r = await flyRunnerMod.pullRemoteArtifacts(retryHandle, retryMachineConfig, retryDestDir); retryArtifactsPulled = true; if (r.errors.length) process.stderr.write(`[fly-runner] Retry pull errors: ${r.errors.join('; ')}\n`); }
+              catch { /* non-fatal */ }
+              break;
+            }
+            await new Promise(r => setTimeout(r, 10_000));
+            if (state.status !== 'running') {
+              await flyRunnerMod.stopRemoteMachine(retryHandle, retryMachineConfig).catch(() => {});
+              break;
+            }
+          }
+
+          // Timeout check
+          if (Date.now() >= retryDeadline && !retryArtifactsPulled) {
+            retryTimedOut = true;
+            process.stderr.write(`[fly-runner] Retry: scenario ${scenario.scenario_id} timed out — killing machine\n`);
+            await flyRunnerMod.stopRemoteMachine(retryHandle, retryMachineConfig).catch(() => {});
+            try { await flyRunnerMod.pullRemoteArtifacts(retryHandle, retryMachineConfig, retryDestDir); retryArtifactsPulled = true; } catch { /* non-fatal */ }
+          }
+
+          // Fallback artifact pull
+          if (!retryArtifactsPulled) {
+            try { await flyRunnerMod.pullRemoteArtifacts(retryHandle, retryMachineConfig, retryDestDir); } catch { /* non-fatal */ }
+          }
+
+          // Parse results
+          const retryDurationSeconds = Math.round((Date.now() - retryStartedAt) / 1000);
+          scenario.duration_ms = Date.now() - retryStartedAt;
+
+          if (retryTimedOut) {
+            scenario.status = 'failed';
+            scenario.failure_summary = `Scenario timed out after ${Math.round(scenarioTimeoutMs / 1000)}s (retry ${attempt})`;
+            scenario.failure_classification = 'timeout';
+            scenario.failure_suggestion = 'Increase scenario_timeout or investigate why the demo is taking too long.';
+          } else {
+            let exitCode = -1;
+            try {
+              const ecPath = path.join(retryDestDir, 'exit-code');
+              if (fs.existsSync(ecPath)) exitCode = parseInt(fs.readFileSync(ecPath, 'utf-8').trim(), 10);
+            } catch { /* non-fatal */ }
+
+            scenario.status = exitCode === 0 ? 'passed' : 'failed';
+
+            if (exitCode !== 0) {
+              let retryStderrTail = '';
+              try {
+                const stderrPath = path.join(retryDestDir, 'stderr.log');
+                if (fs.existsSync(stderrPath)) retryStderrTail = fs.readFileSync(stderrPath, 'utf-8').slice(-5000);
+              } catch { /* non-fatal */ }
+
+              let retryMachineLog = '';
+              try {
+                const machineLogPath = path.join(retryDestDir, 'fly-machine.log');
+                if (fs.existsSync(machineLogPath)) retryMachineLog = fs.readFileSync(machineLogPath, 'utf-8').slice(-3000);
+              } catch { /* non-fatal */ }
+
+              scenario.stderr_tail = retryStderrTail || undefined;
+              scenario.fly_machine_log = retryMachineLog || undefined;
+
+              const retryProgress = readDemoProgress(path.join(retryDestDir, 'progress.jsonl'));
+              const retryClassification = classifyFailure({
+                exitCode,
+                stderrTail: retryStderrTail,
+                machineLog: retryMachineLog,
+                durationSeconds: retryDurationSeconds,
+                computeSizeUsed: wasOom ? 'large' : (scenarioComputeSize || 'standard'),
+                scenarioId: scenario.scenario_id,
+                progress: retryProgress,
+              });
+
+              scenario.failure_classification = retryClassification.classification;
+              scenario.failure_suggestion = retryClassification.suggestion;
+              scenario.failure_summary = retryClassification.reason;
+
+              if (process.env.ELASTIC_CLOUD_ID || process.env.ELASTIC_ENDPOINT) {
+                scenario.elastic_query_hint =
+                  `Query logs: mcp__elastic-logs__query_logs({ query: 'demo.run_id:"${retryRunId}"', index: 'logs-demo-telemetry-*' })`;
+              }
+            }
+          }
+
+          await flyRunnerMod.stopRemoteMachine(retryHandle, retryMachineConfig).catch(() => {});
+
+          // Persist demo result for the retry
+          if (scenario.status === 'passed' || scenario.status === 'failed') {
+            persistDemoResult({
+              scenarioId: scenario.scenario_id,
+              status: scenario.status,
+              executionMode: 'remote',
+              startedAt: new Date(retryStartedAt).toISOString(),
+              completedAt: new Date().toISOString(),
+              durationMs: scenario.duration_ms ?? 0,
+              flyMachineId: retryHandle.machineId,
+              branch: getDemoBranch() ?? undefined,
+              failureReason: scenario.failure_summary,
+            });
+          }
+
+        } catch (err) {
+          scenario.status = 'failed';
+          scenario.failure_summary = err instanceof Error ? err.message : String(err);
+          scenario.failure_classification = 'unknown';
+        }
+
+        // Track the retry
+        if (!state.retried_scenarios) state.retried_scenarios = [];
+        state.retried_scenarios.push({
+          scenario_id: scenario.scenario_id,
+          original_failure: originalFailure,
+          retry_result: scenario.status,
+          retry_attempt: attempt,
+          ...(wasOom ? { oom_upgraded: true } : {}),
+        });
+
+        // Update aggregate counters
+        state.progress.completed++;
+        if (scenario.status === 'passed') state.progress.passed++;
+        else if (scenario.status === 'failed') state.progress.failed++;
+        persistDemoBatches();
+      }
+    }
+  }
+
   // ── Batch-completion cleanup: destroy all machines tagged with this batch_id ──
   try {
     const activeMachines = await flyRunnerMod.listActiveMachines(baseMachineConfig);
@@ -7844,13 +8136,19 @@ function checkDemoBatchResult(args: CheckDemoBatchResultArgs): CheckDemoBatchRes
       break;
   }
 
-  return {
+  const batchResult: CheckDemoBatchResultResult = {
     status: state.status,
     batch_id,
     progress: { ...state.progress },
     scenarios: state.scenarios.map(s => ({ ...s })),
     message,
   };
+
+  if (state.retried_scenarios && state.retried_scenarios.length > 0) {
+    batchResult.retried_scenarios = state.retried_scenarios.map(r => ({ ...r }));
+  }
+
+  return batchResult;
 }
 
 /**

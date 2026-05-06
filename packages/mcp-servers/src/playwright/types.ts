@@ -554,6 +554,8 @@ export const RunDemoBatchArgsSchema = z.object({
     .describe('Per-scenario timeout in milliseconds (default: 10min = 600000). If a scenario exceeds this, its machine is killed and it is marked failed with timeout classification.'),
   batch_timeout: z.coerce.number().int().min(120000).max(7200000).optional().default(1800000)
     .describe('Overall batch timeout in milliseconds (default: 30min = 1800000). If the entire batch exceeds this, remaining scenarios are skipped.'),
+  retry_infra_failures: z.coerce.number().int().min(0).max(3).optional().default(1)
+    .describe('Number of retries for infrastructure failures (oom, timeout, startup_failure, external_kill). Default 1. Test failures are NOT retried.'),
 });
 
 export type RunDemoBatchArgs = z.infer<typeof RunDemoBatchArgsSchema>;
@@ -618,12 +620,23 @@ export interface DemoBatchProgress {
   current_scenario?: string;
 }
 
+/** Tracking entry for a scenario that was retried due to infrastructure failure */
+export interface RetriedScenarioEntry {
+  scenario_id: string;
+  original_failure: string;
+  retry_result: string;
+  retry_attempt: number;
+  oom_upgraded?: boolean;
+}
+
 export interface CheckDemoBatchResultResult {
   status: DemoBatchStatus;
   batch_id: string;
   progress: DemoBatchProgress;
   scenarios: BatchScenarioResult[];
   message: string;
+  /** Scenarios that were retried due to infrastructure failures (oom, timeout, startup_failure, external_kill) */
+  retried_scenarios?: RetriedScenarioEntry[];
 }
 
 export interface StopDemoBatchResult {
@@ -645,6 +658,8 @@ export interface DemoBatchState {
   current_pid?: number;
   current_progress_file?: string;
   stop_on_failure: boolean;
+  /** Scenarios that were retried due to infrastructure failures */
+  retried_scenarios?: RetriedScenarioEntry[];
 }
 
 export const GetFlyStatusArgsSchema = z.object({});
