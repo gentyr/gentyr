@@ -75,6 +75,8 @@ export interface RemoteDemoRequest {
   runId?: string;
   /** Path to services.json for Tigris config discovery */
   servicesJsonPath?: string;
+  /** Batch ID — set when this machine is part of a batch run */
+  batchId?: string;
 }
 
 export interface RemoteDemoHandle {
@@ -106,6 +108,8 @@ export interface MachineState {
   state: 'created' | 'starting' | 'started' | 'stopping' | 'stopped' | 'destroying' | 'destroyed';
   created_at: string;
   updated_at: string;
+  /** Machine metadata set at creation time (gentyr, scenario_id, run_id, batch_id) */
+  metadata?: Record<string, string>;
 }
 
 // ============================================================================
@@ -140,6 +144,7 @@ interface FlyMachineResponse {
     image?: string;
     env?: Record<string, string>;
     auto_destroy?: boolean;
+    metadata?: Record<string, string>;
   };
 }
 
@@ -428,6 +433,12 @@ export async function spawnRemoteMachine(
     ? [{ volume: config.volumeId, path: '/cache' }]
     : [];
 
+  // Build metadata for machine identification and cleanup coordination
+  const metadata: Record<string, string> = { gentyr: 'true' };
+  if (request.scenarioId) metadata.scenario_id = request.scenarioId;
+  if (request.runId) metadata.run_id = request.runId;
+  if (request.batchId) metadata.batch_id = request.batchId;
+
   const body = {
     name: machineName,
     region: config.region,
@@ -444,6 +455,7 @@ export async function spawnRemoteMachine(
       restart: { policy: 'no' },
       mounts,
       stop_config: { timeout: '75s' },
+      metadata,
     },
   };
 
@@ -951,5 +963,6 @@ export async function listActiveMachines(
       state: m.state,
       created_at: m.created_at,
       updated_at: m.updated_at,
+      metadata: m.config?.metadata,
     }));
 }

@@ -79,6 +79,7 @@ import {
   type StopDemoBatchResult,
   type DemoBatchState,
   type BatchScenarioResult,
+  type FailureClassificationResult,
   RunPrerequisitesArgsSchema,
   type RunPrerequisitesArgs,
   type PrerequisiteExecEntry,
@@ -1231,6 +1232,98 @@ function persistDemoResult(opts: {
   } catch {
     // Non-fatal — result persistence must never block demo execution
   }
+}
+
+// ============================================================================
+// Shared Failure Classifier
+// ============================================================================
+
+/**
+ * Classify a demo failure based on exit code, stderr, machine logs, and progress.
+ * Used by both single-demo check_demo_result and batch per-scenario completion to
+ * provide consistent, actionable failure diagnostics.
+ */
+function classifyFailure(opts: {
+  exitCode: number;
+  stderrTail?: string;
+  machineLog?: string;
+  durationSeconds: number;
+  computeSizeUsed?: string;
+  scenarioId?: string;
+  progress?: DemoProgress | null;
+}): FailureClassificationResult {
+  const { exitCode, stderrTail = '', machineLog = '', durationSeconds, computeSizeUsed, scenarioId, progress } = opts;
+
+  // OOM: exit 137 OR OOM patterns in stderr OR kernel OOM killer in machine log
+  const stderrOomPattern = /out of memory|oom|cannot allocate|killed.*signal 9|SIGKILL/i;
+  const machineLogOomPattern = /oom.killer|Out of memory|Killed process/i;
+  if (exitCode === 137 || stderrOomPattern.test(stderrTail) || machineLogOomPattern.test(machineLog)) {
+    const currentSize = computeSizeUsed || 'standard';
+    let suggestion: string;
+    if (currentSize !== 'large') {
+      suggestion = `Demo was killed (likely OOM — exit code ${exitCode}). Current: ${currentSize} (4GB). ` +
+        `Fix: update_demo_scenario({ id: "${scenarioId || 'SCENARIO_ID'}", compute_size: "large" })`;
+    } else {
+      suggestion = `Demo was killed (likely OOM — exit code ${exitCode}) even at large (8GB). ` +
+        `Investigate memory usage — the demo may have a memory leak.`;
+    }
+    return {
+      classification: 'oom',
+      reason: `Process killed with exit code ${exitCode} — OOM pattern detected`,
+      suggestion,
+    };
+  }
+
+  // Startup failure: machine alive < 30s
+  if (durationSeconds < 30) {
+    return {
+      classification: 'startup_failure',
+      reason: `Machine exited after only ${durationSeconds}s — likely a startup/clone/install failure`,
+      suggestion: 'Check stderr_tail for clone or install errors. The git ref or dependencies may be broken.',
+    };
+  }
+
+  // Timeout: stall detector pattern in stderr
+  if (/STALL DETECTED/i.test(stderrTail)) {
+    return {
+      classification: 'timeout',
+      reason: 'Stall detector killed the process — demo stopped producing output',
+      suggestion: 'Add [demo-progress] checkpoints or increase stall_timeout_ms. The demo may be stuck in an infinite loop or waiting for a UI element that never appears.',
+    };
+  }
+
+  // External kill: SIGTERM in stderr (Fly.io or hourly cleanup killed the machine)
+  if (/SIGTERM/i.test(stderrTail)) {
+    return {
+      classification: 'external_kill',
+      reason: 'Process received SIGTERM — machine was killed externally (Fly.io stop or cleanup)',
+      suggestion: 'This is typically a transient infra failure. Retry the scenario.',
+    };
+  }
+
+  // Test failure: progress shows failures + exit > 0 and < 128 (normal failure codes)
+  if (progress?.has_failures && exitCode > 0 && exitCode < 128) {
+    return {
+      classification: 'test_failure',
+      reason: `${progress.tests_failed} test(s) failed out of ${progress.tests_completed}`,
+    };
+  }
+
+  // Recording failure: ffmpeg errors
+  if (/ffmpeg.*error|recording.*fail/i.test(stderrTail)) {
+    return {
+      classification: 'recording_failure',
+      reason: 'Recording infrastructure (ffmpeg/Xvfb) failed',
+      suggestion: 'The test itself may have passed but recording failed. Check if the demo needs headed mode or if ffmpeg crashed.',
+    };
+  }
+
+  // Unknown — fallback
+  return {
+    classification: 'unknown',
+    reason: `Exit code: ${exitCode} — no specific failure pattern matched`,
+    suggestion: 'Check stderr_tail and fly_machine_log for clues. Consider running the demo locally with run_demo({ remote: false }) to reproduce.',
+  };
 }
 
 /**
@@ -4243,35 +4336,29 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         }
       }
 
-      // ── Remote OOM detection ──
+      // ── Remote failure classification (shared classifier) ──
       let remoteOomDetected = false;
       let remoteComputeSizeSuggestion: string | undefined;
       if (remoteStatus === 'failed') {
-        const oomPatterns = /out of memory|oom|cannot allocate|killed.*signal 9|SIGKILL/i;
-        if (remoteExitCode === 137 || oomPatterns.test(remoteStderrTail)) {
+        let remoteMachineLogContent = '';
+        try {
+          const machineLogPath = path.join(destDir, 'fly-machine.log');
+          if (fs.existsSync(machineLogPath)) remoteMachineLogContent = fs.readFileSync(machineLogPath, 'utf-8');
+        } catch { /* non-fatal */ }
+
+        const remoteClassification = classifyFailure({
+          exitCode: remoteExitCode,
+          stderrTail: remoteStderrTail,
+          machineLog: remoteMachineLogContent,
+          durationSeconds: remoteDuration,
+          computeSizeUsed: entry.compute_size_used,
+          scenarioId: entry.scenario_id,
+          progress: remoteProgress,
+        });
+
+        if (remoteClassification.classification === 'oom') {
           remoteOomDetected = true;
-        }
-        if (!remoteOomDetected) {
-          try {
-            const machineLogPath = path.join(destDir, 'fly-machine.log');
-            if (fs.existsSync(machineLogPath)) {
-              const machineLog = fs.readFileSync(machineLogPath, 'utf-8');
-              if (/oom.killer|Out of memory|Killed process/i.test(machineLog)) {
-                remoteOomDetected = true;
-              }
-            }
-          } catch { /* non-fatal */ }
-        }
-        if (remoteOomDetected) {
-          const currentSize = entry.compute_size_used || 'standard';
-          if (currentSize !== 'large') {
-            remoteComputeSizeSuggestion = `Demo was killed (likely OOM — exit code ${remoteExitCode}). ` +
-              `Current: ${currentSize} (4GB). ` +
-              `Fix: update_demo_scenario({ id: "${entry.scenario_id}", compute_size: "large" })`;
-          } else {
-            remoteComputeSizeSuggestion = `Demo was killed (likely OOM — exit code ${remoteExitCode}) even at large (8GB). ` +
-              `Investigate memory usage — the demo may have a memory leak.`;
-          }
+          remoteComputeSizeSuggestion = remoteClassification.suggestion;
         }
       }
 
@@ -4784,37 +4871,29 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     }
   }
 
-  // ── OOM detection: exit 137 = SIGKILL (typically OOM killer), or stderr/log patterns ──
+  // ── Failure classification (shared classifier) ──
   let oomDetected = false;
   let computeSizeSuggestion: string | undefined;
   if (entry.status === 'failed') {
-    const oomPatterns = /out of memory|oom|cannot allocate|killed.*signal 9|SIGKILL/i;
-    const stderrContent = entry.stderr_tail || '';
-    if (entry.exit_code === 137 || oomPatterns.test(stderrContent)) {
-      oomDetected = true;
-    }
-    // For remote demos, also check fly-machine.log for OOM killer signals
-    if (!oomDetected && entry.remote && entry.artifacts_dest_dir) {
+    let localMachineLogContent = '';
+    if (entry.remote && entry.artifacts_dest_dir) {
       try {
         const machineLogPath = path.join(entry.artifacts_dest_dir, 'fly-machine.log');
-        if (fs.existsSync(machineLogPath)) {
-          const machineLog = fs.readFileSync(machineLogPath, 'utf-8');
-          if (/oom.killer|Out of memory|Killed process/i.test(machineLog)) {
-            oomDetected = true;
-          }
-        }
+        if (fs.existsSync(machineLogPath)) localMachineLogContent = fs.readFileSync(machineLogPath, 'utf-8');
       } catch { /* non-fatal */ }
     }
-    if (oomDetected) {
-      const currentSize = entry.compute_size_used || 'standard';
-      if (currentSize !== 'large') {
-        computeSizeSuggestion = `Demo was killed (likely OOM — exit code ${entry.exit_code ?? 'unknown'}). ` +
-          `Current: ${currentSize} (4GB). ` +
-          `Fix: update_demo_scenario({ id: "${entry.scenario_id}", compute_size: "large" })`;
-      } else {
-        computeSizeSuggestion = `Demo was killed (likely OOM — exit code ${entry.exit_code ?? 'unknown'}) even at large (8GB). ` +
-          `Investigate memory usage — the demo may have a memory leak.`;
-      }
+    const localClassification = classifyFailure({
+      exitCode: entry.exit_code ?? -1,
+      stderrTail: entry.stderr_tail || '',
+      machineLog: localMachineLogContent,
+      durationSeconds: durationSec,
+      computeSizeUsed: entry.compute_size_used,
+      scenarioId: entry.scenario_id,
+      progress: progress,
+    });
+    if (localClassification.classification === 'oom') {
+      oomDetected = true;
+      computeSizeSuggestion = localClassification.suggestion;
     }
   }
 
@@ -6958,7 +7037,8 @@ async function runRemoteBatchSequence(
   // Read per-mode RAM config (state file, always writable, no sync needed)
   const batchRamConfig = readFlyMachineConfig();
   const batchEffectiveRam = args.headless ? batchRamConfig.machineRamHeadless : batchRamConfig.machineRamHeaded;
-  const machineConfig = {
+  const COMPUTE_SIZE_RAM = { standard: 4096, large: 8192 } as const;
+  const baseMachineConfig = {
     apiToken: flyResolved['FLY_API_TOKEN'],
     appName: flyConfig.appName,
     region: flyConfig.region || 'iad',
@@ -6970,9 +7050,28 @@ async function runRemoteBatchSequence(
   const maxConcurrent = flyConfig.maxConcurrentMachines || 3;
   const remoteEntries = state.scenarios.filter(s => remoteScenarioIds.has(s.scenario_id));
 
+  // Batch-level deadline
+  const batchDeadline = Date.now() + (args.batch_timeout ?? 1800000);
+  const scenarioTimeoutMs = args.scenario_timeout ?? 600000;
+
   // Process in chunks of maxConcurrent
   for (let i = 0; i < remoteEntries.length; i += maxConcurrent) {
     if (state.status !== 'running') break;
+
+    // Batch-level timeout check: if exceeded, skip remaining scenarios
+    if (Date.now() >= batchDeadline) {
+      process.stderr.write(`[fly-runner] Batch timeout reached — skipping remaining ${remoteEntries.length - i} scenario(s)\n`);
+      for (let j = i; j < remoteEntries.length; j++) {
+        if (remoteEntries[j].status === 'pending') {
+          remoteEntries[j].status = 'skipped';
+          remoteEntries[j].failure_summary = 'Skipped — batch timeout exceeded';
+          state.progress.skipped++;
+          state.progress.completed++;
+        }
+      }
+      persistDemoBatches();
+      break;
+    }
 
     const chunk = remoteEntries.slice(i, i + maxConcurrent);
     await Promise.all(chunk.map(async (batchScenario) => {
@@ -7074,26 +7173,33 @@ async function runRemoteBatchSequence(
           }
         } catch { /* non-fatal */ }
 
-        // Resolve test file from scenario
+        // Resolve test file and compute_size from scenario
         let testFile = '';
+        let scenarioComputeSize: string | null = null;
         try {
           const feedbackDbPath = getUserFeedbackDbPath();
           if (fs.existsSync(feedbackDbPath)) {
             const db = new Database(feedbackDbPath, { readonly: true });
             try {
-              const row = db.prepare('SELECT test_file FROM demo_scenarios WHERE id = ?')
-                .get(batchScenario.scenario_id) as { test_file: string | null } | undefined;
+              const row = db.prepare('SELECT test_file, compute_size FROM demo_scenarios WHERE id = ?')
+                .get(batchScenario.scenario_id) as { test_file: string | null; compute_size: string | null } | undefined;
               if (row?.test_file) testFile = row.test_file;
+              if (row?.compute_size) scenarioComputeSize = row.compute_size;
             } catch { /* */ }
             db.close();
           }
         } catch { /* non-fatal */ }
 
+        // Per-scenario compute_size override: 'large' = 8192MB, otherwise use global default
+        const scenarioRam = scenarioComputeSize === 'large' ? COMPUTE_SIZE_RAM.large : baseMachineConfig.machineRam;
+        const scenarioMachineConfig = { ...baseMachineConfig, machineRam: scenarioRam };
+
         // Generate unique run ID for Tigris correlation (same format as run_demo)
         const batchScenarioSlug = (batchScenario.scenario_id || 'adhoc').replace(/[^a-zA-Z0-9-]/g, '').slice(0, 30);
         const batchRunId = `dr-${batchScenarioSlug}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+        batchScenario.run_id = batchRunId;
 
-        const handle = await flyRunnerMod.spawnRemoteMachine(machineConfig, {
+        const handle = await flyRunnerMod.spawnRemoteMachine(scenarioMachineConfig, {
           gitRemote,
           gitRef,
           testFile,
@@ -7107,23 +7213,28 @@ async function runRemoteBatchSequence(
           scenarioId: batchScenario.scenario_id,
           runId: batchRunId,
           servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
+          batchId: state.batch_id,
         });
+
+        const scenarioStartedAt = Date.now();
+        const scenarioDeadline = scenarioStartedAt + scenarioTimeoutMs;
 
         // Poll until machine stops — pull artifacts proactively when exit code is written
         const destDir = path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-batch-${state.batch_id}-${batchScenario.scenario_id}`);
         fs.mkdirSync(destDir, { recursive: true });
         let batchArtifactsPulled = false;
 
-        while (await flyRunnerMod.isMachineAlive(handle, machineConfig)) {
+        let scenarioTimedOut = false;
+        while (Date.now() < scenarioDeadline && await flyRunnerMod.isMachineAlive(handle, scenarioMachineConfig)) {
           // Check if artifacts are ready (sentinel written AFTER artifacts are copied)
           let batchReady = false;
           try {
-            await flyRunnerMod.execInMachine(handle, machineConfig, ['cat', '/app/.artifacts-ready'], 5_000);
+            await flyRunnerMod.execInMachine(handle, scenarioMachineConfig, ['cat', '/app/.artifacts-ready'], 5_000);
             batchReady = true;
           } catch {
             // Sentinel not found — try .exit-code fallback (old Docker image)
             try {
-              const ecBuf = await flyRunnerMod.execInMachine(handle, machineConfig, ['cat', '/app/.exit-code'], 5_000);
+              const ecBuf = await flyRunnerMod.execInMachine(handle, scenarioMachineConfig, ['cat', '/app/.exit-code'], 5_000);
               if (ecBuf.toString('utf8').trim() !== '') {
                 process.stderr.write('[fly-runner] Batch: .artifacts-ready not found, falling back to .exit-code with 15s delay\n');
                 await new Promise(r => setTimeout(r, 15_000));
@@ -7134,42 +7245,97 @@ async function runRemoteBatchSequence(
           if (batchReady) {
             // Demo done — pull artifacts now while machine is still alive
             process.stderr.write(`[fly-runner] Batch: artifacts ready, pulling proactively\n`);
-            try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); batchArtifactsPulled = true; if (r.errors.length) process.stderr.write(`[fly-runner] Batch proactive pull errors: ${r.errors.join('; ')}\n`); }
+            try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, scenarioMachineConfig, destDir); batchArtifactsPulled = true; if (r.errors.length) process.stderr.write(`[fly-runner] Batch proactive pull errors: ${r.errors.join('; ')}\n`); }
             catch { /* non-fatal */ }
             break;
           }
 
           await new Promise(r => setTimeout(r, 10_000));
           if (state.status !== 'running') {
-            await flyRunnerMod.stopRemoteMachine(handle, machineConfig).catch(() => {});
+            await flyRunnerMod.stopRemoteMachine(handle, scenarioMachineConfig).catch(() => {});
             batchScenario.status = 'skipped';
             persistDemoBatches();
             return;
           }
         }
 
+        // Check if scenario timed out (deadline exceeded while machine was still alive)
+        if (Date.now() >= scenarioDeadline && !batchArtifactsPulled) {
+          scenarioTimedOut = true;
+          const timeoutSec = Math.round(scenarioTimeoutMs / 1000);
+          process.stderr.write(`[fly-runner] Batch: scenario ${batchScenario.scenario_id} timed out after ${timeoutSec}s — killing machine\n`);
+          await flyRunnerMod.stopRemoteMachine(handle, scenarioMachineConfig).catch(() => {});
+          // Try to pull whatever artifacts exist before the machine is destroyed
+          try { await flyRunnerMod.pullRemoteArtifacts(handle, scenarioMachineConfig, destDir); batchArtifactsPulled = true; } catch { /* non-fatal */ }
+        }
+
         // Pull artifacts and parse results (fallback if proactive pull didn't happen)
         if (!batchArtifactsPulled) {
-          try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, machineConfig, destDir); if (r.errors.length) process.stderr.write(`[fly-runner] Batch fallback pull errors: ${r.errors.join('; ')}\n`); }
+          try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, scenarioMachineConfig, destDir); if (r.errors.length) process.stderr.write(`[fly-runner] Batch fallback pull errors: ${r.errors.join('; ')}\n`); }
           catch { /* non-fatal — machine may already be destroyed */ }
         }
 
-        let exitCode = -1;
-        try {
-          const ecPath = path.join(destDir, 'exit-code');
-          if (fs.existsSync(ecPath)) exitCode = parseInt(fs.readFileSync(ecPath, 'utf-8').trim(), 10);
-        } catch { /* non-fatal */ }
+        // ── Per-scenario diagnostic extraction (parity with single-demo check_demo_result) ──
+        const scenarioDurationSeconds = Math.round((Date.now() - scenarioStartedAt) / 1000);
+        batchScenario.duration_ms = Date.now() - scenarioStartedAt;
 
-        batchScenario.status = exitCode === 0 ? 'passed' : 'failed';
+        // Handle scenario timeout (machine was killed by our deadline)
+        if (scenarioTimedOut) {
+          batchScenario.status = 'failed';
+          batchScenario.failure_summary = `Scenario timed out after ${Math.round(scenarioTimeoutMs / 1000)}s`;
+          batchScenario.failure_classification = 'timeout';
+          batchScenario.failure_suggestion = 'Increase scenario_timeout or investigate why the demo is taking too long. Check prerequisites and dev server startup time.';
+        } else {
+          let exitCode = -1;
+          try {
+            const ecPath = path.join(destDir, 'exit-code');
+            if (fs.existsSync(ecPath)) exitCode = parseInt(fs.readFileSync(ecPath, 'utf-8').trim(), 10);
+          } catch { /* non-fatal */ }
 
-        if (exitCode !== 0) {
-          const progress = readDemoProgress(path.join(destDir, 'progress.jsonl'));
-          batchScenario.failure_summary = progress?.has_failures
-            ? `${progress.tests_failed} test(s) failed out of ${progress.tests_completed}`
-            : `Exit code: ${exitCode}`;
+          batchScenario.status = exitCode === 0 ? 'passed' : 'failed';
+
+          if (exitCode !== 0) {
+            // Read stderr and machine log for diagnostics
+            let batchStderrTail = '';
+            try {
+              const stderrPath = path.join(destDir, 'stderr.log');
+              if (fs.existsSync(stderrPath)) batchStderrTail = fs.readFileSync(stderrPath, 'utf-8').slice(-5000);
+            } catch { /* non-fatal */ }
+
+            let batchMachineLog = '';
+            try {
+              const machineLogPath = path.join(destDir, 'fly-machine.log');
+              if (fs.existsSync(machineLogPath)) batchMachineLog = fs.readFileSync(machineLogPath, 'utf-8').slice(-3000);
+            } catch { /* non-fatal */ }
+
+            batchScenario.stderr_tail = batchStderrTail || undefined;
+            batchScenario.fly_machine_log = batchMachineLog || undefined;
+
+            // Run shared failure classifier
+            const progress = readDemoProgress(path.join(destDir, 'progress.jsonl'));
+            const batchClassification = classifyFailure({
+              exitCode,
+              stderrTail: batchStderrTail,
+              machineLog: batchMachineLog,
+              durationSeconds: scenarioDurationSeconds,
+              computeSizeUsed: scenarioComputeSize || 'standard',
+              scenarioId: batchScenario.scenario_id,
+              progress,
+            });
+
+            batchScenario.failure_classification = batchClassification.classification;
+            batchScenario.failure_suggestion = batchClassification.suggestion;
+            batchScenario.failure_summary = batchClassification.reason;
+
+            // Add Elastic query hint when Elastic is configured
+            if (process.env.ELASTIC_CLOUD_ID || process.env.ELASTIC_ENDPOINT) {
+              batchScenario.elastic_query_hint =
+                `Query logs: mcp__elastic-logs__query_logs({ query: 'demo.run_id:"${batchRunId}"', index: 'logs-demo-telemetry-*' })`;
+            }
+          }
         }
 
-        await flyRunnerMod.stopRemoteMachine(handle, machineConfig).catch(() => {});
+        await flyRunnerMod.stopRemoteMachine(handle, scenarioMachineConfig).catch(() => {});
 
         // Persist demo result to user-feedback.db for each remote batch scenario (success path)
         if (batchScenario.status === 'passed' || batchScenario.status === 'failed') {
@@ -7180,7 +7346,7 @@ async function runRemoteBatchSequence(
             executionMode: 'remote',
             startedAt: state.started_at,
             completedAt: remoteBatchCompletedAt,
-            durationMs: new Date(remoteBatchCompletedAt).getTime() - new Date(state.started_at).getTime(),
+            durationMs: batchScenario.duration_ms ?? (new Date(remoteBatchCompletedAt).getTime() - new Date(state.started_at).getTime()),
             flyMachineId: handle.machineId,
             branch: getDemoBranch() ?? undefined,
             failureReason: batchScenario.failure_summary,
@@ -7190,6 +7356,7 @@ async function runRemoteBatchSequence(
       } catch (err) {
         batchScenario.status = 'failed';
         batchScenario.failure_summary = err instanceof Error ? err.message : String(err);
+        batchScenario.failure_classification = 'unknown';
         // Persist demo result to user-feedback.db for each remote batch scenario (error path)
         const remoteBatchErrorCompletedAt = new Date().toISOString();
         persistDemoResult({
@@ -7214,6 +7381,25 @@ async function runRemoteBatchSequence(
         state.status = 'failed';
       }
     }));
+  }
+
+  // ── Batch-completion cleanup: destroy all machines tagged with this batch_id ──
+  try {
+    const activeMachines = await flyRunnerMod.listActiveMachines(baseMachineConfig);
+    const batchMachines = activeMachines.filter(m => m.metadata?.batch_id === state.batch_id);
+    if (batchMachines.length > 0) {
+      process.stderr.write(`[fly-runner] Batch cleanup: destroying ${batchMachines.length} remaining machine(s) for batch ${state.batch_id}\n`);
+      await Promise.all(batchMachines.map(async (m) => {
+        try {
+          await flyRunnerMod.stopRemoteMachine(
+            { machineId: m.id, appName: baseMachineConfig.appName, region: baseMachineConfig.region, startedAt: Date.now() },
+            baseMachineConfig,
+          );
+        } catch { /* non-fatal — machine may already be destroyed */ }
+      }));
+    }
+  } catch {
+    // Non-fatal — machines will be cleaned up by the hourly stale machine cleanup
   }
 }
 
