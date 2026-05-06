@@ -52,4 +52,8 @@ RUN rm -rf /tmp/pnpm-store
 # Mark that this is a project image (remote-runner.sh checks this)
 RUN touch /app/.project-image
 
+# Store the lockfile hash for staleness detection
+# deploy_project_image compares this against the current lockfile to detect stale images
+RUN sha256sum pnpm-lock.yaml > /app/.lockfile-hash 2>/dev/null || true
+
 WORKDIR /app

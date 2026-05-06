@@ -46,6 +46,8 @@ export interface FlyConfig {
   /** Cache volume ID for dep caching */
   volumeId?: string;
   maxConcurrentMachines: number;
+  /** When true, resolveAppImage prefers project-* tags over deployment-* tags */
+  projectImageEnabled?: boolean;
 }
 
 export interface RemoteDemoRequest {
@@ -318,8 +320,12 @@ function inferArtifactType(filePath: string): RemoteArtifact['type'] {
 /**
  * Resolve the current Docker image reference for a Fly app.
  *
+ * When `config.projectImageEnabled` is true, prefers `project-*` tags
+ * (images with pre-installed project dependencies) over base `deployment-*`
+ * tags. Falls back to `deployment-*` when no project image exists.
+ *
  * Queries the OCI registry's tag list (FlyV1 auth) and picks the most recent
- * `deployment-*` tag. Falls back to `:latest` if the registry is unreachable.
+ * matching tag. Falls back to `:latest` if the registry is unreachable.
  */
 async function resolveAppImage(config: FlyConfig): Promise<string> {
   try {
@@ -337,6 +343,19 @@ async function resolveAppImage(config: FlyConfig): Promise<string> {
     if (resp.ok) {
       const data = (await resp.json()) as { tags?: string[] };
       if (data.tags && data.tags.length > 0) {
+        // When projectImageEnabled, prefer project-* tags (pre-installed deps)
+        if (config.projectImageEnabled) {
+          const projectTags = data.tags
+            .filter((t: string) => t.startsWith('project-'))
+            .sort();
+          if (projectTags.length > 0) {
+            const tag = projectTags[projectTags.length - 1];
+            process.stderr.write(`[fly-runner] resolved project image tag: ${tag}\n`);
+            return `registry.fly.io/${config.appName}:${tag}`;
+          }
+          process.stderr.write(`[fly-runner] projectImageEnabled but no project-* tags found, falling back to deployment-* tags\n`);
+        }
+
         // deployment- tags sort chronologically; pick the last (most recent)
         const deployTags = data.tags
           .filter((t: string) => t.startsWith('deployment-'))

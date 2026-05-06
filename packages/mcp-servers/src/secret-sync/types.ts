@@ -314,6 +314,8 @@ export const ServicesConfigSchema = z.object({
       .describe('op:// ref for Tigris secret key (auto-injected by fly storage create)'),
     tigrisEndpoint: z.string().optional()
       .describe('Tigris S3 endpoint URL (default: https://fly.storage.tigris.dev)'),
+    projectImageEnabled: z.boolean().default(false)
+      .describe('When true, spawnRemoteMachine prefers project-specific images (built via deploy_project_image) over base images. Project images include pre-installed dependencies, reducing cold start from ~90s to ~10s.'),
   }).optional().describe('Fly.io remote Playwright execution configuration. When configured, headless demos auto-route to ephemeral Fly machines.'),
   steel: z.object({
     apiKey: z.string().regex(/^op:\/\//, 'Must be an op:// reference')
