@@ -550,6 +550,10 @@ export const RunDemoBatchArgsSchema = z.object({
     .describe('Enable Playwright trace recording.'),
   remote: z.coerce.boolean().optional().default(true)
     .describe('Run batch on remote Fly.io machines (default: true). Prefer remote execution — it avoids local resource contention and runs scenarios in parallel across multiple Fly machines.'),
+  scenario_timeout: z.coerce.number().int().min(60000).max(3600000).optional().default(600000)
+    .describe('Per-scenario timeout in milliseconds (default: 10min = 600000). If a scenario exceeds this, its machine is killed and it is marked failed with timeout classification.'),
+  batch_timeout: z.coerce.number().int().min(120000).max(7200000).optional().default(1800000)
+    .describe('Overall batch timeout in milliseconds (default: 30min = 1800000). If the entire batch exceeds this, remaining scenarios are skipped.'),
 });
 
 export type RunDemoBatchArgs = z.infer<typeof RunDemoBatchArgsSchema>;
@@ -572,6 +576,15 @@ export type StopDemoBatchArgs = z.infer<typeof StopDemoBatchArgsSchema>;
 
 export type DemoBatchStatus = 'running' | 'passed' | 'failed' | 'stopped';
 
+/** Failure classification for automatic triage of machine deaths */
+export type FailureClassification = 'test_failure' | 'oom' | 'startup_failure' | 'timeout' | 'external_kill' | 'recording_failure' | 'unknown';
+
+export interface FailureClassificationResult {
+  classification: FailureClassification;
+  reason: string;
+  suggestion?: string;
+}
+
 export interface BatchScenarioResult {
   scenario_id: string;
   scenario_title: string;
@@ -580,6 +593,18 @@ export interface BatchScenarioResult {
   duration_ms?: number;
   failure_summary?: string;
   video_path?: string;
+  /** Last 5KB of stderr from the remote machine */
+  stderr_tail?: string;
+  /** Last 3KB of fly-machine.log (dmesg/ps/meminfo) */
+  fly_machine_log?: string;
+  /** Automatic failure classification (oom, timeout, startup_failure, etc.) */
+  failure_classification?: FailureClassification;
+  /** Actionable suggestion for resolving the failure */
+  failure_suggestion?: string;
+  /** Unique run ID for Elastic log correlation */
+  run_id?: string;
+  /** Elastic query hint for debugging this scenario's run */
+  elastic_query_hint?: string;
 }
 
 export interface DemoBatchProgress {

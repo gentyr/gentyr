@@ -5640,7 +5640,8 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
 
   // =========================================================================
   // FLY.IO STALE MACHINE CLEANUP (15min cooldown)
-  // Kills Fly.io machines that have been running > 30 minutes (stuck).
+  // Metadata-aware cleanup: 15min for single-demo machines, 30min for batch.
+  // Batch machines with an active batch in demo-batches.json are skipped.
   // Gate-exempt: cleanup is best-effort and does not require CTO activity.
   // =========================================================================
   await runIfDue('fly_stale_machine_cleanup', {
@@ -5675,9 +5676,24 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         return;
       }
 
-      const MAX_RUNTIME_MINUTES = 30;
+      const MAX_RUNTIME_MINUTES_SINGLE = 15;
+      const MAX_RUNTIME_MINUTES_BATCH = 30;
       const API_BASE = 'https://api.machines.dev/v1';
       const headers = { 'Authorization': `Bearer ${apiToken}`, 'Content-Type': 'application/json' };
+
+      // Load active batch IDs from demo-batches.json to protect active batch machines
+      const activeBatchIds = new Set();
+      try {
+        const batchesPath = path.join(PROJECT_DIR, '.claude', 'state', 'demo-batches.json');
+        if (fs.existsSync(batchesPath)) {
+          const batchesData = JSON.parse(fs.readFileSync(batchesPath, 'utf-8'));
+          if (Array.isArray(batchesData)) {
+            for (const batch of batchesData) {
+              if (batch.status === 'running') activeBatchIds.add(batch.batch_id);
+            }
+          }
+        }
+      } catch { /* non-fatal */ }
 
       // List all machines in the app
       let machines;
@@ -5708,7 +5724,16 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         if (isNaN(createdAt)) continue;
 
         const ageMinutes = (now2 - createdAt) / 60000;
-        if (ageMinutes <= MAX_RUNTIME_MINUTES) continue;
+        const metadata = machine.config?.metadata;
+        const machineBatchId = metadata?.batch_id;
+        const isBatchMachine = !!machineBatchId;
+
+        // Skip batch machines whose batch is still running
+        if (isBatchMachine && activeBatchIds.has(machineBatchId)) continue;
+
+        // Apply different thresholds: 15min for single-demo, 30min for batch
+        const threshold = isBatchMachine ? MAX_RUNTIME_MINUTES_BATCH : MAX_RUNTIME_MINUTES_SINGLE;
+        if (ageMinutes <= threshold) continue;
 
         try {
           // Stop the machine gracefully
@@ -5730,7 +5755,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
           });
 
           cleaned++;
-          log(`Fly.io stale machine cleanup: destroyed machine ${machine.id} (${Math.round(ageMinutes)} min old).`);
+          log(`Fly.io stale machine cleanup: destroyed machine ${machine.id} (${Math.round(ageMinutes)} min old${isBatchMachine ? ', batch: ' + machineBatchId : ''}).`);
         } catch (err) {
           log(`Fly.io stale machine cleanup: failed to destroy machine ${machine.id}: ${err.message || err}`);
         }
