@@ -73,6 +73,8 @@ Headless demos do NOT need the display lock. Only acquire when you need:
 - The CTO explicitly asks to watch the demo live in a local browser window
 - The scenario requires chrome-bridge or local extension interaction (`remote_eligible=false`)
 
+**`remote_eligible=false` scenarios are EXCLUDED from the production promotion pipeline** (`verify_demo_completeness` skips them). Do NOT run these scenarios unless explicitly directed by the CTO — they require local Chrome/display access that automated agents cannot provide. If you encounter a `remote_eligible=false` scenario in a batch, skip it.
+
 Specific patterns:
 - **All validation and repair runs**: Use `run_demo` with defaults (remote+recorded). No display lock needed.
 - **Multi-scenario validation (2+ scenarios)**: ALWAYS use `run_demo_batch` instead of sequential `run_demo` calls. `run_demo_batch({ scenario_ids: [...], remote: true, recorded: true })` runs scenarios CONCURRENTLY across multiple Fly.io machines (up to 3 at a time). Sequential single `run_demo` calls are an anti-pattern.
