@@ -362,7 +362,11 @@ export const ForceClosePlanArgsSchema = z.object({
   reason: z.string().describe('Reason for force-closing the plan'),
   cto_bypass: z.literal(true).describe(
     'WARNING: Only set to true if directly asked by the CTO. ' +
-    'This cancels all running persistent tasks and sub-sessions under this plan and cannot be undone.'
+    'This cancels the plan and all linked persistent tasks, and cannot be undone.'
+  ),
+  cascade: z.boolean().default(true).describe(
+    'When true (default), automatically cancels all linked persistent tasks. ' +
+    'Set to false to only cancel the plan and return persistent task IDs for manual cancellation.'
   ),
 });
 export type ForceClosePlanArgs = z.infer<typeof ForceClosePlanArgsSchema>;

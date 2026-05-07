@@ -1229,7 +1229,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'cancel_persistent_task',
-    description: 'Cancel a persistent task in draft, active, or paused status. Records reason in events.',
+    description: 'PERMANENTLY terminate a persistent task. Sets status to cancelled — all revival mechanisms (session reviver, orphan catch-all, stale-pause auto-resume, crash-loop resume) will skip cancelled tasks. Use this to stop work that should never be retried. For temporary pauses, use pause_persistent_task instead.',
     schema: CancelPersistentTaskArgsSchema,
     handler: cancelPersistentTask,
   },

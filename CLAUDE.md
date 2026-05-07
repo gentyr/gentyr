@@ -1457,7 +1457,7 @@ The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`)
 
 **22 tools**: `create_plan`, `get_plan`, `list_plans`, `update_plan_status`, `add_phase`, `update_phase`, `add_plan_task`, `update_task_progress`, `link_task`, `add_substeps`, `complete_substep`, `add_dependency`, `get_spawn_ready_tasks`, `plan_dashboard`, `plan_timeline`, `plan_audit`, `plan_sessions`, `force_close_plan`, `check_verification_audit`, `verification_audit_pass`, `verification_audit_fail`, `get_plan_blocking_status`.
 
-**`force_close_plan`**: CTO-only tool (requires `cto_bypass: true`). Cancels a plan and returns the IDs of linked persistent tasks for separate cancellation. Irreversible.
+**`force_close_plan`**: CTO-only tool (requires `cto_bypass: true`). Cancels a plan and cascades by default — auto-cancels the plan's manager persistent task and all plan-task persistent tasks in one call. Set `cascade: false` to skip cascading and return persistent task IDs for manual cancellation. Irreversible.
 
 **7-table SQLite schema**: `plans`, `phases`, `plan_tasks`, `substeps`, `dependencies`, `state_changes`, `plan_audits`. Cycle detection on dependency graph. Progress rollup from substep → task → phase → plan.
 

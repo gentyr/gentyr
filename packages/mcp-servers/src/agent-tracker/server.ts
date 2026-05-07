@@ -6528,7 +6528,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'kill_session',
-    description: 'Kill a running, suspended, or spawning session. Sends SIGTERM then SIGKILL if needed. Marks queue item completed and resets linked TODO task. Does NOT re-enqueue — use restart_session to kill and re-enqueue.',
+    description: 'Kill a running, suspended, or spawning session. Sends SIGTERM then SIGKILL if needed. Marks queue item completed and resets linked TODO task to pending. WARNING: Killing a session does NOT permanently stop the work — the revival daemon, session reviver, or orphan catch-all will re-spawn it if the underlying task/persistent-task is still active. To permanently stop work: cancel the persistent task (cancel_persistent_task) or force-close the plan (force_close_plan).',
     schema: KillSessionArgsSchema,
     handler: killSession,
   },

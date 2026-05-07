@@ -2136,18 +2136,67 @@ function forceClosePlan(args: ForceClosePlanArgs): object {
     .run(ts, ts, args.plan_id);
   recordStateChange(db, 'plan', args.plan_id, 'status', oldStatus, 'cancelled', 'cto-force-close');
 
-  // Collect persistent task IDs from plan tasks for caller to cancel
+  // Collect persistent task IDs from plan tasks
   const linkedPersistentTasks = db.prepare(
     'SELECT persistent_task_id FROM plan_tasks WHERE plan_id = ? AND persistent_task_id IS NOT NULL'
   ).all(args.plan_id) as Array<{ persistent_task_id: string }>;
+
+  // Also include the plan's own manager persistent task
+  const allPtIds = new Set(linkedPersistentTasks.map(t => t.persistent_task_id));
+  if (plan.persistent_task_id) {
+    allPtIds.add(plan.persistent_task_id);
+  }
+
+  const ptIds = [...allPtIds];
+  const cascadeResults: Array<{ id: string; status: string; cancelled: boolean }> = [];
+
+  if (args.cascade !== false && ptIds.length > 0) {
+    // Cascade: cancel all linked persistent tasks directly
+    const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (fs.existsSync(ptDbPath)) {
+      let ptDb: InstanceType<typeof Database> | undefined;
+      try {
+        ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 5000');
+        ptDb.pragma('journal_mode = WAL');
+        ptDb.pragma('foreign_keys = ON');
+        for (const ptId of ptIds) {
+          const pt = ptDb.prepare('SELECT id, status FROM persistent_tasks WHERE id = ?').get(ptId) as { id: string; status: string } | undefined;
+          if (!pt) {
+            cascadeResults.push({ id: ptId, status: 'not_found', cancelled: false });
+            continue;
+          }
+          if (['draft', 'active', 'paused'].includes(pt.status)) {
+            ptDb.prepare("UPDATE persistent_tasks SET status = 'cancelled', cancelled_at = ? WHERE id = ?").run(ts, ptId);
+            ptDb.prepare("INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'cancelled', ?, ?)")
+              .run(randomUUID(), ptId, JSON.stringify({ reason: `Plan ${args.plan_id} force-closed: ${args.reason}` }), ts);
+            cascadeResults.push({ id: ptId, status: pt.status, cancelled: true });
+          } else {
+            cascadeResults.push({ id: ptId, status: pt.status, cancelled: false });
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[force_close_plan] cascade error: ${msg}\n`);
+        cascadeResults.push({ id: 'error', status: msg, cancelled: false });
+      } finally {
+        try { ptDb?.close(); } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  const cancelledCount = cascadeResults.filter(r => r.cancelled).length;
 
   return {
     plan_id: args.plan_id,
     status: 'cancelled',
     reason: args.reason,
     cancelled_at: ts,
-    persistent_tasks_to_cancel: linkedPersistentTasks.map(t => t.persistent_task_id),
-    message: `Plan force-closed. ${linkedPersistentTasks.length} linked persistent task(s) should be cancelled via cancel_persistent_task.`,
+    persistent_tasks_cancelled: cascadeResults,
+    persistent_tasks_not_cascaded: args.cascade === false ? ptIds : [],
+    message: args.cascade === false
+      ? `Plan force-closed. ${ptIds.length} linked persistent task(s) should be cancelled via cancel_persistent_task.`
+      : `Plan force-closed. ${cancelledCount}/${ptIds.length} linked persistent task(s) cancelled.`,
   };
 }
 
@@ -2351,7 +2400,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'force_close_plan',
-    description: 'Force-close a plan and cancel all running work. WARNING: Only use when directly asked by the CTO. Returns persistent task IDs that must be separately cancelled via cancel_persistent_task.',
+    description: 'PERMANENTLY terminate a plan and all linked persistent tasks. Cascades by default — cancels the plan, its manager persistent task, and all plan-task persistent tasks in one call. Set cascade:false to only cancel the plan. CTO-only (requires cto_bypass:true). Irreversible.',
     schema: ForceClosePlanArgsSchema,
     handler: forceClosePlan,
   },
