@@ -401,7 +401,7 @@ export async function spawnRemoteMachine(
     GIT_REMOTE: request.gitRemote,
     GIT_REF: request.gitRef,
     TEST_FILE: request.testFile,
-    DEMO_HEADLESS: request.headless === false ? '0' : '1',
+    DEMO_HEADLESS: '0', // All demos run headed — Xvfb + ffmpeg handle display and recording on remote
     DEMO_SLOW_MO: String(request.slowMo),
   };
 
@@ -1104,9 +1104,17 @@ export async function captureRunningMachineLogs(
 
   // Run all three captures in parallel for speed
   const [stderrResult, stdoutResult, machineLogResult] = await Promise.allSettled([
-    // 1. Capture last 5KB of stderr
+    // 1. Capture ALL available log sources — stderr, stdout, and error.log.
+    // During pnpm install phase, /app/.stderr.log may not exist yet (only created
+    // after Playwright starts). This captures whatever is available regardless of
+    // which phase the machine is in.
     (async (): Promise<void> => {
-      const buf = await execInMachine(handle, config, ['tail', '-c', '5000', '/app/.stderr.log'], 5_000);
+      const buf = await execInMachine(handle, config, [
+        'sh', '-c',
+        'echo "=== playwright stderr ===" && tail -c 3000 /app/.stderr.log 2>/dev/null; ' +
+        'echo "\\n=== stdout ===" && tail -c 1000 /app/.stdout.log 2>/dev/null; ' +
+        'echo "\\n=== error.log ===" && tail -c 1000 /app/.error.log 2>/dev/null',
+      ], 5_000);
       const content = buf.toString('utf8');
       if (content.length > 0) {
         await fsPromises.writeFile(path.join(destDir, 'stderr.log'), content);
