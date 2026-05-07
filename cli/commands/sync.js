@@ -1168,16 +1168,20 @@ export default async function sync(args) {
   const state = buildState(frameworkDir, model);
   writeState(projectDir, state);
 
-  // 10. Recycle running automated sessions (pick up new MCP servers/configs)
-  await recycleAutomatedSessions(projectDir);
-
   console.log('');
   console.log(`${GREEN}Sync complete (v${state.version})${NC}`);
 
   } finally {
-    // Re-protect if it was protected before sync (even if sync threw)
+    // Re-protect BEFORE session recycling — recycling spawns processes that take
+    // 30-60s, which causes the sudo credential cache to expire. Re-protecting first
+    // ensures the sudo prompt happens while the terminal stdin is still clean.
     if (wasProtected) {
       runProtect(projectDir);
     }
   }
+
+  // 10. Recycle running automated sessions AFTER re-protect.
+  // Session recycling doesn't need unprotected files — it only kills/re-enqueues
+  // processes. Running it after re-protect avoids sudo timeout/ETIMEDOUT errors.
+  await recycleAutomatedSessions(projectDir);
 }
