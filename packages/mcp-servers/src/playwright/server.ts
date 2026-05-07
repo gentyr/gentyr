@@ -2256,9 +2256,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   // Spawned agents (non-interactive sessions) MUST use remote Fly.io execution
   // UNLESS the CTO approved a demo_local bypass request for their task.
   const isSpawnedSession = process.env.CLAUDE_SPAWNED_SESSION === 'true';
+  let hasLocalBypassApproval = false;
   if (isSpawnedSession) {
     // Check if CTO approved a demo_local bypass for this agent's task
-    let hasLocalBypassApproval = false;
     try {
       const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
       if (fs.existsSync(bypassDbPath)) {
@@ -2693,6 +2693,23 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           project,
           message: `Routing error: ${target.reason}`,
           execution_target: target.target,
+          execution_target_reason: target.reason,
+        };
+      }
+
+      // ── Post-routing spawned-agent local guard ──
+      // If the resolver routed to local for a spawned agent (despite args.remote=true),
+      // block unless CTO approved a demo_local bypass. This catches cases where
+      // remote_eligible=false or usesChromeBridge forced local routing.
+      if (isSpawnedSession && target.target === 'local' && !hasLocalBypassApproval) {
+        return {
+          success: false,
+          project,
+          message: `LOCAL DEMO BLOCKED: Execution routed to local (${target.reason}). ` +
+            `Spawned agents cannot run demos locally without CTO approval. ` +
+            `File a bypass request: submit_bypass_request({ task_type: 'todo', task_id: YOUR_TASK_ID, ` +
+            `category: 'demo_local', summary: 'Need local execution: ${target.reason}' }) then summarize_work and exit.`,
+          execution_target: 'local',
           execution_target_reason: target.reason,
         };
       }
