@@ -8544,8 +8544,8 @@ const tools: AnyToolHandler[] = [
       'recording_path, recording_source (window/none), ' +
       'recording_permission_error (set when Screen Recording permission is denied — contains the full error message and fix instructions), ' +
       'and a progress object with real-time test counts, current test name, and error detection. ' +
-      'Auto-kill: demo processes are automatically killed if this tool is not called within 60 seconds. ' +
-      'Each poll resets the countdown. Prevents orphaned browser processes when the polling agent stops. ' +
+      'Demos are NOT auto-killed if you stop polling — they run to completion or timeout. ' +
+      'Poll periodically to monitor progress, but the demo will finish regardless. ' +
       'Includes degraded_features array when tests report warning annotations on soft-guarded features. ' +
       'When the demo completes, screenshot_hint and analysis_guidance fields tell you exactly which screenshots and video frames to review. Always follow the analysis_guidance instructions.',
     schema: CheckDemoResultArgsSchema,
@@ -8705,7 +8705,7 @@ const tools: AnyToolHandler[] = [
     description:
       'Check progress or final result of a batch demo run. ' +
       'Returns per-scenario status, failure summaries, and aggregate progress. ' +
-      'Auto-kill: batch runs are stopped if not polled within 2 minutes. Each poll resets the countdown.',
+      'Batches are NOT auto-killed if you stop polling — they run to completion or batch_timeout. Poll periodically to monitor progress.',
     schema: CheckDemoBatchResultArgsSchema,
     handler: checkDemoBatchResult,
   },
