@@ -1464,6 +1464,22 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   }
 
   function createScenario(args: CreateScenarioArgs): ScenarioResult | ErrorResult {
+    // Block spawned agents from creating scenarios with restrictive pipeline flags
+    const isSpawnedCreate = process.env.CLAUDE_SPAWNED_SESSION === 'true';
+    if (isSpawnedCreate) {
+      const violations: string[] = [];
+      if (args.remote_eligible === false) violations.push('remote_eligible: false');
+      if (args.headed === true) violations.push('headed: true');
+      if (violations.length > 0) {
+        return {
+          error: `Creating a scenario with ${violations.join(', ')} requires CTO approval. ` +
+            `These flags control which demos run in the production promotion pipeline. ` +
+            `File a bypass request: submit_bypass_request({ task_type: 'todo', task_id: YOUR_TASK_ID, ` +
+            `category: 'demo_config', summary: 'Need to create scenario "${args.title}" with ${violations.join(', ')}' })`,
+        };
+      }
+    }
+
     // Validate persona exists and includes 'gui' or 'adk' in consumption_modes
     const persona = db.prepare('SELECT id, name, consumption_modes FROM personas WHERE id = ?').get(args.persona_id) as { id: string; name: string; consumption_modes: string } | undefined;
     if (!persona) {
@@ -1539,6 +1555,21 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     const record = db.prepare('SELECT * FROM demo_scenarios WHERE id = ?').get(args.id) as ScenarioRecord | undefined;
     if (!record) {
       return { error: `Scenario not found: ${args.id}` };
+    }
+
+    // Block spawned agents from changing demo eligibility/pipeline flags
+    const isSpawned = process.env.CLAUDE_SPAWNED_SESSION === 'true';
+    if (isSpawned) {
+      const protectedFields = ['remote_eligible', 'enabled', 'headed'] as const;
+      const attemptedProtected = protectedFields.filter(f => args[f] !== undefined);
+      if (attemptedProtected.length > 0) {
+        return {
+          error: `Changing ${attemptedProtected.join(', ')} requires CTO approval. ` +
+            `These fields control which demos run in the production promotion pipeline. ` +
+            `File a bypass request: submit_bypass_request({ task_type: 'todo', task_id: YOUR_TASK_ID, ` +
+            `category: 'demo_config', summary: 'Need to change ${attemptedProtected.join(', ')} on scenario ${args.id}' })`,
+        };
+      }
     }
 
     // Enforce .demo.ts suffix on test_file if changed
