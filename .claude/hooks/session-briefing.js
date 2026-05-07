@@ -739,7 +739,7 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
-  // Logging health (one-line status)
+  // Logging health (one-line status, cross-references .mcp.json for elastic-logs server)
   if (!localMode) {
     try {
       const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
@@ -747,9 +747,22 @@ function buildInteractiveBriefing() {
         const svcConfig = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
         const elastic = svcConfig?.elastic;
         const hasLocalCreds = svcConfig?.secrets?.local?.ELASTIC_API_KEY && (svcConfig?.secrets?.local?.ELASTIC_CLOUD_ID || svcConfig?.secrets?.local?.ELASTIC_ENDPOINT);
+
+        // Check if elastic-logs MCP server is registered
+        let elasticMcpConfigured = false;
+        try {
+          const mcpJsonPath = path.join(PROJECT_DIR, '.mcp.json');
+          if (fs.existsSync(mcpJsonPath)) {
+            const mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+            elasticMcpConfigured = !!(mcpConfig?.mcpServers?.['elastic-logs']);
+          }
+        } catch { /* non-fatal */ }
+
         if (elastic && elastic.enabled !== false) {
           const prefix = elastic.indexPrefix || 'logs';
           lines.push(`Logging: Elastic Cloud enabled | Index: ${prefix}-{service}-{date} | Local creds: ${hasLocalCreds ? 'configured' : 'MISSING — run populate_secrets_local'}`);
+        } else if (elasticMcpConfigured && (!elastic || !elastic.apiKey)) {
+          lines.push('Logging: NOT CONFIGURED — elastic-logs MCP server registered but services.json has no elastic credentials. Demo telemetry disabled. Use op_vault_map + update_services_config to add elastic credentials.');
         } else if (!elastic) {
           lines.push('Logging: Elastic Cloud not configured (add elastic section via update_services_config)');
         } else {
@@ -1148,6 +1161,20 @@ function buildSpawnedBriefing() {
         if (elastic && elastic.enabled !== false) {
           lines.push('Elastic: configured — query errors via mcp__elastic-logs__query_logs({ query: "level:error", from: "now-1h", to: "now" })');
           lines.push('');
+        } else {
+          // Cross-reference: if elastic-logs MCP is registered but credentials not mapped, warn
+          let elasticMcpConfigured = false;
+          try {
+            const mcpJsonPath = path.join(PROJECT_DIR, '.mcp.json');
+            if (fs.existsSync(mcpJsonPath)) {
+              const mcpConfig = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf-8'));
+              elasticMcpConfigured = !!(mcpConfig?.mcpServers?.['elastic-logs']);
+            }
+          } catch { /* non-fatal */ }
+          if (elasticMcpConfigured) {
+            lines.push('Elastic: NOT CONFIGURED — elastic-logs MCP registered but no credentials. Demo telemetry and elastic_query_hint disabled.');
+            lines.push('');
+          }
         }
       }
     } catch { /* non-fatal */ }
