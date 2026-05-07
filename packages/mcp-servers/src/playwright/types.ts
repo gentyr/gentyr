@@ -528,8 +528,8 @@ export const RunDemoBatchArgsSchema = z.object({
     .min(1)
     .max(100)
     .describe('Playwright project name (e.g., "demo").'),
-  batch_size: z.coerce.number().int().min(1).max(20).optional().default(5)
-    .describe('Number of scenarios to run per batch (default: 5).'),
+  batch_size: z.coerce.number().int().min(1).max(50).optional()
+    .describe('Scenarios per concurrent sub-batch. Defaults to maxConcurrentMachines from fly config (typically 10). All scenarios run with maximum parallelism within this limit. Multiple concurrent batches share the machine pool.'),
   headless: z.coerce.boolean().optional().default(true)
     .describe('Run in headless mode (default: true). Set false for watchable demos.'),
   slow_mo: z.coerce.number().int().min(0).max(5000).optional().default(0)

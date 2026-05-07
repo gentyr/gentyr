@@ -300,8 +300,8 @@ export const ServicesConfigSchema = z.object({
       .describe('Machine RAM in MB'),
     image: z.string().optional()
       .describe('Custom container image override (default: built from gentyr infra/fly-playwright/)'),
-    maxConcurrentMachines: z.number().int().min(1).max(10).default(3)
-      .describe('Max concurrent Fly machines for parallel batch runs'),
+    maxConcurrentMachines: z.number().int().min(1).max(50).default(10)
+      .describe('Max concurrent Fly machines. Fly.io org limits vary by plan — raise if batches are sub-batching unnecessarily.'),
     cacheVolumeId: z.string().optional()
       .describe('Fly volume ID for dependency caching'),
     enabled: z.boolean().default(true)
