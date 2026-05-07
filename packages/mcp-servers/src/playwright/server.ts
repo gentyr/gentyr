@@ -7743,8 +7743,8 @@ async function runRemoteBatchSequence(
  * Each batch gets its own output directory to prevent Playwright's cleanup from destroying previous recordings.
  */
 async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, scenarioEnvMap?: Map<string, Record<string, string>>, devServerReady?: boolean, effectiveBaseUrl?: string): Promise<void> {
-  const batchSize = args.batch_size ?? 5;
   const scenarios = state.scenarios;
+  const batchSize = args.batch_size ?? scenarios.length; // Default: run ALL concurrently
   const totalBatches = Math.ceil(scenarios.length / batchSize);
 
   for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
@@ -8015,7 +8015,7 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   }
 
   const batchId = crypto.randomBytes(8).toString('hex');
-  const batchSize = args.batch_size ?? 5;
+  const batchSize = args.batch_size ?? scenarios.length; // Default: run ALL concurrently
   const totalBatches = Math.ceil(scenarios.length / batchSize);
 
   // Build scenario env_vars map for batch execution
@@ -8691,8 +8691,9 @@ const tools: AnyToolHandler[] = [
   {
     name: 'run_demo_batch',
     description:
-      'Run multiple demo scenarios in sequential batches. ' +
-      'Defaults: headless=true, batch_size=5, remote=true. Runs on Fly.io by default — prefer remote execution to avoid local resource contention. ' +
+      'Run all demo scenarios concurrently on Fly.io. ' +
+      'By default runs ALL scenarios in one batch (full concurrency). Only set batch_size to limit concurrency if experiencing widespread machine failures. ' +
+      'Defaults: headless=true, remote=true, retry_infra_failures=1. ' +
       'Spawned agents must use remote execution (Fly.io). Local batch demos are reserved for the CTO dashboard and interactive sessions. ' +
       'Discovers scenarios from user-feedback.db — filter by scenario_ids, persona_ids, or category. ' +
       'Returns a batch_id for polling via check_demo_batch_result. ' +
