@@ -115,6 +115,7 @@ import {
 import { parseTestOutput, truncateOutput, validateExtraEnv } from './helpers.js';
 import { discoverPlaywrightConfig } from './config-discovery.js';
 import { findTraceZip, parseTraceZip } from './trace-parser.js';
+import * as machinePool from './machine-pool.js';
 
 // ============================================================================
 // Configuration
@@ -7064,39 +7065,59 @@ async function runRemoteBatchSequence(
     projectImageEnabled: flyConfig.projectImageEnabled,
   };
 
-  const maxConcurrent = flyConfig.maxConcurrentMachines || 3;
   const remoteEntries = state.scenarios.filter(s => remoteScenarioIds.has(s.scenario_id));
 
   // Batch-level deadline
   const batchDeadline = Date.now() + (args.batch_timeout ?? 1800000);
   const scenarioTimeoutMs = args.scenario_timeout ?? 600000;
 
-  // Process in chunks of maxConcurrent
-  for (let i = 0; i < remoteEntries.length; i += maxConcurrent) {
+  // ── Slot-based streaming execution model ──
+  // Instead of processing in fixed chunks, we acquire slots from the shared
+  // machine pool and launch scenarios as soon as slots are available. This
+  // allows multiple concurrent batches from different MCP server instances
+  // to coordinate without exceeding the Fly.io org machine limit.
+  const pendingScenarios = remoteEntries.filter(s => s.status === 'pending');
+  const runningPromises = new Map<string, Promise<void>>();
+
+  while (pendingScenarios.length > 0 || runningPromises.size > 0) {
     if (state.status !== 'running') break;
 
     // Batch-level timeout check: if exceeded, skip remaining scenarios
     if (Date.now() >= batchDeadline) {
-      process.stderr.write(`[fly-runner] Batch timeout reached — skipping remaining ${remoteEntries.length - i} scenario(s)\n`);
-      for (let j = i; j < remoteEntries.length; j++) {
-        if (remoteEntries[j].status === 'pending') {
-          remoteEntries[j].status = 'skipped';
-          remoteEntries[j].failure_summary = 'Skipped — batch timeout exceeded';
+      if (pendingScenarios.length > 0) {
+        process.stderr.write(`[fly-runner] Batch timeout reached — skipping remaining ${pendingScenarios.length} scenario(s)\n`);
+        for (const s of pendingScenarios) {
+          s.status = 'skipped';
+          s.failure_summary = 'Skipped — batch timeout exceeded';
           state.progress.skipped++;
           state.progress.completed++;
         }
+        pendingScenarios.length = 0;
+        persistDemoBatches();
       }
-      persistDemoBatches();
+      // Wait for any still-running promises to settle before breaking
+      if (runningPromises.size > 0) {
+        await Promise.allSettled(runningPromises.values());
+      }
       break;
     }
 
-    const chunk = remoteEntries.slice(i, i + maxConcurrent);
-    await Promise.all(chunk.map(async (batchScenario) => {
-      if (state.status !== 'running') return;
-      if (batchScenario.status !== 'pending') return;
+    // Try to acquire slots for pending scenarios
+    while (pendingScenarios.length > 0) {
+      const nextScenario = pendingScenarios[0];
+      const slot = machinePool.acquireSlot(state.batch_id, nextScenario.scenario_id, process.pid);
+      if (!slot.acquired) {
+        // At capacity — wait for running scenarios to finish and free slots
+        break;
+      }
 
+      const batchScenario = pendingScenarios.shift()!;
       batchScenario.status = 'running';
       persistDemoBatches();
+
+      // Launch scenario execution (non-blocking)
+      const slotId = slot.slotId!;
+      const promise = (async () => {
 
       try {
         // Build env for this scenario
@@ -7232,6 +7253,9 @@ async function runRemoteBatchSequence(
           servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
           batchId: state.batch_id,
         });
+
+        // Track the actual Fly machine ID in the slot pool
+        machinePool.updateSlotMachineId(slotId, handle.machineId);
 
         const scenarioStartedAt = Date.now();
         const scenarioDeadline = scenarioStartedAt + scenarioTimeoutMs;
@@ -7413,7 +7437,21 @@ async function runRemoteBatchSequence(
       if (args.stop_on_failure && state.progress.failed > 0) {
         state.status = 'failed';
       }
-    }));
+      })().finally(() => {
+        machinePool.releaseSlot(slotId);
+        runningPromises.delete(batchScenario.scenario_id);
+      });
+      runningPromises.set(batchScenario.scenario_id, promise);
+    }
+
+    // Wait for at least one running scenario to complete (frees a slot)
+    if (runningPromises.size > 0) {
+      await Promise.race(runningPromises.values());
+    } else if (pendingScenarios.length > 0) {
+      // All slots taken by other batches — wait briefly and retry
+      process.stderr.write(`[fly-pool] All slots taken by other batches — waiting 5s before retrying\n`);
+      await new Promise(r => setTimeout(r, 5000));
+    }
   }
 
   // ── Infra-failure retry phase ──
@@ -8187,6 +8225,14 @@ function checkDemoBatchResult(args: CheckDemoBatchResultArgs): CheckDemoBatchRes
   if (state.retried_scenarios && state.retried_scenarios.length > 0) {
     batchResult.retried_scenarios = state.retried_scenarios.map(r => ({ ...r }));
   }
+
+  // Add machine slot pool status when Fly.io is configured
+  try {
+    const poolStatus = machinePool.getPoolStatus();
+    if (poolStatus.activeSlots > 0 || Object.keys(poolStatus.byBatch).length > 0) {
+      batchResult.pool_status = poolStatus;
+    }
+  } catch { /* non-fatal — pool status is informational */ }
 
   return batchResult;
 }
