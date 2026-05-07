@@ -1399,6 +1399,8 @@ A unified framework for recording scripted demos, validating features via E2E te
 
 **Configuration** — services.json: fly.enabled/appName/region/machineRam, steel.enabled/apiKey/sessionLimit. Scenario DB flags: remote_eligible, headed, stealth_required, dual_instance, telemetry.
 
+**Batch lifecycle** — `run_demo_batch` runs scenarios sequentially in batches (partitioned by `batch_size`). No polling requirement — batches run to completion independently. Agents call `check_demo_batch_result` to read progress, and `stop_demo_batch` for manual stop. Fly.io machines have `auto_destroy: true` and manage their own lifecycle. Formerly had a 2-minute poll-or-die auto-kill timer (`DEMO_BATCH_AUTO_KILL_MS`) that killed entire batches if the monitoring agent died — removed (PR #601) because it caused cascading failures when agents hit quota limits.
+
 ---
 
 ### 18.2 Remote Execution (Fly.io)
@@ -2438,18 +2440,28 @@ Triage targets persistent tasks because resuming them cascades via `propagateRes
 - `.claude/hooks/hourly-automation.js` — `global_monitor_health` runIfDue block
 - `.claude/hooks/bypass-request-router.js` — PostToolUse hook routing bypass requests to monitor
 - `agents/deputy-cto.md` — Global Monitor Mode section
-- `.claude/hooks/alignment-monitor-briefing.js` — PostToolUse hook injecting cycle reminders (every 5 tool calls)
+- `.claude/hooks/alignment-monitor-briefing.js` — PostToolUse hook: 3-layer alignment enforcement (v2.0). Tracks alignment task creation via state file. Nudges at 1 cycle overdue, warns at 3+ cycles with exact MCP tool calls. Full 8-step cycle briefing every 5 tool calls. Fires only for `GENTYR_DEPUTY_CTO_MONITOR=true` sessions.
 - `.claude/hooks/session-briefing.js` — `getGlobalMonitorState()` for CTO display + grace period filtering
 - `.claude/hooks/cto-notification-hook.js` — `isGlobalMonitorActive()` + grace period filtering
 - `.claude/commands/global-monitor.md` — slash command
 
-### 53b.6 Escalation Framework
+### 53b.6 Multi-Layer Alignment Enforcement
+
+Three-layer approach ensures the monitor dispatches user-alignment checks rather than skipping them:
+
+| Layer | Mechanism | What it does |
+|-------|-----------|-------------|
+| **1. Agent definition** | `agents/deputy-cto.md` Global Monitor Mode | Step 4 marked MANDATORY with exact MCP tool calls. "You MUST create at least one alignment check task per cycle." |
+| **2. Recurring hook** | `alignment-monitor-briefing.js` (PostToolUse, env-gated) | Tracks `cyclesSinceAlignment` via state file. Credits `search_user_prompts` and alignment task creation. Warns at 1 cycle, escalates at 3+ cycles with full tool call instructions. |
+| **3. Tool restriction** | Agent def `disallowedTools` + `spawnQueueItem()` | `Edit, Write, NotebookEdit, Task` blocked in agent def. `--disallowedTools Edit,Write,NotebookEdit` injected at spawn time. Forces all changes through `create_task` + `force_spawn_tasks`. |
+
+### 53b.7 Escalation Framework
 - Minor drift (~50%): corrective signal to the drifting agent
 - Moderate misalignment (~35%): self-created correction task
 - Significant drift (~15%): `submit_bypass_request` on the affected task for CTO attention
 - Signal throttling: max 1 signal per agent per 30 minutes; self-pauses if >5 signals/hour
 
-### 53b.7 Deputy Bypass Resolution (3 exclusive MCP tools)
+### 53b.8 Deputy Bypass Resolution (3 exclusive MCP tools)
 
 The global monitor can approve bypass requests and deferred actions WITHOUT CTO intervention, acting as a delegated authority for routine decisions.
 

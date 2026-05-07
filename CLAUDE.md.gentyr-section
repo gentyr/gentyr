@@ -425,6 +425,21 @@ Non-exempt task completions are independently audited. Before `complete_task`, a
 
 **Directive signals MUST be acknowledged** before task completion (enforced by `signal-compliance-gate.js` PreToolUse hook).
 
+### Terminating Work Permanently
+
+GENTYR has 8 revival mechanisms that automatically restart dead sessions. **Killing a session does NOT stop the work** — the underlying task must be cancelled or completed.
+
+| To permanently stop... | Use this tool | What it does |
+|------------------------|---------------|--------------|
+| A **plan** + all its work | `force_close_plan({ plan_id, reason, cto_bypass: true })` | Cancels plan + all linked persistent tasks (cascades by default) |
+| A **persistent task** | `cancel_persistent_task({ id, reason })` | Sets status to `cancelled` — all revival mechanisms skip it |
+| A **todo-db task** | `delete_task({ id })` or `complete_task({ id })` | Removes/completes the task so the task runner stops spawning agents |
+| A **running session** (temporarily) | `kill_session({ queue_id })` | Kills process, but the task will be re-spawned unless cancelled |
+
+**Key principle**: Sessions are vehicles; tasks are intent. Cancel the intent to stop the work. Killing sessions without cancelling tasks creates an infinite revival loop.
+
+**Pause vs Cancel**: `pause_persistent_task` is temporary — stale-pause auto-resume wakes it after 30 min. `cancel_persistent_task` is permanent — no revival mechanism will touch it.
+
 ### Global Deputy-CTO Monitor
 
 A persistent deputy-CTO session continuously monitors all agents with user alignment as its primary lens. Spawns user-alignment sub-agents in the `alignment` queue lane (limit 3) to verify work matches CTO intent BEFORE code is written. Detects zombies via `kill_session`, oversees stuck audit gates, and escalates significant drift via `submit_bypass_request` on the affected task.

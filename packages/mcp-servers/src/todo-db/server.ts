@@ -2284,7 +2284,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'complete_task',
-    description: 'Mark a task as completed. Records completion timestamp.',
+    description: 'Mark a task as completed. Records completion timestamp. To permanently stop a task without completing it, use delete_task (removes from DB entirely). Completing or deleting stops the task runner from re-spawning agents for it.',
     schema: CompleteTaskArgsSchema,
     handler: completeTask,
   },
