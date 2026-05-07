@@ -7854,8 +7854,10 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
     cmdArgs.push('--output', batchOutputDir);
 
     // Spawn the batch process
+    const batchSpawnedAt = Date.now();
     try {
-      const exitResult = await new Promise<{ code: number | null }>((resolve) => {
+      const exitResult = await new Promise<{ code: number | null; stderrChunks: Buffer[] }>((resolve) => {
+        const stderrChunks: Buffer[] = [];
         const child = spawn('npx', cmdArgs, {
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -7864,7 +7866,7 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
         });
 
         if (!child.pid) {
-          resolve({ code: 1 });
+          resolve({ code: 1, stderrChunks });
           return;
         }
 
@@ -7872,14 +7874,16 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
         persistDemoBatches();
 
         child.stdout?.resume();
-        child.stderr?.resume();
+        if (child.stderr) {
+          child.stderr.on('data', (chunk: Buffer) => { stderrChunks.push(chunk); });
+        }
 
         child.on('exit', (code) => {
-          resolve({ code });
+          resolve({ code, stderrChunks });
         });
 
         child.on('error', () => {
-          resolve({ code: 1 });
+          resolve({ code: 1, stderrChunks });
         });
 
         child.unref();
@@ -7907,6 +7911,11 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
 
       const progress = readDemoProgress(progressFile);
 
+      // Build stderr tail from captured chunks (shared across all scenarios in this batch)
+      const batchStderrTail = Buffer.concat(exitResult.stderrChunks).toString('utf-8').trim().slice(-5000);
+      const batchDurationMs = Date.now() - batchSpawnedAt;
+      const batchDurationSeconds = Math.round(batchDurationMs / 1000);
+
       // Map results back to scenarios using per-file results
       for (const s of batchScenarios) {
         const fileResult = fileResultMap.get(path.basename(s.test_file));
@@ -7917,8 +7926,33 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
           s.status = exitResult.code === 0 ? 'passed' : 'failed';
         }
 
+        // Track per-scenario duration (batch-level — all scenarios share one process)
+        s.duration_ms = batchDurationMs;
+
         if (s.status === 'failed') {
           s.failure_summary = progress?.recent_errors?.[0]?.slice(0, 500) ?? `Exit code: ${exitResult.code}`;
+
+          // Diagnostic enrichment: stderr, failure classification, elastic query hint
+          if (batchStderrTail) {
+            s.stderr_tail = batchStderrTail;
+          }
+
+          const classification = classifyFailure({
+            exitCode: exitResult.code ?? 1,
+            stderrTail: batchStderrTail,
+            durationSeconds: batchDurationSeconds,
+            scenarioId: s.scenario_id,
+            progress,
+          });
+          s.failure_classification = classification.classification;
+          s.failure_suggestion = classification.suggestion;
+          // Override failure_summary with the classifier's reason (more informative than generic exit code)
+          s.failure_summary = classification.reason;
+
+          if (process.env.ELASTIC_CLOUD_ID || process.env.ELASTIC_ENDPOINT) {
+            s.elastic_query_hint =
+              `Query logs: mcp__elastic-logs__query_logs({ query: 'demo.scenario_id:"${s.scenario_id}"', index: 'logs-demo-telemetry-*' })`;
+          }
         }
 
         // Persist demo result to user-feedback.db for each local batch scenario
@@ -7930,7 +7964,7 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
             executionMode: 'local',
             startedAt: state.started_at,
             completedAt: localBatchCompletedAt,
-            durationMs: new Date(localBatchCompletedAt).getTime() - new Date(state.started_at).getTime(),
+            durationMs: s.duration_ms ?? (new Date(localBatchCompletedAt).getTime() - new Date(state.started_at).getTime()),
             branch: getDemoBranch() ?? undefined,
             failureReason: s.failure_summary,
           });
