@@ -637,6 +637,12 @@ export interface CheckDemoBatchResultResult {
   message: string;
   /** Scenarios that were retried due to infrastructure failures (oom, timeout, startup_failure, external_kill) */
   retried_scenarios?: RetriedScenarioEntry[];
+  /** Current Fly.io machine slot pool utilization across all concurrent batches */
+  pool_status?: {
+    activeSlots: number;
+    maxSlots: number;
+    byBatch: Record<string, number>;
+  };
 }
 
 export interface StopDemoBatchResult {
