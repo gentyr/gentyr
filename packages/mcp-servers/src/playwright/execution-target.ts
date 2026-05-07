@@ -112,7 +112,7 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
     flyConfigured,
     flyHealthy,
     displayLockContended,
-    scenarioHeaded,
+    scenarioHeaded: _scenarioHeaded, // Deprecated — ignored for routing; kept for interface backward compat
     usesChromeBridge,
     remoteEligible,
     explicitRemote,
@@ -214,17 +214,10 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
     return { target: 'local', reason: 'Scenario uses chrome-bridge (requires local Chrome)' };
   }
 
-  // Scenarios flagged headed=true in the DB require ScreenCaptureKit / display
-  // access for window recording — remote machines have no display.
-  if (scenarioHeaded) {
-    if (explicitRemote === true) {
-      return {
-        target: 'remote',
-        reason: 'Scenario has headed=true — Xvfb + ffmpeg will handle display and recording on remote',
-      };
-    }
-    return { target: 'local', reason: 'Scenario requires headed browser (headed=true in DB)' };
-  }
+  // NOTE: scenarioHeaded is ignored for routing decisions — all demos run
+  // headed with video recording (Xvfb + ffmpeg on Fly.io, ScreenCaptureKit locally).
+  // The headed DB flag remains in the interface for backward compatibility but
+  // does not affect execution target selection.
 
   // headless=false at the call site implies local display access — UNLESS
   // the caller explicitly requested remote. Remote machines handle headed mode

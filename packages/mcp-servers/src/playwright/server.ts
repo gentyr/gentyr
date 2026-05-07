@@ -2273,14 +2273,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
   }
 
-  // Derive headless and skip_recording from the high-level "recorded" flag.
-  // Agents set recorded (default true) and remote (default true) — GENTYR handles the rest.
-  // Low-level overrides (headless, skip_recording) take precedence when explicitly set.
-  if (args.headless === undefined) {
-    args.headless = args.recorded === false; // recorded=true → headed, recorded=false → headless
-  }
+  // All demos run headed with video recording. The headless parameter is
+  // deprecated — force headed mode regardless of what the caller passed.
+  args.headless = false;
   if (args.skip_recording === undefined) {
-    args.skip_recording = args.recorded === false; // recorded=true → record, recorded=false → skip
+    args.skip_recording = false; // always record
   }
 
   // When remote: true + Fly configured, skip ALL local setup — the remote machine
@@ -8052,6 +8049,10 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
     }
   }
 
+  // All demos run headed with video recording. The headless parameter is
+  // deprecated — force headed mode regardless of what the caller passed.
+  args.headless = false;
+
   const batchWebPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
   const devServerUrl = args.base_url || `http://localhost:${batchWebPort}`;
 
@@ -8147,16 +8148,8 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
               const row = db.prepare('SELECT test_file, headed, remote_eligible FROM demo_scenarios WHERE id = ?')
                 .get(scenario.scenario_id) as { test_file: string | null; headed: number | null; remote_eligible: number | null } | undefined;
               if (row?.test_file) scenarioTestFile = row.test_file;
-              if (row?.headed === 1) {
-                // When remote requested, skip headed scenarios (don't run locally)
-                if (args.remote === true) {
-                  scenario.status = 'skipped';
-                  scenario.failure_summary = 'Skipped — headed scenario cannot run remotely (remote_eligible=false or headed=true)';
-                  state.progress.skipped++;
-                  state.progress.completed++;
-                }
-                db.close(); continue;
-              }
+              // NOTE: headed flag is ignored — all demos run headed with video recording.
+              // Headed scenarios run remotely via Xvfb + ffmpeg just like all others.
               if (row?.remote_eligible === 0) {
                 // When remote requested, skip remote-ineligible scenarios (don't run locally)
                 if (args.remote === true) {

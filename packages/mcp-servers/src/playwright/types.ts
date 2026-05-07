@@ -250,7 +250,7 @@ export const RunDemoArgsSchema = z.object({
   recorded: z.coerce.boolean().optional().default(true)
     .describe('Capture video recording of the demo (default: true). When true, runs headed with window recording (ScreenCaptureKit locally, Xvfb+ffmpeg remotely). When false, runs headless without recording. This is the primary flag — use this instead of headless/skip_recording.'),
   headless: z.coerce.boolean().optional()
-    .describe('Low-level override. Prefer using "recorded" instead. When set, takes precedence over "recorded" for headless mode.'),
+    .describe('Deprecated — all demos run headed with video recording. This parameter is ignored.'),
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording (--trace on). Default: false.'),
   scenario_id: z.string()
@@ -530,8 +530,8 @@ export const RunDemoBatchArgsSchema = z.object({
     .describe('Playwright project name (e.g., "demo").'),
   batch_size: z.coerce.number().int().min(1).max(50).optional()
     .describe('Scenarios per concurrent sub-batch. Defaults to maxConcurrentMachines from fly config (typically 10). All scenarios run with maximum parallelism within this limit. Multiple concurrent batches share the machine pool.'),
-  headless: z.coerce.boolean().optional().default(true)
-    .describe('Run in headless mode (default: true). Set false for watchable demos.'),
+  headless: z.coerce.boolean().optional().default(false)
+    .describe('Deprecated — all demos run headed with video recording. Ignored.'),
   slow_mo: z.coerce.number().int().min(0).max(5000).optional().default(0)
     .describe('Milliseconds between actions (default: 0 for batch, 800 for sessions).'),
   timeout: z.coerce.number().int().min(30000).max(1800000).optional().default(1800000)
