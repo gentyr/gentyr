@@ -8113,20 +8113,53 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
               const row = db.prepare('SELECT test_file, headed, remote_eligible FROM demo_scenarios WHERE id = ?')
                 .get(scenario.scenario_id) as { test_file: string | null; headed: number | null; remote_eligible: number | null } | undefined;
               if (row?.test_file) scenarioTestFile = row.test_file;
-              if (row?.headed === 1) { db.close(); continue; } // Headed scenarios stay local
-              if (row?.remote_eligible === 0) { db.close(); continue; } // Explicitly marked local-only
+              if (row?.headed === 1) {
+                // When remote requested, skip headed scenarios (don't run locally)
+                if (args.remote === true) {
+                  scenario.status = 'skipped';
+                  scenario.failure_summary = 'Skipped — headed scenario cannot run remotely (remote_eligible=false or headed=true)';
+                  state.progress.skipped++;
+                  state.progress.completed++;
+                }
+                db.close(); continue;
+              }
+              if (row?.remote_eligible === 0) {
+                // When remote requested, skip remote-ineligible scenarios (don't run locally)
+                if (args.remote === true) {
+                  scenario.status = 'skipped';
+                  scenario.failure_summary = 'Skipped — scenario marked remote_eligible=false, cannot run on Fly.io';
+                  state.progress.skipped++;
+                  state.progress.completed++;
+                }
+                db.close(); continue;
+              }
             } catch { /* */ }
             db.close();
           }
         } catch { /* non-fatal */ }
 
         const usesChromeBridge = executionTargetMod.detectChromeBridgeUsage(scenarioTestFile);
-        if (!usesChromeBridge && args.headless) {
-          remoteScenarioIds.add(scenario.scenario_id);
+        if (usesChromeBridge) {
+          // Chrome-bridge scenarios can't run remotely
+          if (args.remote === true) {
+            scenario.status = 'skipped';
+            scenario.failure_summary = 'Skipped — chrome-bridge scenario requires local Chrome extension';
+            state.progress.skipped++;
+            state.progress.completed++;
+          }
+          continue;
         }
+        if (!args.headless) {
+          // Headed batch can't run remotely unless explicitly remote
+          continue;
+        }
+        remoteScenarioIds.add(scenario.scenario_id);
       }
     } catch { /* non-fatal — all local */ }
   }
+
+  // Persist skipped scenarios before launching
+  persistDemoBatches();
 
   // Launch execution — local and remote paths concurrently
   const executionPromises: Promise<void>[] = [];
