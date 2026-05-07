@@ -1124,11 +1124,18 @@ export async function captureRunningMachineLogs(
       }
     })(),
 
-    // 3. Capture NATS log stream (works while machine is alive)
+    // 3. Capture system diagnostics via exec (dmesg, process list, memory)
     (async (): Promise<void> => {
-      const logs = await fetchMachineLogs(handle, config);
-      if (logs.length > 0) {
-        await fsPromises.writeFile(path.join(destDir, 'fly-machine.log'), logs);
+      const buf = await execInMachine(handle, config, [
+        'sh', '-c',
+        'echo "=== dmesg (last 30 lines) ===" && dmesg 2>/dev/null | tail -30 && ' +
+        'echo "\\n=== process list ===" && ps aux --sort=-rss 2>/dev/null | head -20 && ' +
+        'echo "\\n=== memory ===" && cat /proc/meminfo 2>/dev/null | head -5 && ' +
+        'echo "\\n=== uptime ===" && uptime 2>/dev/null',
+      ], 5_000);
+      const content = buf.toString('utf8');
+      if (content.length > 0) {
+        await fsPromises.writeFile(path.join(destDir, 'fly-machine.log'), content);
         result.machineLog = true;
       }
     })(),

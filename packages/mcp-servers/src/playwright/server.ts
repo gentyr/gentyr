@@ -1305,6 +1305,16 @@ function classifyFailure(opts: {
     };
   }
 
+  // Build failure: workspace packages not built, esbuild errors, dist missing
+  const buildFailurePattern = /dist\/index\.js.*not found|Cannot find module.*dist|esbuild.*error|ERR_MODULE_NOT_FOUND.*dist|ENOENT.*dist\/|build.*failed|tsc.*error/i;
+  if (buildFailurePattern.test(stderrTail)) {
+    return {
+      classification: 'build_failure',
+      reason: 'Workspace build failure — dependency dist/ artifacts missing on Fly.io',
+      suggestion: 'The project needs pnpm --recursive build before tests. Either: (1) add worktreeBuildCommand to services.json, (2) use worktreeArtifactCopy to copy dist/ from main tree, or (3) deploy a project-specific Fly.io image with deploy_project_image().',
+    };
+  }
+
   // Test failure: progress shows failures + exit > 0 and < 128 (normal failure codes)
   if (progress?.has_failures && exitCode > 0 && exitCode < 128) {
     return {
@@ -7253,6 +7263,9 @@ async function runRemoteBatchSequence(
             } catch { /* neither file — still running */ }
           }
           if (batchReady) {
+            // Capture logs NOW while machine is still alive — critical for fast scenarios (<30s)
+            // that complete before the 30s incremental capture interval fires
+            await flyRunnerMod.captureRunningMachineLogs(handle, scenarioMachineConfig, destDir).catch(() => {});
             // Demo done — pull artifacts now while machine is still alive
             process.stderr.write(`[fly-runner] Batch: artifacts ready, pulling proactively\n`);
             try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, scenarioMachineConfig, destDir); batchArtifactsPulled = true; if (r.errors.length) process.stderr.write(`[fly-runner] Batch proactive pull errors: ${r.errors.join('; ')}\n`); }
