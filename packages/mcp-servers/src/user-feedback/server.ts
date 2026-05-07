@@ -1727,13 +1727,15 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
   // ============================================================================
 
   function verifyDemoCompleteness(args: VerifyDemoCompletenessArgs): VerifyDemoCompletenessResult {
-    // Query all enabled scenarios with persona names
+    // Query enabled, remote-eligible scenarios only — remote-ineligible demos
+    // are excluded from the promotion pipeline (they require local Chrome/display
+    // and cannot be validated automatically on Fly.io).
     const scenarios = db.prepare(`
       SELECT ds.id, ds.title, ds.persona_id, ds.last_recorded_at, ds.recording_path,
              p.name as persona_name
       FROM demo_scenarios ds
       LEFT JOIN personas p ON p.id = ds.persona_id
-      WHERE ds.enabled = 1
+      WHERE ds.enabled = 1 AND (ds.remote_eligible IS NULL OR ds.remote_eligible = 1)
       ORDER BY ds.sort_order, ds.title
     `).all() as Array<{
       id: string; title: string; persona_id: string;

@@ -8699,6 +8699,8 @@ const tools: AnyToolHandler[] = [
       'Defaults to maxConcurrentMachines parallelism (typically 10). Multiple concurrent batch runs share the Fly machine pool. ' +
       'Defaults: headless=true, remote=true, retry_infra_failures=1. ' +
       'Spawned agents must use remote execution (Fly.io). Local batch demos are reserved for the CTO dashboard and interactive sessions. ' +
+      'remote_eligible=false scenarios are automatically excluded from remote batches and from the production promotion pipeline (verify_demo_completeness). ' +
+      'Do NOT run remote-ineligible scenarios unless explicitly directed by the CTO — they require local Chrome/display access. ' +
       'Discovers scenarios from user-feedback.db — filter by scenario_ids, persona_ids, or category. ' +
       'Returns a batch_id for polling via check_demo_batch_result. ' +
       'Dev server is auto-started if not running.',
