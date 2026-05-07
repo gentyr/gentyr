@@ -2253,24 +2253,42 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   }
 
   // ── Spawned-session remote enforcement ──
-  // Spawned agents (non-interactive sessions) MUST use remote Fly.io execution.
-  // Local demos are reserved for the CTO dashboard and interactive CTO sessions.
+  // Spawned agents (non-interactive sessions) MUST use remote Fly.io execution
+  // UNLESS the CTO approved a demo_local bypass request for their task.
   const isSpawnedSession = process.env.CLAUDE_SPAWNED_SESSION === 'true';
   if (isSpawnedSession) {
-    const flyConfig = getFlyConfigFromServices();
-    const flyAvailableForEnforcement = flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
-    if (flyAvailableForEnforcement) {
-      // Force remote execution — override whatever the caller passed
-      args.remote = true;
-    } else {
-      // Fly.io not configured — fail-closed, spawned agents cannot run local demos
-      return {
-        success: false,
-        project,
-        message: 'Spawned agents are not allowed to run demos locally. Fly.io remote execution is required but not configured. ' +
-          'Configure Fly.io via /setup-fly, or ask the CTO to run this demo from the live dashboard or an interactive session.',
-      };
+    // Check if CTO approved a demo_local bypass for this agent's task
+    let hasLocalBypassApproval = false;
+    try {
+      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+      if (fs.existsSync(bypassDbPath)) {
+        const bypassDb = new Database(bypassDbPath, { readonly: true });
+        try {
+          const approval = bypassDb.prepare(
+            "SELECT id FROM bypass_requests WHERE category = 'demo_local' AND status = 'approved' AND created_at > datetime('now', '-1 hour') LIMIT 1"
+          ).get();
+          if (approval) hasLocalBypassApproval = true;
+        } finally { bypassDb.close(); }
+      }
+    } catch { /* non-fatal — fail-closed (no approval) */ }
+
+    if (!hasLocalBypassApproval) {
+      const flyConfig = getFlyConfigFromServices();
+      const flyAvailableForEnforcement = flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
+      if (flyAvailableForEnforcement) {
+        // Force remote execution — override whatever the caller passed
+        args.remote = true;
+      } else {
+        // Fly.io not configured — fail-closed, spawned agents cannot run local demos
+        return {
+          success: false,
+          project,
+          message: 'Spawned agents are not allowed to run demos locally. Fly.io remote execution is required but not configured. ' +
+            'Configure Fly.io via /setup-fly, or ask the CTO to run this demo from the live dashboard or an interactive session.',
+        };
+      }
     }
+    // If hasLocalBypassApproval: respect the agent's remote: false (CTO approved local execution)
   }
 
   // All demos run headed with video recording. The headless parameter is
@@ -8032,20 +8050,35 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
  */
 async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   // ── Spawned-session remote enforcement ──
-  // Spawned agents MUST use remote Fly.io execution for batch demos too.
+  // Spawned agents MUST use remote Fly.io execution for batch demos too,
+  // UNLESS the CTO approved a demo_local bypass request.
   const isBatchSpawnedSession = process.env.CLAUDE_SPAWNED_SESSION === 'true';
   if (isBatchSpawnedSession) {
-    const flyConfig = getFlyConfigFromServices();
-    const flyAvailableForBatch = flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
-    if (flyAvailableForBatch) {
-      // Force remote execution — override whatever the caller passed
-      args.remote = true;
-    } else {
-      // Fly.io not configured — fail-closed
-      return JSON.stringify({
-        error: 'Spawned agents are not allowed to run demos locally. Fly.io remote execution is required but not configured. ' +
-          'Configure Fly.io via /setup-fly, or ask the CTO to run this demo from the live dashboard or an interactive session.',
-      });
+    let hasBatchLocalBypass = false;
+    try {
+      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+      if (fs.existsSync(bypassDbPath)) {
+        const bypassDb = new Database(bypassDbPath, { readonly: true });
+        try {
+          const approval = bypassDb.prepare(
+            "SELECT id FROM bypass_requests WHERE category = 'demo_local' AND status = 'approved' AND created_at > datetime('now', '-1 hour') LIMIT 1"
+          ).get();
+          if (approval) hasBatchLocalBypass = true;
+        } finally { bypassDb.close(); }
+      }
+    } catch { /* non-fatal */ }
+
+    if (!hasBatchLocalBypass) {
+      const flyConfig = getFlyConfigFromServices();
+      const flyAvailableForBatch = flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
+      if (flyAvailableForBatch) {
+        args.remote = true;
+      } else {
+        return JSON.stringify({
+          error: 'Spawned agents are not allowed to run demos locally. Fly.io remote execution is required but not configured. ' +
+            'Configure Fly.io via /setup-fly, or ask the CTO to run this demo from the live dashboard or an interactive session.',
+        });
+      }
     }
   }
 
