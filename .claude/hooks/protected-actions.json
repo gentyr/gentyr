@@ -187,7 +187,10 @@
       "credentialKeys": [
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
-        "SUPABASE_SERVICE_ROLE_KEY"
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "ELASTIC_API_KEY",
+        "ELASTIC_CLOUD_ID",
+        "ELASTIC_ENDPOINT"
       ]
     },
     "icon-processor": {
