@@ -274,5 +274,14 @@ For all config changes, use the MCP staging tools:
 If the file is root-owned, these tools automatically stage changes to
 \`.claude/state/services-config-pending.json\`. The CTO applies them with \`npx gentyr sync\`.
 Do NOT file a bypass request for services.json access — use the staging tools instead.
+
+### Elastic Logging Configuration
+
+If demo telemetry or \`elastic_query_hint\` is missing from batch results, Elastic may not be configured.
+Check with \`mcp__secret-sync__get_services_config()\`. If the \`elastic\` section is empty:
+1. Find credentials: \`mcp__onepassword__op_vault_map()\` — look for Elastic items
+2. Add secrets: \`mcp__secret-sync__populate_secrets_local({ entries: { ELASTIC_API_KEY: "op://...", ELASTIC_CLOUD_ID: "op://..." } })\`
+3. Configure: \`mcp__secret-sync__update_services_config({ updates: { elastic: { apiKey: "op://...", cloudId: "op://...", enabled: true } } })\`
+4. Ask CTO to run \`npx gentyr sync\` to apply
 `;
 }
