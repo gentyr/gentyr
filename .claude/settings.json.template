@@ -193,6 +193,16 @@
         ]
       },
       {
+        "matcher": "mcp__playwright__run_demo,mcp__playwright__run_demo_batch,mcp__playwright__run_tests,mcp__playwright__launch_ui_mode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/demo-local-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "mcp__*",
         "hooks": [
           {
