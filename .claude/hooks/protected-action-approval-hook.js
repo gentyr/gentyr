@@ -1,24 +1,25 @@
 #!/usr/bin/env node
 /**
- * Protected Action Approval Hook (UserPromptSubmit)
+ * DEPRECATED: Protected Action Approval Hook (UserPromptSubmit)
  *
- * Watches for CTO approval messages in the format:
+ * This hook is deprecated as of Phase 3 of the Unified CTO Authorization System.
+ * CTO approval now flows through `record_cto_decision` on the agent-tracker server,
+ * which provides JSONL verbatim verification and independent auditor verification
+ * before auto-executing the deferred action.
+ *
+ * This file will be removed from settings.json.template in Phase 5.
+ * Until then, it remains registered but its primary flow (writing to
+ * protected-action-approvals.json) is no longer consumed by the gate hook.
+ * The deferred action path (checkAndExecuteDeferred) is also superseded by
+ * the deferred-action-audit-executor.js PostToolUse hook.
+ *
+ * Previously watched for CTO approval messages in the format:
  *   APPROVE <PHRASE> <6-char-code>
- *
- * Examples:
- *   APPROVE PROD A7X9K2
- *   APPROVE PAYMENT B3C4D5
- *   APPROVE EMAIL X7Y8Z9
- *
- * When detected, validates the code exists in pending approval requests
- * and marks the request as approved.
- *
- * This ensures only the CTO (human user) can approve protected actions
- * by typing the approval phrase - agents cannot trigger UserPromptSubmit hooks.
  *
  * SECURITY: This file should be root-owned via protect-framework.sh
  *
  * @version 2.0.0
+ * @deprecated Phase 3 of Unified CTO Authorization System — use record_cto_decision instead
  */
 
 import fs from 'fs';
