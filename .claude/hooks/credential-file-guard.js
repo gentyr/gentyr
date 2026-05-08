@@ -58,10 +58,8 @@ const BLOCKED_BASENAMES = new Set([
  */
 const BLOCKED_PATH_SUFFIXES = [
   '.claude/protection-key',
-  '.claude/bypass-approval-token.json',
   '.claude/commit-approval-token.json',
   '.claude/credential-provider.json',
-  '.claude/protected-action-approvals.json',
   '.claude/vault-mappings.json',
   // NOTE: .claude/config/services.json is intentionally NOT listed here.
   // It contains service IDs (not secrets) and agents need read access to it
@@ -94,8 +92,6 @@ const WRITE_BLOCKED_PATH_CONTAINS = [
  */
 const ALWAYS_BLOCKED_SUFFIXES = new Set([
   '.claude/protection-key',
-  '.claude/protected-action-approvals.json',
-  '.claude/bypass-approval-token.json',
   '.claude/commit-approval-token.json',
 ]);
 
