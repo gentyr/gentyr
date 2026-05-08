@@ -591,7 +591,7 @@ export interface BatchScenarioResult {
   scenario_id: string;
   scenario_title: string;
   test_file: string;
-  status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+  status: 'pending' | 'remote_pending' | 'running' | 'passed' | 'failed' | 'skipped';
   duration_ms?: number;
   failure_summary?: string;
   video_path?: string;

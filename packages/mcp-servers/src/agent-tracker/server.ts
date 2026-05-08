@@ -5427,17 +5427,47 @@ async function recordCtoDecision(args: RecordCtoDecisionArgs): Promise<object | 
       const id = 'ctod-' + crypto.randomUUID().slice(0, 12);
       const isAuditOverride = args.decision_type === 'audit_override';
       const initialStatus = isAuditOverride ? 'audit_passed' : 'verified';
-      db.prepare(`INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, status, audit_verdict, audit_completed_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`).run(
+
+      // For bypass_request decisions, store the bypass request context so the
+      // deferred-action-audit-executor can resolve the request autonomously after audit pass.
+      // The executor reuses executeDeputyBypassResolution which reads bypass_request_id and
+      // deputy_decision from decision_context. CTO recording a decision via this tool
+      // constitutes approval — rejection is handled by the agent not calling this tool at all.
+      let decisionContext: string | null = null;
+      if (args.decision_type === 'bypass_request') {
+        const bypassReq = db.prepare(
+          'SELECT id, task_type, task_id, task_title, category, summary FROM bypass_requests WHERE id = ?'
+        ).get(args.decision_id) as { id: string; task_type: string; task_id: string; task_title: string; category: string; summary: string } | undefined;
+        if (bypassReq) {
+          decisionContext = JSON.stringify({
+            bypass_request_id: bypassReq.id,
+            deputy_decision: 'approved',
+            task_type: bypassReq.task_type,
+            task_id: bypassReq.task_id,
+            task_title: bypassReq.task_title,
+            category: bypassReq.category,
+            summary: bypassReq.summary,
+          });
+        }
+      }
+
+      db.prepare(`INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, status, audit_verdict, audit_completed_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`).run(
         id, args.decision_type, args.decision_id, args.verbatim_text, effectiveSessionId, fileHash, hmac,
+        decisionContext,
         initialStatus,
         isAuditOverride ? 'override — CTO bypassed audit' : null,
         isAuditOverride ? new Date().toISOString() : null,
       );
 
-      const message = isAuditOverride
-        ? `CTO audit override recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. Decision goes directly to audit_passed — no auditor spawned.`
-        : `CTO decision recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. You may now call the appropriate resolution tool (e.g., resolve_bypass_request).`;
+      let message: string;
+      if (isAuditOverride) {
+        message = `CTO audit override recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. Decision goes directly to audit_passed — no auditor spawned.`;
+      } else if (args.decision_type === 'bypass_request') {
+        message = `CTO decision recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. An authorization auditor will verify the approval context — the bypass request will be resolved automatically after audit pass. Do NOT call resolve_bypass_request manually.`;
+      } else {
+        message = `CTO decision recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. You may now call the appropriate resolution tool.`;
+      }
 
       return {
         id,
@@ -5550,8 +5580,13 @@ async function ctoDecisionAuditPass(args: CtoDecisionAuditPassArgs): Promise<obj
       return { error: `Cannot transition CTO decision from status "${existing.status}" to "audit_passed". Expected status "audit_pending".` };
     }
 
+    // Read the decision_type so the deferred-action-audit-executor hook can
+    // route to the correct handler (bypass_request, deputy_bypass_resolution, etc.)
+    const passedDecision = db.prepare('SELECT decision_type FROM cto_decisions WHERE id = ?').get(args.decision_id) as { decision_type: string } | undefined;
+
     return {
       decision_id: args.decision_id,
+      decision_type: passedDecision?.decision_type || null,
       status: 'audit_passed',
       ...(laneCheck.warning ? { warning: laneCheck.warning } : {}),
     };

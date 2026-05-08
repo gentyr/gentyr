@@ -7293,10 +7293,48 @@ async function runRemoteBatchSequence(
   remoteScenarioIds: Set<string>,
 ): Promise<void> {
   const flyConfig = getFlyConfigFromServices();
-  if (!flyConfig || !flyConfig.appName || !flyConfig.apiToken) return;
+  if (!flyConfig || !flyConfig.appName || !flyConfig.apiToken) {
+    // Fly.io not configured — revert remote_pending scenarios
+    for (const entry of state.scenarios) {
+      if (entry.status === 'remote_pending') {
+        if (args.remote === true) {
+          // Explicit remote: true — fail loudly, don't silently fall back to local
+          entry.status = 'failed';
+          entry.failure_summary = 'Fly.io not configured but remote execution was explicitly requested';
+          entry.failure_classification = 'startup_failure';
+          state.progress.failed++;
+          state.progress.completed++;
+        } else {
+          // Auto-routing — fall back to local
+          entry.status = 'pending';
+          process.stderr.write(`[run_demo_batch] WARNING: Remote-eligible scenario '${entry.scenario_id}' falling back to local execution (Fly.io not configured)\n`);
+        }
+      }
+    }
+    persistDemoBatches();
+    return;
+  }
 
   const { resolved: flyResolved, failedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
-  if (failedKeys.length > 0) return;
+  if (failedKeys.length > 0) {
+    // Token resolution failed — revert remote_pending scenarios
+    for (const entry of state.scenarios) {
+      if (entry.status === 'remote_pending') {
+        if (args.remote === true) {
+          entry.status = 'failed';
+          entry.failure_summary = `Fly.io API token resolution failed (${failedKeys.join(', ')}) but remote execution was explicitly requested`;
+          entry.failure_classification = 'startup_failure';
+          state.progress.failed++;
+          state.progress.completed++;
+        } else {
+          entry.status = 'pending';
+          process.stderr.write(`[run_demo_batch] WARNING: Remote-eligible scenario '${entry.scenario_id}' falling back to local execution (Fly.io token resolution failed)\n`);
+        }
+      }
+    }
+    persistDemoBatches();
+    return;
+  }
 
   const flyRunnerMod = await import('./fly-runner.js');
   // Read per-mode RAM config (state file, always writable, no sync needed)
@@ -7342,7 +7380,7 @@ async function runRemoteBatchSequence(
   // machine pool and launch scenarios as soon as slots are available. This
   // allows multiple concurrent batches from different MCP server instances
   // to coordinate without exceeding the Fly.io org machine limit.
-  const pendingScenarios = remoteEntries.filter(s => s.status === 'pending');
+  const pendingScenarios = remoteEntries.filter(s => s.status === 'pending' || s.status === 'remote_pending');
   const runningPromises = new Map<string, Promise<void>>();
 
   while (pendingScenarios.length > 0 || runningPromises.size > 0) {
@@ -8472,6 +8510,19 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   // Persist skipped scenarios before launching
   persistDemoBatches();
 
+  // Pre-mark remote scenarios synchronously BEFORE launching any async work.
+  // This prevents the local runner from racing the remote runner's async initialization
+  // (dynamic imports, op:// resolution, fly config reads) and claiming remote-eligible
+  // scenarios before the remote runner can start processing them.
+  if (remoteScenarioIds.size > 0) {
+    for (const entry of state.scenarios) {
+      if (remoteScenarioIds.has(entry.scenario_id) && entry.status === 'pending') {
+        entry.status = 'remote_pending';
+      }
+    }
+    persistDemoBatches();
+  }
+
   // Launch execution — local and remote paths concurrently
   const executionPromises: Promise<void>[] = [];
 
@@ -8481,10 +8532,15 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
     );
   }
 
-  // Always run the local batch sequence — it will skip non-pending (remote) scenarios
-  executionPromises.push(
-    runBatchSequence(state, args, scenarioEnvMap, devServer.ready, effectiveBatchBaseUrl)
+  // Only run local batch if there are scenarios not claimed by the remote runner
+  const hasLocalScenarios = state.scenarios.some(
+    s => s.status === 'pending' && !remoteScenarioIds.has(s.scenario_id)
   );
+  if (hasLocalScenarios || remoteScenarioIds.size === 0) {
+    executionPromises.push(
+      runBatchSequence(state, args, scenarioEnvMap, devServer.ready, effectiveBatchBaseUrl)
+    );
+  }
 
   Promise.all(executionPromises).catch((err) => {
     state.status = 'failed';
@@ -8616,7 +8672,7 @@ function stopDemoBatch(args: StopDemoBatchArgs): StopDemoBatchResult {
   state.status = 'stopped';
   state.ended_at = new Date().toISOString();
   for (const s of state.scenarios) {
-    if (s.status === 'pending' || s.status === 'running') {
+    if (s.status === 'pending' || s.status === 'remote_pending' || s.status === 'running') {
       s.status = 'skipped';
     }
   }
