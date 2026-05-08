@@ -82,6 +82,7 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'screenshot_cleanup',
   'auto_rollback_check',
   'fly_image_freshness',
+  'fly_project_image_freshness',
   'global_monitor_health',
   'stale_wait_detection_minutes',
   'stale_wait_escalation_minutes',
@@ -225,6 +226,7 @@ const DEFAULTS = {
   load_test: 360,                              // 6 hours (only runs during promotion)
   auto_rollback_check: 2,                      // 2 minutes
   fly_image_freshness: 60,                     // 1 hour
+  fly_project_image_freshness: 30,             // 30 minutes
   global_monitor_health: 5,                    // 5 minutes
   stale_wait_detection_minutes: 8,             // minutes before first stale-wait nudge
   stale_wait_escalation_minutes: 5,            // minutes after detection before instruction signal

@@ -5116,6 +5116,100 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
   });
 
   // =========================================================================
+  // FLY.IO PROJECT IMAGE FRESHNESS CHECK (30min cooldown, gate-exempt)
+  // Detects when the project image is stale (pnpm-lock.yaml changed since
+  // last deploy) and files a report. Prevents cascade failures where
+  // all remote demos fall back to base image cold installs (~5min each).
+  // =========================================================================
+  await runIfDue('fly_project_image_freshness', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastFlyProjectImageFreshnessCheck',
+    label: 'Fly.io project image freshness (gate-exempt)',
+    localModeSkip: localMode,
+    fn: async () => {
+      try {
+        const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+        if (!fs.existsSync(servicesPath)) return;
+        const svcConfig = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+        if (!svcConfig?.fly || svcConfig.fly.enabled === false) return;
+
+        const { checkProjectImageStaleness } = await import('./lib/fly-image-freshness.js');
+        const projFreshness = checkProjectImageStaleness(PROJECT_DIR);
+
+        if (!projFreshness.hasMeta) {
+          log('Fly.io project image: no metadata file — skipping freshness check');
+          return;
+        }
+
+        if (projFreshness.deploying) {
+          // Check for stuck deploy (PID dead > 30 min)
+          if (projFreshness.deployPidAlive === false && projFreshness.ageHours >= 0.5) {
+            log(`Fly.io project image: deploy stuck (deploying=true for ${projFreshness.ageHours}h, PID dead) — will be auto-recovered on next get_fly_status call`);
+          } else {
+            log(`Fly.io project image: deploy in progress (${projFreshness.ageHours}h ago)`);
+          }
+          return;
+        }
+
+        if (projFreshness.deployFailed) {
+          // Back-off: don't retry within 2 hours of failure
+          const failedAt = projFreshness.meta?.deployFailedAt;
+          if (failedAt) {
+            const failedMs = new Date(failedAt).getTime();
+            if (Date.now() - failedMs < 2 * 60 * 60 * 1000) {
+              log(`Fly.io project image: deploy failed ${Math.round((Date.now() - failedMs) / 60000)}min ago — backing off (2h cooldown)`);
+              return;
+            }
+          }
+        }
+
+        if (projFreshness.stale) {
+          log(`Fly.io project image STALE: pnpm-lock.yaml changed (stored: ${(projFreshness.storedLockfileHash || '').slice(0, 8)}..., current: ${(projFreshness.currentLockfileHash || '').slice(0, 8)}...)`);
+
+          // File a deputy-CTO report for visibility (dedup against 24h)
+          try {
+            if (Database) {
+              const reportsDbPath = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
+              if (fs.existsSync(reportsDbPath)) {
+                const reportsDb = new Database(reportsDbPath);
+                try {
+                  const existing = reportsDb.prepare(
+                    `SELECT id FROM reports WHERE title LIKE '%project image stale%' AND triage_status = 'pending' AND created_at > datetime('now', '-24 hours') LIMIT 1`
+                  ).get();
+                  if (!existing) {
+                    reportsDb.prepare(
+                      `INSERT INTO reports (id, title, summary, category, priority, reporting_agent, triage_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+                    ).run(
+                      randomUUID(),
+                      'Fly.io project image stale — remote demos degraded',
+                      `The Fly.io project image lockfile hash does not match the current pnpm-lock.yaml. ` +
+                      `All remote demos will fall back to base image with 5+ minute cold installs. ` +
+                      `Fix: call deploy_project_image({ force: true }) to rebuild the project image.`,
+                      'infrastructure',
+                      'high',
+                      'hourly-automation',
+                      'pending'
+                    );
+                    log('Filed deputy-CTO report for stale Fly.io project image');
+                  }
+                } finally {
+                  reportsDb.close();
+                }
+              }
+            }
+          } catch (reportErr) {
+            log(`Failed to file stale project image report (non-fatal): ${reportErr.message}`);
+          }
+        } else {
+          log(`Fly.io project image: fresh (${projFreshness.ageHours}h old)`);
+        }
+      } catch (err) {
+        log(`Fly.io project image freshness check error (non-fatal): ${err.message}`);
+      }
+    },
+  });
+
+  // =========================================================================
   // DORA METRICS COLLECTION (daily, gate-exempt)
   // Tracks Deployment Frequency, Lead Time, Change Failure Rate, MTTR
   // =========================================================================

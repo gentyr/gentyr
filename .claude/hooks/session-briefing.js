@@ -20,7 +20,7 @@ import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
-import { checkImageStaleness } from './lib/fly-image-freshness.js';
+import { checkImageStaleness, checkProjectImageStaleness } from './lib/fly-image-freshness.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const IS_SPAWNED = process.env.CLAUDE_SPAWNED_SESSION === 'true';
@@ -790,6 +790,27 @@ function buildInteractiveBriefing() {
           } else {
             lines.push('Fly.io: configured but no image metadata — run deploy_fly_image() or get_fly_status() to verify');
           }
+          // Project image health (one-line)
+          try {
+            const projFreshness = checkProjectImageStaleness(PROJECT_DIR);
+            if (projFreshness.hasMeta) {
+              if (projFreshness.deploying) {
+                const deployAgeMin = projFreshness.ageHours != null ? Math.round(projFreshness.ageHours * 60) : '?';
+                if (projFreshness.deployPidAlive === false) {
+                  lines.push(`Fly.io: PROJECT IMAGE DEPLOY STUCK — deploying for ${deployAgeMin}min but PID is dead. Will auto-recover on next get_fly_status call.`);
+                } else {
+                  lines.push(`Fly.io: project image deploy in progress (${deployAgeMin}min ago)`);
+                }
+              } else if (projFreshness.stale) {
+                lines.push(`Fly.io: PROJECT IMAGE STALE — pnpm-lock.yaml changed since last build. Remote demos will cold-install deps (~5min). Run deploy_project_image({ force: true })`);
+              } else if (projFreshness.deployFailed) {
+                lines.push(`Fly.io: project image deploy FAILED at ${projFreshness.meta?.deployFailedAt || 'unknown time'}. Run deploy_project_image({ force: true }) to retry.`);
+              } else if (!svcConfig.fly.projectImageEnabled) {
+                lines.push(`Fly.io: project image deployed but NOT ENABLED — set fly.projectImageEnabled=true or it will auto-enable on next successful deploy`);
+              }
+              // If healthy, don't add noise — the base image line is enough
+            }
+          } catch { /* non-fatal */ }
           lines.push('');
         }
       }
