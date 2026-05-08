@@ -59,7 +59,7 @@ Excludes all 10 remote MCP servers (`github`, `cloudflare`, `supabase`, `vercel`
 
 **Two-layer design:** Layer 1 (MCP servers in `.mcp.json`) requires `npx gentyr sync` + session restart after toggling. Layer 2 (automation behavior, credential checks, agent prompts) takes effect immediately.
 
-**Toggle at runtime:** `/local-mode` slash command or `set_local_mode` MCP tool on agent-tracker. Enabling is unrestricted. Disabling requires CTO APPROVE BYPASS (same HMAC mechanism as lockdown).
+**Toggle at runtime:** `/local-mode` slash command or `set_local_mode` MCP tool on agent-tracker. Enabling is unrestricted. Disabling requires CTO authorization via `record_cto_decision` (Unified CTO Authorization System).
 
 **What's skipped in local mode:**
 - Credential health check (no 1Password warnings)
@@ -310,7 +310,7 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 - `merge-chain-check.yml` (GitHub Actions): BLOCKS PRs from non-preview branches to staging
 - `setup-branch-protection.js`: Configures GitHub required status checks
 
-**CTO bypass**: `APPROVE BYPASS <code>` → HMAC-signed token → temporarily allows the blocked action.
+**CTO bypass**: Agent calls `record_cto_decision` with the CTO's verbatim approval → `authorization-audit-spawner.js` enqueues an independent auditor → on audit pass, `deferred-action-audit-executor.js` executes the blocked action autonomously.
 
 #### Pattern 2: Interactive Session Lockdown
 
@@ -327,7 +327,7 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 - `interactive-lockdown-guard.js` (PreToolUse, root-owned): DENIES Write/Edit/NotebookEdit and code-modifying Agent spawns in interactive sessions
 - HMAC token required to disable: `set_lockdown_mode({ enabled: false })` requires a valid bypass token
 
-**CTO bypass**: `APPROVE BYPASS <code>` → `bypass-approval-hook.js` writes HMAC token → `set_lockdown_mode` verifies and disables lockdown.
+**CTO bypass**: Agent calls `record_cto_decision` with the CTO's verbatim approval → `authorization-audit-spawner.js` enqueues an independent auditor → on audit pass, `deferred-action-audit-executor.js` executes the disable-lockdown action autonomously.
 
 #### Pattern 3: Backward-Compatible Migration Enforcement
 
@@ -360,30 +360,35 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 - GitHub branch protection (required status checks): `gh pr merge` fails if CI hasn't passed
 - `setup-branch-protection.js`: Configures these rules automatically
 
-### The HMAC CTO Bypass System
+### The Unified CTO Authorization System
 
-When enforcement blocks a legitimate CTO action, the bypass system allows temporary override:
+When enforcement blocks a legitimate CTO action, the authorization system allows temporary override through a verified, audited approval chain:
 
-1. **Agent hits a block**: PreToolUse hook denies the action
-2. **Agent requests bypass**: Calls `submit_bypass_request` or the hook returns a bypass code
-3. **CTO types**: `APPROVE BYPASS <6-char-code>` in the interactive session
-4. **bypass-approval-hook.js fires**:
-   - Reads the code from `deputy-cto.db`
-   - Computes HMAC-SHA256 with `.claude/protection-key` (root-owned, agents can't read)
-   - Writes signed approval token
-5. **Agent retries**: The blocked action now succeeds (token is consumed on use)
+1. **Agent hits a block**: PreToolUse hook creates a `deferred_actions` record and returns `permissionDecision: 'deny'` with the deferred action ID
+2. **Agent presents to CTO**: Shows the blocked action context and requests the CTO's verbatim approval; for spawned agents, files a `submit_bypass_request` and exits
+3. **CTO approves**: Types approval response; agent calls `record_cto_decision` with the verbatim text and the `deferred_action_id`
+4. **authorization-audit-spawner.js fires**: Transitions the decision to `audit_pending`, enqueues an independent `authorization-auditor` agent in the `audit` lane (Sonnet-tier, 8-min TTL, signal-excluded)
+5. **authorization-auditor verifies**: Uses `peek_session` to read the CTO's session JSONL — confirms the CTO was presented accurate context, the decision scope matches the actual action, and no critical information was omitted or misrepresented
+6. **On audit pass**: `deferred-action-audit-executor.js` executes the blocked tool call autonomously via the MCP shared daemon (Tier 1) or Bash (Tier 2); signals the original agent with the result
+7. **On audit fail**: The blocked action is NOT executed; the agent receives a failure signal with the scope mismatch reason
 
 **Security properties**:
-- The 6-char code is server-generated (stored in DB) — agents can't forge it
-- The HMAC is signed with `.claude/protection-key` — agents can't read or compute it
-- Token is one-time use — consumed after successful verification
-- Spawned sessions CANNOT use bypass even with valid token (server-side guard)
+- CTO approval is recorded verbatim and hashed in `cto_decisions` table — agents cannot fabricate a decision
+- Independent auditor verifies context accuracy from the actual session JSONL — not from agent claims
+- Deferred action is bound by `args_hash` — approved args must match stored args (no bait-and-switch)
+- Spawned sessions cannot override the auditor verdict — server-side guard blocks `cto_decision_audit_pass` for spawned sessions
+- Fail-closed: auditor cannot find session file → FAIL verdict (never passes on uncertainty)
+- Stale auditors are auto-revived by `session-reaper.js` to prevent `pending_audit` stuck states
 
-**When to use HMAC bypass in new enforcement hooks**:
+**Legacy HMAC bypass** (`bypass-approval-hook.js`, `bypass-approval-token.js`): Deprecated in Phase 2 of the Unified CTO Authorization System. The `APPROVE BYPASS <code>` pattern and file-based approval tokens are no longer the primary bypass mechanism. The HOTFIX flow is preserved pending Phase 5 cleanup. New enforcement hooks should use the deferred action pattern (`createDeferredAction` in `lib/deferred-action-db.js`) instead.
+
+**When to use the authorization system in new enforcement hooks**:
 ```javascript
 // In a PreToolUse hook that blocks an action:
-const reason = 'This action is blocked. If this is intentional, the CTO can override: ' +
-  'APPROVE BYPASS <code> (request a code via submit_bypass_request or /lockdown off)';
+// 1. Call createDeferredAction() to persist the blocked call
+// 2. Return permissionDecision: 'deny' with the deferred action ID
+// 3. The agent presents the ID to the CTO, calls record_cto_decision, and exits
+// 4. authorization-audit-spawner.js and deferred-action-audit-executor.js handle the rest
 ```
 
 ### Adding New Enforcement
@@ -652,12 +657,13 @@ Non-exempt task completions are independently audited to verify that work was ge
 - `task_audit_pass` / `pt_audit_pass` — task transitions `pending_audit → completed`, normal cascade runs
 - `task_audit_fail` / `pt_audit_fail` — task reverts to `in_progress` with failure reason injected into the next spawn prompt
 
-**Routing by task type** (`lib/auditor-prompt.js`, `resolveAuditTools()`): Three task types are supported.
+**Routing by task type** (`lib/auditor-prompt.js`, `resolveAuditTools()`): Four task types are supported.
 - `'todo'` → `universal-auditor` agent, `task_audit_pass`/`task_audit_fail` on `todo-db` server
 - `'persistent'` → `universal-auditor` agent, `pt_audit_pass`/`pt_audit_fail` on `persistent-task` server
 - `'plan'` → `plan-auditor` agent, `verification_audit_pass`/`verification_audit_fail` on `plan-orchestrator` server
+- `'authorization'` → `authorization-auditor` agent, `cto_decision_audit_pass`/`cto_decision_audit_fail` on `agent-tracker` server
 
-`buildAuditorSessionSpec()` in `lib/auditor-prompt.js` is the single source of truth for spawning auditors across all three types. Both `universal-audit-spawner.js` (first spawn) and `session-queue.js` Step 1b.5 (revival spawn) consume this shared module.
+`buildAuditorSessionSpec()` in `lib/auditor-prompt.js` is the single source of truth for spawning auditors across all four types. `universal-audit-spawner.js` (first spawn), `authorization-audit-spawner.js` (CTO authorization audits), and `session-queue.js` Step 1b.5 (revival spawn) consume this shared module.
 
 **Gate-exempt categories**: Triage & Delegation, Project Management, and Workstream Management categories complete directly without audit (their work is coordination, not deliverable artifacts).
 
@@ -915,7 +921,7 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 Two-pass reaping engine that detects and cleans up dead or stuck sessions in the queue.
 
-**Sync pass** (`reapSyncPass(db)`): Called from `drainQueue()` on every drain cycle. Fast, synchronous, no process kills. Detects dead PIDs (process.kill(pid, 0) fails), marks their queue items `completed`, emits `session_reaped_dead` audit events, and returns a `stuckAlive` list for the async pass and an `auditRevivals` list for Step 1b.5 auditor re-spawning. Also kills stale persistent monitors directly in the sync pass (stale heartbeat detected via `persistent_heartbeat_stale_minutes`, default 5 min — configurable), triggering immediate revival via `requeueDeadPersistentMonitor()` in Step 1b rather than waiting for the async pass. **Audit revival detection**: When a dead session is in the `audit` lane and its linked task is still `pending_audit`, the sync pass preserves the audit gate state (does NOT reset the task to `pending`) and adds the item to `auditRevivals[]` for `drainQueue()` Step 1b.5 to re-spawn a fresh auditor. Handles three task types: todo-db tasks (queries `todo.db`), persistent tasks (queries `persistent-tasks.db`), and plan tasks (`taskType === 'plan'` or `metadata.planId` set — queries `plans.db` for the `plan_tasks` row, checks `status === 'pending_audit'`). All three paths use `buildAuditorSessionSpec()` from `lib/auditor-prompt.js` for the revival spawn.
+**Sync pass** (`reapSyncPass(db)`): Called from `drainQueue()` on every drain cycle. Fast, synchronous, no process kills. Detects dead PIDs (process.kill(pid, 0) fails), marks their queue items `completed`, emits `session_reaped_dead` audit events, and returns a `stuckAlive` list for the async pass and an `auditRevivals` list for Step 1b.5 auditor re-spawning. Also kills stale persistent monitors directly in the sync pass (stale heartbeat detected via `persistent_heartbeat_stale_minutes`, default 5 min — configurable), triggering immediate revival via `requeueDeadPersistentMonitor()` in Step 1b rather than waiting for the async pass. **Audit revival detection**: When a dead session is in the `audit` lane and its linked task is still `pending_audit`, the sync pass preserves the audit gate state (does NOT reset the task to `pending`) and adds the item to `auditRevivals[]` for `drainQueue()` Step 1b.5 to re-spawn a fresh auditor. Handles four task types: todo-db tasks (queries `todo.db`), persistent tasks (queries `persistent-tasks.db`), plan tasks (`taskType === 'plan'` or `metadata.planId` set — queries `plans.db` for the `plan_tasks` row, checks `status === 'pending_audit'`), and authorization tasks (`taskType === 'authorization'` — queries `cto_decisions` table in `bypass-requests.db`, checks `status === 'audit_pending'`). All four paths use `buildAuditorSessionSpec()` from `lib/auditor-prompt.js` for the revival spawn.
 
 **Auth-stall detection** (`isAuthStalled(sessionFile)`): Reads the JSONL tail of a running session's file. If the last 3+ consecutive entries are all auth errors (`"authentication_error"`, `"permission_error"`, or similar), the session is considered auth-stalled. The sync pass applies this check to ALL running sessions whose JSONL file hasn't been updated in `auth_stall_detection_minutes` (default 2 min). Auth-stalled sessions are killed immediately with `reapReason: 'auth_stall'` and linked TODO tasks are reset to `pending`.
 
@@ -1047,39 +1053,51 @@ Agents blocked by access, authorization, or resource constraints can pause thems
 
 ## Deferred Protected Actions
 
-Extends the protected action gate system for spawned (non-interactive) agents. When a spawned agent hits a protected action block, the system stores the exact tool call (server, tool, args) in a persistent DB with HMAC signatures rather than requiring the agent to wait interactively. The CTO sees pending deferred actions in the session briefing and can approve them hours later — the system executes the tool call automatically via HTTP POST to the MCP shared daemon with no agent session required.
+Both interactive and spawned sessions now use the deferred action system when hitting protected action blocks. When a session hits a protected action block, `protected-action-gate.js` stores the exact tool call (server, tool, args) in a persistent DB and the agent presents the deferred action to the CTO via `record_cto_decision`. The CTO does NOT need to type a phrase or approve code — the agent records the CTO's verbatim response, and the authorization audit chain executes the action autonomously after audit pass.
 
-**Key distinction from standard protected actions**: Standard approvals require the requesting agent to retry the tool call after CTO approval (synchronous, interactive). Deferred approvals are fire-and-forget — the requesting agent exits immediately, and the tool call executes autonomously when approved (asynchronous, non-interactive).
+**Key distinction from old approval system (deprecated)**: The old `APPROVE <phrase> <code>` pattern required the requesting agent to be alive and retry. The deferred action system is fully asynchronous — the requesting agent exits immediately after calling `record_cto_decision`, and `deferred-action-audit-executor.js` executes the blocked call autonomously after the `authorization-auditor` passes it.
 
-**Spawned agent gate response**: When `protected-action-gate.js` creates a deferred action for a spawned agent, it outputs a `permissionDecision: 'deny'` response (not `process.exit(1)`) with `permissionDecisionReason` containing the deferred action ID, approval code, the exact `APPROVE <phrase> <code>` CTO incantation, and the exact `submit_bypass_request` arguments the agent must call before exiting. This ensures spawned agents always file a bypass request so the CTO can unblock stalled work — previously agents would die silently with zero context.
+**Interactive session gate response** (Phase 3): When `protected-action-gate.js` creates a deferred action for an interactive session, it outputs a `permissionDecision: 'deny'` response with the deferred action ID and instructs the agent to call `record_cto_decision` with the CTO's verbatim approval. No phrase or code required — the session JSONL is the audit trail.
 
-**DB**: `deferred_actions` table in `.claude/state/bypass-requests.db` (shared with `bypass_requests` table). Fields: `id`, `server`, `tool`, `args` (JSON), `args_hash` (SHA256 of args), `code` (6-char approval code), `phrase`, `pending_hmac`, `approved_hmac`, `status` (`pending`/`approved`/`executing`/`completed`/`failed`/`expired`/`cancelled`), `requester_agent_id`, `requester_session_id`, `requester_task_type`, `requester_task_id`, `execution_result`, `execution_error`, timestamps.
+**Spawned agent gate response**: When `protected-action-gate.js` creates a deferred action for a spawned agent, it outputs a `permissionDecision: 'deny'` response with `permissionDecisionReason` containing the deferred action ID and the exact `submit_bypass_request` arguments the agent must call before exiting. This ensures spawned agents always file a bypass request so the CTO can unblock stalled work.
+
+**DB**: `deferred_actions` table in `.claude/state/bypass-requests.db` (shared with `bypass_requests` table). Fields: `id`, `server`, `tool`, `args` (JSON), `args_hash` (SHA256 of args), `source_hook` (which hook created this entry), `code` (6-char approval code — legacy, present for backward compat), `phrase` (legacy), `pending_hmac`, `approved_hmac`, `status` (`pending`/`approved`/`executing`/`completed`/`failed`/`expired`/`cancelled`), `requester_agent_id`, `requester_session_id`, `requester_task_type`, `requester_task_id`, `execution_result`, `execution_error`, timestamps.
 
 **Status lifecycle**: `pending` → `approved` → `executing` → `completed` or `failed`. Atomic transition from `approved` to `executing` prevents double-execution. `expired` for past-TTL pending items; `cancelled` for CTO-cancelled items.
 
-**Tier 1 only**: Deferred execution is only supported for Tier 1 servers (those hosted in the shared MCP daemon on port 18090). Tier 2 servers require per-session stdio and cannot be auto-executed — the approval hook shows a manual execution hint for these.
+**Tier 1 only (execution)**: Deferred auto-execution is only supported for Tier 1 servers (those hosted in the shared MCP daemon on port 18090). Tier 2 servers require per-session stdio and cannot be auto-executed — the executor shows a manual execution hint for these. Bash commands are executed directly via `child_process.execFile` in the deferred action's recorded CWD.
+
+**Authorization audit chain** (new in Phase 1): After `record_cto_decision` is called with the CTO's verbatim approval:
+1. `authorization-audit-spawner.js` (PostToolUse) fires and enqueues an `authorization-auditor` in the `audit` lane
+2. The `authorization-auditor` uses `peek_session` to read the session JSONL — verifies context accuracy and scope match
+3. On pass: `deferred-action-audit-executor.js` (PostToolUse on `cto_decision_audit_pass`) executes the blocked action via MCP daemon or Bash
+4. On fail: the blocked action is not executed; the agent is signaled with the mismatch reason
+5. Stale `authorization-auditor` sessions are auto-revived by `session-reaper.js` Step 1b.5
+
+**`cto_decisions` table** (in `bypass-requests.db`, auto-migrated): Tracks CTO authorization decisions for the audit chain. Fields: `id`, `decision_type`, `decision_id`, `verbatim_text`, `session_id`, `session_file_hash`, `hmac`, `status` (`pending`/`verified`/`audit_pending`/`audit_passed`/`audit_failed`/`consumed`), `decision_context` (JSON — what will actually be executed), `audit_session_id`, `audit_verdict`, `audit_evidence`, `audit_completed_at`, `consumed_at`, `created_at`. The `decision_type` field routes to different verification logic: `'bypass_request'`, `'lockdown_toggle'`, `'deferred_action'`, `'audit_override'`.
 
 **Security model**:
-- HMAC domain separation: `'deferred-pending'` and `'deferred-approved'` domains prevent cross-replay with standard approvals
-- `pending_hmac` verified before marking approved (prevents forged approval requests)
-- `approved_hmac` verified before execution (prevents replay attacks)
-- `args_hash` binding prevents bait-and-switch (approved args must match stored args)
-- Timing-safe HMAC comparison (`crypto.timingSafeEqual`) throughout
-- Fail-closed: missing protection key blocks execution
+- CTO approval is recorded verbatim + hashed in `cto_decisions` — agents cannot fabricate or alter it
+- Independent auditor reads the actual session JSONL via `peek_session` — not agent claims or summaries
+- `args_hash` binding prevents bait-and-switch (executed args must match stored args)
+- Audit-override decision type (`'audit_override'`) skips the auditor for CTO-initiated force-overrides
+- Fail-closed: session unavailable or compacted beyond recovery → FAIL verdict
+- Stale auditors are auto-revived (never permanently stuck in `audit_pending`)
 
-**CTO workflow**: Pending deferred actions appear in the `=== DEFERRED PROTECTED ACTIONS AWAITING APPROVAL ===` section of the interactive session briefing (above the bypass requests section) showing `server:tool`, age, and the exact `APPROVE <phrase> <code>` incantation to type. Typing the phrase triggers `protected-action-approval-hook.js`, which verifies both HMACs, transitions the action to `approved`, then immediately executes it via the MCP daemon. Success/failure output is printed in the terminal.
+**Legacy CTO workflow** (deprecated, pending Phase 5 cleanup): Pending deferred actions still appear in the `=== DEFERRED PROTECTED ACTIONS AWAITING APPROVAL ===` section of the interactive session briefing. `protected-action-approval-hook.js` (UserPromptSubmit) is deprecated but preserved for the HOTFIX flow.
 
-**Dedup guard**: If the same `server + tool + args_hash` combination already has a `pending` deferred action, the gate hook returns the existing code rather than creating a duplicate.
+**Dedup guard**: If the same `server + tool + args_hash` combination already has a `pending` deferred action, the gate hook returns the existing entry rather than creating a duplicate.
 
 **Key modules**:
 - `lib/deferred-action-db.js` — DB operations: `createDeferredAction`, `getDeferredActionByCode`, `listPendingDeferredActions`, `markApproved`, `markExecuting`, `markCompleted`, `markFailed`, `cancelAction`, `expireStaleActions`, `findDuplicatePending`
-- `lib/deferred-action-executor.js` — MCP HTTP execution, HMAC verification, full pipeline: `executeAction`, `executeMcpTool`, `verifyActionHmac`, `computePendingHmac`, `computeApprovedHmac`, `isDaemonHealthy`, `isTier1Server`
+- `lib/deferred-action-executor.js` — Legacy MCP HTTP execution pipeline (pre-Phase 3); retained for reference
+- `.claude/hooks/deferred-action-audit-executor.js` — Phase 1 executor: fires on `cto_decision_audit_pass`, loads deferred action, executes via MCP daemon (Tier 1) or Bash (Tier 2), signals original agent
 
 ## Hooks Reference
 
 Individual hook specifications for all GENTYR hooks (auto-sync, CTO notification, branch drift, branch checkout guard, main tree commit guard, uncommitted change monitor, PR auto-merge nudge, project-manager reminder, credential health check, credential file guard, playwright CLI guard, playwright health check, worktree path guard, worktree CWD guard, interactive agent guard, interactive session lockdown guard, progress-tracker, long-command-warning).
 
-The **Interactive Session Lockdown Guard** (`.claude/hooks/interactive-lockdown-guard.js`) enforces the deputy-CTO console model: in interactive (non-spawned) sessions, only read/observe tools and GENTYR task/agent management MCP tools are permitted. File-editing tools (`Edit`, `Write`, `NotebookEdit`) and code-modifying sub-agent types are blocked. Spawned sessions (`CLAUDE_SPAWNED_SESSION=true`) are always unrestricted. Toggle via `/lockdown on|off` or `mcp__agent-tracker__set_lockdown_mode`. **Plan file whitelist**: writes to `.claude/plans/` and `EnterPlanMode`/`ExitPlanMode` tool calls are always permitted even when lockdown is active, so the CTO can write plan files without disabling lockdown; path traversal is defended via `path.resolve()`. **Memory file whitelist**: writes to `~/.claude/projects/*/memory/` are also always permitted — memory files are auto-memory persistence, not code. **`claude-sessions` tool whitelist**: All `mcp__claude-sessions__` tools (`search_sessions`, `list_sessions`, `read_session`, `list_projects`, `session_stats`) are allowed through lockdown — these are read-only session introspection tools safe for interactive use. **1Password tool whitelist**: 6 `onepassword` MCP tools are individually allowed through lockdown: `check_auth`, `list_items`, `op_vault_map` (read-only, no secret values), `read_secret` (default `include_value: false` only confirms existence — no secret values exposed), `create_item`, and `add_item_fields` (write tools where secret values go direct to `op` CLI, never in agent context). **HMAC token required to disable**: disabling lockdown requires a valid HMAC-signed approval token written by `bypass-approval-hook.js` after the CTO physically types `APPROVE BYPASS <code>` in chat. The MCP tool verifies this via `.claude/hooks/lib/bypass-approval-token.js` — fail-closed on missing `protection-key`, constant-time HMAC comparison, one-time use (consumed on success). An agent cannot forge the 6-char code (server-generated, stored in deputy-cto.db) or the HMAC (signed with `.claude/protection-key`). **Security invariant**: spawned sessions can never call `set_lockdown_mode({ enabled: false })` even with a valid token — the server-side spawned-session guard fires first, preventing any spawned or misbehaving agent from removing its own constraints. Lockdown toggles emit `lockdown_enabled`/`lockdown_disabled` audit events to `session-audit.log`.
+The **Interactive Session Lockdown Guard** (`.claude/hooks/interactive-lockdown-guard.js`) enforces the deputy-CTO console model: in interactive (non-spawned) sessions, only read/observe tools and GENTYR task/agent management MCP tools are permitted. File-editing tools (`Edit`, `Write`, `NotebookEdit`) and code-modifying sub-agent types are blocked. Spawned sessions (`CLAUDE_SPAWNED_SESSION=true`) are always unrestricted. Toggle via `/lockdown on|off` or `mcp__agent-tracker__set_lockdown_mode`. **Plan file whitelist**: writes to `.claude/plans/` and `EnterPlanMode`/`ExitPlanMode` tool calls are always permitted even when lockdown is active, so the CTO can write plan files without disabling lockdown; path traversal is defended via `path.resolve()`. **Memory file whitelist**: writes to `~/.claude/projects/*/memory/` are also always permitted — memory files are auto-memory persistence, not code. **`claude-sessions` tool whitelist**: All `mcp__claude-sessions__` tools (`search_sessions`, `list_sessions`, `read_session`, `list_projects`, `session_stats`) are allowed through lockdown — these are read-only session introspection tools safe for interactive use. **1Password tool whitelist**: 6 `onepassword` MCP tools are individually allowed through lockdown: `check_auth`, `list_items`, `op_vault_map` (read-only, no secret values), `read_secret` (default `include_value: false` only confirms existence — no secret values exposed), `create_item`, and `add_item_fields` (write tools where secret values go direct to `op` CLI, never in agent context). **Authorization required to disable** (Phase 2): Disabling lockdown now routes through the Unified CTO Authorization System. The agent presents the lockdown disable request, the CTO approves verbally, and the agent calls `record_cto_decision` with the CTO's verbatim response. `authorization-audit-spawner.js` enqueues an auditor in the `audit` lane; on pass, `deferred-action-audit-executor.js` executes the disable autonomously. **Legacy bypass** (`bypass-approval-hook.js`, `bypass-approval-token.js`): deprecated, present for HOTFIX flow compatibility pending Phase 5 cleanup. **Security invariant**: spawned sessions can never call `set_lockdown_mode({ enabled: false })` — the server-side spawned-session guard fires first, preventing any spawned or misbehaving agent from removing its own constraints. Lockdown toggles emit `lockdown_enabled`/`lockdown_disabled` audit events to `session-audit.log`.
 
 > Full details: [Hooks Reference](docs/CLAUDE-REFERENCE.md#hooks-reference)
 
@@ -1545,7 +1563,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 89 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | 91 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 23 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
@@ -1592,7 +1610,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |
 | demo-local-guard.js | `mcp__playwright__run_demo,mcp__playwright__run_demo_batch,mcp__playwright__run_tests,mcp__playwright__launch_ui_mode` | Block local demo execution for spawned agents (CTO HMAC bypass required) |
 
-#### PostToolUse (37 hooks — REACT to actions, inject context, spawn agents)
+#### PostToolUse (39 hooks — REACT to actions, inject context, spawn agents)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
@@ -1632,6 +1650,8 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | universal-audit-spawner.js | `complete_task,update_task_progress,complete_persistent_task` | Fire on task completion; when `gate_success_criteria` / `verification_strategy` set, transition to `pending_audit` and enqueue Haiku auditor in `audit` lane |
 | alignment-monitor-briefing.js | `""` (all) | Deliver cross-session alignment violation summaries to active deputy-CTO monitor sessions |
 | bypass-request-router.js | `submit_bypass_request` | Route bypass requests to global monitor via directive signal; CTO sees after 5-min grace period |
+| authorization-audit-spawner.js | `mcp__agent-tracker__record_cto_decision` | On verified CTO decision, transition to `audit_pending` and enqueue `authorization-auditor` in `audit` lane (8-min TTL); skips when `decision_type === 'audit_override'` |
+| deferred-action-audit-executor.js | `mcp__agent-tracker__cto_decision_audit_pass` | On authorization audit pass, load linked deferred action and execute via MCP daemon (Tier 1) or Bash (Tier 2); signal original agent with result |
 
 #### SessionStart (9 hooks — set initial context)
 
@@ -1653,8 +1673,8 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 |------|---------|
 | cto-notification-hook.js | Update CTO status line; inject pending bypass request details into model context on every prompt |
 | secret-leak-detector.js | Scan for leaked secrets |
-| bypass-approval-hook.js | Detect "APPROVE BYPASS" pattern |
-| protected-action-approval-hook.js | Detect protected action approval tokens; execute approved deferred actions via MCP daemon |
+| bypass-approval-hook.js | Deprecated (Phase 2). Detect "APPROVE BYPASS" pattern — preserved for HOTFIX flow pending Phase 5 cleanup |
+| protected-action-approval-hook.js | Deprecated (Phase 3). Previously detected approval phrase+code tokens and executed deferred actions via MCP daemon — superseded by authorization-audit-spawner.js + deferred-action-audit-executor.js |
 | slash-command-prefetch.js | Pre-fetch data for slash commands |
 | branch-drift-check.js | Check for upstream branch drift |
 | comms-notifier.js | Notify about pending inter-agent communications |
@@ -1674,7 +1694,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 Key modules consumed by hooks:
 - `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
-- `session-reaper.js` — Dead session detection and cleanup (sync + async passes); includes plan task audit revival detection in `reapSyncPass()` — stale `audit`-lane sessions for `plan` task type are re-enqueued via `buildAuditorSessionSpec({ taskType: 'plan' })`
+- `session-reaper.js` — Dead session detection and cleanup (sync + async passes); includes audit revival detection in `reapSyncPass()` — stale `audit`-lane sessions for all four task types (`todo`, `persistent`, `plan`, `authorization`) are re-enqueued via `buildAuditorSessionSpec({ taskType })`
 - `session-audit.js` — Audit event emission to session-audit.log
 - `session-signals.js` — Inter-agent signal delivery
 - `resource-lock.js` — Shared resource coordination (display, chrome-bridge, main-dev-server)
@@ -1703,12 +1723,12 @@ Key modules consumed by hooks:
 - `release-report-generator.js` — Structured release report pipeline: `generateStructuredReport` reads release-ledger.db + artifacts, fills `templates/release-report-template.md` with 17 placeholders (including `{cto_approval}`), writes `report.md` to artifact dir; `convertToPdf` converts to PDF via headless Chromium; `generateCtoApproval` reads `cto-approval.json` to fill Section 9
 - `cto-approval-proof.js` — CTO release approval cryptographic proof: `verifyQuoteInJsonl` (line-by-line JSONL scan for verbatim quote), `computeApprovalHmac` (HMAC-SHA256 with `cto-release-approval` domain separator), `verifyApprovalHmac` (constant-time verification), `computeFileHash` (SHA-256), `findCurrentSessionJsonl` (session discovery — encodes project path by replacing all non-alphanumeric chars with dashes to match canonical `~/.claude/projects/` directory naming). Consumed by `record_cto_approval` tool on release-ledger server. **TOCTOU defense**: `record_cto_approval` copies the live JSONL to a stable snapshot first, then verifies the quote and hashes the snapshot (not the live file), ensuring the archived hash matches the verified content. **Spawned-session guard**: `record_cto_approval` blocks `CLAUDE_SPAWNED_SESSION=true` sessions — only interactive CTO sessions can sign off releases. **`approval_text` minimum**: 10 characters (enforced by Zod schema) to ensure a substantive audit trail
 - `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
-- `auditor-prompt.js` — Single source of truth for building auditor session specs. Exports `buildAuditorSessionSpec()` consumed by `universal-audit-spawner.js` (first spawn) and `session-queue.js` Step 1b.5 (revival spawn). Internally calls `resolveAuditTools(taskType)` to dispatch across three task types: `'todo'` (universal-auditor + todo-db tools), `'persistent'` (universal-auditor + persistent-task tools), `'plan'` (plan-auditor + plan-orchestrator tools).
+- `auditor-prompt.js` — Single source of truth for building auditor session specs. Exports `buildAuditorSessionSpec()` consumed by `universal-audit-spawner.js` (first spawn), `authorization-audit-spawner.js` (CTO authorization audits), and `session-queue.js` Step 1b.5 (revival spawn). Also exports `buildAuthorizationAuditorSessionSpec()`. Internally calls `resolveAuditTools(taskType)` to dispatch across four task types: `'todo'` (universal-auditor + todo-db tools), `'persistent'` (universal-auditor + persistent-task tools), `'plan'` (plan-auditor + plan-orchestrator tools), `'authorization'` (authorization-auditor + agent-tracker cto_decision tools).
 - `load-test-runner.js` — Lightweight autocannon-based load test runner. Reads route configuration from `services.json` (`loadTest` section), runs load tests per route, and returns structured performance results. `autocannon` must be installed in the target project. Used by the promotion pipeline when `loadTest.enabled: true`.
 - `ai-compatibility-check.js` — LLM-powered (Haiku) dependency upgrade compatibility validator. Fetches npm registry metadata and changelogs, analyzes project usage patterns, and classifies upgrades as compatible/risky with specific breaking-change identification. Returns `{ compatible, risks, recommendation }`.
 - `ai-pr-decomposition.js` — LLM-powered (Haiku) large-PR decomposer. When a PR exceeds 3000 lines, suggests how to split commits into independently-promotable groups by feature/concern. Returns `{ groups }` with each group's commits, rationale, and suggested branch name.
 
-### Agent Definitions (23 shared)
+### Agent Definitions (24 shared)
 
 | Agent | Model | Purpose | Key Constraints |
 |-------|-------|---------|----------------|
@@ -1724,6 +1744,7 @@ Key modules consumed by hooks:
 | plan-updater | haiku | Sync plan substeps | Lightweight, completes in <30s |
 | plan-auditor | sonnet | Verify plan task completion | Independent, 8-min TTL, audit lane |
 | universal-auditor | sonnet | Verify todo-db and persistent task completion | Independent, 8-min TTL, audit lane, signal-excluded; does NOT audit plan tasks |
+| authorization-auditor | sonnet | Verify CTO authorization decisions against presented context | Independent, 8-min TTL, audit lane, signal-excluded; verifies via peek_session JSONL; fail-closed on missing session |
 | demo-manager | sonnet | Demo lifecycle | Only agent that creates/modifies .demo.ts files |
 | feedback-agent | sonnet | User persona testing | No source code access |
 | product-manager | opus | PMF analysis | External research only |
@@ -1745,7 +1766,7 @@ Key modules consumed by hooks:
 | todo-db | create_task, list_tasks, complete_task, summarize_work, gate_approve_task, list_categories | Task CRUD, categories, gate approval |
 | persistent-task | create/activate/amend/pause/resume/cancel/complete_persistent_task, inspect_persistent_task | Persistent task lifecycle |
 | plan-orchestrator | create_plan, add_phase, add_plan_task, get_spawn_ready_tasks, plan_dashboard | Plans, phases, tasks, dependencies |
-| agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, list/resolve_blocking_item, get_blocking_summary, peek_session, browse_session, set_automation_toggle, get_automation_toggles | Session queue, signals, locks, bypass, blocking queue, automation toggles |
+| agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, list/resolve_blocking_item, get_blocking_summary, peek_session, browse_session, set_automation_toggle, get_automation_toggles, record_cto_decision, check_cto_decision, cto_decision_audit_pass, cto_decision_audit_fail | Session queue, signals, locks, bypass, blocking queue, automation toggles, CTO authorization chain |
 | user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature, create/archive/switch/list/get/delete_persona_profile, verify_demo_completeness | Personas, features, scenarios, prerequisites, persona profiles, demo completeness gate |
 | product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
 | deputy-cto | create_report, list_reports, acknowledge_report | Reports, triage, delegation |
@@ -1884,7 +1905,7 @@ After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 
 **Step 1b: Re-enqueue dead persistent monitors** — Calls `requeueDeadPersistentMonitor()`. Circuit breaker: max 3 hard revivals per task in 10 min → exponential backoff (5→10→20→60 min). Rate-limit detection: scans session tail, applies 5-min cooldown (excluded from crash counter). Self-healing: calls `handleBlocker()` → may escalate to CTO or spawn fix task.
 
-**Step 1b.5: Audit session revival** — For each item in `reaperResult.auditRevivals`, dedup-checks for an existing auditor in `queued/running/spawning` state for the same task ID (via `json_extract(metadata, '$.taskId')`). If none found, enqueues a fresh `universal-auditor` in the `audit` lane with an 8-minute TTL and a full audit prompt containing the task's success criteria and verification method. Source tagged `session-reaper-audit-revival`. Emits `audit_session_revived` audit event. This prevents tasks from being permanently stuck in `pending_audit` when an auditor crashes.
+**Step 1b.5: Audit session revival** — For each item in `reaperResult.auditRevivals`, dedup-checks for an existing auditor in `queued/running/spawning` state for the same task ID (via `json_extract(metadata, '$.taskId')`). If none found, enqueues the appropriate auditor (type determined by `taskType` — `universal-auditor` for todo/persistent, `plan-auditor` for plan, `authorization-auditor` for authorization) in the `audit` lane with an 8-minute TTL. Source tagged `session-reaper-audit-revival`. Emits `audit_session_revived` audit event. This prevents tasks from being permanently stuck in `pending_audit` when an auditor crashes. Covers all four audit types including CTO authorization decisions.
 
 **Step 1c: Orphan persistent task catch-all** — Queries `persistent-tasks.db` for `active` tasks with no queued/running monitor. Re-enqueues via `requeueDeadPersistentMonitor()`.
 
