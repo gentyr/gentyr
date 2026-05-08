@@ -5,13 +5,17 @@
  * remote-runner.sh, fly.toml.template) and compares them against the
  * hashes recorded at deploy time to detect stale images.
  *
+ * Also checks project image staleness by comparing the current
+ * pnpm-lock.yaml hash against the hash stored at project image deploy
+ * time (fly-project-image-metadata.json).
+ *
  * Consumed by:
  * - session-briefing.js (SessionStart health line)
  * - hourly-automation.js (periodic staleness check)
  * - packages/mcp-servers/src/playwright/server.ts (inlines the logic
  *   because TS cannot easily import this ESM JS module at runtime)
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import crypto from 'node:crypto';
@@ -94,4 +98,107 @@ export function checkImageStaleness(projectDir) {
   const ageHours = Math.round((Date.now() - deployedMs) / 3600000);
 
   return { hasMeta: true, stale, ageHours, meta, changedFiles };
+}
+
+/**
+ * Read the project image metadata file written by deploy_project_image.
+ *
+ * @param {string} projectDir - Absolute path to the project root
+ * @returns {object|null} Parsed metadata JSON, or null if not found/corrupt
+ */
+export function readProjectImageMetadata(projectDir) {
+  const metaPath = path.join(projectDir, '.claude', 'state', 'fly-project-image-metadata.json');
+  if (!fs.existsSync(metaPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check project image staleness by comparing the current pnpm-lock.yaml
+ * hash against the hash stored at project image deploy time.
+ *
+ * @param {string} projectDir - Absolute path to the project root
+ * @returns {{
+ *   hasMeta: boolean,
+ *   stale: boolean|null,
+ *   deploying: boolean,
+ *   deployFailed: boolean,
+ *   deployPidAlive: boolean|null,
+ *   ageHours: number|undefined,
+ *   meta: object|undefined,
+ *   currentLockfileHash: string|undefined,
+ *   storedLockfileHash: string|undefined,
+ * }}
+ */
+export function checkProjectImageStaleness(projectDir) {
+  const meta = readProjectImageMetadata(projectDir);
+  if (!meta) {
+    return {
+      hasMeta: false,
+      stale: null,
+      deploying: false,
+      deployFailed: false,
+      deployPidAlive: null,
+    };
+  }
+
+  const deploying = meta.deploying === true;
+  const deployFailed = meta.deployFailed === true;
+
+  // Check if deploy PID is alive
+  let deployPidAlive = null;
+  if (meta.deployPid != null) {
+    try {
+      process.kill(meta.deployPid, 0);
+      deployPidAlive = true;
+    } catch {
+      deployPidAlive = false;
+    }
+  }
+
+  // Compute age (independent of lockfile — needed for stuck deploy detection)
+  let ageHours;
+  if (meta.deployedAt) {
+    const deployedMs = new Date(meta.deployedAt).getTime();
+    ageHours = Math.round((Date.now() - deployedMs) / 3600000);
+  }
+
+  // Compute current lockfile hash
+  const lockfilePath = path.join(projectDir, 'pnpm-lock.yaml');
+  let currentLockfileHash;
+  try {
+    const content = fs.readFileSync(lockfilePath);
+    currentLockfileHash = crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    // Lockfile missing or unreadable — cannot determine staleness
+    return {
+      hasMeta: true,
+      stale: null,
+      deploying,
+      deployFailed,
+      deployPidAlive,
+      ageHours,
+      meta,
+      currentLockfileHash: undefined,
+      storedLockfileHash: meta.lockfileHash,
+    };
+  }
+
+  const storedLockfileHash = meta.lockfileHash;
+  const stale = storedLockfileHash != null ? currentLockfileHash !== storedLockfileHash : null;
+
+  return {
+    hasMeta: true,
+    stale,
+    deploying,
+    deployFailed,
+    deployPidAlive,
+    ageHours,
+    meta,
+    currentLockfileHash,
+    storedLockfileHash,
+  };
 }

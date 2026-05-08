@@ -579,7 +579,7 @@ export type StopDemoBatchArgs = z.infer<typeof StopDemoBatchArgsSchema>;
 export type DemoBatchStatus = 'running' | 'passed' | 'failed' | 'stopped';
 
 /** Failure classification for automatic triage of machine deaths */
-export type FailureClassification = 'test_failure' | 'oom' | 'startup_failure' | 'timeout' | 'external_kill' | 'recording_failure' | 'build_failure' | 'unknown';
+export type FailureClassification = 'test_failure' | 'oom' | 'startup_failure' | 'install_timeout' | 'timeout' | 'external_kill' | 'recording_failure' | 'build_failure' | 'unknown';
 
 export interface FailureClassificationResult {
   classification: FailureClassification;

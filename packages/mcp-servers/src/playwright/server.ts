@@ -238,6 +238,187 @@ function getSteelConfigFromServices(): SteelServicesConfig | null {
 }
 
 // ============================================================================
+// Stuck Project Deploy Auto-Recovery
+// ============================================================================
+
+/**
+ * Recover from stuck project image deploy metadata.
+ *
+ * When `deploying: true` persists beyond 30 minutes and the deploy PID is dead,
+ * reads the deploy log to determine success/failure and updates metadata.
+ * If PID is not stored (old format), also recovers.
+ *
+ * @returns Recovery result or null if no recovery needed
+ */
+function recoverStuckProjectDeploy(): { recovered: boolean; success: boolean; reason: string } | null {
+  const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+  try {
+    if (!fs.existsSync(metaPath)) return null;
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    if (!meta.deploying) return null;
+
+    const deployedAt = new Date(meta.deployedAt).getTime();
+    const STUCK_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+    if (Date.now() - deployedAt < STUCK_THRESHOLD_MS) return null; // Still within time window
+
+    // Check if deploy PID is alive
+    const deployPid = meta.deployPid;
+    if (deployPid) {
+      try {
+        process.kill(deployPid, 0); // PID is alive
+        return null; // Deploy still running
+      } catch {
+        // PID is dead — need to determine outcome
+      }
+    }
+
+    // PID is dead or not stored — check log file for outcome
+    let deploySuccess = false;
+    const logDir = path.join(PROJECT_DIR, '.claude', 'state');
+    try {
+      // Look for the most recent fly-project-deploy*.log
+      const logFiles = fs.readdirSync(logDir)
+        .filter((f: string) => f.startsWith('fly-project-deploy') && f.endsWith('.log'))
+        .sort()
+        .reverse();
+      if (logFiles.length > 0) {
+        const logContent = fs.readFileSync(path.join(logDir, logFiles[0]), 'utf-8');
+        // Success: log contains "Release command" and no "Error:" or "failed to"
+        deploySuccess = /Release command/i.test(logContent) &&
+          !/^Error:/m.test(logContent) &&
+          !/failed to/i.test(logContent);
+      }
+    } catch { /* log read failed, assume failure */ }
+
+    // Update metadata
+    meta.deploying = false;
+    if (deploySuccess) {
+      meta.deployCompletedAt = new Date().toISOString();
+      meta.deployRecoveredAt = new Date().toISOString();
+      // Auto-enable project image in services.json (atomic tmp+rename)
+      try {
+        const svcPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+        if (fs.existsSync(svcPath)) {
+          const svc = JSON.parse(fs.readFileSync(svcPath, 'utf-8'));
+          if (svc.fly && svc.fly.projectImageEnabled !== true) {
+            svc.fly.projectImageEnabled = true;
+            const tmpPath = svcPath + '.tmp.' + process.pid;
+            fs.writeFileSync(tmpPath, JSON.stringify(svc, null, 2) + '\n');
+            fs.renameSync(tmpPath, svcPath);
+          }
+        }
+      } catch { /* EACCES or other — non-fatal, will be caught on next sync */ }
+    } else {
+      meta.deployFailed = true;
+      meta.deployFailedAt = new Date().toISOString();
+      meta.deployRecoveredAt = new Date().toISOString();
+    }
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
+
+    return {
+      recovered: true,
+      success: deploySuccess,
+      reason: deployPid
+        ? `Deploy PID ${deployPid} is dead after ${Math.round((Date.now() - deployedAt) / 60000)}min — ${deploySuccess ? 'log indicates success' : 'log indicates failure or missing'}`
+        : `Deploy metadata stuck for ${Math.round((Date.now() - deployedAt) / 60000)}min with no PID recorded — recovered as ${deploySuccess ? 'success' : 'failure'}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ============================================================================
+// Pre-Flight Project Image Health Gate
+// ============================================================================
+
+/**
+ * Pre-flight check for project image health before remote demo execution.
+ *
+ * Determines if the project image is available and fresh, and provides
+ * recommended timeout adjustments when falling back to the base image.
+ *
+ * Currently used by adaptive timeout logic inline. Retained as a callable
+ * utility for future pre-flight gate integration in run_demo/run_demo_batch.
+ */
+// @ts-ignore TS6133 — retained for future pre-flight gate integration
+function checkProjectImageHealth(flyConfig: FlyConfig): {
+  healthy: boolean;
+  projectImageAvailable: boolean;
+  usingBaseImageFallback: boolean;
+  stale: boolean;
+  deploying: boolean;
+  deployFailed: boolean;
+  recommendedStallTimeoutMs: number;
+  recommendedGraceMs: number;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  let projectImageAvailable = false;
+  let stale = false;
+  let deploying = false;
+  let deployFailed = false;
+
+  // Check if project image is enabled in config
+  if (!flyConfig.projectImageEnabled) {
+    warnings.push('projectImageEnabled is false in services.json — using base image (cold install ~5min)');
+  }
+
+  // Read project image metadata
+  const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+  try {
+    if (fs.existsSync(metaPath)) {
+      // Try stuck-deploy recovery first
+      recoverStuckProjectDeploy();
+
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      deploying = meta.deploying === true;
+      deployFailed = meta.deployFailed === true;
+
+      if (deploying) {
+        warnings.push(`Project image deploy in progress (started ${meta.deployedAt})`);
+      } else if (deployFailed) {
+        warnings.push(`Last project image deploy failed at ${meta.deployFailedAt}`);
+      } else if (meta.deployCompletedAt) {
+        // Check lockfile freshness
+        const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
+        if (fs.existsSync(lockfilePath) && meta.lockfileHash) {
+          const currentHash = crypto.createHash('sha256')
+            .update(fs.readFileSync(lockfilePath))
+            .digest('hex');
+          if (currentHash !== meta.lockfileHash) {
+            stale = true;
+            warnings.push('Project image is stale — pnpm-lock.yaml changed since last build');
+          }
+        }
+
+        if (!stale && flyConfig.projectImageEnabled) {
+          projectImageAvailable = true;
+        }
+      }
+    } else {
+      warnings.push('No project image metadata — using base image');
+    }
+  } catch {
+    warnings.push('Failed to read project image metadata');
+  }
+
+  const usingBaseImageFallback = !projectImageAvailable;
+
+  return {
+    healthy: projectImageAvailable && !stale,
+    projectImageAvailable,
+    usingBaseImageFallback,
+    stale,
+    deploying,
+    deployFailed,
+    recommendedStallTimeoutMs: usingBaseImageFallback ? 600_000 : 300_000,
+    recommendedGraceMs: usingBaseImageFallback ? 300_000 : 60_000,
+    warnings,
+  };
+}
+
+// ============================================================================
 // Profile-Scoped Secret Resolution for run_demo
 // ============================================================================
 
@@ -1256,6 +1437,7 @@ function classifyFailure(opts: {
   computeSizeUsed?: string;
   scenarioId?: string;
   progress?: DemoProgress | null;
+  usingBaseImageFallback?: boolean;
 }): FailureClassificationResult {
   const { exitCode, stderrTail = '', machineLog = '', durationSeconds, computeSizeUsed, scenarioId, progress } = opts;
 
@@ -1279,12 +1461,25 @@ function classifyFailure(opts: {
     };
   }
 
-  // Startup failure: machine alive < 30s
-  if (durationSeconds < 30) {
+  // Startup failure: machine alive < threshold (higher when using base image fallback due to cold install)
+  const startupThreshold = opts.usingBaseImageFallback ? 120 : 30;
+  if (durationSeconds < startupThreshold) {
     return {
       classification: 'startup_failure',
       reason: `Machine exited after only ${durationSeconds}s — likely a startup/clone/install failure`,
-      suggestion: 'Check stderr_tail for clone or install errors. The git ref or dependencies may be broken.',
+      suggestion: opts.usingBaseImageFallback
+        ? 'Running on base image (project image unavailable). Check stderr_tail for install errors. Consider rebuilding: deploy_project_image({ force: true }).'
+        : 'Check stderr_tail for clone or install errors. The git ref or dependencies may be broken.',
+    };
+  }
+
+  // Install timeout: stall during dependency installation (base image fallback)
+  if (/STALL DETECTED/i.test(stderrTail) &&
+      /pnpm install|install_start|Installing dependencies|playwright install/i.test(stderrTail)) {
+    return {
+      classification: 'install_timeout',
+      reason: 'Stalled during dependency installation — project image unavailable, cold install exceeded timeout',
+      suggestion: 'The project image is stale or disabled, causing a full cold install (~5min). Fix: call deploy_project_image({ force: true }) to rebuild.',
     };
   }
 
@@ -3031,10 +3226,27 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
       let lastRemoteProgressCount = 0;
       let lastRemoteProgressAt = Date.now();
-      const REMOTE_STALL_GRACE_MS = 60_000;
+      // Adaptive timeouts: increase when using base image (no project image → cold pnpm install ~5min)
+      const _imageHealth = (() => {
+        try {
+          const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+          if (!fs.existsSync(metaPath)) return { usingBaseImageFallback: true };
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          if (meta.deploying || meta.deployFailed) return { usingBaseImageFallback: true };
+          if (!machineConfig!.projectImageEnabled) return { usingBaseImageFallback: true };
+          const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
+          if (fs.existsSync(lockfilePath) && meta.lockfileHash) {
+            const currentHash = crypto.createHash('sha256').update(fs.readFileSync(lockfilePath)).digest('hex');
+            if (currentHash !== meta.lockfileHash) return { usingBaseImageFallback: true };
+          }
+          return { usingBaseImageFallback: false };
+        } catch { return { usingBaseImageFallback: true }; }
+      })();
+      const REMOTE_STALL_GRACE_MS = _imageHealth.usingBaseImageFallback ? 300_000 : 60_000;
       // Remote default is 5 minutes (not 45s like local) — pnpm install on cold machines
       // takes 2-4 minutes with no progress events between install_start and install_done.
-      const REMOTE_STALL_TIMEOUT_MS = args.stall_timeout_ms ?? 300_000;
+      // When using base image fallback (no project image), extend to 10 minutes.
+      const REMOTE_STALL_TIMEOUT_MS = args.stall_timeout_ms ?? (_imageHealth.usingBaseImageFallback ? 600_000 : 300_000);
 
       const pollInterval = setInterval(async () => {
         try {
@@ -7101,7 +7313,25 @@ async function runRemoteBatchSequence(
 
   // Batch-level deadline
   const batchDeadline = Date.now() + (args.batch_timeout ?? 1800000);
-  const scenarioTimeoutMs = args.scenario_timeout ?? 600000;
+  // Adaptive timeout: add buffer when falling back to base image (cold install ~5min)
+  const _batchImageFallback = (() => {
+    try {
+      const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+      if (!fs.existsSync(metaPath)) return true;
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      if (meta.deploying || meta.deployFailed || !baseMachineConfig.projectImageEnabled) return true;
+      const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
+      if (fs.existsSync(lockfilePath) && meta.lockfileHash) {
+        const currentHash = crypto.createHash('sha256').update(fs.readFileSync(lockfilePath)).digest('hex');
+        if (currentHash !== meta.lockfileHash) return true;
+      }
+      return false;
+    } catch { return true; }
+  })();
+  const scenarioTimeoutMs = (args.scenario_timeout ?? 600000) + (_batchImageFallback ? 300_000 : 0);
+  if (_batchImageFallback) {
+    process.stderr.write('[run_demo_batch] WARNING: Project image unavailable — using base image fallback. Stall/scenario timeouts extended by 5 minutes for cold install.\n');
+  }
 
   // ── Slot-based streaming execution model ──
   // Instead of processing in fixed chunks, we acquire slots from the shared
@@ -7410,6 +7640,7 @@ async function runRemoteBatchSequence(
               computeSizeUsed: scenarioComputeSize || 'standard',
               scenarioId: batchScenario.scenario_id,
               progress,
+              usingBaseImageFallback: _batchImageFallback,
             });
 
             batchScenario.failure_classification = batchClassification.classification;
@@ -7487,7 +7718,7 @@ async function runRemoteBatchSequence(
   }
 
   // ── Infra-failure retry phase ──
-  const INFRA_CLASSIFICATIONS = new Set(['oom', 'timeout', 'startup_failure', 'external_kill']);
+  const INFRA_CLASSIFICATIONS = new Set(['oom', 'timeout', 'startup_failure', 'external_kill', 'install_timeout']);
   const maxRetries = args.retry_infra_failures ?? 1;
   if (maxRetries > 0 && state.status === 'running') {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -7733,6 +7964,7 @@ async function runRemoteBatchSequence(
                 computeSizeUsed: wasOom ? 'large' : (scenarioComputeSize || 'standard'),
                 scenarioId: scenario.scenario_id,
                 progress: retryProgress,
+                usingBaseImageFallback: _batchImageFallback,
               });
 
               scenario.failure_classification = retryClassification.classification;
@@ -9123,6 +9355,17 @@ const tools: AnyToolHandler[] = [
             projectImageMetadata = JSON.parse(fs.readFileSync(projectMetaPath, 'utf-8'));
             if (projectImageMetadata) {
               projectImageDeploying = (projectImageMetadata as Record<string, unknown>).deploying === true;
+
+              // Auto-recover stuck deploys (watcher may have died from MCP server restart)
+              if (projectImageDeploying) {
+                const recovery = recoverStuckProjectDeploy();
+                if (recovery?.recovered) {
+                  // Re-read metadata after recovery
+                  projectImageMetadata = JSON.parse(fs.readFileSync(projectMetaPath, 'utf-8'));
+                  projectImageDeploying = false;
+                }
+              }
+
               const storedHash = (projectImageMetadata as Record<string, string>).lockfileHash;
               if (storedHash) {
                 // Compute current lockfile hash
@@ -9317,6 +9560,24 @@ const tools: AnyToolHandler[] = [
         return JSON.stringify({
           success: false,
           message: 'Failed to resolve FLY_API_TOKEN from 1Password.',
+        });
+      }
+
+      // 2b. Recover stuck deploys from previous attempts
+      recoverStuckProjectDeploy();
+      // If metadata still shows deploying after recovery check and force is not set, block
+      const freshProjectMeta = (() => {
+        try {
+          const p = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+          return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : null;
+        } catch { return null; }
+      })();
+      if (freshProjectMeta?.deploying && !args.force) {
+        return JSON.stringify({
+          success: false,
+          message: `A project image deploy is already in progress (started ${freshProjectMeta.deployedAt}). Use force: true to override.`,
+          deploying: true,
+          deployPid: freshProjectMeta.deployPid,
         });
       }
 
@@ -9522,6 +9783,7 @@ const tools: AnyToolHandler[] = [
         const metadata = {
           deployedAt: new Date().toISOString(),
           deploying: true,
+          deployPid: child.pid || null,
           gitSha: gitShortSha,
           gitRef,
           lockfileHash,
@@ -9534,6 +9796,7 @@ const tools: AnyToolHandler[] = [
 
       // 15. Set up a background watcher to update metadata when deploy completes
       if (child.pid) {
+        const escapedServicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json').replace(/'/g, "\\'");
         const watcherScript = `
           while kill -0 ${child.pid} 2>/dev/null; do sleep 5; done
           EXIT_CODE=$(wait ${child.pid} 2>/dev/null; echo $?)
@@ -9547,6 +9810,32 @@ const tools: AnyToolHandler[] = [
                 m.deployCompletedAt = new Date().toISOString();
                 fs.writeFileSync(p, JSON.stringify(m, null, 2) + '\\n');
               } catch {}
+              // Auto-enable project image in services.json
+              const svcCandidates = [
+                '${escapedServicesPath}'
+              ];
+              for (const sp of svcCandidates) {
+                try {
+                  if (!fs.existsSync(sp)) continue;
+                  const svc = JSON.parse(fs.readFileSync(sp, 'utf-8'));
+                  if (svc.fly && svc.fly.projectImageEnabled !== true) {
+                    svc.fly.projectImageEnabled = true;
+                    fs.writeFileSync(sp, JSON.stringify(svc, null, 2) + '\\n');
+                  }
+                  break;
+                } catch (e) {
+                  // EACCES: stage to pending file
+                  if (e.code === 'EACCES') {
+                    try {
+                      const pendingPath = sp.replace('services.json', '').replace(/config\\\\//, 'state/') + 'services-config-pending.json';
+                      const pending = fs.existsSync(pendingPath) ? JSON.parse(fs.readFileSync(pendingPath, 'utf-8')) : {};
+                      if (!pending.fly) pending.fly = {};
+                      pending.fly.projectImageEnabled = true;
+                      fs.writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + '\\n');
+                    } catch {}
+                  }
+                }
+              }
             "
           fi
         `;
@@ -9555,6 +9844,13 @@ const tools: AnyToolHandler[] = [
           stdio: 'ignore',
         });
         watcher.unref();
+
+        // Store watcher PID in metadata
+        try {
+          const updatedMeta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+          updatedMeta.watcherPid = watcher.pid || null;
+          fs.writeFileSync(metaPath, JSON.stringify(updatedMeta, null, 2) + '\n');
+        } catch { /* non-fatal */ }
       }
 
       return JSON.stringify({
@@ -9571,7 +9867,7 @@ const tools: AnyToolHandler[] = [
         message: `Deploying project image to ${flySection.appName} in background (PID ${child.pid}). ` +
           `This takes 5-15 minutes (clone + pnpm install + browser install). ` +
           `Poll get_fly_status() to check when projectImageDeployed becomes true. ` +
-          `After deploy completes, enable with: update_services_config({ updates: { fly: { projectImageEnabled: true } } }). ` +
+          `Project image will be auto-enabled in services.json after deploy completes. ` +
           `Deploy log: ${logFile}`,
       });
     },
