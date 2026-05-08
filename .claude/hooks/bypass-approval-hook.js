@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 /**
- * Bypass Approval Hook (UserPromptSubmit)
+ * DEPRECATED: Bypass Approval Hook (UserPromptSubmit)
  *
- * Watches for CTO bypass approval messages in the format:
- *   APPROVE BYPASS <6-char-code>
+ * This hook is deprecated as part of the Unified CTO Authorization System migration.
+ * CTO bypass approval now flows through:
+ *   1. PreToolUse hooks create deferred actions on block
+ *   2. Agent calls record_cto_decision with CTO's verbatim text
+ *   3. Independent authorization-auditor verifies the decision
+ *   4. Deferred action auto-executes on audit pass
  *
- * When detected, validates the code exists in pending bypass requests
- * and writes an approval token that execute_bypass can verify.
+ * The "APPROVE BYPASS <6-char-code>" pattern is being retired.
+ * This file will be removed from settings.json.template in Phase 5.
  *
- * This ensures only the CTO (human user) can approve bypasses by typing
- * the approval phrase - agents cannot trigger UserPromptSubmit hooks.
+ * The HOTFIX approval flow (APPROVE HOTFIX <code>) is preserved here
+ * until the hotfix system is also migrated.
  *
  * @version 1.0.0
+ * @deprecated Use record_cto_decision + authorization-auditor instead
  */
 
 import fs from 'fs';

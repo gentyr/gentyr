@@ -6,19 +6,20 @@
  * that include --no-verify or -n flags, which would skip git hooks.
  *
  * Uses Claude Code's permissionDecision JSON output for hard blocking.
- * Supports CTO bypass via bypass-approval-token.json.
+ * On block, creates a deferred action via the Unified CTO Authorization System.
+ * The agent does NOT retry — the deferred action auto-executes after CTO approval + audit pass.
  *
  * Input: JSON on stdin from Claude Code PreToolUse event
  * Output: JSON on stdout with permissionDecision (deny/allow)
  *
  * SECURITY: This file should be root-owned via protect-framework.sh
  *
- * @version 3.0.0
+ * @version 4.0.0
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
+import { createDeferredAction, openDb, findDuplicatePending } from './lib/deferred-action-db.js';
+import { computePendingHmac } from './lib/deferred-action-executor.js';
 
 // Patterns that indicate hook bypass attempts
 const forbiddenPatterns = [
@@ -52,132 +53,78 @@ const credentialAccessPatterns = [
 ];
 
 /**
- * Load the protection key for HMAC verification.
- * @param {string} projectDir
- * @returns {string|null} Base64-encoded key or null
+ * Create a deferred action for a blocked command, or return existing duplicate.
+ * @param {string} command - The blocked shell command
+ * @param {string} reason - Why it was blocked
+ * @param {string} category - Block category label
+ * @returns {{ id: string, code: string } | null} Deferred action info or null on failure
  */
-function loadProtectionKey(projectDir) {
+function createBlockedCommandDeferredAction(command, reason, category) {
   try {
-    const keyPath = path.join(projectDir, '.claude', 'protection-key');
-    if (!fs.existsSync(keyPath)) {
-      return null;
+    const db = openDb();
+    if (!db) return null;
+
+    try {
+      const argsHash = crypto.createHash('sha256').update(command).digest('hex');
+      const existing = findDuplicatePending(db, 'Bash', 'Bash', argsHash);
+      if (existing) {
+        return { id: existing.id, code: existing.code };
+      }
+
+      const code = crypto.randomBytes(3).toString('hex').toUpperCase();
+      const pendingHmac = computePendingHmac(code, 'Bash', 'Bash', argsHash);
+      if (!pendingHmac) {
+        // G001 fail-closed: cannot create HMAC without protection key
+        return null;
+      }
+
+      const result = createDeferredAction(db, {
+        server: 'Bash',
+        tool: 'Bash',
+        args: { command, cwd: process.cwd() },
+        argsHash,
+        code,
+        phrase: 'UNIFIED',
+        pendingHmac,
+        sourceHook: 'block-no-verify',
+      });
+
+      return { id: result.id, code: result.code };
+    } finally {
+      try { db.close(); } catch { /* ignore */ }
     }
-    return fs.readFileSync(keyPath, 'utf8').trim();
   } catch (err) {
+    console.error(`[block-no-verify] Failed to create deferred action: ${err.message}`);
     return null;
   }
 }
 
 /**
- * Compute HMAC-SHA256 over pipe-delimited fields.
- * @param {string} key - Base64-encoded key
- * @param {...string} fields - Fields to include in HMAC
- * @returns {string} Hex-encoded HMAC
- */
-function computeHmac(key, ...fields) {
-  const keyBuffer = Buffer.from(key, 'base64');
-  return crypto.createHmac('sha256', keyBuffer)
-    .update(fields.join('|'))
-    .digest('hex');
-}
-
-/**
- * Check if a valid, HMAC-verified CTO bypass token exists.
- * Consumes the token on successful verification (one-time use).
- *
- * SECURITY FIX (H1): Now verifies HMAC-SHA256 signature to prevent agent forgery.
- * Previously only checked expiry, allowing agents to write fake tokens.
- *
- * SECURITY FIX (H2): Token is consumed (deleted) on use, preventing reuse
- * across different blocked actions.
- */
-function hasValidBypassToken(projectDir) {
-  try {
-    const tokenPath = path.join(projectDir, '.claude', 'bypass-approval-token.json');
-    const clearToken = () => { try { fs.writeFileSync(tokenPath, '{}'); } catch (_) { /* ignore */ } };
-
-    if (!fs.existsSync(tokenPath)) {
-      return false;
-    }
-
-    const token = JSON.parse(fs.readFileSync(tokenPath, 'utf-8'));
-
-    // Empty object means token was consumed (overwrite pattern for sticky-bit compat)
-    if (!token.code && !token.request_id && !token.expires_timestamp) {
-      return false;
-    }
-
-    // Check expiry
-    if (token.expires_timestamp && Date.now() > token.expires_timestamp) {
-      // Clean up expired token
-      clearToken();
-      return false;
-    }
-    if (token.expires_at && new Date(token.expires_at).getTime() < Date.now()) {
-      clearToken();
-      return false;
-    }
-
-    // Verify required fields
-    if (!token.code || !token.request_id || !token.expires_timestamp) {
-      console.error('[block-no-verify] FORGERY DETECTED: Token missing required fields. Clearing.');
-      clearToken();
-      return false;
-    }
-
-    // HMAC verification: ensure token was created by the bypass-approval-hook
-    const key = loadProtectionKey(projectDir);
-    if (key) {
-      if (!token.hmac) {
-        console.error('[block-no-verify] FORGERY DETECTED: Token missing HMAC field. Clearing.');
-        clearToken();
-        return false;
-      }
-      const expectedHmac = computeHmac(key, token.code, token.request_id, String(token.expires_timestamp), 'bypass-approved');
-      if (token.hmac !== expectedHmac) {
-        console.error('[block-no-verify] FORGERY DETECTED: Invalid HMAC on bypass token. Clearing.');
-        clearToken();
-        return false;
-      }
-    } else {
-      // G001 Fail-Closed: No protection key available -- cannot verify token authenticity
-      console.error('[block-no-verify] G001 FAIL-CLOSED: Protection key missing, cannot verify bypass token. Rejecting.');
-      clearToken();
-      return false;
-    }
-
-    // Token is valid - consume it (one-time use)
-    clearToken();
-
-    return true;
-  } catch (err) {
-    console.error('[block-no-verify] Warning:', err.message);
-    return false;
-  }
-}
-
-/**
  * Block the tool call using Claude Code's permissionDecision system.
+ * Creates a deferred action so the command can auto-execute after CTO approval + audit pass.
  */
-function blockCommand(command, reason, category, bypassContext) {
-  const bypassInstructions = [
-    '',
-    '  HOW TO REQUEST A CTO BYPASS (if you have a valid reason):',
-    '',
-    '  1. Call: mcp__deputy-cto__request_bypass({',
-    `       reason: "${bypassContext}",`,
-    '       reporting_agent: "your-agent-name",',
-    '       blocked_by: "block-no-verify hook"',
-    '     })',
-    '',
-    '  2. You will receive a 6-character bypass code (e.g. X7K9M2)',
-    '',
-    '  3. STOP and ask the CTO to type in chat:',
-    '       APPROVE BYPASS <CODE>',
-    '',
-    '  4. After CTO approval, retry your command.',
-    '     The bypass token is valid for 5 minutes (one-time use).',
-  ].join('\n');
+function blockCommand(command, reason, category) {
+  const deferred = createBlockedCommandDeferredAction(command, reason, category);
+
+  const deferredInfo = deferred
+    ? [
+        '',
+        `  Deferred Action ID: ${deferred.id}`,
+        '',
+        '  Present this to the CTO with context about why this command is needed.',
+        '  Then call: mcp__agent-tracker__record_cto_decision({',
+        `    decision_type: "command_bypass",`,
+        `    decision_id: "${deferred.id}",`,
+        '    verbatim_text: "<CTO exact words>"',
+        '  })',
+        '',
+        '  The command will auto-execute after CTO approval + independent audit pass.',
+        '  Do NOT retry the command — the system handles execution automatically.',
+      ].join('\n')
+    : [
+        '',
+        '  Failed to create deferred action. Contact the CTO directly.',
+      ].join('\n');
 
   const fullReason = [
     `BLOCKED: ${category}`,
@@ -186,7 +133,7 @@ function blockCommand(command, reason, category, bypassContext) {
     '',
     `Command: ${command.substring(0, 100)}${command.length > 100 ? '...' : ''}`,
     '',
-    bypassInstructions,
+    deferredInfo,
   ].join('\n');
 
   // Output JSON to stdout for Claude Code's permission system (hard deny)
@@ -207,10 +154,9 @@ function blockCommand(command, reason, category, bypassContext) {
   console.error(`  Why: ${reason}`);
   console.error('');
   console.error(`  Command: ${command.substring(0, 100)}${command.length > 100 ? '...' : ''}`);
-  console.error('');
-  console.error('  ──────────────────────────────────────────────────────────');
-  console.error(bypassInstructions);
-  console.error('  ──────────────────────────────────────────────────────────');
+  if (deferred) {
+    console.error(`  Deferred Action: ${deferred.id}`);
+  }
   console.error('');
   console.error('══════════════════════════════════════════════════════════════');
   console.error('');
@@ -231,7 +177,6 @@ process.stdin.on('end', () => {
 
     const toolName = hookInput.tool_name;
     const toolInput = hookInput.tool_input || {};
-    const projectDir = hookInput.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
     // Only check Bash commands
     if (toolName !== 'Bash') {
@@ -240,20 +185,13 @@ process.stdin.on('end', () => {
 
     const command = toolInput.command || '';
 
-    // Check if CTO has granted a bypass
-    if (hasValidBypassToken(projectDir)) {
-      console.error('[block-no-verify] Active CTO bypass token found - allowing command through');
-      process.exit(0);
-    }
-
-    // Check for forbidden patterns
+    // Check for forbidden patterns — always deny, create deferred action
     for (const { pattern, reason } of forbiddenPatterns) {
       if (pattern.test(command)) {
         blockCommand(
           command,
           reason,
-          'Security Hook Bypass Attempt',
-          'Explain why --no-verify is needed'
+          'Security Hook Bypass Attempt'
         );
         return; // blockCommand calls process.exit, but just in case
       }
@@ -265,8 +203,7 @@ process.stdin.on('end', () => {
         blockCommand(
           command,
           reason,
-          'Lint Enforcement Weakening Attempt',
-          'Explain why lint relaxation is needed'
+          'Lint Enforcement Weakening Attempt'
         );
         return;
       }
@@ -278,8 +215,7 @@ process.stdin.on('end', () => {
         blockCommand(
           command,
           reason,
-          'Credential Access Attempt',
-          'Explain why direct 1Password CLI access is needed'
+          'Credential Access Attempt'
         );
         return;
       }
