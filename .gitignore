@@ -53,6 +53,7 @@ CLAUDE.local.md
 .claude/hooks/*.log
 .claude/hooks/test-*
 .claude/hooks/.claude/
+.claude/hooks/hooks
 
 # Nested .claude runtime state (subdirectory copies)
 **/.claude/*.db
