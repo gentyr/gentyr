@@ -6,13 +6,16 @@
  * audit passes, this hook auto-executes the linked deferred action — the CTO's
  * approved tool call fires without requiring the original agent to retry.
  *
- * Handles three decision types:
+ * Handles four decision types:
  * 1. Default (deferred_action / protected_action_gate / command_bypass / demo_local / lockdown_toggle):
  *    - Load deferred action by decision_id
  *    - Compute approved_hmac, mark approved, execute via MCP daemon (Tier 1) or Bash
- * 2. deputy_bypass_resolution:
+ * 2. bypass_request:
+ *    - CTO-approved bypass request resolution; reuses executeDeputyBypassResolution
+ *      from deputy-resolution-executor.js (reads decision_context for request details)
+ * 3. deputy_bypass_resolution:
  *    - Import and call executeDeputyBypassResolution from deputy-resolution-executor.js
- * 3. deputy_deferred_approval:
+ * 4. deputy_deferred_approval:
  *    - Import and call executeDeputyDeferredApproval from deputy-resolution-executor.js
  *
  * PostToolUse hooks MUST always exit 0 (the tool already ran, blocking is meaningless).
@@ -270,13 +273,40 @@ async function executeDeputyBypassResolution(decisionId) {
   try {
     const mod = await import('./lib/deputy-resolution-executor.js');
     if (mod.executeDeputyBypassResolution) {
-      await mod.executeDeputyBypassResolution(decisionId);
+      await mod.executeDeputyBypassResolution(decisionId, PROJECT_DIR);
       log(`Deputy bypass resolution executed for decision ${decisionId}`);
     } else {
       log(`deputy-resolution-executor.js does not export executeDeputyBypassResolution — module may not be available yet`);
     }
   } catch (err) {
     log(`Failed to execute deputy bypass resolution for ${decisionId}: ${err.message}`);
+  }
+}
+
+/**
+ * Execute a CTO bypass request resolution after audit pass.
+ *
+ * Reads the cto_decisions record, extracts the bypass request context from
+ * decision_context, then resolves the bypass request (same logic as
+ * resolve_bypass_request in the agent-tracker server).
+ *
+ * @param {string} decisionId - The cto_decisions.id
+ */
+async function executeBypassRequestResolution(decisionId) {
+  try {
+    const mod = await import('./lib/deputy-resolution-executor.js');
+    if (mod.executeDeputyBypassResolution) {
+      // Reuse the deputy bypass resolution executor — it reads cto_decisions.decision_context
+      // (which contains bypass_request_id, deputy_decision, task_type, task_id, etc.)
+      // and resolves the bypass request.
+      // The logic is identical: read context, update bypass_requests, resume task, enqueue monitor.
+      await mod.executeDeputyBypassResolution(decisionId, PROJECT_DIR);
+      log(`Bypass request resolution executed for decision ${decisionId}`);
+    } else {
+      log(`deputy-resolution-executor.js does not export executeDeputyBypassResolution — module may not be available yet`);
+    }
+  } catch (err) {
+    log(`Failed to execute bypass request resolution for ${decisionId}: ${err.message}`);
   }
 }
 
@@ -288,7 +318,7 @@ async function executeDeputyDeferredApproval(decisionId) {
   try {
     const mod = await import('./lib/deputy-resolution-executor.js');
     if (mod.executeDeputyDeferredApproval) {
-      await mod.executeDeputyDeferredApproval(decisionId);
+      await mod.executeDeputyDeferredApproval(decisionId, PROJECT_DIR);
       log(`Deputy deferred approval executed for decision ${decisionId}`);
     } else {
       log(`deputy-resolution-executor.js does not export executeDeputyDeferredApproval — module may not be available yet`);
@@ -332,6 +362,10 @@ process.stdin.on('end', async () => {
 
     // Route based on decision_type
     switch (decisionType) {
+      case 'bypass_request':
+        await executeBypassRequestResolution(decisionId);
+        break;
+
       case 'deputy_bypass_resolution':
         await executeDeputyBypassResolution(decisionId);
         break;
