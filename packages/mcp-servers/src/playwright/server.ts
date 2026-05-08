@@ -8462,10 +8462,8 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
           }
           continue;
         }
-        if (!args.headless) {
-          // Headed batch can't run remotely unless explicitly remote
-          continue;
-        }
+        // All demos run headed (args.headless forced false at line 8340).
+        // Remote machines handle headed mode via Xvfb+ffmpeg.
         remoteScenarioIds.add(scenario.scenario_id);
       }
     } catch { /* non-fatal — all local */ }
