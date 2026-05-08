@@ -452,6 +452,14 @@ function resolveProfileScopedSecrets(
     const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
     if (!fs.existsSync(servicesPath)) return result;
     const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+
+    // Always inject demoDevModeEnv regardless of secrets.local presence.
+    // This MUST come before the early-return guard below, because on Fly.io
+    // remote machines secrets.local is absent and the guard returns early.
+    if (services.demoDevModeEnv) {
+      Object.assign(result.resolved, services.demoDevModeEnv);
+    }
+
     const allLocalSecrets = services.secrets?.local as Record<string, string> | undefined;
     if (!allLocalSecrets || Object.keys(allLocalSecrets).length === 0) return result;
 
@@ -531,10 +539,6 @@ function resolveProfileScopedSecrets(
       }
     }
 
-    // Also include demoDevModeEnv if available
-    if (services.demoDevModeEnv) {
-      Object.assign(result.resolved, services.demoDevModeEnv);
-    }
   } catch { /* non-fatal — return whatever we resolved */ }
 
   return result;

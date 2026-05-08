@@ -194,6 +194,7 @@ else
   (while true; do sleep 30; echo '{"type":"setup","phase":"install_progress","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true; done) &
   INSTALL_HEARTBEAT_PID=$!
   NODE_ENV=development PNPM_STORE_DIR="${PNPM_STORE_DIR:-/cache/pnpm-store}" \
+    PNPM_IGNORE_BUILT_PACKAGES="${PNPM_IGNORE_BUILT_PACKAGES:-code-server}" \
     pnpm install --frozen-lockfile 2>&1 | tee -a /app/.error.log
 fi
 if [[ -n "$INSTALL_HEARTBEAT_PID" ]]; then
