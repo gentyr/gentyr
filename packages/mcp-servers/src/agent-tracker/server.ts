@@ -5064,15 +5064,15 @@ function getBypassDb(): InstanceType<typeof Database> {
       session_id TEXT NOT NULL,
       session_file_hash TEXT,
       hmac TEXT,
+      decision_context TEXT,
       status TEXT NOT NULL DEFAULT 'verified',
       consumed_at TEXT,
       audit_session_id TEXT,
       audit_verdict TEXT,
       audit_evidence TEXT,
       audit_completed_at TEXT,
-      decision_context TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
+      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
       CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed', 'audit_pending', 'audit_passed', 'audit_failed', 'audit_overridden'))
     );
     CREATE INDEX IF NOT EXISTS idx_cto_decisions_lookup ON cto_decisions(decision_type, decision_id, status);
@@ -5093,6 +5093,76 @@ function getBypassDb(): InstanceType<typeof Database> {
       db.exec("ALTER TABLE bypass_requests ADD COLUMN escalation_urgency TEXT");
     }
   } catch { /* best-effort migration */ }
+
+  // Migration: expand cto_decisions CHECK constraint to include deputy decision types and audit status values
+  // SQLite CHECK constraints cannot be altered, so we must recreate the table.
+  // We detect the old constraint by attempting a test insert/rollback.
+  try {
+    const testId = '__migration_check_' + Date.now();
+    try {
+      db.exec('BEGIN');
+      db.prepare(
+        `INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, status, created_at)
+         VALUES (?, 'deputy_bypass_resolution', '__test__', '__test__', '__test__', 'verified', datetime('now'))`
+      ).run(testId);
+      // Worked — constraint already includes new types or doesn't have CHECK
+      db.exec('ROLLBACK');
+    } catch (checkErr: unknown) {
+      // If the insert fails with CHECK constraint violation, recreate the table
+      try { db.exec('ROLLBACK'); } catch { /* may already be rolled back */ }
+      if (checkErr instanceof Error && checkErr.message.includes('CHECK constraint')) {
+        // The old table may not have all columns. Add missing ones before copying.
+        try {
+          const oldCols = db.prepare("PRAGMA table_info(cto_decisions)").all() as Array<{ name: string }>;
+          const colNames = oldCols.map((c: { name: string }) => c.name);
+          if (!colNames.includes('decision_context')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN decision_context TEXT");
+          }
+          if (!colNames.includes('audit_session_id')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_session_id TEXT");
+          }
+          if (!colNames.includes('audit_verdict')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_verdict TEXT");
+          }
+          if (!colNames.includes('audit_evidence')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_evidence TEXT");
+          }
+          if (!colNames.includes('audit_completed_at')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_completed_at TEXT");
+          }
+        } catch { /* best-effort */ }
+
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS cto_decisions_new (
+            id TEXT PRIMARY KEY,
+            decision_type TEXT NOT NULL,
+            decision_id TEXT NOT NULL,
+            verbatim_text TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            session_file_hash TEXT,
+            hmac TEXT,
+            decision_context TEXT,
+            audit_session_id TEXT,
+            audit_verdict TEXT,
+            audit_evidence TEXT,
+            audit_completed_at TEXT,
+            status TEXT NOT NULL DEFAULT 'verified',
+            consumed_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
+            CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed', 'audit_pending', 'audit_passed', 'audit_failed', 'audit_overridden'))
+          );
+          INSERT INTO cto_decisions_new (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, audit_session_id, audit_verdict, audit_evidence, audit_completed_at, status, consumed_at, created_at)
+          SELECT id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, audit_session_id, audit_verdict, audit_evidence, audit_completed_at, status, consumed_at, created_at
+          FROM cto_decisions;
+          DROP TABLE cto_decisions;
+          ALTER TABLE cto_decisions_new RENAME TO cto_decisions;
+          CREATE INDEX IF NOT EXISTS idx_cto_decisions_lookup ON cto_decisions(decision_type, decision_id, status);
+        `);
+      }
+    }
+  } catch { /* non-fatal migration */ }
+
   // Migration: add audit columns to cto_decisions if absent (non-fatal)
   try {
     const decCols = db.prepare("PRAGMA table_info(cto_decisions)").all() as Array<{ name: string }>;
@@ -5740,122 +5810,47 @@ async function deputyResolveBypassRequest(args: DeputyResolveBypassRequestArgs):
       }
     }
 
-    // Resolve the request — NO CTO decision required, deputy is the decision-maker
-    const resolvedContext = `[Deputy-CTO Monitor Decision] ${args.reasoning}`;
-    db.prepare(
-      "UPDATE bypass_requests SET status = ?, resolution_context = ?, resolved_at = datetime('now'), resolved_by = 'deputy-cto-monitor' WHERE id = ?"
-    ).run(args.decision, resolvedContext, request.id);
+    // Record the deputy's decision as a cto_decision for auditor verification.
+    // The deputy's reasoning serves as the "verbatim text" since the deputy is an agent,
+    // not a human typing in a session. No JSONL verification — compute HMAC proof for audit trail.
+    const decisionId = 'ctod-' + crypto.randomUUID().slice(0, 12);
+    const decisionContext = JSON.stringify({
+      bypass_request_id: request.id,
+      deputy_decision: args.decision,
+      task_type: request.task_type,
+      task_id: request.task_id,
+      task_title: request.task_title,
+      category: request.category,
+      summary: request.summary,
+    });
 
-    // Handle approval — resume the task (same logic as resolveBypassRequest)
-    if (args.decision === 'approved') {
-      if (request.task_type === 'persistent') {
-        const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-        if (fs.existsSync(ptDbPath)) {
-          let ptDb2: InstanceType<typeof Database> | undefined;
-          try {
-            ptDb2 = new Database(ptDbPath);
-            ptDb2.pragma('busy_timeout = 3000');
-            const result = ptDb2.prepare(
-              "UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'"
-            ).run(request.task_id);
-
-            if (result.changes > 0) {
-              ptDb2.prepare(
-                "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
-              ).run(
-                crypto.randomUUID(),
-                request.task_id,
-                JSON.stringify({ reason: 'deputy_bypass_approved', bypass_request_id: request.id }),
-              );
-            }
-          } finally {
-            try { ptDb2?.close(); } catch { /* best-effort */ }
-          }
-
-          // Enqueue a monitor revival via session-queue
-          try {
-            const queueModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js');
-            if (fs.existsSync(queueModulePath)) {
-              const revivalPromptPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'persistent-monitor-revival-prompt.js');
-              if (fs.existsSync(revivalPromptPath)) {
-                const ptDbR = openReadonlyDb(ptDbPath);
-                const task = ptDbR.prepare('SELECT id, title, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?').get(request.task_id) as { id: string; title: string; metadata: string | null; monitor_session_id: string | null } | undefined;
-                ptDbR.close();
-
-                if (task) {
-                  const { buildPersistentMonitorRevivalPrompt } = await import(revivalPromptPath);
-                  const revival = await buildPersistentMonitorRevivalPrompt(task, 'deputy_bypass_approved', PROJECT_DIR);
-                  const queueModule = await import(queueModulePath);
-                  queueModule.enqueueSession({
-                    title: `[Persistent] Deputy bypass approved: ${task.title}`,
-                    agentType: 'persistent-task-monitor',
-                    hookType: 'persistent-task-monitor',
-                    tagContext: 'persistent-monitor',
-                    source: 'deputy-bypass-resolve',
-                    prompt: revival.prompt,
-                    priority: 'critical',
-                    lane: 'persistent',
-                    spawnType: task.monitor_session_id ? 'resume' : 'fresh',
-                    resumeSessionId: task.monitor_session_id || undefined,
-                    extraEnv: revival.extraEnv,
-                    metadata: { ...revival.metadata, persistentTaskId: request.task_id },
-                    agent: revival.agent,
-                    ttlMs: 0,
-                  });
-                }
-              }
-            }
-          } catch (err) {
-            process.stderr.write(`[deputy-bypass-resolve] Failed to enqueue revival: ${err instanceof Error ? err.message : String(err)}\n`);
-          }
-        }
-
-        // Back-propagate resume to plan layer
-        try {
-          const bypassRow = db.prepare('SELECT propagation_context FROM bypass_requests WHERE id = ?').get(args.request_id) as { propagation_context: string | null } | undefined;
-          if (bypassRow?.propagation_context) {
-            const ctx = JSON.parse(bypassRow.propagation_context) as { plan_task_id?: string; plan_id?: string };
-            if (ctx.plan_task_id) {
-              const pausePropagationPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
-              const { propagateResumeToPlan } = await import(pausePropagationPath) as { propagateResumeToPlan: (taskId: string) => { propagated: boolean } };
-              propagateResumeToPlan(request.task_id);
-            }
-          }
-        } catch { /* back-propagation is non-fatal */ }
-
-        return {
-          resolved: true,
-          request_id: request.id,
-          decision: 'approved',
-          resolved_by: 'deputy-cto-monitor',
-          task_type: request.task_type,
-          task_title: request.task_title,
-          message: `Deputy-CTO Monitor approved bypass request. Persistent task "${request.task_title}" has been set to active and a monitor session is being revived.`,
-        };
-      } else {
-        return {
-          resolved: true,
-          request_id: request.id,
-          decision: 'approved',
-          resolved_by: 'deputy-cto-monitor',
-          task_type: request.task_type,
-          task_title: request.task_title,
-          message: `Deputy-CTO Monitor approved bypass request. Todo task "${request.task_title}" will be picked up by the next spawn cycle.`,
-        };
-      }
+    // Compute HMAC proof (skip JSONL verification — the deputy is a spawned agent)
+    let hmac = '';
+    const sessionId = process.env.CLAUDE_SESSION_ID || process.env.CLAUDE_QUEUE_ID || 'deputy-monitor';
+    try {
+      const keyPath = path.join(PROJECT_DIR, '.claude', 'protection-key');
+      const keyBase64 = fs.readFileSync(keyPath, 'utf-8').trim();
+      hmac = computeDecisionHmac(keyBase64, 'deputy_bypass_resolution', request.id, args.reasoning, sessionId, '');
+    } catch {
+      // Protection key missing — proceed without HMAC (still creates audit trail)
     }
 
-    // Handle rejection
+    // Insert the decision. The decision_context column is guaranteed to exist because:
+    // - Fresh DBs: CREATE TABLE includes decision_context
+    // - Existing DBs: migration in getBypassDb() adds the column
+    db.prepare(
+      `INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, status, created_at)
+       VALUES (?, 'deputy_bypass_resolution', ?, ?, ?, '', ?, ?, 'verified', datetime('now'))`
+    ).run(decisionId, request.id, args.reasoning, sessionId, hmac, decisionContext);
+
     return {
-      resolved: true,
+      recorded: true,
+      decision_id: decisionId,
       request_id: request.id,
-      decision: 'rejected',
-      resolved_by: 'deputy-cto-monitor',
+      deputy_decision: args.decision,
       task_type: request.task_type,
       task_title: request.task_title,
-      message: request.task_type === 'persistent'
-        ? `Deputy-CTO Monitor rejected bypass request. Persistent task "${request.task_title}" remains paused.`
-        : `Deputy-CTO Monitor rejected bypass request. Todo task "${request.task_title}" remains pending.`,
+      message: `Deputy-CTO Monitor decision recorded (${args.decision}). An authorization auditor will verify this decision before it takes effect. The bypass request remains pending until the auditor passes.`,
     };
   } catch (err) {
     return { error: `Failed to resolve bypass request: ${err instanceof Error ? err.message : String(err)}` };
@@ -5911,87 +5906,43 @@ async function deputyApproveDeferredAction(args: DeputyApproveDeferredActionArgs
       };
     }
 
-    // Execute the deferred action via the MCP daemon
-    // We need to: mark approved -> execute -> mark completed/failed
-    // Unlike the CTO flow, we don't use HMAC — the deputy's identity was verified by the 3-layer check above.
-    // We still transition atomically: pending -> approved -> executing -> completed/failed
+    // Record the deputy's approval as a cto_decision for auditor verification.
+    // The actual execution will happen AFTER the auditor passes, via the
+    // deferred-action-audit-executor hook detecting decision_type === 'deputy_deferred_approval'.
+    const decisionId = 'ctod-' + crypto.randomUUID().slice(0, 12);
+    const decisionContext = JSON.stringify({
+      deferred_action_id: action.id,
+      server: action.server,
+      tool: action.tool,
+      args_hash: action.args_hash,
+    });
 
-    // Mark as approved (set approved_by in execution_result context since the table doesn't have that column)
-    const approvedTransition = db.prepare(
-      "UPDATE deferred_actions SET status = 'approved', approved_at = datetime('now') WHERE id = ? AND status = 'pending'"
-    ).run(action.id);
-    if (approvedTransition.changes === 0) {
-      return { error: 'Failed to approve action — it may have been approved by another process.' };
-    }
-
-    // Mark as executing (atomic transition prevents double-execution)
-    const executingTransition = db.prepare(
-      "UPDATE deferred_actions SET status = 'executing' WHERE id = ? AND status = 'approved'"
-    ).run(action.id);
-    if (executingTransition.changes === 0) {
-      return { error: 'Failed to transition action to executing — it may have been picked up by another process.' };
-    }
-
-    // Parse args
-    let parsedArgs: object;
+    // Compute HMAC proof (skip JSONL verification — the deputy is a spawned agent)
+    let hmac = '';
+    const sessionId = process.env.CLAUDE_SESSION_ID || process.env.CLAUDE_QUEUE_ID || 'deputy-monitor';
     try {
-      parsedArgs = typeof action.args === 'string' ? JSON.parse(action.args) : action.args;
+      const keyPath = path.join(PROJECT_DIR, '.claude', 'protection-key');
+      const keyBase64 = fs.readFileSync(keyPath, 'utf-8').trim();
+      hmac = computeDecisionHmac(keyBase64, 'deputy_deferred_approval', action.id, args.reasoning, sessionId, '');
     } catch {
-      db.prepare(
-        "UPDATE deferred_actions SET status = 'failed', execution_error = 'Failed to parse action arguments', executed_at = datetime('now') WHERE id = ?"
-      ).run(action.id);
-      return { error: 'Failed to parse deferred action arguments.' };
+      // Protection key missing — proceed without HMAC (still creates audit trail)
     }
 
-    // Execute via MCP daemon
-    try {
-      const executorPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'deferred-action-executor.js');
-      const { executeMcpTool, isTier1Server } = await import(executorPath);
+    // Insert the decision. decision_context column guaranteed to exist (see migration in getBypassDb()).
+    db.prepare(
+      `INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, status, created_at)
+       VALUES (?, 'deputy_deferred_approval', ?, ?, ?, '', ?, ?, 'verified', datetime('now'))`
+    ).run(decisionId, action.id, args.reasoning, sessionId, hmac, decisionContext);
 
-      if (!isTier1Server(action.server)) {
-        db.prepare(
-          "UPDATE deferred_actions SET status = 'failed', execution_error = ?, executed_at = datetime('now') WHERE id = ?"
-        ).run(`Server "${action.server}" is not a Tier 1 server. Only Tier 1 servers can be executed via deferred actions.`, action.id);
-        return { error: `Server "${action.server}" is not a Tier 1 server. Deferred execution only supports Tier 1 (shared daemon) servers.` };
-      }
-
-      const result = await executeMcpTool(action.server, action.tool, parsedArgs);
-
-      if (result.success) {
-        db.prepare(
-          "UPDATE deferred_actions SET status = 'completed', execution_result = ?, executed_at = datetime('now') WHERE id = ?"
-        ).run(JSON.stringify({ ...result.result, approved_by: 'deputy-cto-monitor', reasoning: args.reasoning }), action.id);
-        return {
-          approved: true,
-          executed: true,
-          action_id: action.id,
-          server: action.server,
-          tool: action.tool,
-          approved_by: 'deputy-cto-monitor',
-          result: result.result,
-          message: `Deputy-CTO Monitor approved and executed deferred action: ${action.server}:${action.tool}`,
-        };
-      } else {
-        db.prepare(
-          "UPDATE deferred_actions SET status = 'failed', execution_error = ?, executed_at = datetime('now') WHERE id = ?"
-        ).run(result.error, action.id);
-        return {
-          approved: true,
-          executed: false,
-          action_id: action.id,
-          server: action.server,
-          tool: action.tool,
-          approved_by: 'deputy-cto-monitor',
-          error: result.error,
-          message: `Deputy-CTO Monitor approved the action but execution failed: ${result.error}`,
-        };
-      }
-    } catch (err) {
-      db.prepare(
-        "UPDATE deferred_actions SET status = 'failed', execution_error = ?, executed_at = datetime('now') WHERE id = ?"
-      ).run((err instanceof Error ? err.message : String(err)), action.id);
-      return { error: `Failed to execute deferred action: ${err instanceof Error ? err.message : String(err)}` };
-    }
+    return {
+      recorded: true,
+      decision_id: decisionId,
+      action_id: action.id,
+      server: action.server,
+      tool: action.tool,
+      approved_by: 'deputy-cto-monitor',
+      message: `Deputy-CTO Monitor approval recorded for deferred action ${action.server}:${action.tool}. An authorization auditor will verify this decision before the action is executed.`,
+    };
   } catch (err) {
     return { error: `Failed to approve deferred action: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
@@ -7072,13 +7023,13 @@ const tools: AnyToolHandler[] = [
   // Deputy-CTO Monitor bypass resolution tools
   {
     name: 'deputy_resolve_bypass_request',
-    description: 'RESTRICTED TO GLOBAL DEPUTY-CTO MONITOR ONLY. Approve or reject a pending bypass request without CTO intervention. Uses 3-layer identity verification (env var + queue DB + persistent task DB) to ensure only the Global Monitor session can call this. Same downstream effects as resolve_bypass_request (resumes tasks, revives monitors, propagates to plans). Does NOT require record_cto_decision — the deputy IS the decision-maker.',
+    description: 'RESTRICTED TO GLOBAL DEPUTY-CTO MONITOR ONLY. Records the deputy\'s approval or rejection of a pending bypass request as a cto_decision with decision_type \'deputy_bypass_resolution\'. An authorization auditor is spawned to verify the decision before it takes effect. Uses 3-layer identity verification (env var + queue DB + persistent task DB). The bypass request remains pending until the auditor passes.',
     schema: DeputyResolveBypassRequestArgsSchema,
     handler: deputyResolveBypassRequest,
   },
   {
     name: 'deputy_approve_deferred_action',
-    description: 'RESTRICTED TO GLOBAL DEPUTY-CTO MONITOR ONLY. Approve and immediately execute a pending deferred protected action. Blocked for CTO-only actions: release-ledger server, set_lockdown_mode, sign_off_release, cancel_release, record_cto_approval, and tools with "staging" in the name. Uses the MCP shared daemon for execution. 3-layer identity verification enforced.',
+    description: 'RESTRICTED TO GLOBAL DEPUTY-CTO MONITOR ONLY. Records the deputy\'s approval of a pending deferred protected action as a cto_decision with decision_type \'deputy_deferred_approval\'. An authorization auditor is spawned to verify the decision before the action is executed. Blocked for CTO-only actions: release-ledger server, set_lockdown_mode, sign_off_release, cancel_release, record_cto_approval, and tools with "staging" in the name. 3-layer identity verification enforced.',
     schema: DeputyApproveDeferredActionArgsSchema,
     handler: deputyApproveDeferredAction,
   },
@@ -7099,7 +7050,7 @@ const tools: AnyToolHandler[] = [
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '9.7.0',  // Unified CTO authorization: cto_decision_audit_pass, cto_decision_audit_fail, extended decision types, audit_override
+  version: '9.7.0',  // Phase 4: Route deputy resolutions through auditor (deputy_bypass_resolution, deputy_deferred_approval decision types); extended decision types, audit_override
   tools,
 });
 

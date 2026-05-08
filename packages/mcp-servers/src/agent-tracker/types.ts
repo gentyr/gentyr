@@ -609,6 +609,8 @@ export const CTO_DECISION_TYPES = [
   'lockdown_toggle',
   'release_signoff',
   'staging_override',
+  'deputy_bypass_resolution',
+  'deputy_deferred_approval',
   'command_bypass',
   'demo_local',
   'deferred_action',
