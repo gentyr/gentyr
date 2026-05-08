@@ -144,6 +144,10 @@ import {
   RecordCtoDecisionArgsSchema,
   type CheckCtoDecisionArgs,
   CheckCtoDecisionArgsSchema,
+  CtoDecisionAuditPassArgsSchema,
+  type CtoDecisionAuditPassArgs,
+  CtoDecisionAuditFailArgsSchema,
+  type CtoDecisionAuditFailArgs,
   DeputyResolveBypassRequestArgsSchema,
   type DeputyResolveBypassRequestArgs,
   DeputyApproveDeferredActionArgsSchema,
@@ -5063,9 +5067,13 @@ function getBypassDb(): InstanceType<typeof Database> {
       decision_context TEXT,
       status TEXT NOT NULL DEFAULT 'verified',
       consumed_at TEXT,
+      audit_session_id TEXT,
+      audit_verdict TEXT,
+      audit_evidence TEXT,
+      audit_completed_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval')),
-      CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed'))
+      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
+      CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed', 'audit_pending', 'audit_passed', 'audit_failed', 'audit_overridden'))
     );
     CREATE INDEX IF NOT EXISTS idx_cto_decisions_lookup ON cto_decisions(decision_type, decision_id, status);
   `);
@@ -5086,7 +5094,7 @@ function getBypassDb(): InstanceType<typeof Database> {
     }
   } catch { /* best-effort migration */ }
 
-  // Migration: expand cto_decisions CHECK constraint to include deputy decision types
+  // Migration: expand cto_decisions CHECK constraint to include deputy decision types and audit status values
   // SQLite CHECK constraints cannot be altered, so we must recreate the table.
   // We detect the old constraint by attempting a test insert/rollback.
   try {
@@ -5103,12 +5111,24 @@ function getBypassDb(): InstanceType<typeof Database> {
       // If the insert fails with CHECK constraint violation, recreate the table
       try { db.exec('ROLLBACK'); } catch { /* may already be rolled back */ }
       if (checkErr instanceof Error && checkErr.message.includes('CHECK constraint')) {
-        // The old table may not have decision_context column. We must handle the column mismatch.
-        // First add decision_context to the old table if missing (so INSERT INTO ... SELECT * works).
+        // The old table may not have all columns. Add missing ones before copying.
         try {
           const oldCols = db.prepare("PRAGMA table_info(cto_decisions)").all() as Array<{ name: string }>;
-          if (!oldCols.some((c: { name: string }) => c.name === 'decision_context')) {
+          const colNames = oldCols.map((c: { name: string }) => c.name);
+          if (!colNames.includes('decision_context')) {
             db.exec("ALTER TABLE cto_decisions ADD COLUMN decision_context TEXT");
+          }
+          if (!colNames.includes('audit_session_id')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_session_id TEXT");
+          }
+          if (!colNames.includes('audit_verdict')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_verdict TEXT");
+          }
+          if (!colNames.includes('audit_evidence')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_evidence TEXT");
+          }
+          if (!colNames.includes('audit_completed_at')) {
+            db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_completed_at TEXT");
           }
         } catch { /* best-effort */ }
 
@@ -5122,13 +5142,19 @@ function getBypassDb(): InstanceType<typeof Database> {
             session_file_hash TEXT,
             hmac TEXT,
             decision_context TEXT,
+            audit_session_id TEXT,
+            audit_verdict TEXT,
+            audit_evidence TEXT,
+            audit_completed_at TEXT,
             status TEXT NOT NULL DEFAULT 'verified',
             consumed_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval')),
-            CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed'))
+            CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
+            CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed', 'audit_pending', 'audit_passed', 'audit_failed', 'audit_overridden'))
           );
-          INSERT INTO cto_decisions_new SELECT * FROM cto_decisions;
+          INSERT INTO cto_decisions_new (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, audit_session_id, audit_verdict, audit_evidence, audit_completed_at, status, consumed_at, created_at)
+          SELECT id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, audit_session_id, audit_verdict, audit_evidence, audit_completed_at, status, consumed_at, created_at
+          FROM cto_decisions;
           DROP TABLE cto_decisions;
           ALTER TABLE cto_decisions_new RENAME TO cto_decisions;
           CREATE INDEX IF NOT EXISTS idx_cto_decisions_lookup ON cto_decisions(decision_type, decision_id, status);
@@ -5137,14 +5163,25 @@ function getBypassDb(): InstanceType<typeof Database> {
     }
   } catch { /* non-fatal migration */ }
 
-  // Migration: add decision_context column to cto_decisions if absent
+  // Migration: add audit columns to cto_decisions if absent (non-fatal)
   try {
     const decCols = db.prepare("PRAGMA table_info(cto_decisions)").all() as Array<{ name: string }>;
-    if (!decCols.some((c: { name: string }) => c.name === 'decision_context')) {
+    if (!decCols.some(c => c.name === 'audit_session_id')) {
+      db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_session_id TEXT");
+    }
+    if (!decCols.some(c => c.name === 'audit_verdict')) {
+      db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_verdict TEXT");
+    }
+    if (!decCols.some(c => c.name === 'audit_evidence')) {
+      db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_evidence TEXT");
+    }
+    if (!decCols.some(c => c.name === 'audit_completed_at')) {
+      db.exec("ALTER TABLE cto_decisions ADD COLUMN audit_completed_at TEXT");
+    }
+    if (!decCols.some(c => c.name === 'decision_context')) {
       db.exec("ALTER TABLE cto_decisions ADD COLUMN decision_context TEXT");
     }
-  } catch { /* non-fatal migration */ }
-
+  } catch { /* best-effort migration */ }
   return db;
 }
 
@@ -5385,20 +5422,29 @@ async function recordCtoDecision(args: RecordCtoDecisionArgs): Promise<object | 
       const effectiveSessionId = jsonlResult.sessionId || sessionId;
       const hmac = computeDecisionHmac(keyBase64, args.decision_type, args.decision_id, args.verbatim_text, effectiveSessionId, fileHash);
 
-      // Insert decision
+      // Insert decision — audit_override skips auditor and goes directly to audit_passed
       db = getBypassDb();
       const id = 'ctod-' + crypto.randomUUID().slice(0, 12);
-      db.prepare(`INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'verified', datetime('now'))`).run(
-        id, args.decision_type, args.decision_id, args.verbatim_text, effectiveSessionId, fileHash, hmac
+      const isAuditOverride = args.decision_type === 'audit_override';
+      const initialStatus = isAuditOverride ? 'audit_passed' : 'verified';
+      db.prepare(`INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, status, audit_verdict, audit_completed_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`).run(
+        id, args.decision_type, args.decision_id, args.verbatim_text, effectiveSessionId, fileHash, hmac,
+        initialStatus,
+        isAuditOverride ? 'override — CTO bypassed audit' : null,
+        isAuditOverride ? new Date().toISOString() : null,
       );
+
+      const message = isAuditOverride
+        ? `CTO audit override recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. Decision goes directly to audit_passed — no auditor spawned.`
+        : `CTO decision recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. You may now call the appropriate resolution tool (e.g., resolve_bypass_request).`;
 
       return {
         id,
-        status: 'verified',
+        status: initialStatus,
         decision_type: args.decision_type,
         decision_id: args.decision_id,
-        message: `CTO decision recorded and verified. JSONL quote found at line ${quoteResult.lineNumber}. You may now call the appropriate resolution tool (e.g., resolve_bypass_request).`,
+        message,
       };
     } finally {
       try { fs.unlinkSync(snapshotPath); } catch { /* non-fatal */ }
@@ -5426,6 +5472,138 @@ async function checkCtoDecision(args: CheckCtoDecisionArgs): Promise<object | Er
     return { found: true, ...(row as Record<string, unknown>) };
   } catch (err) {
     return { error: `Failed to check CTO decision: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+// ============================================================================
+// CTO Decision Audit Verdict Tools
+// ============================================================================
+
+/**
+ * Validate that the caller is in the audit lane by checking CLAUDE_QUEUE_ID
+ * against session-queue.db metadata.
+ * Fail-open when CLAUDE_QUEUE_ID is not set (testability).
+ * Fail-closed when CLAUDE_QUEUE_ID is set but lane is not 'audit'.
+ */
+function validateAuditLaneCaller(): { valid: boolean; error?: string; warning?: string } {
+  const queueId = process.env.CLAUDE_QUEUE_ID;
+  if (!queueId) {
+    return { valid: true, warning: 'CLAUDE_QUEUE_ID not set — audit lane validation skipped (testability mode)' };
+  }
+
+  try {
+    if (!fs.existsSync(QUEUE_DB_PATH)) {
+      return { valid: true, warning: 'session-queue.db not found — audit lane validation skipped' };
+    }
+    const qDb = openReadonlyDb(QUEUE_DB_PATH);
+    try {
+      const item = qDb.prepare('SELECT lane FROM queue_items WHERE id = ?').get(queueId) as { lane: string } | undefined;
+      if (!item) {
+        return { valid: true, warning: `Queue item ${queueId} not found — audit lane validation skipped` };
+      }
+      if (item.lane !== 'audit') {
+        return { valid: false, error: `BLOCKED: Caller is in lane "${item.lane}", not "audit". Only audit-lane sessions can render CTO decision audit verdicts.` };
+      }
+      return { valid: true };
+    } finally {
+      try { qDb.close(); } catch { /* best-effort */ }
+    }
+  } catch {
+    return { valid: true, warning: 'Could not read session-queue.db — audit lane validation skipped' };
+  }
+}
+
+async function ctoDecisionAuditPass(args: CtoDecisionAuditPassArgs): Promise<object | ErrorResult> {
+  // Validate audit lane
+  const laneCheck = validateAuditLaneCaller();
+  if (!laneCheck.valid) {
+    return { error: laneCheck.error! };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    // Atomic transition: only audit_pending -> audit_passed
+    const result = db.prepare(
+      `UPDATE cto_decisions SET
+        status = 'audit_passed',
+        audit_verdict = 'pass',
+        audit_evidence = ?,
+        audit_completed_at = datetime('now'),
+        audit_session_id = ?
+      WHERE id = ? AND status = 'audit_pending'`
+    ).run(
+      args.evidence,
+      process.env.CLAUDE_SESSION_ID || process.env.CLAUDE_QUEUE_ID || null,
+      args.decision_id,
+    );
+
+    if (result.changes === 0) {
+      // Check if it exists at all
+      const existing = db.prepare('SELECT id, status FROM cto_decisions WHERE id = ?').get(args.decision_id) as { id: string; status: string } | undefined;
+      if (!existing) {
+        return { error: `CTO decision not found: ${args.decision_id}` };
+      }
+      return { error: `Cannot transition CTO decision from status "${existing.status}" to "audit_passed". Expected status "audit_pending".` };
+    }
+
+    return {
+      decision_id: args.decision_id,
+      status: 'audit_passed',
+      ...(laneCheck.warning ? { warning: laneCheck.warning } : {}),
+    };
+  } catch (err) {
+    return { error: `Failed to record audit pass: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function ctoDecisionAuditFail(args: CtoDecisionAuditFailArgs): Promise<object | ErrorResult> {
+  // Validate audit lane
+  const laneCheck = validateAuditLaneCaller();
+  if (!laneCheck.valid) {
+    return { error: laneCheck.error! };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+
+    // Atomic transition: only audit_pending -> audit_failed
+    const result = db.prepare(
+      `UPDATE cto_decisions SET
+        status = 'audit_failed',
+        audit_verdict = ?,
+        audit_evidence = ?,
+        audit_completed_at = datetime('now'),
+        audit_session_id = ?
+      WHERE id = ? AND status = 'audit_pending'`
+    ).run(
+      args.failure_reason,
+      args.evidence,
+      process.env.CLAUDE_SESSION_ID || process.env.CLAUDE_QUEUE_ID || null,
+      args.decision_id,
+    );
+
+    if (result.changes === 0) {
+      const existing = db.prepare('SELECT id, status FROM cto_decisions WHERE id = ?').get(args.decision_id) as { id: string; status: string } | undefined;
+      if (!existing) {
+        return { error: `CTO decision not found: ${args.decision_id}` };
+      }
+      return { error: `Cannot transition CTO decision from status "${existing.status}" to "audit_failed". Expected status "audit_pending".` };
+    }
+
+    return {
+      decision_id: args.decision_id,
+      status: 'audit_failed',
+      ...(laneCheck.warning ? { warning: laneCheck.warning } : {}),
+    };
+  } catch (err) {
+    return { error: `Failed to record audit fail: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
     try { db?.close(); } catch { /* best-effort */ }
   }
@@ -6829,6 +7007,19 @@ const tools: AnyToolHandler[] = [
     schema: CheckCtoDecisionArgsSchema,
     handler: checkCtoDecision,
   },
+  // CTO Decision Audit Verdict tools
+  {
+    name: 'cto_decision_audit_pass',
+    description: 'AUDIT LANE ONLY. Mark a CTO decision as passing audit verification. Transitions the decision from audit_pending to audit_passed. Only callable from the audit lane (validated via CLAUDE_QUEUE_ID). Provide concrete evidence of what you verified.',
+    schema: CtoDecisionAuditPassArgsSchema,
+    handler: ctoDecisionAuditPass,
+  },
+  {
+    name: 'cto_decision_audit_fail',
+    description: 'AUDIT LANE ONLY. Mark a CTO decision as failing audit verification. Transitions the decision from audit_pending to audit_failed. Only callable from the audit lane (validated via CLAUDE_QUEUE_ID). Provide the failure reason and evidence.',
+    schema: CtoDecisionAuditFailArgsSchema,
+    handler: ctoDecisionAuditFail,
+  },
   // Deputy-CTO Monitor bypass resolution tools
   {
     name: 'deputy_resolve_bypass_request',
@@ -6859,7 +7050,7 @@ const tools: AnyToolHandler[] = [
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '9.7.0',  // Phase 4: Route deputy resolutions through auditor (deputy_bypass_resolution, deputy_deferred_approval decision types)
+  version: '9.7.0',  // Phase 4: Route deputy resolutions through auditor (deputy_bypass_resolution, deputy_deferred_approval decision types); extended decision types, audit_override
   tools,
 });
 

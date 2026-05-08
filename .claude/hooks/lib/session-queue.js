@@ -28,7 +28,7 @@ import { killProcessGroup, isClaudeProcess } from './process-tree.js';
 import { compactSessionIfNeeded } from './compact-session.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
-import { buildAuditorSessionSpec } from './auditor-prompt.js';
+import { buildAuditorSessionSpec, buildAuthorizationAuditorSessionSpec } from './auditor-prompt.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorStrictInfraInstructions } from './persistent-monitor-strict-infra-instructions.js';
 import { checkAndExpireResources } from './resource-lock.js';
@@ -1275,11 +1275,28 @@ export function drainQueue() {
           continue;
         }
 
-        const spec = buildAuditorSessionSpec(
-          { taskId: revival.taskId, taskType: revival.taskType, taskTitle: revival.taskTitle, criteria: revival.criteria, method: revival.method },
-          PROJECT_DIR,
-        );
-        const auditLabel = revival.taskType === 'plan' ? 'Plan audit' : 'Universal audit';
+        let spec;
+        let auditLabel;
+        if (revival.taskType === 'authorization') {
+          // Authorization audit revival — use the specialized builder
+          spec = buildAuthorizationAuditorSessionSpec(
+            {
+              decisionId: revival.taskId,
+              decisionType: revival.decisionType || 'unknown',
+              verbatimText: revival.verbatimText || revival.criteria || '',
+              decisionContext: revival.decisionContext || revival.method || '',
+              sessionId: revival.sessionId || '',
+            },
+            PROJECT_DIR,
+          );
+          auditLabel = 'Authorization audit';
+        } else {
+          spec = buildAuditorSessionSpec(
+            { taskId: revival.taskId, taskType: revival.taskType, taskTitle: revival.taskTitle, criteria: revival.criteria, method: revival.method },
+            PROJECT_DIR,
+          );
+          auditLabel = revival.taskType === 'plan' ? 'Plan audit' : 'Universal audit';
+        }
         enqueueSession({
           ...spec,
           title: `${auditLabel} (revival): ${revival.taskTitle}`,

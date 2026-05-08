@@ -291,16 +291,6 @@
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/bypass-approval-hook.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/protected-action-approval-hook.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/slash-command-prefetch.js",
             "timeout": 15
           },
@@ -675,6 +665,22 @@
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/universal-audit-spawner.js",
           "timeout": 15
+        }]
+      },
+      {
+        "matcher": "mcp__agent-tracker__record_cto_decision",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/authorization-audit-spawner.js",
+          "timeout": 15
+        }]
+      },
+      {
+        "matcher": "mcp__agent-tracker__cto_decision_audit_pass",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/deferred-action-audit-executor.js",
+          "timeout": 30
         }]
       },
       {

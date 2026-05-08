@@ -49,7 +49,6 @@ import {
   SetAutomationModeArgsSchema,
   ListAutomationConfigArgsSchema,
   RequestBypassArgsSchema,
-  ExecuteBypassArgsSchema,
   ListProtectionsArgsSchema,
   GetProtectedActionRequestArgsSchema,
   ApproveProtectedActionArgsSchema,
@@ -76,7 +75,6 @@ import {
   type ResolveQuestionArgs,
   type SetAutomationModeArgs,
   type RequestBypassArgs,
-  type ExecuteBypassArgs,
   type GetProtectedActionRequestArgs,
   type ApproveProtectedActionArgs,
   type DenyProtectedActionArgs,
@@ -113,7 +111,7 @@ import {
   type ListAutomationConfigResult,
   type AutomationModeEntry,
   type RequestBypassResult,
-  type ExecuteBypassResult,
+  // ExecuteBypassResult removed — execute_bypass tool eliminated
   type ListProtectionsResult,
   type GetProtectedActionRequestResult,
   type ApproveProtectedActionResult,
@@ -1397,12 +1395,11 @@ function requestBypass(args: RequestBypassArgs): RequestBypassResult {
   `).get(title) as { id: string; context: string } | undefined;
 
   if (existingBypass) {
-    const existingCode = existingBypass.context;
     return {
       request_id: existingBypass.id,
-      bypass_code: existingCode,
-      message: `Bypass request already pending (deduplicated). To approve, the CTO must type: APPROVE BYPASS ${existingCode}`,
-      instructions: `STOP attempting commits. Ask the CTO to type exactly: APPROVE BYPASS ${existingCode}`,
+      bypass_code: existingBypass.context,
+      message: `Bypass request already pending (deduplicated). Present the situation to the CTO, then call record_cto_decision({ decision_type: "bypass_request", decision_id: "${existingBypass.id}", verbatim_text: "<CTO exact words>" }).`,
+      instructions: `Present this bypass request to the CTO with context. Then call record_cto_decision with decision_id: "${existingBypass.id}" and the CTO's verbatim response.`,
     };
   }
 
@@ -1434,11 +1431,8 @@ ${args.blocked_by ? `**Blocked by:** ${args.blocked_by}` : ''}
 ---
 
 **CTO Action Required:**
-To approve: **APPROVE BYPASS ${bypassCode}**
-To deny: **DENY BYPASS ${bypassCode}**
-
-Approving creates an approval token that allows the agent to execute the bypass.
-Denying removes the request from the queue.`;
+The agent will present this situation to you. State your decision in natural language.
+The agent will then call record_cto_decision to record your verbatim response.`;
 
   // Store bypass code in context field for validation
   try {
@@ -1458,12 +1452,11 @@ Denying removes the request from the queue.`;
         WHERE type = 'bypass-request' AND title = ? AND status = 'pending' LIMIT 1
       `).get(title) as { id: string; context: string } | undefined;
       if (fallback) {
-        const fallbackCode = fallback.context;
         return {
           request_id: fallback.id,
-          bypass_code: fallbackCode,
-          message: `Bypass request already pending (deduplicated). To approve, the CTO must type: APPROVE BYPASS ${fallbackCode}`,
-          instructions: `STOP attempting commits. Ask the CTO to type exactly: APPROVE BYPASS ${fallbackCode}`,
+          bypass_code: fallback.context,
+          message: `Bypass request already pending (deduplicated). Present the situation to the CTO, then call record_cto_decision({ decision_type: "bypass_request", decision_id: "${fallback.id}", verbatim_text: "<CTO exact words>" }).`,
+          instructions: `Present this bypass request to the CTO with context. Then call record_cto_decision with decision_id: "${fallback.id}" and the CTO's verbatim response.`,
         };
       }
     }
@@ -1473,118 +1466,14 @@ Denying removes the request from the queue.`;
   return {
     request_id: id,
     bypass_code: bypassCode,
-    message: `Bypass request submitted. To approve, the CTO must type: APPROVE BYPASS ${bypassCode}`,
-    instructions: `STOP attempting commits. Ask the CTO to type exactly: APPROVE BYPASS ${bypassCode}`,
+    message: `Bypass request submitted (decision_id: ${id}). Present the situation to the CTO, then call record_cto_decision({ decision_type: "bypass_request", decision_id: "${id}", verbatim_text: "<CTO exact words>" }).`,
+    instructions: `Present this bypass request to the CTO with context about why the bypass is needed. Then call record_cto_decision with decision_id: "${id}" and the CTO's verbatim response.`,
   };
 }
 
-/**
- * Execute an approved bypass.
- *
- * This verifies that the CTO has typed "APPROVE BYPASS <code>" by checking
- * for an approval token created by the UserPromptSubmit hook.
- *
- * The agent cannot forge this token because:
- * 1. UserPromptSubmit hooks only trigger on actual user input
- * 2. The hook validates the code exists in pending bypass requests
- * 3. The token is tied to the specific bypass code
- */
-function executeBypass(args: ExecuteBypassArgs): ExecuteBypassResult | ErrorResult {
-  const db = getDb();
-  const code = args.bypass_code.toUpperCase();
-  const approvalTokenPath = path.join(PROJECT_DIR, '.claude', 'bypass-approval-token.json');
-
-  // Step 1: Verify the bypass request exists with this code
-  const question = db.prepare(`
-    SELECT id, title FROM questions
-    WHERE type = 'bypass-request'
-    AND status = 'pending'
-    AND context = ?
-  `).get(code) as { id: string; title: string } | undefined;
-
-  if (!question) {
-    return { error: `No pending bypass request found with code: ${code}` };
-  }
-
-  // Step 2: Check for approval token (created by UserPromptSubmit hook when CTO types approval)
-  if (!fs.existsSync(approvalTokenPath)) {
-    return {
-      error: `No approval token found. The CTO must type "APPROVE BYPASS ${code}" to create an approval token.`,
-    };
-  }
-
-  // Step 3: Verify the approval token
-  let token: {
-    code: string;
-    request_id: string;
-    user_message: string;
-    expires_timestamp: number;
-    hmac?: string;
-  };
-
-  try {
-    token = JSON.parse(fs.readFileSync(approvalTokenPath, 'utf8'));
-  } catch {
-    return { error: 'Failed to read approval token. Ask the CTO to type the approval again.' };
-  }
-
-  // Empty object means token was consumed (overwrite pattern for sticky-bit compat)
-  if (!token.code && !token.request_id && !token.expires_timestamp) {
-    return {
-      error: `No approval token found. The CTO must type "APPROVE BYPASS ${code}" to create an approval token.`,
-    };
-  }
-
-  // Verify HMAC signature to prevent agent forgery
-  const key = loadProtectionKey();
-  if (!key) {
-    return { error: 'Protection key missing. Cannot verify bypass approval token. Restore .claude/protection-key.' };
-  }
-  const expectedHmac = computeHmac(key, token.code, token.request_id, String(token.expires_timestamp), 'bypass-approved');
-  if (token.hmac !== expectedHmac) {
-    try { fs.writeFileSync(approvalTokenPath, '{}'); } catch { /* ignore */ }
-    return { error: 'FORGERY DETECTED: Invalid bypass approval token signature. Token deleted.' };
-  }
-
-  // Verify code matches
-  if (token.code !== code) {
-    return {
-      error: `Approval token is for a different bypass code (${token.code}). Ask the CTO to type "APPROVE BYPASS ${code}"`,
-    };
-  }
-
-  // Verify not expired
-  if (Date.now() > token.expires_timestamp) {
-    // Clean up expired token (overwrite for sticky-bit compat)
-    try { fs.writeFileSync(approvalTokenPath, '{}'); } catch { /* ignore */ }
-    return {
-      error: `Approval token has expired. Ask the CTO to type "APPROVE BYPASS ${code}" again.`,
-    };
-  }
-
-  // Step 4: Approval verified - record the bypass and clean up
-  const bypassId = randomUUID();
-  const now = new Date();
-  const created_at = now.toISOString();
-  const created_timestamp = now.toISOString();
-
-  // Create an approval record that the pre-commit hook can check
-  db.prepare(`
-    INSERT INTO commit_decisions (id, decision, rationale, question_id, created_at, created_timestamp)
-    VALUES (?, 'approved', ?, ?, ?, ?)
-  `).run(bypassId, `EMERGENCY BYPASS - CTO typed "APPROVE BYPASS ${code}"`, question.id, created_at, created_timestamp);
-
-  // Clear the bypass request from the queue
-  db.prepare('DELETE FROM questions WHERE id = ?').run(question.id);
-
-  // Clear the approval token (one-time use, overwrite for sticky-bit compat)
-  try { fs.writeFileSync(approvalTokenPath, '{}'); } catch { /* ignore */ }
-
-  return {
-    executed: true,
-    message: `Bypass executed (Decision ID: ${bypassId}). The next commit will proceed without deputy-cto review. This is a ONE-TIME bypass.`,
-  };
-}
+// DEPRECATED: executeBypass tool removed — replaced by the Unified CTO Authorization System.
+// CTO bypass approval now flows through record_cto_decision + independent auditor + deferred action auto-execution.
+// The function body has been removed. See the plan at .claude/plans/graceful-baking-locket.md for the migration path.
 
 // ============================================================================
 // Protected Action Functions
@@ -2759,16 +2648,12 @@ const tools: AnyToolHandler[] = [
   // Bypass governance tools
   {
     name: 'request_bypass',
-    description: 'Request an emergency bypass from the CTO. Returns a 6-character code. STOP attempting commits and ask the CTO to type "APPROVE BYPASS <code>" in the chat. Only then call execute_bypass.',
+    description: 'Request an emergency bypass from the CTO. Returns a decision_id. Present the situation to the CTO, then call record_cto_decision({ decision_type: "bypass_request", decision_id: "<returned_id>", verbatim_text: "<CTO exact words>" }). The bypass will take effect after CTO approval + independent audit pass.',
     schema: RequestBypassArgsSchema,
     handler: requestBypass,
   },
-  {
-    name: 'execute_bypass',
-    description: 'Execute a bypass AFTER the CTO has typed "APPROVE BYPASS <code>" in the chat. The UserPromptSubmit hook creates an approval token when the CTO types the approval phrase. This tool verifies that token exists.',
-    schema: ExecuteBypassArgsSchema,
-    handler: executeBypass,
-  },
+  // execute_bypass removed — replaced by the Unified CTO Authorization System
+  // (deferred actions auto-execute after CTO approval + audit pass via record_cto_decision)
   // Protected action tools
   {
     name: 'list_protections',

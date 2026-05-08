@@ -80,10 +80,9 @@ function doProtect(projectDir) {
 
   const criticalHooks = [
     'pre-commit-review.js',
-    'bypass-approval-hook.js',
     'block-no-verify.js',
     'protected-action-gate.js',
-    'protected-action-approval-hook.js',
+    'authorization-audit-spawner.js',
     'credential-file-guard.js',
     'secret-leak-detector.js',
     'protected-actions.json',
@@ -133,10 +132,9 @@ function doProtect(projectDir) {
 
   const files = [
     path.join(protectedHooksDir, 'pre-commit-review.js'),
-    path.join(protectedHooksDir, 'bypass-approval-hook.js'),
     path.join(protectedHooksDir, 'block-no-verify.js'),
     path.join(protectedHooksDir, 'protected-action-gate.js'),
-    path.join(protectedHooksDir, 'protected-action-approval-hook.js'),
+    path.join(protectedHooksDir, 'authorization-audit-spawner.js'),
     path.join(protectedHooksDir, 'credential-file-guard.js'),
     path.join(protectedHooksDir, 'secret-leak-detector.js'),
     path.join(protectedHooksDir, 'protected-actions.json'),
@@ -243,11 +241,13 @@ function doUnprotect(projectDir) {
 
   const files = [
     path.join(hooksOwnershipDir, 'pre-commit-review.js'),
-    path.join(hooksOwnershipDir, 'bypass-approval-hook.js'),
     path.join(hooksOwnershipDir, 'block-no-verify.js'),
     path.join(hooksOwnershipDir, 'protected-action-gate.js'),
-    path.join(hooksOwnershipDir, 'protected-action-approval-hook.js'),
+    path.join(hooksOwnershipDir, 'authorization-audit-spawner.js'),
     path.join(hooksOwnershipDir, 'credential-file-guard.js'),
+    // Legacy files — still unprotect them if they exist on disk from prior installs
+    path.join(hooksOwnershipDir, 'bypass-approval-hook.js'),
+    path.join(hooksOwnershipDir, 'protected-action-approval-hook.js'),
     path.join(hooksOwnershipDir, 'secret-leak-detector.js'),
     path.join(hooksOwnershipDir, 'protected-actions.json'),
     path.join(hooksOwnershipDir, 'branch-checkout-guard.js'),

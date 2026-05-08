@@ -79,6 +79,7 @@ function migrate(db) {
       pending_hmac TEXT NOT NULL,
       approved_hmac TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
+      source_hook TEXT,
       requester_agent_id TEXT,
       requester_session_id TEXT,
       requester_task_type TEXT,
@@ -94,6 +95,13 @@ function migrate(db) {
     CREATE INDEX IF NOT EXISTS idx_deferred_status ON deferred_actions(status);
     CREATE INDEX IF NOT EXISTS idx_deferred_code ON deferred_actions(code);
   `);
+  // Migration: add source_hook column if absent (non-fatal)
+  try {
+    const cols = db.prepare('PRAGMA table_info(deferred_actions)').all();
+    if (!cols.some(c => c.name === 'source_hook')) {
+      db.exec('ALTER TABLE deferred_actions ADD COLUMN source_hook TEXT');
+    }
+  } catch { /* best-effort migration */ }
 }
 
 // ============================================================================
@@ -111,6 +119,7 @@ function migrate(db) {
  * @param {string} params.code - 6-char approval code
  * @param {string} params.phrase - Approval phrase (e.g., "APPROVE DEPLOY")
  * @param {string} params.pendingHmac - HMAC signature of the pending request
+ * @param {string} [params.sourceHook] - PreToolUse hook that created this deferred action (e.g., 'block-no-verify', 'demo-local-guard')
  * @param {string} [params.requesterAgentId] - Agent that requested the action
  * @param {string} [params.requesterSessionId] - Session that requested the action
  * @param {string} [params.requesterTaskType] - 'persistent' or 'todo'
@@ -124,9 +133,9 @@ export function createDeferredAction(db, params) {
   db.prepare(`
     INSERT INTO deferred_actions (
       id, server, tool, args, args_hash, code, phrase, pending_hmac,
-      requester_agent_id, requester_session_id, requester_task_type,
+      source_hook, requester_agent_id, requester_session_id, requester_task_type,
       requester_task_id, expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     params.server,
@@ -136,6 +145,7 @@ export function createDeferredAction(db, params) {
     params.code,
     params.phrase,
     params.pendingHmac,
+    params.sourceHook || null,
     params.requesterAgentId || null,
     params.requesterSessionId || null,
     params.requesterTaskType || null,

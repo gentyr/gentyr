@@ -33,7 +33,10 @@
  */
 
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { isStagingLocked, getStagingLockState } from './lib/staging-lock.js';
+import { createDeferredAction, openDb, findDuplicatePending } from './lib/deferred-action-db.js';
+import { computePendingHmac } from './lib/deferred-action-executor.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -351,6 +354,41 @@ async function main() {
   for (const sub of subCommands) {
     const result = analyzeSubCommand(sub);
     if (result.blocked) {
+      // Create a deferred action for the blocked command
+      let deferredInfo = '';
+      try {
+        const db = openDb();
+        if (db) {
+          try {
+            const argsHash = crypto.createHash('sha256').update(command).digest('hex');
+            const existing = findDuplicatePending(db, 'Bash', 'Bash', argsHash);
+            if (existing) {
+              deferredInfo = `\n\nDeferred action already pending: ${existing.id}.`;
+            } else {
+              const code = crypto.randomBytes(3).toString('hex').toUpperCase();
+              const pendingHmac = computePendingHmac(code, 'Bash', 'Bash', argsHash);
+              if (pendingHmac) {
+                const deferredResult = createDeferredAction(db, {
+                  server: 'Bash',
+                  tool: 'Bash',
+                  args: { command, cwd: process.cwd() },
+                  argsHash,
+                  code,
+                  phrase: 'UNIFIED',
+                  pendingHmac,
+                  sourceHook: 'staging-lock-guard',
+                });
+                deferredInfo = `\n\nDeferred action created: ${deferredResult.id}\nPresent this to the CTO, then call record_cto_decision({ decision_type: "command_bypass", decision_id: "${deferredResult.id}", verbatim_text: "<CTO exact words>" }). The command will auto-execute after CTO approval + audit pass. Do NOT retry.`;
+              }
+            }
+          } finally {
+            try { db.close(); } catch { /* ignore */ }
+          }
+        }
+      } catch {
+        // Non-fatal — proceed with deny even if deferred action creation fails
+      }
+
       // Determine the appropriate error message based on lock state
       const locked = isStagingLocked(PROJECT_DIR);
       let reason;
@@ -367,6 +405,7 @@ async function main() {
           'No code may be merged to staging until the release completes or is cancelled.',
           '',
           'Use /promote-to-prod to manage the release.',
+          deferredInfo,
         ].join('\n');
       } else {
         reason = [
@@ -376,9 +415,7 @@ async function main() {
           '',
           'Direct staging merges are not allowed — they bypass quality gates (tests, demos, migration safety).',
           'Use /promote-to-staging to trigger the promotion pipeline, or wait for the automated 30-minute cycle.',
-          '',
-          'If this is an emergency, the CTO can type APPROVE BYPASS <code> to temporarily allow direct staging access.',
-          'Request a bypass code via submit_bypass_request.',
+          deferredInfo,
         ].join('\n');
       }
 
