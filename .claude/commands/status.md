@@ -98,21 +98,32 @@ mcp__todo-db__list_tasks({ status: 'completed', limit: 10 })
 
 ## Step 3: Spawn Session Investigator
 
-Spawn **ONE** investigator sub-agent to deeply analyze all active sessions. This is the most valuable part of the report -- the investigator reads actual session content, not summaries.
+Spawn **ONE** investigator sub-agent to deeply analyze active sessions. This is the most valuable part of the report -- the investigator reads actual session content, not summaries.
+
+**Scope filtering:** If `/status` was invoked with a scope argument (Step 1), only include sessions relevant to that scope in the investigator prompt:
+- `/status plans` or `/status <plan-id>` -> only sessions linked to the selected plan(s) (plan-manager monitors + their children)
+- `/status persistent` or `/status <task-id>` -> only the selected persistent task's monitor + its children
+- bare `/status` -> all running sessions
+
+**Render Step 2 data BEFORE spawning the investigator.** Output Sections 1-5 and 7 from Step 4 using the structural data you already have. Then spawn the investigator. When it returns, output Section 6 (Session Deep Dive) and Section 8 (Assessment).
 
 ```javascript
 Agent({
   subagent_type: "investigator",
   description: "Deep session analysis for /status",
-  prompt: `[STATUS INVESTIGATION] Comprehensively analyze all active Claude sessions and return a structured report.
+  prompt: `[STATUS INVESTIGATION] Comprehensively analyze the active Claude sessions listed below and return a structured report.
 
 ## Your Job
 
-You are gathering detailed intelligence on every active session for a CTO status report. For each active session, you must understand: what the agent is CURRENTLY doing, what it has RECENTLY accomplished, what problems it's facing, and whether it's making progress or stuck.
+You are gathering detailed intelligence on active sessions for a CTO status report. For each session, you must understand: what the agent is CURRENTLY doing, what it has RECENTLY accomplished, what problems it's facing, and whether it's making progress or stuck.
 
-## Active Sessions to Investigate
+## Sessions to Investigate
 
-${JSON.stringify(runningSessionsFromStep2a)}
+// Dynamically construct this list from Step 2a queue status data.
+// Include: agent_id, agent_type, title, persistent_task_id (if any),
+// worktree_path (if any), queue_id, priority, lane, uptime.
+// Filter by scope if a scope argument was provided to /status.
+${JSON.stringify(filteredRunningSessions)}
 
 ## Investigation Steps (for EACH running session)
 
@@ -205,13 +216,13 @@ Quote the 3-5 most informative recent messages verbatim with their indices:
 })
 ```
 
-**Important:** Construct the prompt dynamically using the running session list from Step 2a. Include agent IDs, agent types, persistent task IDs, worktree paths, and queue item metadata in the prompt so the investigator knows exactly what to inspect.
+**Important:** Construct the prompt dynamically using the running session list from Step 2a. Include agent IDs, agent types, persistent task IDs, worktree paths, and queue item metadata in the prompt so the investigator knows exactly what to inspect. Apply scope filtering from Step 1 -- do NOT send the investigator to analyze sessions unrelated to the user's requested scope.
 
 ---
 
 ## Step 4: Render the Report
 
-While the investigator runs, begin rendering the structural data from Step 2. When the investigator returns, integrate its findings.
+You already rendered Sections 1-5 and 7 BEFORE spawning the investigator (per Step 3 instructions). Now that the investigator has returned, render Section 6 (Session Deep Dive) and Section 8 (Assessment).
 
 ### Section 1: Executive Summary
 
@@ -385,9 +396,6 @@ Insert the investigator's full per-session report here. This is the core of the 
 (none)
 
 ### Active Blocking Queue Items: 0
-(none)
-
-### Deferred Actions Awaiting Approval: 0
 (none)
 ```
 
