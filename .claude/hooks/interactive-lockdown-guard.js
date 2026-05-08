@@ -31,6 +31,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { createDeferredAction, openDb, findDuplicatePending } from './lib/deferred-action-db.js';
+import { computePendingHmac } from './lib/deferred-action-executor.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -158,25 +161,48 @@ const BLOCKED_BASH_PATTERNS = [
 ];
 
 /**
- * Check if a valid CTO bypass token exists (consumed on use).
- * Mirrors the check in block-no-verify.js but without HMAC (workflow guard, not security).
- * @returns {boolean}
+ * Create a deferred action for a blocked tool call.
+ * @param {string} toolName - The blocked tool name
+ * @param {object} toolInput - The tool arguments
+ * @returns {{ id: string, code: string } | null} Deferred action info or null on failure
  */
-function consumeBypassToken() {
+function createLockdownDeferredAction(toolName, toolInput) {
   try {
-    const tokenPath = path.join(PROJECT_DIR, '.claude', 'bypass-approval-token.json');
-    if (!fs.existsSync(tokenPath)) return false;
-    const token = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
-    if (!token.code || !token.expires_timestamp) return false;
-    if (Date.now() > token.expires_timestamp) {
-      fs.writeFileSync(tokenPath, '{}');
-      return false;
+    const db = openDb();
+    if (!db) return null;
+
+    try {
+      const argsJson = JSON.stringify(toolInput || {});
+      const argsHash = crypto.createHash('sha256').update(argsJson).digest('hex');
+      const server = toolName.startsWith('mcp__') ? toolName.split('__')[1] || 'claude' : 'claude';
+      const tool = toolName;
+
+      const existing = findDuplicatePending(db, server, tool, argsHash);
+      if (existing) {
+        return { id: existing.id, code: existing.code };
+      }
+
+      const code = crypto.randomBytes(3).toString('hex').toUpperCase();
+      const pendingHmac = computePendingHmac(code, server, tool, argsHash);
+      if (!pendingHmac) return null; // G001 fail-closed
+
+      const result = createDeferredAction(db, {
+        server,
+        tool,
+        args: toolInput || {},
+        argsHash,
+        code,
+        phrase: 'UNIFIED',
+        pendingHmac,
+        sourceHook: 'interactive-lockdown-guard',
+      });
+
+      return { id: result.id, code: result.code };
+    } finally {
+      try { db.close(); } catch { /* ignore */ }
     }
-    // Valid — consume (one-time use)
-    fs.writeFileSync(tokenPath, '{}');
-    return true;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -248,18 +274,17 @@ async function main() {
 
   // MCP tools: whitelist by server prefix, with individual blocklist
   if (toolName.startsWith('mcp__')) {
-    // Check individual blocklist (requires CTO bypass token)
+    // Check individual blocklist — create deferred action and deny unconditionally
     if (BLOCKED_MCP_TOOLS.has(toolName)) {
-      if (consumeBypassToken()) {
-        // CTO approved — allow this one call
-        process.stdout.write(JSON.stringify({ decision: 'approve' }));
-        return;
-      }
+      const deferred = createLockdownDeferredAction(toolName, event?.tool_input);
+      const deferredMsg = deferred
+        ? `\n\nDeferred action created: ${deferred.id}\nPresent this to the CTO, then call record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${deferred.id}", verbatim_text: "<CTO exact words>" }). The action will auto-execute after approval + audit.`
+        : '';
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
-          permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` requires CTO bypass approval.\n\nThis tool changes system-level settings. Request a bypass via mcp__deputy-cto__request_bypass.`,
+          permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` requires CTO authorization.\n\nThis tool changes system-level settings.${deferredMsg}`,
         },
       }));
       return;
@@ -274,14 +299,20 @@ async function main() {
       process.stdout.write(JSON.stringify({ decision: 'approve' }));
       return;
     }
-    // Block non-whitelisted MCP tools
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` is not available in interactive mode.\n\nThis MCP tool is for infrastructure management. Create a task to delegate this work to an agent.`,
-      },
-    }));
+    // Block non-whitelisted MCP tools — create deferred action
+    {
+      const deferred = createLockdownDeferredAction(toolName, event?.tool_input);
+      const deferredMsg = deferred
+        ? `\n\nDeferred action created: ${deferred.id}\nPresent this to the CTO, then call record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${deferred.id}", verbatim_text: "<CTO exact words>" }). The action will auto-execute after approval + audit.`
+        : '';
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` is not available in interactive mode.\n\nThis MCP tool is for infrastructure management. Create a task to delegate this work to an agent.${deferredMsg}`,
+        },
+      }));
+    }
     return;
   }
 
@@ -302,16 +333,20 @@ async function main() {
     return;
   }
 
-  // Bash: check for blocked command patterns
+  // Bash: check for blocked command patterns — create deferred action and deny
   if (toolName === 'Bash') {
     const command = event?.tool_input?.command || '';
     for (const pattern of BLOCKED_BASH_PATTERNS) {
       if (pattern.test(command)) {
+        const deferred = createLockdownDeferredAction(toolName, event?.tool_input);
+        const deferredMsg = deferred
+          ? `\n\nDeferred action created: ${deferred.id}\nPresent this to the CTO, then call record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${deferred.id}", verbatim_text: "<CTO exact words>" }).`
+          : '';
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
             permissionDecision: 'deny',
-            permissionDecisionReason: `Deputy-CTO console: This Bash command is not available in interactive mode.\n\nBlocked: \`${command.substring(0, 80)}\`\n\nWrite operations (git checkout, builds, file mutations) must be delegated to agents via tasks. Use read-only commands (git log, git status, git diff, gh pr list, ls, cat, grep) for investigation.`,
+            permissionDecisionReason: `Deputy-CTO console: This Bash command is not available in interactive mode.\n\nBlocked: \`${command.substring(0, 80)}\`\n\nWrite operations (git checkout, builds, file mutations) must be delegated to agents via tasks. Use read-only commands (git log, git status, git diff, gh pr list, ls, cat, grep) for investigation.${deferredMsg}`,
           },
         }));
         return;
@@ -353,7 +388,17 @@ async function main() {
     return;
   }
 
-  // Block everything else
+  // Block everything else — create deferred action for the blocked tool call
+  const deferred = createLockdownDeferredAction(toolName, event?.tool_input);
+  const deferredMsg = deferred
+    ? [
+        '',
+        `Deferred action created: ${deferred.id}`,
+        `Present this to the CTO, then call record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${deferred.id}", verbatim_text: "<CTO exact words>" }).`,
+        'The action will auto-execute after CTO approval + independent audit pass.',
+      ].join('\n')
+    : '';
+
   const reason = [
     `Deputy-CTO console: \`${toolName}\` is not available in interactive mode.`,
     '',
@@ -369,6 +414,7 @@ async function main() {
     '',
     'To disable this lockdown temporarily (development only):',
     '  /lockdown off',
+    deferredMsg,
   ].join('\n');
 
   process.stdout.write(JSON.stringify({

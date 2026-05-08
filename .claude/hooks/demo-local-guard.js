@@ -2,9 +2,9 @@
 /**
  * PreToolUse Hook: Demo Local Execution Guard
  *
- * Blocks spawned agents from running demos locally without CTO HMAC bypass
- * approval. Local demo execution requires physical Chrome/display access
- * that automated agents cannot reliably provide.
+ * Blocks spawned agents from running demos locally. Local demo execution
+ * requires physical Chrome/display access that automated agents cannot
+ * reliably provide.
  *
  * Matched tools: run_demo, run_demo_batch, run_tests, launch_ui_mode
  *
@@ -12,15 +12,19 @@
  *   - CTO interactive sessions (CLAUDE_SPAWNED_SESSION !== 'true')
  *   - CTO Dashboard GUI (launches via process-runner.ts, not MCP)
  *   - run_demo/run_demo_batch with remote=true (default — remote is allowed)
- *   - Valid HMAC bypass token from CTO approval
+ *
+ * On block, creates a deferred action via the Unified CTO Authorization System.
+ * The agent does NOT retry — the deferred action auto-executes after CTO approval + audit pass.
  *
  * SECURITY: This file should be root-owned via npx gentyr protect
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 import { createInterface } from 'readline';
-import { verifyAndConsumeApprovalToken } from './lib/bypass-approval-token.js';
+import crypto from 'node:crypto';
+import { createDeferredAction, openDb, findDuplicatePending } from './lib/deferred-action-db.js';
+import { computePendingHmac } from './lib/deferred-action-executor.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const IS_SPAWNED = process.env.CLAUDE_SPAWNED_SESSION === 'true';
@@ -96,26 +100,51 @@ rl.on('close', () => {
       process.exit(0);
     }
 
-    // --- Would run locally. Check for HMAC bypass token ---
+    // --- Would run locally. Create deferred action and deny unconditionally ---
+    let deferredInfo = '';
     try {
-      const tokenResult = verifyAndConsumeApprovalToken(PROJECT_DIR);
-      if (tokenResult.valid) {
-        // CTO approved this local execution via HMAC bypass
-        process.stdout.write(JSON.stringify({ permissionDecision: 'allow' }));
-        process.exit(0);
+      const db = openDb();
+      if (db) {
+        try {
+          const argsJson = JSON.stringify(toolInput);
+          const argsHash = crypto.createHash('sha256').update(argsJson).digest('hex');
+          const mcpServer = 'playwright';
+          const existing = findDuplicatePending(db, mcpServer, shortName, argsHash);
+
+          if (existing) {
+            deferredInfo = ` Deferred action already pending: ${existing.id}.`;
+          } else {
+            const code = crypto.randomBytes(3).toString('hex').toUpperCase();
+            const pendingHmac = computePendingHmac(code, mcpServer, shortName, argsHash);
+            if (pendingHmac) {
+              const result = createDeferredAction(db, {
+                server: mcpServer,
+                tool: shortName,
+                args: toolInput,
+                argsHash,
+                code,
+                phrase: 'UNIFIED',
+                pendingHmac,
+                sourceHook: 'demo-local-guard',
+              });
+              deferredInfo = ` Deferred action created: ${result.id}. Present this to the CTO, then call record_cto_decision({ decision_type: "demo_local", decision_id: "${result.id}", verbatim_text: "<CTO exact words>" }). The demo will auto-execute after CTO approval + audit pass. Do NOT retry.`;
+            }
+          }
+        } finally {
+          try { db.close(); } catch { /* ignore */ }
+        }
       }
-    } catch {
-      // Token verification failed — continue to deny
+    } catch (err) {
+      // Non-fatal — proceed with deny even if deferred action creation fails
     }
 
-    // --- Block with bypass instructions ---
     const denyMessage =
       `LOCAL DEMO BLOCKED: ${reason}. ` +
-      `Spawned agents must use remote execution (Fly.io). ` +
-      `If local execution is genuinely required, file a bypass request: ` +
+      `Spawned agents must use remote execution (Fly.io).` +
+      (deferredInfo || ` If local execution is genuinely required, file a bypass request: ` +
       `submit_bypass_request({ task_type: 'todo', task_id: YOUR_TASK_ID, ` +
       `category: 'demo_local', summary: '${reason}' }) ` +
-      `then call summarize_work and exit. The CTO will approve if appropriate.`;
+      `then call summarize_work and exit.`);
 
     process.stdout.write(JSON.stringify({
       permissionDecision: 'deny',
