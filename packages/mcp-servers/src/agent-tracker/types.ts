@@ -609,6 +609,11 @@ export const CTO_DECISION_TYPES = [
   'lockdown_toggle',
   'release_signoff',
   'staging_override',
+  'command_bypass',
+  'demo_local',
+  'deferred_action',
+  'protected_action_gate',
+  'audit_override',
 ] as const;
 
 export const RecordCtoDecisionArgsSchema = z.object({
@@ -628,6 +633,28 @@ export const CheckCtoDecisionArgsSchema = z.object({
   decision_type: z.enum(CTO_DECISION_TYPES).optional().describe('Filter by decision type'),
 });
 export type CheckCtoDecisionArgs = z.infer<typeof CheckCtoDecisionArgsSchema>;
+
+// ============================================================================
+// CTO Decision Audit Verdict Schemas
+// ============================================================================
+
+export const CtoDecisionAuditPassArgsSchema = z.object({
+  decision_id: z.string().min(1)
+    .describe('The cto_decisions row ID to mark as audit_passed'),
+  evidence: z.string().min(10)
+    .describe('Concrete evidence supporting the audit pass verdict (min 10 chars)'),
+});
+export type CtoDecisionAuditPassArgs = z.infer<typeof CtoDecisionAuditPassArgsSchema>;
+
+export const CtoDecisionAuditFailArgsSchema = z.object({
+  decision_id: z.string().min(1)
+    .describe('The cto_decisions row ID to mark as audit_failed'),
+  failure_reason: z.string().min(10)
+    .describe('Explanation of why the audit failed (min 10 chars)'),
+  evidence: z.string().min(10)
+    .describe('Concrete evidence supporting the audit fail verdict (min 10 chars)'),
+});
+export type CtoDecisionAuditFailArgs = z.infer<typeof CtoDecisionAuditFailArgsSchema>;
 
 // ============================================================================
 // Deputy-CTO Monitor Bypass Resolution Schemas

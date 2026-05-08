@@ -490,6 +490,35 @@ export function reapSyncPass(db) {
                   }
                 }
               } catch (_) { /* non-fatal */ }
+            } else if (!task && item.lane === 'audit' && metadata.taskType === 'authorization') {
+              // Authorization audit — check cto_decisions in bypass-requests.db
+              try {
+                const bypassDbPath = path.join(projectDir, '.claude', 'state', 'bypass-requests.db');
+                if (fs.existsSync(bypassDbPath)) {
+                  const bypassDb = new Database(bypassDbPath, { readonly: true });
+                  bypassDb.pragma('busy_timeout = 3000');
+                  const decision = bypassDb.prepare('SELECT id, status, decision_type, verbatim_text, decision_context, session_id FROM cto_decisions WHERE id = ?').get(metadata.taskId);
+                  bypassDb.close();
+                  if (decision && decision.status === 'audit_pending') {
+                    result.auditRevivals.push({
+                      taskId: metadata.taskId,
+                      taskType: 'authorization',
+                      taskTitle: `CTO decision: ${decision.decision_type || 'unknown'}`,
+                      criteria: decision.verbatim_text || '',
+                      method: decision.decision_context || '',
+                      queueId: item.id,
+                      agentId: item.agent_id,
+                      // Extra fields for authorization auditor revival
+                      decisionType: decision.decision_type,
+                      verbatimText: decision.verbatim_text,
+                      decisionContext: decision.decision_context,
+                      sessionId: decision.session_id,
+                    });
+                    debugLog('session-reaper', 'authorization_audit_revival_candidate', { taskId: metadata.taskId });
+                    try { auditEvent('audit_revival_candidate', { queue_id: item.id, task_id: metadata.taskId, task_type: 'authorization', agent_id: item.agent_id }); } catch (_) { /* non-fatal */ }
+                  }
+                }
+              } catch (_) { /* non-fatal */ }
             } else if (task && task.status === 'in_progress') {
               const resetResult = todoDb.prepare(
                 "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
