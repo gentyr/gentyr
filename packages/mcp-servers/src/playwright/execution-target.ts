@@ -243,20 +243,23 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
   if (explicitRemote === true) {
     if (!flyConfigured) {
       return {
-        target: 'local',
+        target: 'remote',
         reason: 'Remote execution requested but Fly.io is not configured in services.json',
+        error: true,
       };
     }
     if (!flyHealthy) {
       return {
-        target: 'local',
+        target: 'remote',
         reason: 'Remote execution requested but Fly.io API is unreachable',
+        error: true,
       };
     }
     if (activeMachineCount >= maxConcurrentMachines) {
       return {
-        target: 'local',
+        target: 'remote',
         reason: `Remote execution requested but at machine capacity (${activeMachineCount}/${maxConcurrentMachines})`,
+        error: true,
       };
     }
     return { target: 'remote', reason: 'Explicitly requested remote execution (remote: true)' };
