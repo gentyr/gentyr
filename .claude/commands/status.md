@@ -94,6 +94,16 @@ mcp__agent-tracker__get_blocking_summary({})
 mcp__todo-db__list_tasks({ status: 'completed', limit: 10 })
 ```
 
+### Step 2g: GLOBAL MONITOR
+
+Find the global deputy-CTO monitor persistent task and its running session:
+
+1. From the persistent tasks list (Step 2c), find the task with `task_type: "global_monitor"` in its metadata
+2. From the queue status (Step 2a), find the running session in the `persistent` lane with matching `persistentTaskId`
+3. If a running monitor session exists, note its `agent_id` for the investigator prompt in Step 3
+
+If no global monitor task exists or it's disabled/paused, note the state for Section 9.
+
 ---
 
 ## Step 3: Spawn Session Investigator
@@ -105,7 +115,7 @@ Spawn **ONE** investigator sub-agent to deeply analyze active sessions. This is 
 - `/status persistent` or `/status <task-id>` -> only the selected persistent task's monitor + its children
 - bare `/status` -> all running sessions
 
-**Render Step 2 data BEFORE spawning the investigator.** Output Sections 1-5 and 7 from Step 4 using the structural data you already have. Then spawn the investigator. When it returns, output Section 6 (Session Deep Dive) and Section 8 (Assessment).
+**Render Step 2 data BEFORE spawning the investigator.** Output Sections 1-5 and 7 from Step 4 using the structural data you already have. Then spawn the investigator. When it returns, output Section 6 (Session Deep Dive), Section 8 (Assessment), and Section 9 (Global Monitor Review).
 
 ```javascript
 Agent({
@@ -174,6 +184,23 @@ Bash: ls -la .claude/recordings/demos/ 2>/dev/null | head -20
 \`\`\`
 Look for recent recordings, screenshots, and check_demo_result data.
 
+### 8. Global Monitor Deep Dive (if running)
+
+If one of the sessions is the global deputy-CTO monitor (identified by \`GENTYR_DEPUTY_CTO_MONITOR=true\` in env or \`task_type: "global_monitor"\` persistent task), give it EXTRA attention:
+
+\`\`\`
+mcp__agent-tracker__browse_session({ agent_id: "<monitor_agent_id>", page_size: 50 })
+\`\`\`
+
+Page backward through history to find:
+- **Bypass requests triaged**: Any \`deputy_resolve_bypass_request\` or \`deputy_escalate_to_cto\` calls
+- **Alignment signals sent**: Any \`send_session_signal\` calls to other agents
+- **Correction tasks created**: Any \`create_task\` calls for misalignment fixes
+- **Zombies killed**: Any \`kill_session\` calls
+- **Audit gate interventions**: Any stuck \`pending_audit\` detections
+
+Count each action type across the session history. If the monitor has been running for hours, page backward at least 3 times to capture a representative sample of its activity.
+
 ## Output Format
 
 Return a SINGLE structured report with this exact format for each session:
@@ -222,7 +249,7 @@ Quote the 3-5 most informative recent messages verbatim with their indices:
 
 ## Step 4: Render the Report
 
-You already rendered Sections 1-5 and 7 BEFORE spawning the investigator (per Step 3 instructions). Now that the investigator has returned, render Section 6 (Session Deep Dive) and Section 8 (Assessment).
+You already rendered Sections 1-5 and 7 BEFORE spawning the investigator (per Step 3 instructions). Now that the investigator has returned, render Section 6 (Session Deep Dive), Section 8 (Assessment), and Section 9 (Global Monitor Review).
 
 ### Section 1: Executive Summary
 
@@ -426,6 +453,54 @@ The system cleaned up from 14 sessions to 2 -- most fix tasks resolved successfu
 **Verdict: Healthy -- 2 focused sessions, good progress, 1 scenario risk to watch**
 ```
 
+### Section 9: Global Monitor Review
+
+This is the FINAL section of the report. It reviews what the global deputy-CTO alignment monitor has been doing.
+
+**If the global monitor is not running** (disabled, paused, no task, or dead PID):
+
+```
+## Global Monitor
+
+Status: DISABLED / PAUSED / INACTIVE / DEAD (no running session)
+(Show task ID and state if applicable. Recommend `/global-monitor on` if inactive.)
+```
+
+**If the global monitor IS running** (from the investigator's Step 8 data):
+
+```
+## Global Monitor
+
+Status: ACTIVE (pid <PID>, heartbeat <age>)
+Task ID: <task_id>
+Uptime: <session uptime>
+
+### Activity Summary (from session history)
+
+| Action | Count | Last Occurrence |
+|--------|-------|-----------------|
+| Bypass requests triaged | N | Xm ago |
+| Alignment signals sent | N | Xm ago |
+| Correction tasks created | N | Xm ago |
+| Zombies killed | N | Xm ago |
+| Audit gate interventions | N | never |
+
+### Recent Actions (last 3-5 substantive actions, verbatim from session)
+
+  #NNN [HH:MM:SS] [tool] deputy_resolve_bypass_request({ request_id: "...", decision: "approved" })
+  #NNN [HH:MM:SS] [tool] send_session_signal({ agent_id: "...", signal: { type: "directive", ... } })
+  #NNN [HH:MM:SS] [text] "Checked 4 active tasks against CTO intent. All aligned."
+
+### Monitor Health
+
+- Cycles completed: N (from inspect_persistent_task)
+- Signal throttle: N signals in last hour (threshold: 5)
+- Compaction: Yes/No
+- Assessment: Healthy -- actively monitoring / Idle -- no actions taken in Xh / Stuck -- looping on errors
+```
+
+**Key:** The global monitor review should answer: "Is the deputy-CTO monitor actually doing useful work, or just burning tokens on sleep loops?" Look for concrete actions (bypass triage, signals, task creation) vs. pure polling. If the monitor has been running for hours with zero actions, note that it may be over-monitoring for the current workload.
+
 ---
 
 ## Step 5: Done
@@ -447,6 +522,7 @@ Output is complete. Do NOT loop, sleep, or repeat. Do NOT call `update_monitor_s
 - Show plan dashboard and blocking status for active plans
 - Include recently completed tasks to show throughput
 - End with a specific, evidence-based verdict
+- Always include Section 9 (Global Monitor Review) as the final section -- even when the monitor is disabled/inactive, report its state
 
 **DO NOT:**
 - Loop, sleep, or repeat -- this is a one-shot command
