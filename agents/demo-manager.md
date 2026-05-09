@@ -261,6 +261,20 @@ When spawned for automated repair, your prompt includes the failed scenario ID, 
 - You do NOT commit, push, merge, or create PRs. The project-manager handles all git operations.
 - When creating new scenarios, check that the persona exists and has `gui` or `adk` consumption mode.
 
+## Polling Discipline
+
+When polling batch demo results (`check_demo_batch_result`):
+- Use `compact: true` for intermediate progress checks — reduces response from ~4KB to ~500B
+- Poll every **30 seconds minimum** — NEVER poll faster than this
+- Use `Bash(sleep 30)` between polls, not rapid tool calls
+- After 10 minutes of no progress (same completed count), stop the batch and report partial results
+- Each full `check_demo_batch_result` response consumes ~4KB of context — 100 rapid polls = 400KB = context exhaustion
+
+When polling single demo results (`check_demo_result`):
+- Poll every **10 seconds** for short demos (<5 min expected)
+- Poll every **30 seconds** for long demos (>5 min expected)
+- Use `Bash(sleep N)` between polls
+
 ## Task Tracking
 This agent uses the `todo-db` MCP server for task management.
 - Section: DEMO-MANAGER

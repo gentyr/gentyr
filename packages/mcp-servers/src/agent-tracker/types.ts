@@ -386,6 +386,8 @@ export const PeekSessionArgsSchema = z.object({
   offset: z.number().min(0).optional().default(0).describe('Bytes from end of file to start reading. 0 = latest. Use next_offset from previous response to page backward.'),
   include_compaction_context: z.boolean().optional().default(false)
     .describe('Scan backward for compaction summaries when session has been compacted. Adds ~50ms for compacted sessions.'),
+  subagent_id: z.string().optional()
+    .describe('Peek a specific sub-agent JSONL instead of the parent session. Get available sub-agent IDs from the activeSubagents array in a parent peek.'),
 });
 export type PeekSessionArgs = z.infer<typeof PeekSessionArgsSchema>;
 
@@ -393,6 +395,8 @@ export const BrowseSessionArgsSchema = z.object({
   agent_id: z.string().describe('Agent ID to browse'),
   page_size: z.number().min(5).max(50).optional().default(20).describe('Messages per page (default 20)'),
   before_index: z.number().min(0).optional().describe('Return messages before this index (for paging backward). Omit for latest.'),
+  subagent_id: z.string().optional()
+    .describe('Browse a specific sub-agent JSONL instead of the parent session. Get available sub-agent IDs from the activeSubagents array in a parent peek_session call.'),
 });
 export type BrowseSessionArgs = z.infer<typeof BrowseSessionArgsSchema>;
 

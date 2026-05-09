@@ -3758,6 +3758,17 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     return { error: `Session file not found for agent: ${agentId}` };
   }
 
+  // If subagent_id is provided, redirect to sub-agent JSONL
+  if (args.subagent_id) {
+    const sessionBasename = path.basename(sessionFile, '.jsonl');
+    const subagentFile = path.join(path.dirname(sessionFile), sessionBasename, 'subagents', args.subagent_id + '.jsonl');
+    if (!fs.existsSync(subagentFile)) {
+      return { error: `Sub-agent file not found: ${args.subagent_id}` };
+    }
+    sessionFile = subagentFile;
+    // Continue with normal peek logic using the sub-agent file
+  }
+
   const depthBytes = (args.depth ?? 24) * 1024;
   const offsetBytes = args.offset ?? 0;
   let tailResult: { content: string; fileSize: number; windowStart: number; windowEnd: number };
@@ -3844,6 +3855,78 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
   const hasMore = tailResult.windowStart > 0;
   const nextOffset = hasMore ? (tailResult.fileSize - tailResult.windowStart) : null;
 
+  // Detect sub-agents (Agent tool children) — only for parent sessions, not sub-agent peeks
+  const activeSubagents: Array<{
+    agentId: string;
+    agentType: string;
+    description: string;
+    lineCount: number;
+    fileSize: number;
+    lastModified: string;
+    lastTimestamp: string | null;
+  }> = [];
+
+  if (!args.subagent_id) {
+    try {
+      const sessionDir = path.dirname(sessionFile);
+      const sessionBasename = path.basename(sessionFile, '.jsonl');
+      const subagentDir = path.join(sessionDir, sessionBasename, 'subagents');
+
+      if (fs.existsSync(subagentDir)) {
+        const metaFiles = fs.readdirSync(subagentDir)
+          .filter((f: string) => f.endsWith('.meta.json'));
+
+        for (const metaFile of metaFiles) {
+          try {
+            const metaPath = path.join(subagentDir, metaFile);
+            const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+            const subAgentId = metaFile.replace('.meta.json', '');
+            const jsonlFile = path.join(subagentDir, subAgentId + '.jsonl');
+
+            if (!fs.existsSync(jsonlFile)) continue;
+            // Skip compaction sub-agents
+            if (subAgentId.startsWith('acompact-')) continue;
+
+            const subStat = fs.statSync(jsonlFile);
+
+            // Read last line for timestamp (read last 2KB)
+            let lastTs: string | null = null;
+            try {
+              const fd = fs.openSync(jsonlFile, 'r');
+              const readSize = Math.min(subStat.size, 2048);
+              const buf = Buffer.alloc(readSize);
+              fs.readSync(fd, buf, 0, readSize, Math.max(0, subStat.size - readSize));
+              fs.closeSync(fd);
+              const tailLines = buf.toString('utf-8').split('\n').filter((l: string) => l.trim());
+              const lastLine = tailLines[tailLines.length - 1];
+              if (lastLine) {
+                const lastEntry = JSON.parse(lastLine);
+                lastTs = lastEntry.timestamp || lastEntry.created_at || null;
+              }
+            } catch { /* non-fatal */ }
+
+            // Approximate line count from file size (avoid reading entire file for large sub-agents)
+            // Average JSONL line is ~500 bytes
+            const approxLineCount = Math.round(subStat.size / 500);
+
+            activeSubagents.push({
+              agentId: subAgentId,
+              agentType: meta.agentType || 'unknown',
+              description: (meta.description || '').slice(0, 100),
+              lineCount: approxLineCount,
+              fileSize: subStat.size,
+              lastModified: subStat.mtime.toISOString(),
+              lastTimestamp: lastTs,
+            });
+          } catch { /* skip corrupt meta files */ }
+        }
+
+        // Sort by lastModified desc (most recent first)
+        activeSubagents.sort((a, b) => new Date(b.lastModified).getTime() - new Date(a.lastModified).getTime());
+      }
+    } catch { /* non-fatal */ }
+  }
+
   return {
     agentId,
     sessionFile,
@@ -3857,6 +3940,8 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     recentActivity,
     compactionDetected,
     ...(compaction ? { compaction } : {}),
+    // Sub-agent visibility
+    ...(activeSubagents.length > 0 ? { activeSubagents } : {}),
     // Pagination metadata
     fileSize: tailResult.fileSize,
     windowStart: tailResult.windowStart,
@@ -3935,6 +4020,16 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
     }
   }
   if (!sessionFile) return { error: `Session file not found for agent: ${agentId}` };
+
+  // If subagent_id is provided, redirect to sub-agent JSONL
+  if (args.subagent_id) {
+    const sessionBasename = path.basename(sessionFile, '.jsonl');
+    const subagentFile = path.join(path.dirname(sessionFile), sessionBasename, 'subagents', args.subagent_id + '.jsonl');
+    if (!fs.existsSync(subagentFile)) {
+      return { error: `Sub-agent file not found: ${args.subagent_id}` };
+    }
+    sessionFile = subagentFile;
+  }
 
   // For files > 10MB, fall back to tail-based reading
   let stat: fs.Stats;

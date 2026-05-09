@@ -564,6 +564,8 @@ export const CheckDemoBatchResultArgsSchema = z.object({
   batch_id: z.string()
     .min(1)
     .describe('Batch ID returned by run_demo_batch.'),
+  compact: z.boolean().optional().default(false)
+    .describe('Return compact progress only (omit per-scenario failure details, stderr, logs). Reduces response size from ~4KB to ~500B for intermediate polling.'),
 });
 
 export type CheckDemoBatchResultArgs = z.infer<typeof CheckDemoBatchResultArgsSchema>;
