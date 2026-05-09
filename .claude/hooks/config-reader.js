@@ -79,6 +79,7 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'revival_compact_min_tokens',
   'revival_compact_max_minutes',
   'revival_compact_timeout_ms',
+  'session_reaper',
   'screenshot_cleanup',
   'auto_rollback_check',
   'fly_image_freshness',
