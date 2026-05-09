@@ -201,6 +201,15 @@ Page backward through history to find:
 
 Count each action type across the session history. If the monitor has been running for hours, page backward at least 3 times to capture a representative sample of its activity.
 
+### 9. Check for Sub-Agents (for sessions that appear idle but alive)
+If peek_session returns an \`activeSubagents\` array, the session has Agent tool sub-agents running inside it.
+For each sub-agent listed:
+- Note its agentType, description, fileSize, lineCount, and lastTimestamp
+- For the most recent/largest sub-agent, call peek_session with subagent_id parameter to see its activity:
+  \`mcp__agent-tracker__peek_session({ agent_id: "<parent_agent_id>", subagent_id: "<sub_agent_id>", depth: 16 })\`
+- Report what the sub-agent is doing (last tools, last text, activity pattern)
+A session that appears "idle" may actually have a very active sub-agent — check before concluding it's stuck.
+
 ## Output Format
 
 Return a SINGLE structured report with this exact format for each session:
@@ -227,6 +236,9 @@ Quote the 3-5 most informative recent messages verbatim with their indices:
 - Cycle count, heartbeat age, last_summary text
 - Child session statuses
 - Amendment state (any unacknowledged?)
+
+**Sub-Agents:** (if activeSubagents detected)
+  - <sub_agent_id> (<agentType>) — <lineCount> lines, <fileSize>, last active <age> — [activity summary from subagent peek]
 
 **Compaction:** Yes/No (if yes, note context loss)
 **Assessment:** 1-sentence verdict -- healthy/progressing/stuck/needs-intervention
@@ -412,6 +424,28 @@ Insert the investigator's full per-session report here. This is the core of the 
 
 **Compaction:** No
 **Assessment:** Progressing -- batch running, 2 persistent failures may need escalation
+
+---
+
+### Session: agent-abc12345 -- task-runner -- "Fix 17 ALLOW demos"
+**Status:** running (sub-agent active)
+**Uptime:** 45m
+**Pipeline Stage:** demo-manager (40%)
+**Worktree:** feature/fix-allow-demos | 0 commits | no uncommitted | no PR yet
+
+**Current Activity:**
+  #88 [11:30:00] [tool] Agent({ subagent_type: "demo-manager", ... })
+  (parent session idle since spawning sub-agent 15m ago)
+
+**Sub-Agents:**
+  - agent-a125e76d (demo-manager) — 516 lines, 1.1MB, last active 3m ago — polling check_demo_batch_result, 8/17 scenarios complete
+  - agent-ace0538e (code-writer) — 42KB, completed 2h ago
+
+**Problems/Errors Detected:**
+- None -- parent appears idle but sub-agent is actively polling batch results
+
+**Compaction:** No
+**Assessment:** Healthy -- parent idle but sub-agent actively running batch demos
 ```
 
 ### Section 7: Blockers & Bypass Requests

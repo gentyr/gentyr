@@ -7175,6 +7175,7 @@ async function screenshotExtensionTab(args: ScreenshotExtensionTabArgs): Promise
 
 const DEMO_BATCHES_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'demo-batches.json');
 const demoBatches = new Map<string, DemoBatchState>();
+const _batchResultCache = new Map<string, { result: CheckDemoBatchResultResult; at: number }>();
 
 function loadPersistedDemoBatches(): void {
   try {
@@ -8563,6 +8564,17 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
  */
 function checkDemoBatchResult(args: CheckDemoBatchResultArgs): CheckDemoBatchResultResult {
   const { batch_id } = args;
+
+  // Server-side throttle: return cached result if polled within 10 seconds
+  const cached = _batchResultCache.get(batch_id);
+  if (cached && Date.now() - cached.at < 10_000) {
+    return {
+      ...cached.result,
+      throttled: true,
+      throttle_message: 'Cached response (polled within 10s). Use Bash(sleep 30) between polls to conserve context.',
+    } as CheckDemoBatchResultResult & { throttled: boolean; throttle_message: string };
+  }
+
   let state = demoBatches.get(batch_id);
 
   if (!state) {
@@ -8618,21 +8630,34 @@ function checkDemoBatchResult(args: CheckDemoBatchResultArgs): CheckDemoBatchRes
     status: state.status,
     batch_id,
     progress: { ...state.progress },
-    scenarios: state.scenarios.map(s => ({ ...s })),
+    scenarios: state.scenarios.map(s => {
+      if (args.compact) {
+        return {
+          scenario_id: s.scenario_id,
+          status: s.status,
+        } as typeof s;
+      }
+      return { ...s };
+    }),
     message,
   };
 
-  if (state.retried_scenarios && state.retried_scenarios.length > 0) {
-    batchResult.retried_scenarios = state.retried_scenarios.map(r => ({ ...r }));
+  if (!args.compact) {
+    if (state.retried_scenarios && state.retried_scenarios.length > 0) {
+      batchResult.retried_scenarios = state.retried_scenarios.map(r => ({ ...r }));
+    }
+
+    // Add machine slot pool status when Fly.io is configured
+    try {
+      const poolStatus = machinePool.getPoolStatus();
+      if (poolStatus.activeSlots > 0 || Object.keys(poolStatus.byBatch).length > 0) {
+        batchResult.pool_status = poolStatus;
+      }
+    } catch { /* non-fatal — pool status is informational */ }
   }
 
-  // Add machine slot pool status when Fly.io is configured
-  try {
-    const poolStatus = machinePool.getPoolStatus();
-    if (poolStatus.activeSlots > 0 || Object.keys(poolStatus.byBatch).length > 0) {
-      batchResult.pool_status = poolStatus;
-    }
-  } catch { /* non-fatal — pool status is informational */ }
+  // Cache the result for throttle dedup
+  _batchResultCache.set(batch_id, { result: batchResult, at: Date.now() });
 
   return batchResult;
 }

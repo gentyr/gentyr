@@ -282,8 +282,65 @@ async function pollCycle() {
 
     const tail = readTailBytes(file);
     const entries = parseTailEntries(tail);
-    const activityText = extractActivityText(entries);
+    let activityText = extractActivityText(entries);
     if (!activityText.trim()) continue;
+
+    // Check for sub-agents (Agent tool children)
+    let subagentContext = '';
+    try {
+      const sessionBasename = path.basename(file, '.jsonl');
+      const subagentDir = path.join(path.dirname(file), sessionBasename, 'subagents');
+      if (fs.existsSync(subagentDir)) {
+        const metaFiles = fs.readdirSync(subagentDir)
+          .filter(f => f.endsWith('.meta.json') && !f.startsWith('acompact-'));
+        if (metaFiles.length > 0) {
+          subagentContext = `\n[${metaFiles.length} sub-agent(s) active via Agent tool]`;
+          // Find most recently modified sub-agent
+          let mostRecent = null;
+          let mostRecentMtime = 0;
+          for (const mf of metaFiles) {
+            const subId = mf.replace('.meta.json', '');
+            const subJsonl = path.join(subagentDir, subId + '.jsonl');
+            try {
+              const subStat = fs.statSync(subJsonl);
+              if (subStat.mtimeMs > mostRecentMtime) {
+                mostRecentMtime = subStat.mtimeMs;
+                mostRecent = { id: subId, path: subJsonl, size: subStat.size, meta: JSON.parse(fs.readFileSync(path.join(subagentDir, mf), 'utf-8')) };
+              }
+            } catch { /* skip */ }
+          }
+          if (mostRecent) {
+            subagentContext += `\nMost active sub-agent: ${mostRecent.id} (${mostRecent.meta.agentType || 'unknown'}) — ${Math.round(mostRecent.size / 1024)}KB`;
+            // Read last 1KB of the sub-agent's JSONL for context
+            try {
+              const fd = fs.openSync(mostRecent.path, 'r');
+              const readSize = Math.min(mostRecent.size, 1024);
+              const buf = Buffer.alloc(readSize);
+              fs.readSync(fd, buf, 0, readSize, Math.max(0, mostRecent.size - readSize));
+              fs.closeSync(fd);
+              const lastLines = buf.toString('utf-8').split('\n').filter(l => l.trim());
+              const lastLine = lastLines[lastLines.length - 1];
+              if (lastLine) {
+                try {
+                  const entry = JSON.parse(lastLine);
+                  const content = entry.message?.content;
+                  if (Array.isArray(content)) {
+                    const tools = content.filter(c => c.type === 'tool_use').map(c => c.name);
+                    const texts = content.filter(c => c.type === 'text').map(c => c.text?.slice(0, 100));
+                    if (tools.length > 0) subagentContext += `\nSub-agent last tools: ${tools.join(', ')}`;
+                    if (texts.length > 0) subagentContext += `\nSub-agent last text: ${texts[0]}`;
+                  }
+                } catch { /* parse error */ }
+              }
+            } catch { /* read error */ }
+          }
+        }
+      }
+    } catch { /* non-fatal — sub-agent detection is best-effort */ }
+
+    if (subagentContext) {
+      activityText += subagentContext;
+    }
 
     sessionPrompts.push({
       session,

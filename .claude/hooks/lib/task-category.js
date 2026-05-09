@@ -344,10 +344,25 @@ The ${step.agent_type} sub-agent has specialized instructions loaded from .claud
 Pass the full task context including title and description.`;
   }
 
+  // ── Sub-agent guidelines ─────────────────────────────────────────────────────
+  const subAgentGuidelines = hasMultipleSteps ? `
+## Sub-Agent Guidelines
+
+When spawning sub-agents via the Agent tool, set clear time expectations in the prompt:
+- Demo sub-agents: max 20 minutes. If not done, they should return partial results and exit.
+- Investigation sub-agents: max 10 minutes.
+- Code-writing sub-agents: max 30 minutes.
+
+Sub-agents that poll MCP tools (check_demo_batch_result, check_demo_result, get_fly_status) MUST:
+- Use compact: true when available for intermediate polling
+- Use Bash(sleep 30) between polls — NEVER poll faster than every 30 seconds
+- Return partial results after 10 minutes of no progress rather than polling indefinitely
+` : '';
+
   // ── Assemble final prompt ────────────────────────────────────────────────────
   const prompt = `${taskDetails}
 ${workflowSection}
-
+${subAgentGuidelines}
 ${completionBlock}`;
 
   return strictInfraSection ? `${prompt}${strictInfraSection}` : prompt;
