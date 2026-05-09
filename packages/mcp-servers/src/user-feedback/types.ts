@@ -606,12 +606,12 @@ export type PrerequisiteScope = (typeof PREREQUISITE_SCOPE)[number];
 export const RegisterPrerequisiteArgsSchema = z.object({
   command: z.string().min(1).max(2000).describe('Shell command to execute (e.g., "pnpm dev", "npm run build:extension")'),
   description: z.string().min(1).max(500).describe('Human-readable description of what this prerequisite does'),
-  timeout_ms: z.coerce.number().int().min(1000).max(300000).optional().default(30000)
-    .describe('Max execution time in milliseconds (1s-300s, default: 30s)'),
+  timeout_ms: z.coerce.number().int().min(1000).max(300000).optional().default(60000)
+    .describe('Max total execution/polling time in milliseconds (1s-300s, default: 60s). For background services, health check retries until this limit.'),
   health_check: z.string().max(2000).optional()
     .describe('Optional command to verify the prerequisite is satisfied. If exit 0, setup command is skipped.'),
-  health_check_timeout_ms: z.coerce.number().int().min(1000).max(30000).optional().default(5000)
-    .describe('Timeout for health check command (1s-30s, default: 5s)'),
+  health_check_timeout_ms: z.coerce.number().int().min(1000).max(60000).optional().default(5000)
+    .describe('Timeout per health check attempt (1s-60s, default: 5s). For background services, the check retries every 2s until timeout_ms.'),
   scope: z.enum(PREREQUISITE_SCOPE).optional().default('global')
     .describe('Scope: "global" (all demos), "persona" (all demos for a persona), "scenario" (single scenario)'),
   persona_id: z.string().optional().describe('Required when scope is "persona"'),
@@ -628,7 +628,7 @@ export const UpdatePrerequisiteArgsSchema = z.object({
   description: z.string().min(1).max(500).optional(),
   timeout_ms: z.coerce.number().int().min(1000).max(300000).optional(),
   health_check: z.string().max(2000).optional(),
-  health_check_timeout_ms: z.coerce.number().int().min(1000).max(30000).optional(),
+  health_check_timeout_ms: z.coerce.number().int().min(1000).max(60000).optional(),
   sort_order: z.coerce.number().int().min(0).max(999).optional(),
   enabled: z.coerce.boolean().optional(),
   run_as_background: z.coerce.boolean().optional(),

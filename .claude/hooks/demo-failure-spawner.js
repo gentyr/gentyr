@@ -138,7 +138,7 @@ function isRepairInFlight(scenarioId) {
  * Spawn a demo-manager repair agent for a failed scenario.
  */
 function spawnRepairAgent(scenario) {
-  const { id: scenarioId, title, error, test_file } = scenario;
+  const { id: scenarioId, title, error, test_file, failure_classification } = scenario;
 
   // Create worktree
   let worktreePath;
@@ -209,6 +209,24 @@ function spawnRepairAgent(scenario) {
           ``,
           `See "Progress Checkpoints (MANDATORY)" in your agent definition for patterns and examples.`,
         ] : [];
+        const isPrereqMissing = error && /ECONNREFUSED|connection refused|ERR_CONNECTION/i.test(error);
+        const infraGuidance = isPrereqMissing ? [
+          ``,
+          `## MISSING INFRASTRUCTURE SERVICE DETECTED`,
+          ``,
+          `This demo failed because a required background service is not running (connection refused).`,
+          `The fix is to register a background prerequisite that starts the service:`,
+          ``,
+          `1. Check scenario env_vars via \`get_scenario({ id: "${scenarioId}" })\` for service URLs`,
+          `2. Check existing prerequisites via \`list_prerequisites({ scenario_id: "${scenarioId}" })\``,
+          `3. If no prerequisite exists for the required service, register one:`,
+          `   \`register_prerequisite({ scope: "scenario", scenario_id: "${scenarioId}",`,
+          `     run_as_background: true, command: "<start command>",`,
+          `     health_check: "curl -sf <service-url>", timeout_ms: 120000 })\``,
+          `4. Re-run the demo after registering the prerequisite`,
+          ``,
+          `Do NOT increase timeouts — the service is not starting at all, not starting slowly.`,
+        ] : [];
         return [
           `[Automation][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
           ``,
@@ -216,10 +234,12 @@ function spawnRepairAgent(scenario) {
           `- ID: ${scenarioId}`,
           `- Title: ${title}`,
           `- Error: ${error || 'Unknown error'}`,
+          failure_classification ? `- Failure Classification: ${failure_classification}` : '',
           test_file ? `- Test File: ${test_file}` : '',
           taskId ? `- Tracking Task: ${taskId}` : '',
           prereqBlock,
           ...stallGuidance,
+          ...infraGuidance,
           ``,
           `## Instructions`,
           ``,
@@ -305,6 +325,7 @@ process.stdin.on('end', () => {
             title: s.title || s.scenario_title || 'Unknown scenario',
             error: s.failure_summary || s.error || s.message || null,
             test_file: s.test_file || null,
+            failure_classification: s.failure_classification || null,
           });
         }
       }
@@ -351,7 +372,28 @@ process.stdin.on('end', () => {
       }
     }
 
+    // Build skipped scenario accountability context for completed batches
+    let skippedContext = '';
+    if (toolName.includes('check_demo_batch_result') && response.status !== 'running' && response.scenarios) {
+      const skippedScenarios = (response.scenarios || []).filter(s => s.status === 'skipped');
+      if (skippedScenarios.length > 0) {
+        const skippedList = skippedScenarios.map(s =>
+          `- ${s.scenario_title || s.scenario_id}: ${s.failure_summary || 'No reason given'}`
+        ).join('\n');
+        skippedContext = `SKIPPED SCENARIOS: ${skippedScenarios.length} scenario(s) were skipped:\n${skippedList}\nYou MUST either fix the skip reason and re-run them, or create a task for follow-up. Do NOT ignore skipped scenarios.`;
+      }
+    }
+
     if (failedScenarios.length === 0) {
+      // No failures but may have skipped scenarios — inject accountability and exit
+      if (skippedContext) {
+        console.log(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            additionalContext: skippedContext,
+          },
+        }));
+      }
       process.exit(0);
     }
 
@@ -401,12 +443,15 @@ process.stdin.on('end', () => {
       }
     }
 
-    // If escalation triggered, inject context and skip spawning repair agents
+    // If escalation triggered, inject combined context (escalation + skipped) and skip spawning
     if (escalationContext) {
+      const combinedContext = skippedContext
+        ? `${skippedContext}\n\n${escalationContext.trim()}`
+        : escalationContext.trim();
       console.log(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
-          additionalContext: escalationContext.trim(),
+          additionalContext: combinedContext,
         },
       }));
       process.exit(0);
