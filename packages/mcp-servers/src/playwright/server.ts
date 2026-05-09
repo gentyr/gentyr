@@ -6297,6 +6297,21 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
     warnings.push(`Prerequisites check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // 0.6. Infrastructure readiness — check for scenarios needing unregistered prerequisites
+  try {
+    const allScenarios = discoverScenarios({});
+    const infraWarnings = checkInfraReadiness(allScenarios);
+    if (infraWarnings.length > 0) {
+      checks.push({ name: 'infrastructure_readiness', status: 'warn',
+        message: `${infraWarnings.length} scenario(s) reference local services without a registered background prerequisite`,
+        duration_ms: 0 });
+      for (const w of infraWarnings) warnings.push(w);
+    } else if (allScenarios.length > 0) {
+      checks.push({ name: 'infrastructure_readiness', status: 'pass',
+        message: 'All scenarios with local service dependencies have registered prerequisites', duration_ms: 0 });
+    }
+  } catch { /* non-fatal — skip readiness check */ }
+
   // 1. Config exists
   checks.push(runCheck('config_exists', () => {
     const tsConfig = path.join(EFFECTIVE_CWD, 'playwright.config.ts');
@@ -7205,6 +7220,63 @@ function persistDemoBatches(): void {
 }
 
 loadPersistedDemoBatches();
+
+/**
+ * Check if scenarios in a batch have registered background prerequisites
+ * for local services referenced in their env_vars.
+ * Returns warnings for scenarios that reference localhost URLs but lack
+ * a background prerequisite at any scope (global, persona, or scenario).
+ */
+function checkInfraReadiness(
+  scenarios: Array<{ id: string; title: string; persona_id?: string; env_vars?: Record<string, string> }>,
+): string[] {
+  const warnings: string[] = [];
+  const dbPath = getUserFeedbackDbPath();
+  if (!fs.existsSync(dbPath)) return warnings;
+
+  let db: InstanceType<typeof Database>;
+  try { db = new Database(dbPath, { readonly: true }); } catch { return warnings; }
+
+  try {
+    const allPrereqs = db.prepare(
+      `SELECT scope, persona_id, scenario_id, run_as_background FROM demo_prerequisites WHERE enabled = 1`,
+    ).all() as Array<{ scope: string; persona_id: string | null; scenario_id: string | null; run_as_background: number }>;
+
+    const scenariosWithBgPrereq = new Set<string>();
+    const personasWithBgPrereq = new Set<string>();
+    let hasGlobalBgPrereq = false;
+    for (const p of allPrereqs) {
+      if (!p.run_as_background) continue;
+      if (p.scope === 'global') hasGlobalBgPrereq = true;
+      if (p.scope === 'persona' && p.persona_id) personasWithBgPrereq.add(p.persona_id);
+      if (p.scope === 'scenario' && p.scenario_id) scenariosWithBgPrereq.add(p.scenario_id);
+    }
+
+    for (const scenario of scenarios) {
+      if (!scenario.env_vars) continue;
+      const localServiceVars = Object.entries(scenario.env_vars).filter(([, v]) =>
+        /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)[:/]/.test(v),
+      );
+      if (localServiceVars.length === 0) continue;
+
+      const hasCoverage = hasGlobalBgPrereq ||
+        (scenario.persona_id && personasWithBgPrereq.has(scenario.persona_id)) ||
+        scenariosWithBgPrereq.has(scenario.id);
+
+      if (!hasCoverage) {
+        const envDetails = localServiceVars.map(([k, v]) => `${k}=${v}`).join(', ');
+        warnings.push(
+          `Scenario "${scenario.title}" (${scenario.id}) references local services (${envDetails}) ` +
+          `but has no background prerequisite registered. Register one: register_prerequisite({ scope: "scenario", ` +
+          `scenario_id: "${scenario.id}", run_as_background: true, command: "<start command>", ` +
+          `health_check: "curl -sf <url>", timeout_ms: 120000 })`,
+        );
+      }
+    }
+  } catch { /* non-fatal */ } finally { db.close(); }
+
+  return warnings;
+}
 
 /**
  * Discover demo scenarios from user-feedback.db.
@@ -8412,6 +8484,9 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
     return JSON.stringify({ error: 'No matching scenarios found. Check filters or ensure demo_scenarios table has enabled entries.' });
   }
 
+  // Check infrastructure readiness — warn about scenarios needing unregistered prerequisites
+  const infraWarnings = checkInfraReadiness(scenarios);
+
   const batchId = crypto.randomBytes(8).toString('hex');
   // Default batch_size to maxConcurrentMachines — runs all scenarios with max parallelism.
   // Multiple concurrent batches share the machine pool via Fly.io's own capacity limits.
@@ -8555,6 +8630,10 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
     total_scenarios: scenarios.length,
     total_batches: totalBatches,
     scenarios: batchScenarios.map(s => ({ id: s.scenario_id, title: s.scenario_title, test_file: s.test_file })),
+    ...(infraWarnings.length > 0 ? {
+      missing_prerequisite_warnings: infraWarnings,
+      warning: `${infraWarnings.length} scenario(s) may fail due to missing infrastructure prerequisites. Review warnings and register prerequisites before proceeding.`,
+    } : {}),
     message: `Batch run started: ${scenarios.length} scenarios in ${totalBatches} batch(es) of ${batchSize}. Use check_demo_batch_result to monitor progress.`,
   });
 }

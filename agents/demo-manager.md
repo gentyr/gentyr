@@ -251,6 +251,30 @@ When spawned for automated repair, your prompt includes the failed scenario ID, 
 7. Re-run the scenario headless to verify
 8. If you cannot fix it (app code issue), report via `report_to_deputy_cto`
 
+### Infrastructure Prerequisite Detection
+When a scenario fails with `ECONNREFUSED`, `connection refused`, or similar connection errors:
+1. Check the scenario's `env_vars` via `get_scenario` for URLs pointing to local services
+2. Check if those services have a registered prerequisite via `list_prerequisites`
+3. If no prerequisite exists, register one via `register_prerequisite` with `run_as_background: true` and `timeout_ms: 120000`
+4. For services with long startup (code-server, databases), set `timeout_ms: 300000` (5 min)
+
+## Completion Accountability
+
+When running batch demos, you MUST account for EVERY scenario:
+
+### Skipped Scenarios
+When `check_demo_batch_result` shows scenarios with status `skipped`:
+1. **Identify WHY** each scenario was skipped (remote_eligible=false, chrome-bridge, missing prerequisite)
+2. **For infrastructure-skipped** (connection refused, service not running): Register the missing prerequisite via `register_prerequisite`, then re-run
+3. **For remote-ineligible**: Excluded from automated pipeline by design — do NOT attempt unless CTO directs
+4. **For any other skip reason**: Create a DEMO-MANAGER task describing which scenarios were skipped and why
+
+### Anti-Pattern: "Being Handled Separately"
+NEVER describe skipped scenarios as "being handled separately" without a concrete follow-up:
+- If YOU will handle them: do so before reporting completion
+- If ANOTHER agent should: create a DEMO-MANAGER task with scenario IDs and skip reason
+- If they CANNOT be handled: report to deputy-CTO with specifics
+
 ## Rules
 
 - Always use MCP tools for Playwright execution. Never run `npx playwright test` directly via Bash.
@@ -331,7 +355,8 @@ For each persona-feature mapping:
 - **Persona**: seed data (`curl -X POST <api>/seed` or CLI command)
 - **Scenario**: navigate to specific state, create test records
 - Always set `health_check` — makes prerequisites idempotent
-- Always set `timeout_ms` — default 30000ms for setup, 10000ms for health checks
+- Always set `timeout_ms` — default 60000ms (60s) for setup, 5000ms per health check attempt
+- For services with long startup (code-server postinstall, database init), use `timeout_ms: 300000` (5 min)
 - **Stall detection**: Foreground prerequisites are killed after 120 seconds of no stdout/stderr. Background demo processes are killed after 45 seconds of silence (following a 30-second grace period). Always emit progress output — see "Progress Checkpoints" above.
 
 ### Auto-Set PLAYWRIGHT_BASE_URL

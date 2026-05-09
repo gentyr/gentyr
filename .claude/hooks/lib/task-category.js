@@ -357,6 +357,10 @@ Sub-agents that poll MCP tools (check_demo_batch_result, check_demo_result, get_
 - Use compact: true when available for intermediate polling
 - Use Bash(sleep 30) between polls — NEVER poll faster than every 30 seconds
 - Return partial results after 10 minutes of no progress rather than polling indefinitely
+
+When a batch run completes with skipped scenarios, the sub-agent MUST report which scenarios
+were skipped and why. Create DEMO-MANAGER tasks for any scenarios that need follow-up.
+Do NOT describe them as "being handled separately" without creating a concrete task.
 ` : '';
 
   // ── Assemble final prompt ────────────────────────────────────────────────────
