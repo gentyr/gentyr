@@ -106,6 +106,19 @@ import { GATE_EXEMPT_CATEGORIES } from '../shared/constants.js';
 
 const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
+
+/**
+ * Emit a task lifecycle audit event to session-audit.log.
+ * Non-fatal — must never crash callers.
+ */
+function emitAuditEvent(event: string, fields: Record<string, unknown> = {}): void {
+  try {
+    const logPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-audit.log');
+    const dir = path.dirname(logPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(logPath, JSON.stringify({ ts: new Date().toISOString(), event, ...fields }) + '\n');
+  } catch { /* non-fatal */ }
+}
 const WORKLOG_DB_PATH = path.join(PROJECT_DIR, '.claude', 'worklog.db');
 const SESSION_WINDOW_MINUTES = 5;
 
@@ -1088,6 +1101,15 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     }
   }
 
+  emitAuditEvent('task_created', {
+    task_id: id,
+    title: args.title,
+    assigned_by: args.assigned_by ?? null,
+    category_id: resolvedCategoryId,
+    priority: priority as string,
+    status: taskStatus,
+  });
+
   return {
     id,
     section: resolvedSection,
@@ -1144,6 +1166,13 @@ function startTask(args: StartTaskArgs): StartTaskResult | ErrorResult {
     WHERE id = ?
   `).run(started_at, started_timestamp, args.id);
 
+  emitAuditEvent('task_status_changed', {
+    task_id: args.id,
+    title: task.title,
+    from: task.status,
+    to: 'in_progress',
+  });
+
   return {
     id: args.id,
     status: 'in_progress',
@@ -1198,6 +1227,13 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(auditId, args.id, task.gate_success_criteria!, task.gate_verification_method ?? '', now.toISOString(), attemptNumber);
 
+    emitAuditEvent('task_status_changed', {
+      task_id: args.id,
+      title: task.title,
+      from: task.status,
+      to: 'pending_audit',
+    });
+
     return {
       id: args.id,
       status: 'pending_audit',
@@ -1211,6 +1247,13 @@ function completeTask(args: CompleteTaskArgs): CompleteTaskResult | ErrorResult 
     UPDATE tasks SET status = 'completed', completed_at = ?, completed_timestamp = ?
     WHERE id = ?
   `).run(completed_at, completed_timestamp, args.id);
+
+  emitAuditEvent('task_completed', {
+    task_id: args.id,
+    title: task.title,
+    assigned_by: task.assigned_by ?? null,
+    gate_status: task.gate_status ?? null,
+  });
 
   let followup_task_id: string | undefined;
 
@@ -1276,6 +1319,14 @@ function deleteTask(args: DeleteTaskArgs): DeleteTaskResult | ErrorResult {
     db.prepare('DELETE FROM tasks WHERE id = ?').run(args.id);
   });
   archiveAndDelete();
+
+  emitAuditEvent('task_deleted', {
+    task_id: args.id,
+    title: task.title,
+    original_status: task.status,
+    reason: args.reason || 'deleted',
+    spawned_session: process.env.CLAUDE_SPAWNED_SESSION === 'true',
+  });
 
   return {
     deleted: true,
@@ -2101,6 +2152,12 @@ function gateApproveTask(args: { id: string }): object {
   if (task.status !== 'pending_review') return { error: `Task is not in pending_review status (current: ${task.status}). Only pending_review tasks can be approved.` };
 
   db.prepare("UPDATE tasks SET status = 'pending' WHERE id = ?").run(parsed.id);
+
+  emitAuditEvent('task_gate_approved', {
+    task_id: parsed.id,
+    title: task.title,
+  });
+
   return { id: parsed.id, title: task.title, old_status: 'pending_review', new_status: 'pending', message: 'Task approved and moved to pending queue.' };
 }
 
@@ -2130,6 +2187,12 @@ function gateKillTask(args: { id: string; reason: string }): object {
     db.prepare('DELETE FROM tasks WHERE id = ?').run(parsed.id);
   });
   killTxn();
+
+  emitAuditEvent('task_gate_killed', {
+    task_id: parsed.id,
+    title: task.title,
+    reason: parsed.reason,
+  });
 
   return { id: parsed.id, title: task.title, killed: true, reason: parsed.reason, message: `Task killed: ${parsed.reason}` };
 }

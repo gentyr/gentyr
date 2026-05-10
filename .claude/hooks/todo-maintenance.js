@@ -124,6 +124,18 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
       followupCapped: 0,
     };
 
+    // Shared archive statement and ISO timestamp — used by all archive-then-delete
+    // paths: completed-task cleanup, completed-cap overflow, stale-pending, followup-cap.
+    const nowIso = now.toISOString();
+    const archiveStmt = db.prepare(`
+      INSERT OR IGNORE INTO archived_tasks
+        (id, section, category_id, title, description, assigned_by, priority,
+         created_at, started_at, completed_at, created_timestamp, completed_timestamp,
+         followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp,
+         original_status, deletion_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
     // Clear stale starts (>30 min without completion)
     const staleResult = db.prepare(`
       UPDATE tasks
@@ -134,7 +146,26 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
     `).run(nowTimestamp);
     changes.staleStartsCleared = staleResult.changes;
 
-    // Remove completed tasks older than 3 hours
+    // Archive completed tasks older than 3 hours before deleting
+    const oldCompleted = db.prepare(`
+      SELECT id, section, category_id, title, description, assigned_by, priority,
+             created_at, started_at, completed_at, created_timestamp, completed_timestamp,
+             followup_enabled, followup_section, followup_prompt
+      FROM tasks
+      WHERE status = 'completed'
+        AND completed_timestamp IS NOT NULL
+        AND (? - completed_timestamp) > 10800
+    `).all(nowTimestamp);
+    for (const task of oldCompleted) {
+      archiveStmt.run(
+        task.id, task.section, task.category_id, task.title, task.description,
+        task.assigned_by, task.priority, task.created_at, task.started_at,
+        task.completed_at, task.created_timestamp, task.completed_timestamp,
+        task.followup_enabled, task.followup_section, task.followup_prompt,
+        nowIso, nowTimestamp,
+        'completed', 'completed_older_than_3h'
+      );
+    }
     const oldResult = db.prepare(`
       DELETE FROM tasks
       WHERE status = 'completed'
@@ -143,10 +174,29 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
     `).run(nowTimestamp);
     changes.completedRemoved = oldResult.changes;
 
-    // Cap completed tasks at 50 (keep most recent)
+    // Cap completed tasks at 50 (keep most recent), archiving overflow first
     const completedCount = db.prepare("SELECT COUNT(*) as count FROM tasks WHERE status = 'completed'").get().count;
     if (completedCount > 50) {
       const toRemove = completedCount - 50;
+      const toArchive = db.prepare(`
+        SELECT id, section, category_id, title, description, assigned_by, priority,
+               created_at, started_at, completed_at, created_timestamp, completed_timestamp,
+               followup_enabled, followup_section, followup_prompt
+        FROM tasks
+        WHERE status = 'completed'
+        ORDER BY completed_timestamp ASC
+        LIMIT ?
+      `).all(toRemove);
+      for (const task of toArchive) {
+        archiveStmt.run(
+          task.id, task.section, task.category_id, task.title, task.description,
+          task.assigned_by, task.priority, task.created_at, task.started_at,
+          task.completed_at, task.created_timestamp, task.completed_timestamp,
+          task.followup_enabled, task.followup_section, task.followup_prompt,
+          nowIso, nowTimestamp,
+          'completed', 'completed_cap_overflow_50'
+        );
+      }
       const capResult = db.prepare(`
         DELETE FROM tasks WHERE id IN (
           SELECT id FROM tasks
@@ -160,15 +210,6 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
 
     // Archive stale pending tasks older than 7 days
     const STALE_PENDING_SECONDS = 7 * 24 * 60 * 60;
-    const nowIso = now.toISOString();
-    const archiveStmt = db.prepare(`
-      INSERT OR IGNORE INTO archived_tasks
-        (id, section, category_id, title, description, assigned_by, priority,
-         created_at, started_at, completed_at, created_timestamp, completed_timestamp,
-         followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp,
-         original_status, deletion_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
 
     const stalePending = db.prepare(`
       SELECT id, section, category_id, title, description, assigned_by, priority,
