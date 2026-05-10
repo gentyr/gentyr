@@ -587,3 +587,19 @@ export interface ExecuteHotfixPromotionResult {
   success: boolean;
   message: string;
 }
+
+// ============================================================================
+// Trigger Preview Promotion
+// ============================================================================
+
+export const TriggerPreviewPromotionArgsSchema = z.object({
+  promotion_id: z.string().optional().describe('Custom promotion ID. Auto-generated if omitted.'),
+});
+export type TriggerPreviewPromotionArgs = z.infer<typeof TriggerPreviewPromotionArgsSchema>;
+export interface TriggerPreviewPromotionResult {
+  queueId: string;
+  promotionId: string;
+  commitCount: number;
+  commits: string[];
+  message: string;
+}

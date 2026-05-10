@@ -271,7 +271,7 @@ Then call `mcp__todo-db__complete_task` if a task ID was provided.
 
 ## Key Constraints
 
-- This agent does NOT need `GENTYR_PROMOTION_PIPELINE=true` — the staging lock guard only blocks during active production releases, which the automation checks before spawning this agent.
+- This agent runs with `GENTYR_PROMOTION_PIPELINE=true` injected by its spawner (hourly-automation.js or trigger_preview_promotion MCP tool). This env var bypasses the staging-lock-guard, allowing the agent to create and merge PRs targeting staging.
 - This agent does NOT edit source files — it is a read-only quality review and promotion agent.
 - This agent does NOT create fix tasks — if issues are found, it reports them and exits. Fixes follow the normal feature branch flow.
 - If any step fails, the agent records what it can, reports the failure via `report_to_deputy_cto`, and exits cleanly via `summarize_work`.

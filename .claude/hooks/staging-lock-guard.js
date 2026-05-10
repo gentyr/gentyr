@@ -11,7 +11,8 @@
  * directs the user to /promote-to-staging or the automated 30-minute cycle.
  *
  * Blocked patterns:
- *   - `gh pr merge` targeting staging (--base staging, or PR against staging)
+ *   - `gh pr create` targeting staging (--base staging, -B staging)
+ *   - `gh pr merge` targeting staging (runtime PR target check via gh CLI)
  *   - `git push` to staging or origin staging
  *   - `git merge` into staging (when on the staging branch)
  *
@@ -34,6 +35,7 @@
 
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { isStagingLocked, getStagingLockState } from './lib/staging-lock.js';
 import { createDeferredAction, openDb, findDuplicatePending } from './lib/deferred-action-db.js';
 import { computePendingHmac } from './lib/deferred-action-executor.js';
@@ -175,34 +177,41 @@ function analyzeSubCommand(subCommand) {
   const tokens = tokenize(subCommand);
   if (tokens.length === 0) return { blocked: false };
 
-  // --- gh pr merge targeting staging ---
+  // --- gh pr create targeting staging ---
   const ghIdx = tokens.indexOf('gh');
   if (ghIdx !== -1) {
-    // Check for: gh pr merge [flags]
     const afterGh = tokens.slice(ghIdx + 1);
-    if (afterGh.length >= 2 && afterGh[0] === 'pr' && afterGh[1] === 'merge') {
-      // Check if --base staging is specified
+
+    // Check for: gh pr create --base staging / -B staging
+    if (afterGh.length >= 2 && afterGh[0] === 'pr' && afterGh[1] === 'create') {
       for (let i = 0; i < afterGh.length; i++) {
         if (afterGh[i] === '--base' && i + 1 < afterGh.length && afterGh[i + 1] === 'staging') {
-          return {
-            blocked: true,
-            reason: 'gh pr merge --base staging',
-          };
+          return { blocked: true, reason: 'gh pr create --base staging' };
         }
         if (afterGh[i].startsWith('--base=') && afterGh[i].split('=')[1] === 'staging') {
-          return {
-            blocked: true,
-            reason: 'gh pr merge --base=staging',
-          };
+          return { blocked: true, reason: 'gh pr create --base=staging' };
+        }
+        if (afterGh[i] === '-B' && i + 1 < afterGh.length && afterGh[i + 1] === 'staging') {
+          return { blocked: true, reason: 'gh pr create -B staging' };
         }
       }
-      // Also check for -B flag (gh shorthand for --base)
-      for (let i = 0; i < afterGh.length; i++) {
-        if (afterGh[i] === '-B' && i + 1 < afterGh.length && afterGh[i + 1] === 'staging') {
-          return {
-            blocked: true,
-            reason: 'gh pr merge -B staging',
-          };
+    }
+
+    // --- gh pr merge targeting staging (runtime check) ---
+    // gh pr merge does not accept --base — extract PR number and check target branch via API
+    if (afterGh.length >= 2 && afterGh[0] === 'pr' && afterGh[1] === 'merge') {
+      const prNumber = afterGh.slice(2).find(t => /^\d+$/.test(t));
+      if (prNumber) {
+        try {
+          const base = execFileSync('gh', ['pr', 'view', prNumber, '--json', 'baseRefName', '-q', '.baseRefName'], {
+            encoding: 'utf8', timeout: 2000, stdio: 'pipe',
+          }).trim();
+          if (base === 'staging') {
+            return { blocked: true, reason: `gh pr merge #${prNumber} (PR targets staging)` };
+          }
+        } catch {
+          // Fail-open: if gh CLI is unavailable or times out, allow.
+          // Primary defense is GENTYR_PROMOTION_PIPELINE env var.
         }
       }
     }
