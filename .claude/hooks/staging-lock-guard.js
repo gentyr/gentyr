@@ -200,6 +200,11 @@ function analyzeSubCommand(subCommand) {
     // --- gh pr merge targeting staging (runtime check) ---
     // gh pr merge does not accept --base — extract PR number and check target branch via API
     if (afterGh.length >= 2 && afterGh[0] === 'pr' && afterGh[1] === 'merge') {
+      // Block --admin flag (prevents CI bypass via admin privileges)
+      if (afterGh.includes('--admin')) {
+        return { blocked: true, reason: 'gh pr merge --admin (admin CI bypass not permitted for staging)' };
+      }
+
       const prNumber = afterGh.slice(2).find(t => /^\d+$/.test(t));
       if (prNumber) {
         try {
@@ -207,6 +212,19 @@ function analyzeSubCommand(subCommand) {
             encoding: 'utf8', timeout: 2000, stdio: 'pipe',
           }).trim();
           if (base === 'staging') {
+            // Verify CI is passing before allowing staging merge
+            try {
+              const checksOutput = execFileSync('gh', ['pr', 'checks', prNumber, '--json', 'state,name'], {
+                encoding: 'utf8', timeout: 3000, stdio: 'pipe',
+              }).trim();
+              const checks = JSON.parse(checksOutput);
+              const failing = checks.filter(c => c.state === 'FAILURE' || c.state === 'ERROR');
+              if (failing.length > 0) {
+                return { blocked: true, reason: `gh pr merge #${prNumber} — ${failing.length} CI check(s) failing (${failing.map(c => c.name).join(', ')})` };
+              }
+            } catch {
+              // Fail-open on CI check parse — primary defense is GENTYR_PROMOTION_PIPELINE
+            }
             return { blocked: true, reason: `gh pr merge #${prNumber} (PR targets staging)` };
           }
         } catch {

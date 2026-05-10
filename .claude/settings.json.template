@@ -474,6 +474,16 @@
         ]
       },
       {
+        "matcher": "mcp__todo-db__delete_task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/task-deletion-cascade.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "mcp__todo-db__summarize_work",
         "hooks": [
           {

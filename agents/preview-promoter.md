@@ -19,6 +19,7 @@ allowedTools:
   - mcp__agent-tracker__send_session_signal
   - mcp__agent-tracker__summarize_work
   - mcp__agent-tracker__force_spawn_tasks
+  - mcp__agent-tracker__request_self_compact
   - mcp__todo-db__create_task
   - mcp__todo-db__get_task
   - mcp__todo-db__complete_task
@@ -210,29 +211,15 @@ Check for an existing open PR from preview to staging:
 gh pr list --head preview --base staging --state open --json number,url
 ```
 
-If an open PR exists, wait for CI and merge it:
-
-```bash
-gh pr checks {number} --watch --fail-on-fail
-```
-
-If CI fails after creating/finding the PR, enter the **CI Failure Self-Healing Loop:**
-1. Diagnose failures via `gh run view <run-id> --log-failed`
-2. Create an urgent `Standard Development` task via `mcp__todo-db__create_task`:
-   - Title: "Fix CI failure blocking staging promotion: {failure_summary}"
-   - Description: Include the full CI failure log output and the PR number
-   - Priority: `urgent`
-   - `assigned_by`: `"cto"` (gate-bypass for immediate spawning)
-3. Spawn the task immediately via `mcp__agent-tracker__force_spawn_tasks`
-4. Wait for the task to complete (poll `mcp__todo-db__get_task` every 60 seconds, max 30 minutes)
-5. After the fix lands, re-check CI: `gh pr checks <number> --watch --fail-on-fail`
-6. If CI passes — proceed to merge
-7. If CI still fails — repeat from step 1 (max 3 iterations)
-8. After 3 failed iterations: Report to CTO and EXIT without merging
-
-```bash
-gh pr merge {number} --merge
-```
+If an open PR exists:
+1. Check CI status: `gh pr checks {number}`
+2. If ALL checks are passing: merge it immediately — `gh pr merge {number} --merge`
+3. If CI is failing: this PR is stale (possibly created by a dead promoter session with
+   outdated HEAD). Close it and create a fresh one:
+   ```bash
+   gh pr close {number} --comment "Closing stale promotion PR — CI failing on merged result. Creating fresh PR with current preview HEAD."
+   ```
+   Then fall through to the "no open PR" path below to create a new PR.
 
 If no open PR exists, create one and then merge it:
 
@@ -309,6 +296,8 @@ Then call `mcp__todo-db__complete_task` if a task ID was provided.
 - This agent runs with `GENTYR_PROMOTION_PIPELINE=true` injected by its spawner (hourly-automation.js or trigger_preview_promotion MCP tool). This env var bypasses the staging-lock-guard, allowing the agent to create and merge PRs targeting staging.
 - This agent does NOT edit source files — it is a read-only quality review and promotion agent.
 - This agent creates fix tasks only within self-healing loops (test failures at Step 3, coverage gaps at Step 3.5, CI failures at Step 5). It does NOT edit source files directly — fix tasks are delegated to code-writer/test-writer agents.
+- `create_task` may ONLY be used within self-healing loops (Steps 3, 3.5, 5) to spawn fix agents. NEVER create "continuation" or "completion" tasks that attempt to resume the promotion pipeline. If context pressure reaches CRITICAL, call `mcp__agent-tracker__request_self_compact`. If compaction is not possible, call `summarize_work` and exit — the automation will re-trigger a fresh promoter.
+- NEVER merge staging into preview. The merge direction is always preview -> staging via PR. If a PR has merge conflicts, close it and create a fresh one from the current preview HEAD.
 - If any step fails, the agent records what it can, reports the failure via `report_to_deputy_cto`, and exits cleanly via `summarize_work`.
 - The `GENTYR_PROMOTION_ID` env var contains the promotion ID for artifact naming. If not set, generate one with the format `promo-{timestamp}-{random_hex}`.
 - Never log or expose secret values. All credential handling goes through MCP tools.
