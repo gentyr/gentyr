@@ -1054,7 +1054,11 @@ export async function stopRemoteMachine(
 // ============================================================================
 
 /**
- * Check whether a machine is currently in the 'started' state.
+ * Check whether a machine is currently alive and reachable.
+ *
+ * Returns true for 'started' and 'stopping' states. The 'stopping' state
+ * is included because Fly.io's EXIT trap (artifact copy + grace period)
+ * runs entirely within this state with the exec API still reachable.
  *
  * Returns false on any error (network, 404, etc.) — fail-safe for callers
  * that need to gate on machine liveness.
@@ -1070,7 +1074,11 @@ export async function isMachineAlive(
       { timeout: DEFAULT_TIMEOUT_MS },
     );
     const machine = await response.json() as FlyMachineResponse;
-    return machine.state === 'started';
+    // Include 'stopping' state: Fly.io transitions to 'stopping' when the
+    // main process exits, but the EXIT trap (artifact copy + sleep 60 grace
+    // period) runs entirely within this state. The exec API is reachable
+    // during 'stopping', so we must continue polling for .artifacts-ready.
+    return machine.state === 'started' || machine.state === 'stopping';
   } catch {
     return false;
   }
