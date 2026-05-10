@@ -165,8 +165,9 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
       INSERT OR IGNORE INTO archived_tasks
         (id, section, category_id, title, description, assigned_by, priority,
          created_at, started_at, completed_at, created_timestamp, completed_timestamp,
-         followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp,
+         original_status, deletion_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const stalePending = db.prepare(`
@@ -185,7 +186,8 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
         task.assigned_by, task.priority, task.created_at, task.started_at,
         task.completed_at, task.created_timestamp, task.completed_timestamp,
         task.followup_enabled, task.followup_section, task.followup_prompt,
-        nowIso, nowTimestamp
+        nowIso, nowTimestamp,
+        'pending', 'stale_pending_7d'
       );
     }
     if (stalePending.length > 0) {
@@ -209,7 +211,7 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
       const excessFollowups = db.prepare(`
         SELECT id, section, category_id, title, description, assigned_by, priority,
                created_at, started_at, completed_at, created_timestamp, completed_timestamp,
-               followup_enabled, followup_section, followup_prompt
+               followup_enabled, followup_section, followup_prompt, status
         FROM tasks
         WHERE assigned_by = 'system-followup' AND status = 'pending'
         ORDER BY created_timestamp ASC
@@ -222,7 +224,8 @@ function performDatabaseCleanup(projectDir, now = new Date()) {
           task.assigned_by, task.priority, task.created_at, task.started_at,
           task.completed_at, task.created_timestamp, task.completed_timestamp,
           task.followup_enabled, task.followup_section, task.followup_prompt,
-          nowIso, nowTimestamp
+          nowIso, nowTimestamp,
+          task.status, 'excess_followup_cap_20'
         );
       }
 

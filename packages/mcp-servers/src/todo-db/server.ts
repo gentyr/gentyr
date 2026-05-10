@@ -446,6 +446,10 @@ function initializeDatabase(): Database.Database {
     db.exec("DROP TABLE tasks_old");
   }
 
+  // Auto-migration: add original_status and deletion_reason columns to archived_tasks
+  try { db.prepare('ALTER TABLE archived_tasks ADD COLUMN original_status TEXT').run(); } catch { /* already exists */ }
+  try { db.prepare('ALTER TABLE archived_tasks ADD COLUMN deletion_reason TEXT').run(); } catch { /* already exists */ }
+
   // Auto-migration: create task_audits table
   db.exec(`
     CREATE TABLE IF NOT EXISTS task_audits (
@@ -878,6 +882,17 @@ function getTask(args: GetTaskArgs): TaskResponse | ErrorResult {
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(args.id) as TaskRecord | undefined;
 
   if (!task) {
+    // Check archive before returning "not found"
+    const archived = db.prepare('SELECT * FROM archived_tasks WHERE id = ?').get(args.id) as Record<string, unknown> | undefined;
+    if (archived) {
+      return {
+        ...archived,
+        archived: true,
+        status: (archived.original_status as string) || 'completed',
+        note: `This task was archived at ${archived.archived_at}. ` +
+          `Reason: ${(archived.deletion_reason as string) || 'routine cleanup'}`,
+      } as unknown as TaskResponse;
+    }
     return { error: `Task not found: ${args.id}` };
   }
 
@@ -1232,38 +1247,40 @@ function deleteTask(args: DeleteTaskArgs): DeleteTaskResult | ErrorResult {
     return { error: `Task not found: ${args.id}` };
   }
 
-  let archived = false;
-
-  if (task.status === 'completed') {
-    // Archive completed tasks before deleting
-    const now = new Date();
-    const archived_at = now.toISOString();
-    const archived_timestamp = Math.floor(now.getTime() / 1000);
-
-    const category_id = task.category_id ?? null;
-
-    const archiveAndDelete = db.transaction(() => {
-      db.prepare(`
-        INSERT OR REPLACE INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        task.id, task.section, category_id, task.title, task.description, task.assigned_by,
-        task.priority ?? 'normal', task.created_at, task.started_at, task.completed_at,
-        task.created_timestamp, task.completed_timestamp, task.followup_enabled,
-        task.followup_section, task.followup_prompt, archived_at, archived_timestamp
-      );
-      db.prepare('DELETE FROM tasks WHERE id = ?').run(args.id);
-    });
-    archiveAndDelete();
-    archived = true;
-  } else {
-    db.prepare('DELETE FROM tasks WHERE id = ?').run(args.id);
+  // Spawned-session guard: spawned agents can only delete completed tasks
+  if (process.env.CLAUDE_SPAWNED_SESSION === 'true' && task.status !== 'completed') {
+    return {
+      error: `Spawned agents cannot delete non-completed tasks. Task "${task.title}" is ${task.status}. ` +
+        `Only the CTO can delete active tasks. If this task is no longer needed, ` +
+        `complete it first or ask the CTO to delete it.`,
+    };
   }
+
+  // Archive the task regardless of status — no task should silently disappear
+  const now = new Date();
+  const archived_at = now.toISOString();
+  const archived_timestamp = Math.floor(now.getTime() / 1000);
+  const category_id = task.category_id ?? null;
+
+  const archiveAndDelete = db.transaction(() => {
+    db.prepare(`
+      INSERT OR REPLACE INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp, original_status, deletion_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      task.id, task.section, category_id, task.title, task.description, task.assigned_by,
+      task.priority ?? 'normal', task.created_at, task.started_at, task.completed_at,
+      task.created_timestamp, task.completed_timestamp, task.followup_enabled,
+      task.followup_section, task.followup_prompt, archived_at, archived_timestamp,
+      task.status, args.reason || 'deleted'
+    );
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(args.id);
+  });
+  archiveAndDelete();
 
   return {
     deleted: true,
     id: args.id,
-    archived,
+    archived: true,
   };
 }
 
@@ -1356,8 +1373,8 @@ function cleanup(): CleanupResult {
   // Archive completed tasks older than 3 hours
   const archiveOld = db.transaction(() => {
     const insertResult = db.prepare(`
-      INSERT OR REPLACE INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
-      SELECT id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
+      INSERT OR REPLACE INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp, original_status, deletion_reason)
+      SELECT id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?, 'completed', 'completed_older_than_3h'
       FROM tasks
       WHERE status = 'completed'
         AND completed_timestamp IS NOT NULL
@@ -1382,8 +1399,8 @@ function cleanup(): CleanupResult {
     const toRemove = completedCount - 50;
     const archiveCap = db.transaction(() => {
       const insertResult = db.prepare(`
-        INSERT INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp)
-        SELECT id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?
+        INSERT INTO archived_tasks (id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp, original_status, deletion_reason)
+        SELECT id, section, category_id, title, description, assigned_by, priority, created_at, started_at, completed_at, created_timestamp, completed_timestamp, followup_enabled, followup_section, followup_prompt, ?, ?, 'completed', 'completed_cap_overflow_50'
         FROM tasks
         WHERE status = 'completed'
         ORDER BY completed_timestamp ASC
@@ -2090,11 +2107,30 @@ function gateApproveTask(args: { id: string }): object {
 function gateKillTask(args: { id: string; reason: string }): object {
   const parsed = GateKillTaskArgsSchema.parse(args);
   const db = getDb();
-  const task = db.prepare('SELECT id, status, title FROM tasks WHERE id = ?').get(parsed.id) as { id: string; status: string; title: string } | undefined;
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(parsed.id) as TaskRecord | undefined;
   if (!task) return { error: `Task not found: ${parsed.id}` };
   if (task.status !== 'pending_review') return { error: `Task is not in pending_review status (current: ${task.status}). Only pending_review tasks can be killed.` };
 
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(parsed.id);
+  // Archive the task before killing — gate decisions should be auditable
+  const now = new Date();
+  const killTxn = db.transaction(() => {
+    db.prepare(`INSERT OR REPLACE INTO archived_tasks (
+      id, section, category_id, title, description, assigned_by, priority,
+      created_at, started_at, completed_at, created_timestamp, completed_timestamp,
+      followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp,
+      original_status, deletion_reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      task.id, task.section, task.category_id ?? null, task.title, task.description,
+      task.assigned_by, task.priority ?? 'normal', task.created_at, task.started_at,
+      task.completed_at, task.created_timestamp, task.completed_timestamp,
+      task.followup_enabled, task.followup_section, task.followup_prompt,
+      now.toISOString(), Math.floor(now.getTime() / 1000),
+      task.status, `gate_killed: ${parsed.reason}`
+    );
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(parsed.id);
+  });
+  killTxn();
+
   return { id: parsed.id, title: task.title, killed: true, reason: parsed.reason, message: `Task killed: ${parsed.reason}` };
 }
 

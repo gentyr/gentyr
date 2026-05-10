@@ -139,6 +139,25 @@ process.stdin.on('end', async () => {
       try {
         const Database = (await import('better-sqlite3')).default;
         const db = new Database(path.join(PROJECT_DIR, '.claude', 'todo.db'));
+        // Archive before deleting — no silent task loss
+        const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId);
+        if (task) {
+          const nowIso = new Date().toISOString();
+          const nowTs = Math.floor(Date.now() / 1000);
+          db.prepare(`INSERT OR IGNORE INTO archived_tasks (
+            id, section, category_id, title, description, assigned_by, priority,
+            created_at, started_at, completed_at, created_timestamp, completed_timestamp,
+            followup_enabled, followup_section, followup_prompt, archived_at, archived_timestamp,
+            original_status, deletion_reason
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+            task.id, task.section, task.category_id, task.title, task.description,
+            task.assigned_by, task.priority, task.created_at, task.started_at,
+            task.completed_at, task.created_timestamp, task.completed_timestamp,
+            task.followup_enabled, task.followup_section, task.followup_prompt,
+            nowIso, nowTs,
+            task.status, 'local_mode_secret_task_auto_kill'
+          );
+        }
         db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
         db.close();
       } catch (err) {
