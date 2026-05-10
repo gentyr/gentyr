@@ -69,13 +69,13 @@ function detectRepoSlug(cwd) {
  * @param {string} branch
  * @param {string[]} requiredChecks
  */
-function configureBranchProtection(slug, branch, requiredChecks) {
+function configureBranchProtection(slug, branch, requiredChecks, options = {}) {
   const payload = JSON.stringify({
     required_status_checks: {
       strict: true,
       contexts: requiredChecks,
     },
-    enforce_admins: false,
+    enforce_admins: options.enforceAdmins || false,
     required_pull_request_reviews: null,
     restrictions: null,
   });
@@ -117,7 +117,7 @@ function main() {
   console.log(`  Repo: ${slug}`);
 
   configureBranchProtection(slug, 'preview', ['CI']);
-  configureBranchProtection(slug, 'staging', ['CI', 'Validate Merge Chain']);
+  configureBranchProtection(slug, 'staging', ['CI', 'Validate Merge Chain'], { enforceAdmins: true });
   configureBranchProtection(slug, 'main', ['CI', 'Validate Merge Chain', 'Security Scan']);
 
   console.log(`${GREEN}Branch protection configured.${NC}`);

@@ -31,7 +31,7 @@ import { debugLog } from './debug-log.js';
 import { buildAuditorSessionSpec, buildAuthorizationAuditorSessionSpec } from './auditor-prompt.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorStrictInfraInstructions } from './persistent-monitor-strict-infra-instructions.js';
-import { checkAndExpireResources } from './resource-lock.js';
+import { checkAndExpireResources, releaseAllResources, removeFromAllQueues } from './resource-lock.js';
 import { cleanupStaleAllocations as cleanupStalePortAllocations } from './port-allocator.js';
 import { buildRevivalContext } from './persistent-revival-context.js';
 import { checkBypassBlock, getBypassResolutionContext } from './bypass-guard.js';
@@ -540,6 +540,18 @@ export function enqueueSession(spec) {
     if (planExisting) {
       log(`Dedup: plan manager for planId ${spec.metadata.planId} already has queue item ${planExisting.id} — skipping`);
       return { queueId: planExisting.id, position: 0, drained: { spawned: 0, atCapacity: false } };
+    }
+  }
+
+  // Promotion dedup: prevent duplicate sessions with the same promotion tagContext.
+  // This stops a second preview-promoter from being enqueued while one is already running.
+  if (spec.tagContext && spec.tagContext.endsWith('-promotion')) {
+    const contextExisting = db.prepare(
+      "SELECT id, title FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND tag_context = ?"
+    ).get(spec.tagContext);
+    if (contextExisting) {
+      log(`Dedup: promotion context '${spec.tagContext}' already has queue item ${contextExisting.id} ("${contextExisting.title}") — skipping`);
+      return { queueId: contextExisting.id, position: 0, drained: { spawned: 0, atCapacity: false } };
     }
   }
 
@@ -2401,6 +2413,59 @@ export function cancelQueueItem(queueId) {
   log(`Cancelled ${queueId}`);
   auditEvent('session_cancelled', { queue_id: queueId });
   return { success: true };
+}
+
+/**
+ * Cancel all active sessions linked to a given taskId.
+ * Used by the task-deletion-cascade hook to kill zombie sessions when a task is deleted.
+ *
+ * @param {string} taskId - The todo-db task ID
+ * @param {string} reason - Cancellation reason
+ * @returns {Array<{ id: string, action: string, pid?: number }>} Results per cancelled item
+ */
+export function cancelSessionsByTaskId(taskId, reason) {
+  const db = getDb();
+  const results = [];
+
+  const activeItems = db.prepare(
+    "SELECT id, status, pid, agent_id FROM queue_items WHERE status IN ('queued', 'running', 'spawning', 'suspended') AND json_extract(metadata, '$.taskId') = ?"
+  ).all(taskId);
+
+  if (activeItems.length === 0) return results;
+
+  for (const item of activeItems) {
+    if (item.status === 'queued') {
+      // Queued items: cancel directly
+      db.prepare("UPDATE queue_items SET status = 'cancelled', completed_at = datetime('now'), error = ? WHERE id = ?").run(reason, item.id);
+      auditEvent('session_cancelled', { queue_id: item.id, reason, source: 'task-deletion-cascade' });
+      results.push({ id: item.id, action: 'cancelled' });
+    } else if (item.pid) {
+      // Running/spawning/suspended items with a PID: send SIGTERM
+      try {
+        process.kill(item.pid, 'SIGTERM');
+      } catch (_) {
+        // Process may already be dead — that's fine
+      }
+      db.prepare("UPDATE queue_items SET status = 'failed', completed_at = datetime('now'), error = ? WHERE id = ?").run(reason, item.id);
+      auditEvent('session_cancelled', { queue_id: item.id, pid: item.pid, reason, source: 'task-deletion-cascade' });
+
+      // Release any shared resources held by this agent
+      if (item.agent_id) {
+        try { releaseAllResources(item.agent_id); } catch (_) { /* non-fatal */ }
+        try { removeFromAllQueues(item.agent_id); } catch (_) { /* non-fatal */ }
+      }
+
+      results.push({ id: item.id, action: 'killed', pid: item.pid });
+    } else {
+      // No PID — mark as failed
+      db.prepare("UPDATE queue_items SET status = 'failed', completed_at = datetime('now'), error = ? WHERE id = ?").run(reason, item.id);
+      auditEvent('session_cancelled', { queue_id: item.id, reason, source: 'task-deletion-cascade' });
+      results.push({ id: item.id, action: 'cancelled' });
+    }
+  }
+
+  log(`cancelSessionsByTaskId(${taskId}): ${results.length} session(s) terminated — ${reason}`);
+  return results;
 }
 
 // ============================================================================

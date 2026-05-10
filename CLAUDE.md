@@ -306,9 +306,9 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 - `preview_promotion` automation block: Auto-spawns preview-promoter every 30 minutes
 
 **Enforcement layer**:
-- `staging-lock-guard.js` (PreToolUse, root-owned): DENIES `gh pr create --base staging`, `gh pr merge` targeting staging (runtime PR target check), `git push origin staging` for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`
+- `staging-lock-guard.js` (PreToolUse, root-owned): DENIES `gh pr create --base staging`, `gh pr merge` targeting staging (runtime PR target check + CI check verification), `gh pr merge --admin` (admin CI bypass), `git push origin staging` for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`
 - `merge-chain-check.yml` (GitHub Actions): BLOCKS PRs from non-preview branches to staging
-- `setup-branch-protection.js`: Configures GitHub required status checks
+- `setup-branch-protection.js`: Configures GitHub required status checks; staging has `enforce_admins: true` to prevent admin CI bypass
 
 **CTO bypass**: Agent calls `record_cto_decision` with the CTO's verbatim approval → `authorization-audit-spawner.js` enqueues an independent auditor → on audit pass, `deferred-action-audit-executor.js` executes the blocked action autonomously.
 
@@ -643,7 +643,7 @@ New tasks created by non-privileged agents enter `pending_review` status and are
 
 **Race condition prevention**: `urgent-task-spawner.js` (Universal Task Spawner v2.0.0) checks concurrency limits on the input side; `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
 
-**Task Safety — No Silent Deletion**: Every delete path in `todo-db` archives before removing. `delete_task` archives tasks of any status (not just completed) and accepts an optional `reason` parameter recorded in `archived_tasks.deletion_reason`. `get_task` falls back to `archived_tasks` before returning "not found" — returning the archived record with `archived: true`, `original_status`, and `deletion_reason`. Spawned agents (`CLAUDE_SPAWNED_SESSION=true`) are blocked from deleting non-completed tasks — only CTO/interactive sessions may remove active work. `gate_kill_task` and local-mode auto-kill paths in `task-gate-spawner.js` also archive before deleting. `todo-maintenance.js` and the `cleanup` handler populate `original_status` and `deletion_reason` on all archive writes. Schema: `archived_tasks` table gains `original_status TEXT` and `deletion_reason TEXT` columns (auto-migrated via idempotent `ALTER TABLE`).
+**Task Safety — No Silent Deletion**: Every delete path in `todo-db` archives before removing. `delete_task` archives tasks of any status (not just completed) and accepts an optional `reason` parameter recorded in `archived_tasks.deletion_reason`. `get_task` falls back to `archived_tasks` before returning "not found" — returning the archived record with `archived: true`, `original_status`, and `deletion_reason`. Spawned agents (`CLAUDE_SPAWNED_SESSION=true`) are blocked from deleting non-completed tasks — only CTO/interactive sessions may remove active work. `gate_kill_task` and local-mode auto-kill paths in `task-gate-spawner.js` also archive before deleting. `todo-maintenance.js` and the `cleanup` handler populate `original_status` and `deletion_reason` on all archive writes. Schema: `archived_tasks` table gains `original_status TEXT` and `deletion_reason TEXT` columns (auto-migrated via idempotent `ALTER TABLE`). **Session cascade on deletion**: The `task-deletion-cascade.js` PostToolUse hook fires on `delete_task` and calls `cancelSessionsByTaskId()` (from `session-queue.js`) to terminate all active sessions linked to the deleted task — preventing zombie sessions from continuing work on deleted tasks.
 
 ## Universal Audit Gate System
 
@@ -911,7 +911,7 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 **Revival integration**: `scripts/revival-daemon.js` calls `drainQueue()` on agent death to unblock queued items when capacity frees up.
 
-**Dedup-by-taskId**: `enqueueSession()` checks for an existing `queued`, `running`, or `spawning` item with the same `metadata.taskId` **and the same lane** before inserting. If found, returns the existing queue item immediately (no duplicate spawn). Lane-scoped dedup ensures audit-lane auditors are not blocked by the original task running in the standard lane — the same `taskId` can exist in different lanes simultaneously (e.g., the task agent in `standard` and its auditor in `audit`). A second dedup layer checks `metadata.persistentTaskId` for persistent-lane items, preventing duplicate monitor spawns when multiple revival mechanisms fire concurrently for the same persistent task.
+**Dedup-by-taskId**: `enqueueSession()` checks for an existing `queued`, `running`, or `spawning` item with the same `metadata.taskId` **and the same lane** before inserting. If found, returns the existing queue item immediately (no duplicate spawn). Lane-scoped dedup ensures audit-lane auditors are not blocked by the original task running in the standard lane — the same `taskId` can exist in different lanes simultaneously (e.g., the task agent in `standard` and its auditor in `audit`). A second dedup layer checks `metadata.persistentTaskId` for persistent-lane items, preventing duplicate monitor spawns when multiple revival mechanisms fire concurrently for the same persistent task. A third dedup layer checks `tagContext` for values ending in `-promotion` — prevents duplicate preview-promoter sessions when hourly automation re-triggers while an existing promoter is still running.
 
 **Agent definition loading** (`--agent` flag): The `queue_items` schema includes an `agent TEXT` column. When `spec.agent` is passed to `enqueueSession()`, `spawnQueueItem()` adds `--agent <name>` to the Claude CLI args, causing the spawned session to load the corresponding `.claude/agents/<name>.md` agent definition. This enforces model, allowedTools, and behavioral instructions from the agent definition. Key agent mappings: plan-manager monitors pass `agent: 'plan-manager'`, regular persistent monitors pass `agent: 'persistent-monitor'`, demo repair agents pass `agent: 'demo-manager'`. The shared revival prompt builder (`buildPersistentMonitorRevivalPrompt`) returns the `agent` field alongside `prompt`, `extraEnv`, and `metadata`.
 
@@ -1612,7 +1612,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | block-team-tools.js | `TeamCreate,TeamDelete,SendMessage` | Block Team tools (use Agent tool instead) |
 | secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
 | protected-action-gate.js | `mcp__*` | Block protected MCP actions; store as deferred action for spawned agents |
-| staging-lock-guard.js | `Bash` | Block staging operations (gh pr create --base staging, gh pr merge targeting staging, git push, git merge) for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true` |
+| staging-lock-guard.js | `Bash` | Block staging operations (gh pr create --base staging, gh pr merge targeting staging, gh pr merge --admin, git push, git merge) for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`; CI check verification on staging merges |
 | worktree-sync-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block `gentyr sync` when CWD is inside a worktree (sync destroys the worktree directory) |
 | gate-confirmation-enforcer.js | `mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task` | Block task completion while `pending_audit` is active; prevents bypassing the audit gate |
 | signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |
@@ -1639,6 +1639,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | workstream-spawner.js | `create_task` | Auto-spawn workstream tasks |
 | persistent-task-linker.js | `create_task` | Auto-link sub-tasks to persistent tasks |
 | orchestration-guidance-hook.js | `create_task` | Analyze task complexity; nudge CTO toward parallel tasks, persistent tasks, or plans when complexity signals detected |
+| task-deletion-cascade.js | `delete_task` | Cascade-kill running sessions linked to a deleted task via `cancelSessionsByTaskId` |
 | project-manager-reminder.js | `summarize_work` | Remind to spawn project-manager |
 | worktree-cleanup-gate.js | `summarize_work` | Remind to clean up worktree |
 | plan-work-tracker.js | `summarize_work` | Record work against plan tasks |
