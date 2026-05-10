@@ -306,7 +306,7 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 - `preview_promotion` automation block: Auto-spawns preview-promoter every 30 minutes
 
 **Enforcement layer**:
-- `staging-lock-guard.js` (PreToolUse, root-owned): DENIES `gh pr merge --base staging`, `git push origin staging` for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`
+- `staging-lock-guard.js` (PreToolUse, root-owned): DENIES `gh pr create --base staging`, `gh pr merge` targeting staging (runtime PR target check), `git push origin staging` for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`
 - `merge-chain-check.yml` (GitHub Actions): BLOCKS PRs from non-preview branches to staging
 - `setup-branch-protection.js`: Configures GitHub required status checks
 
@@ -1442,7 +1442,9 @@ The release-ledger MCP server (`packages/mcp-servers/src/release-ledger/`) track
 
 **Shared module**: `.claude/hooks/lib/staging-lock.js` — manages lock state at `.claude/state/staging-lock.json`. Exports `lockStaging(releaseId, options)`, `unlockStaging(releaseId, options)`, `isStagingLocked()`, `getStagingLockState()`. Best-effort GitHub branch protection via `gh api` (non-fatal — local state file is the primary enforcement mechanism).
 
-**PreToolUse hook**: `.claude/hooks/staging-lock-guard.js` — blocks Bash commands that would merge into staging when the lock is active. Blocked patterns: `gh pr merge --base staging` (and `--base=staging`, `-B staging`), `git push origin staging` (including refspecs like `HEAD:staging`), `git merge staging`. Uses the same shell tokenizer as `main-tree-commit-guard.js`. Fast exits: `GENTYR_PROMOTION_PIPELINE=true` passes through unconditionally, as does any call when staging is unlocked (most common path). Fail-open on unexpected errors.
+**PreToolUse hook**: `.claude/hooks/staging-lock-guard.js` — blocks Bash commands that would create PRs targeting staging or merge into staging. Blocked patterns: `gh pr create --base staging` (and `--base=staging`, `-B staging`), `gh pr merge` targeting staging (runtime PR target check via `gh pr view`), `git push origin staging` (including refspecs like `HEAD:staging`), `git merge staging`. Uses the same shell tokenizer as `main-tree-commit-guard.js`. Fast exit: `GENTYR_PROMOTION_PIPELINE=true` passes through unconditionally. The guard is always-on — staging operations are blocked regardless of lock state for non-pipeline agents. Fail-open on `gh pr view` timeout (2s) and unexpected errors.
+
+**Manual promotion**: `/promote-to-staging` slash command calls `mcp__deputy-cto__trigger_preview_promotion` which spawns the preview-promoter agent directly via `enqueueSession({ agent: 'preview-promoter' })` with `GENTYR_PROMOTION_PIPELINE=true`. Do NOT use `create_task` or `force_spawn_tasks` for staging promotion — the task system routes through category-based resolution which does not load the preview-promoter agent definition.
 
 ### /promote-to-prod — CTO-Initiated Production Release
 
@@ -1610,7 +1612,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | block-team-tools.js | `TeamCreate,TeamDelete,SendMessage` | Block Team tools (use Agent tool instead) |
 | secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
 | protected-action-gate.js | `mcp__*` | Block protected MCP actions; store as deferred action for spawned agents |
-| staging-lock-guard.js | `Bash` | Block staging merges (gh pr merge, git push, git merge) when staging is locked for a production release |
+| staging-lock-guard.js | `Bash` | Block staging operations (gh pr create --base staging, gh pr merge targeting staging, git push, git merge) for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true` |
 | worktree-sync-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block `gentyr sync` when CWD is inside a worktree (sync destroys the worktree directory) |
 | gate-confirmation-enforcer.js | `mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task` | Block task completion while `pending_audit` is active; prevents bypassing the audit gate |
 | signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |

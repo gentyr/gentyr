@@ -127,6 +127,9 @@ import {
   type ClearedQuestionItem,
   type AutonomousModeConfig,
   type ErrorResult,
+  TriggerPreviewPromotionArgsSchema,
+  type TriggerPreviewPromotionArgs,
+  type TriggerPreviewPromotionResult,
 } from './types.js';
 
 // ============================================================================
@@ -2303,6 +2306,132 @@ Complete within 25 minutes. If blocked, report and exit.`,
 }
 
 // ============================================================================
+// Preview Promotion
+// ============================================================================
+
+async function triggerPreviewPromotion(args: TriggerPreviewPromotionArgs): Promise<TriggerPreviewPromotionResult | ErrorResult> {
+  // 1. Check staging lock
+  try {
+    const stagingLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'staging-lock.js');
+    if (fs.existsSync(stagingLockPath)) {
+      const { isStagingLocked } = await import(stagingLockPath);
+      if (isStagingLocked(PROJECT_DIR)) {
+        return { error: 'Preview promotion blocked: staging is locked for a production release. Complete or cancel the release via /promote-to-prod.' };
+      }
+    }
+  } catch { /* non-fatal — proceed if lock check fails */ }
+
+  // 2. Check branches exist
+  try {
+    execSync('git rev-parse --verify origin/preview', { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+    execSync('git rev-parse --verify origin/staging', { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+  } catch {
+    return { error: 'Preview or staging branch not found. Both must exist for promotion.' };
+  }
+
+  // 3. Check for commits to promote
+  let commits: string[];
+  try {
+    const output = execSync('git log --oneline origin/staging..origin/preview', {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+    }).trim();
+    if (!output) {
+      return { error: 'Preview and staging are in sync. Nothing to promote.' };
+    }
+    commits = output.split('\n');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to check preview-staging drift: ${message}` };
+  }
+
+  // 4. Spawn preview-promoter via session queue
+  try {
+    const { enqueueSession } = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js'));
+
+    let currentSha: string;
+    try {
+      currentSha = execSync('git rev-parse origin/preview', {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      }).trim();
+    } catch {
+      currentSha = Date.now().toString(16);
+    }
+
+    const promotionId = args.promotion_id || `prom-${Date.now()}-${currentSha.slice(0, 8)}`;
+    const commitList = commits.join('\n');
+
+    // Create promotion worktree (same pattern as hourly-automation.js)
+    let cwd = PROJECT_DIR;
+    let mcpConfig = path.join(PROJECT_DIR, '.mcp.json');
+    try {
+      const { createWorktree } = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'worktree-manager.js'));
+      const branchName = 'automation/preview-promotion';
+      const worktree = createWorktree(branchName, 'preview');
+      if (worktree.created) {
+        cwd = worktree.path;
+      } else {
+        cwd = worktree.path;
+        try {
+          execSync('git pull --ff-only', { cwd: worktree.path, encoding: 'utf8', timeout: 30000, stdio: 'pipe' });
+        } catch { /* non-fatal */ }
+      }
+      mcpConfig = path.join(cwd, '.mcp.json');
+    } catch {
+      // Fall back to PROJECT_DIR (same as hourly-automation)
+    }
+
+    const result = enqueueSession({
+      title: `[Preview → Staging] ${commits.length} commits`,
+      agentType: 'preview-promoter',
+      hookType: 'hourly-automation',
+      tagContext: 'preview-promotion',
+      source: 'deputy-cto-server',
+      priority: 'urgent',
+      agent: 'preview-promoter',
+      buildPrompt: (agentId: string) => [
+        `[Automation][preview-promoter][AGENT:${agentId}]`,
+        `## Preview → Staging Promotion`,
+        ``,
+        `**Promotion ID**: ${promotionId}`,
+        `**Commits to promote** (${commits.length}):`,
+        '```',
+        commitList,
+        '```',
+        ``,
+        `Follow your agent instructions to evaluate quality, run tests/demos,`,
+        `and promote if all gates pass.`,
+        ``,
+        `Artifact directory: .claude/promotions/${promotionId}/`,
+      ].join('\n'),
+      extraEnv: {
+        CLAUDE_PROJECT_DIR: PROJECT_DIR,
+        GENTYR_PROMOTION_ID: promotionId,
+        GENTYR_PROMOTION_PIPELINE: 'true',
+      },
+      metadata: {
+        promotionId,
+        commitCount: commits.length,
+        previewSha: currentSha,
+      },
+      cwd,
+      mcpConfig,
+      projectDir: PROJECT_DIR,
+    });
+
+    return {
+      queueId: result.queueId,
+      promotionId,
+      commitCount: commits.length,
+      commits,
+      message: `Preview-promoter enqueued (queue ID: ${result.queueId}). ${commits.length} commits will be evaluated through the full quality pipeline (migration safety, tests, coverage, demos) before promotion.`,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to enqueue preview-promoter: ${message}` };
+  }
+}
+
+// ============================================================================
 // Promotion Bypass Functions
 // ============================================================================
 
@@ -2734,6 +2863,12 @@ const tools: AnyToolHandler[] = [
     description: 'Execute a CTO-approved emergency hotfix promotion from staging to main. Requires prior APPROVE HOTFIX approval. Bypasses 24h stability and midnight window.',
     schema: ExecuteHotfixPromotionArgsSchema,
     handler: executeHotfixPromotion,
+  },
+  {
+    name: 'trigger_preview_promotion',
+    description: 'Trigger a preview → staging promotion. Spawns the preview-promoter agent with full quality gates (migration safety, tests, coverage, related demos). This is the ONLY correct way to manually trigger promotion — do NOT use create_task for staging promotion.',
+    schema: TriggerPreviewPromotionArgsSchema,
+    handler: triggerPreviewPromotion,
   },
 ];
 
