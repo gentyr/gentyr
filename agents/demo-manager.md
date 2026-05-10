@@ -359,6 +359,73 @@ For each persona-feature mapping:
 - For services with long startup (code-server postinstall, database init), use `timeout_ms: 300000` (5 min)
 - **Stall detection**: Foreground prerequisites are killed after 120 seconds of no stdout/stderr. Background demo processes are killed after 45 seconds of silence (following a 30-second grace period). Always emit progress output — see "Progress Checkpoints" above.
 
+### Fly.io Project Image Management
+
+The project image is a Docker image with your project's dependencies pre-installed. It reduces Fly.io demo cold starts from ~5 minutes to ~10 seconds.
+
+#### What's Baked Into the Project Image
+- **Git clone** at the specified branch (typically `preview`)
+- **All node_modules** from `pnpm install --frozen-lockfile`
+- **Playwright Chromium** browser binaries
+- **Optional build artifacts** via `build_cmd` parameter
+- **Sentinel file** (`/app/.project-image`) that tells `remote-runner.sh` to skip clone/install
+
+#### What Runs at Machine Startup (NOT in the image)
+- `git fetch + checkout` — pulls latest code (~5-10s, even with project image)
+- **Prerequisites** — passed via `GENTYR_PREREQUISITES` env var, executed by `remote-runner.sh`
+- **Dev server** — started fresh each run
+- **Playwright tests** — the actual demo
+
+#### When to Deploy a New Project Image
+Do NOT deploy before every batch. The project image is a performance optimization, not a correctness requirement. `pnpm install` on the machine handles any lockfile delta in ~30 seconds.
+
+**Deploy when:**
+- `get_fly_status()` shows `projectImageAgeHours > 24` — the image is getting old
+- You see `install_timeout` failures — major dependency changes outgrew the delta window
+- A major dependency was added/removed (new framework, database driver, etc.)
+- `get_fly_status()` shows `projectImageDeployed: false` — no image exists
+
+**Do NOT deploy when:**
+- The lockfile changed from a minor PR (patch version bumps, devDependency adds)
+- You just deployed within the last 2 hours
+- You're in a deploy->stale->deploy loop — STOP and just run the batch
+
+#### How to Deploy
+```
+deploy_project_image()                    # Standard deploy (2-hour cooldown)
+deploy_project_image({ force: true })     # Override cooldown
+deploy_project_image({ build_cmd: "pnpm --filter '@myorg/*' build" })  # Include build step
+```
+
+The deploy runs in the background (3-10 minutes). You can run batches while it's deploying — they'll use the existing image or base image with extended timeouts.
+
+#### Ensuring Full Image Capabilities
+To minimize cold start time, ensure the project image has everything demos need:
+
+1. **Dependencies**: Automatic — `pnpm install` runs during image build
+2. **Build artifacts**: Pass `build_cmd` to `deploy_project_image()` for workspace packages that need compilation:
+   ```
+   deploy_project_image({ build_cmd: "pnpm --filter '@myorg/shared' --filter '@myorg/ui' build" })
+   ```
+3. **Playwright browsers**: Automatic — `npx playwright install chromium` runs during build
+4. **Prerequisites**: NOT baked in (they're runtime). But for long-running setup commands that are stable and deterministic, consider including them in `build_cmd` to pre-warm the image
+
+#### Prerequisites vs Build Commands
+- **Prerequisites** (`register_prerequisite`): Dynamic, run every time, can change between demos. Good for: dev servers, auth setup, seed data, services that need the latest code.
+- **Build commands** (`build_cmd` in `deploy_project_image`): Baked into the image, only change on redeploy. Good for: compiling shared packages, generating static assets, installing system tools.
+
+If a prerequisite is slow (>30s) and its output is deterministic (same result every time regardless of code changes), consider moving it to `build_cmd` instead.
+
+#### Evaluating Image Health
+Use `get_fly_status()` to check:
+- `projectImageDeployed` — does a project image exist?
+- `projectImageAgeHours` — how old is it?
+- `projectImageEnabled` — is it being used?
+- `projectImageLockfileMatch` — does the lockfile match? (informational — a mismatch means minor dep changes, not a broken image)
+- `projectImageRecommendation` — human-readable suggestion (null when image is fresh)
+
+A project image with a mismatched lockfile is still vastly faster than no project image. The machine runs `pnpm install` regardless — with the project image it installs the delta (~30s), without it installs everything (~5min).
+
 ### Auto-Set PLAYWRIGHT_BASE_URL
 
 When a dev server prerequisite is registered and healthy, `run_demo` and `run_demo_batch` automatically set `PLAYWRIGHT_BASE_URL` in the child environment. This tells Playwright to skip its own `webServer` startup block, reducing demo start time from ~150s to ~15s. You do NOT need to pass `base_url` to `run_demo` — it defaults to `http://localhost:3000` and auto-detects the healthy server.

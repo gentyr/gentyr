@@ -801,8 +801,8 @@ function buildInteractiveBriefing() {
                 } else {
                   lines.push(`Fly.io: project image deploy in progress (${deployAgeMin}min ago)`);
                 }
-              } else if (projFreshness.stale) {
-                lines.push(`Fly.io: PROJECT IMAGE STALE — pnpm-lock.yaml changed since last build. Remote demos will cold-install deps (~5min). Run deploy_project_image({ force: true })`);
+              } else if (projFreshness.freshnessTier === 'stale') {
+                lines.push(`Fly.io: project image ${projFreshness.ageHours}h old — use get_fly_status() to check health if demo installs seem slow`);
               } else if (projFreshness.deployFailed) {
                 lines.push(`Fly.io: project image deploy FAILED at ${projFreshness.meta?.deployFailedAt || 'unknown time'}. Run deploy_project_image({ force: true }) to retry.`);
               } else if (!svcConfig.fly.projectImageEnabled) {

@@ -131,6 +131,7 @@ export function readProjectImageMetadata(projectDir) {
  *   meta: object|undefined,
  *   currentLockfileHash: string|undefined,
  *   storedLockfileHash: string|undefined,
+ *   freshnessTier: string,
  * }}
  */
 export function checkProjectImageStaleness(projectDir) {
@@ -142,6 +143,7 @@ export function checkProjectImageStaleness(projectDir) {
       deploying: false,
       deployFailed: false,
       deployPidAlive: null,
+      freshnessTier: 'missing',
     };
   }
 
@@ -174,6 +176,9 @@ export function checkProjectImageStaleness(projectDir) {
     currentLockfileHash = crypto.createHash('sha256').update(content).digest('hex');
   } catch {
     // Lockfile missing or unreadable — cannot determine staleness
+    let earlyTier = 'fresh';
+    if (deployFailed) earlyTier = 'missing';
+    else if (deploying) earlyTier = 'deploying';
     return {
       hasMeta: true,
       stale: null,
@@ -184,11 +189,21 @@ export function checkProjectImageStaleness(projectDir) {
       meta,
       currentLockfileHash: undefined,
       storedLockfileHash: meta.lockfileHash,
+      freshnessTier: earlyTier,
     };
   }
 
   const storedLockfileHash = meta.lockfileHash;
-  const stale = storedLockfileHash != null ? currentLockfileHash !== storedLockfileHash : null;
+  // Project image is always usable when deployed — pnpm handles lockfile delta (~30s)
+  const stale = false;
+
+  // Informational tier for logging/briefing — does NOT affect timeouts or fallback behavior
+  let freshnessTier = 'fresh';
+  if (!meta || deployFailed) freshnessTier = 'missing';
+  else if (deploying) freshnessTier = 'deploying';
+  else if (storedLockfileHash != null && currentLockfileHash !== storedLockfileHash) {
+    freshnessTier = ageHours != null && ageHours < 4 ? 'warm' : 'stale';
+  }
 
   return {
     hasMeta: true,
@@ -200,5 +215,6 @@ export function checkProjectImageStaleness(projectDir) {
     meta,
     currentLockfileHash,
     storedLockfileHash,
+    freshnessTier,
   };
 }

@@ -5163,10 +5163,10 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
           }
         }
 
-        if (projFreshness.stale) {
-          log(`Fly.io project image STALE: pnpm-lock.yaml changed (stored: ${(projFreshness.storedLockfileHash || '').slice(0, 8)}..., current: ${(projFreshness.currentLockfileHash || '').slice(0, 8)}...)`);
+        if (projFreshness.freshnessTier === 'missing') {
+          log(`Fly.io project image MISSING — no metadata or deploy failed`);
 
-          // File a deputy-CTO report for visibility (dedup against 24h)
+          // File a deputy-CTO report only for truly missing images (dedup against 24h)
           try {
             if (Database) {
               const reportsDbPath = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
@@ -5174,23 +5174,22 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
                 const reportsDb = new Database(reportsDbPath);
                 try {
                   const existing = reportsDb.prepare(
-                    `SELECT id FROM reports WHERE title LIKE '%project image stale%' AND triage_status = 'pending' AND created_at > datetime('now', '-24 hours') LIMIT 1`
+                    `SELECT id FROM reports WHERE title LIKE '%project image missing%' AND triage_status = 'pending' AND created_at > datetime('now', '-24 hours') LIMIT 1`
                   ).get();
                   if (!existing) {
                     reportsDb.prepare(
                       `INSERT INTO reports (id, title, summary, category, priority, reporting_agent, triage_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
                     ).run(
                       randomUUID(),
-                      'Fly.io project image stale — remote demos degraded',
-                      `The Fly.io project image lockfile hash does not match the current pnpm-lock.yaml. ` +
-                      `All remote demos will fall back to base image with 5+ minute cold installs. ` +
-                      `Fix: call deploy_project_image({ force: true }) to rebuild the project image.`,
+                      'Fly.io project image missing — cold installs active',
+                      `No project image is available. Remote demos will cold-install deps (~5min). ` +
+                      `Deploy with: deploy_project_image()`,
                       'infrastructure',
                       'high',
                       'hourly-automation',
                       'pending'
                     );
-                    log('Filed deputy-CTO report for stale Fly.io project image');
+                    log('Filed deputy-CTO report for missing Fly.io project image');
                   }
                 } finally {
                   reportsDb.close();
@@ -5198,10 +5197,13 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
               }
             }
           } catch (reportErr) {
-            log(`Failed to file stale project image report (non-fatal): ${reportErr.message}`);
+            log(`Failed to file missing project image report (non-fatal): ${reportErr.message}`);
           }
+        } else if (projFreshness.freshnessTier === 'stale') {
+          log(`Fly.io project image ${projFreshness.ageHours}h old (lockfile changed) — pnpm delta install handles this`);
+          // No report — this is normal in active repos
         } else {
-          log(`Fly.io project image: fresh (${projFreshness.ageHours}h old)`);
+          log(`Fly.io project image: ${projFreshness.freshnessTier} (${projFreshness.ageHours}h old)`);
         }
       } catch (err) {
         log(`Fly.io project image freshness check error (non-fatal): ${err.message}`);
