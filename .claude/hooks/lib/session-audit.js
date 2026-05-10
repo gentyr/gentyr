@@ -9,6 +9,10 @@
  *   session_reaped_complete, session_hard_killed, session_revival_triggered,
  *   session_suspended, session_preempted
  *
+ * Task lifecycle events:
+ *   task_created, task_completed, task_deleted,
+ *   task_gate_killed, task_gate_approved, task_status_changed
+ *
  * CTO Preemption Events:
  *   session_suspended — emitted when a running session is preempted by a CTO task.
  *     Fields: queue_id, agent_id, pid, title, priority, elapsed, cto_queue_id, session_id
@@ -26,8 +30,8 @@ const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const AUDIT_LOG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-audit.log');
 
 // Cleanup thresholds
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
-const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const CLEANUP_INTERVAL = 100; // Every N writes
 
 let _writesSinceCleanup = 0;
@@ -62,8 +66,8 @@ export function auditEvent(event, fields = {}) {
 }
 
 /**
- * Delete audit log lines older than 24 hours via atomic tmp+rename rewrite.
- * Also halves the file if it exceeds 5MB.
+ * Delete audit log lines older than 30 days via atomic tmp+rename rewrite.
+ * Also halves the file if it exceeds 50MB.
  */
 export function cleanupAuditLog() {
   try {
@@ -85,7 +89,7 @@ export function cleanupAuditLog() {
       }
     });
 
-    // If still over 5MB, keep only the newer half
+    // If still over 50MB, keep only the newer half
     if (stat.size > MAX_FILE_SIZE && kept.length > 1) {
       kept = kept.slice(Math.floor(kept.length / 2));
     }

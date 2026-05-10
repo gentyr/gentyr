@@ -973,13 +973,13 @@ SQLite-backed multi-resource coordination system. Worktree agents acquire exclus
 
 Structured JSON-lines audit trail covering the full session lifecycle.
 
-**Log file**: `.claude/state/session-audit.log`. JSON-lines format, one event per line. 24h retention, 5MB cap (halved on overflow), atomic tmp+rename cleanup.
+**Log file**: `.claude/state/session-audit.log`. JSON-lines format, one event per line. 30-day retention, 50MB cap (halved on overflow), atomic tmp+rename cleanup.
 
-**Event types**: `session_enqueued`, `session_spawned`, `session_completed`, `session_failed`, `session_cancelled`, `session_ttl_expired`, `session_reaped_dead`, `session_reaped_complete`, `session_hard_killed`, `session_revival_triggered`, `session_suspended`, `session_preempted`, `session_sync_recycled`, `session_sync_revived`, `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted`, `persistent_task_paused`, `persistent_task_cancelled`, `audit_revival_candidate` (sync pass flagged a dead auditor for re-spawn), `audit_session_revived` (Step 1b.5 spawned a fresh auditor), `session_queue_db_recovered` (DB corruption detected and fresh DB created).
+**Event types**: `session_enqueued`, `session_spawned`, `session_completed`, `session_failed`, `session_cancelled`, `session_ttl_expired`, `session_reaped_dead`, `session_reaped_complete`, `session_hard_killed`, `session_revival_triggered`, `session_suspended`, `session_preempted`, `session_sync_recycled`, `session_sync_revived`, `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted`, `persistent_task_paused`, `persistent_task_cancelled`, `audit_revival_candidate` (sync pass flagged a dead auditor for re-spawn), `audit_session_revived` (Step 1b.5 spawned a fresh auditor), `session_queue_db_recovered` (DB corruption detected and fresh DB created). Task lifecycle events (emitted by `todo-db` MCP server): `task_created`, `task_completed`, `task_deleted`, `task_gate_killed`, `task_gate_approved`, `task_status_changed`.
 
-**Emission points**: `session-queue.js` (all lifecycle transitions), `session-reviver.js` (all 3 revival modes), `stop-continue-hook.js` (inline revival), `revival-daemon.js` (dead agent detection and revival), `persistent-task-spawner.js` (pause and cancel lifecycle transitions), `cli/commands/sync.js` (`session_sync_recycled` on kill, `session_sync_revived` on re-enqueue).
+**Emission points**: `session-queue.js` (all lifecycle transitions), `session-reviver.js` (all 3 revival modes), `stop-continue-hook.js` (inline revival), `revival-daemon.js` (dead agent detection and revival), `persistent-task-spawner.js` (pause and cancel lifecycle transitions), `cli/commands/sync.js` (`session_sync_recycled` on kill, `session_sync_revived` on re-enqueue), `todo-db/server.ts` (task lifecycle: create, complete, delete, gate approve/kill, status changes).
 
-**Cleanup**: `cleanupAuditLog()` called from hourly-automation's `session_reaper` runIfDue block. Also triggered internally every 100 writes when file exceeds 5MB.
+**Cleanup**: `cleanupAuditLog()` called from hourly-automation's `session_reaper` runIfDue block. Also triggered internally every 100 writes when file exceeds 50MB.
 
 **Key file**: `.claude/hooks/lib/session-audit.js`.
 
