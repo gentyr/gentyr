@@ -634,7 +634,7 @@ New tasks created by non-privileged agents enter `pending_review` status and are
 
 **Gate decision tools** (on `todo-db` server):
 - `gate_approve_task` — moves `pending_review` → `pending`
-- `gate_kill_task` — deletes a `pending_review` task with reason
+- `gate_kill_task` — archives and deletes a `pending_review` task with reason (audit trail preserved in `archived_tasks`)
 - `gate_escalate_task` — approves task AND creates a deputy-CTO report for review
 
 **PostToolUse hook** (`.claude/hooks/task-gate-spawner.js`): Fires on `mcp__todo-db__create_task`. When the response shows `status: 'pending_review'`, spawns a Haiku gate agent that checks for duplicates, feature stability locks, and CTO intent before deciding.
@@ -642,6 +642,8 @@ New tasks created by non-privileged agents enter `pending_review` status and are
 **Crash recovery**: `hourly-automation.js` auto-approves stale `pending_review` tasks older than 10 minutes (gate agent timed out or crashed).
 
 **Race condition prevention**: `urgent-task-spawner.js` (Universal Task Spawner v2.0.0) checks concurrency limits on the input side; `task-gate-spawner.js` checks `tool_response.status === 'pending_review'` (output-side). No overlap.
+
+**Task Safety — No Silent Deletion**: Every delete path in `todo-db` archives before removing. `delete_task` archives tasks of any status (not just completed) and accepts an optional `reason` parameter recorded in `archived_tasks.deletion_reason`. `get_task` falls back to `archived_tasks` before returning "not found" — returning the archived record with `archived: true`, `original_status`, and `deletion_reason`. Spawned agents (`CLAUDE_SPAWNED_SESSION=true`) are blocked from deleting non-completed tasks — only CTO/interactive sessions may remove active work. `gate_kill_task` and local-mode auto-kill paths in `task-gate-spawner.js` also archive before deleting. `todo-maintenance.js` and the `cleanup` handler populate `original_status` and `deletion_reason` on all archive writes. Schema: `archived_tasks` table gains `original_status TEXT` and `deletion_reason TEXT` columns (auto-migrated via idempotent `ALTER TABLE`).
 
 ## Universal Audit Gate System
 
