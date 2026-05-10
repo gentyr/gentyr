@@ -18,6 +18,9 @@ allowedTools:
   - mcp__agent-reports__report_to_deputy_cto
   - mcp__agent-tracker__send_session_signal
   - mcp__agent-tracker__summarize_work
+  - mcp__agent-tracker__force_spawn_tasks
+  - mcp__todo-db__create_task
+  - mcp__todo-db__get_task
   - mcp__todo-db__complete_task
   - mcp__vercel__vercel_list_deployments
   - mcp__vercel__vercel_get_deployment
@@ -124,9 +127,27 @@ Run the full test suite:
 mcp__playwright__run_tests (headless, full suite)
 ```
 
-If tests FAIL: record the results in `test-results.json` in the promotion artifact directory, report the failure via `mcp__agent-reports__report_to_deputy_cto` with the failing test names, call `mcp__agent-tracker__summarize_work`, and exit.
+If tests PASS: Record passing results in `test-results.json` and proceed to Step 3.5.
 
-Record passing test results in `test-results.json`.
+If tests FAIL: Enter the **Test Failure Self-Healing Loop:**
+
+1. Parse the test output to identify failing test files, test names, and error messages
+2. Create an urgent `Test Suite Work` category task via `mcp__todo-db__create_task`:
+   - Title: "Fix failing tests blocking staging promotion: {test_file}"
+   - Description: Include the exact error output, assertion failures, and file paths
+   - Priority: `urgent`
+   - `assigned_by`: `"cto"` (gate-bypass for immediate spawning)
+3. Spawn the task immediately via `mcp__agent-tracker__force_spawn_tasks`
+4. Wait for the task to complete (poll `mcp__todo-db__get_task` every 60 seconds, max 30 minutes)
+5. After the fix task completes, re-run tests: `mcp__playwright__run_tests`
+6. If tests now PASS — proceed to Step 3.5
+7. If tests still FAIL — repeat from step 1 (max 3 iterations)
+8. After 3 failed iterations:
+   - Record the remaining failures in `test-results.json`
+   - Report to CTO via `mcp__agent-reports__report_to_deputy_cto` with what's still failing
+   - EXIT without promoting — do NOT proceed
+
+CRITICAL: Never proceed to Step 3.5 or promote with failing tests. The self-healing loop must either fix all tests or escalate — there is no "close enough."
 
 ### Step 3.5: Coverage Gate
 
@@ -195,12 +216,19 @@ If an open PR exists, wait for CI and merge it:
 gh pr checks {number} --watch --fail-on-fail
 ```
 
-If CI fails after creating the PR:
+If CI fails after creating/finding the PR, enter the **CI Failure Self-Healing Loop:**
 1. Diagnose failures via `gh run view <run-id> --log-failed`
-2. Push fix commits to the source branch
-3. Wait for CI re-run: `gh pr checks <number> --watch --fail-on-fail`
-4. Repeat up to 5 times
-5. If still failing after 5 attempts, report to CTO and EXIT without merging
+2. Create an urgent `Standard Development` task via `mcp__todo-db__create_task`:
+   - Title: "Fix CI failure blocking staging promotion: {failure_summary}"
+   - Description: Include the full CI failure log output and the PR number
+   - Priority: `urgent`
+   - `assigned_by`: `"cto"` (gate-bypass for immediate spawning)
+3. Spawn the task immediately via `mcp__agent-tracker__force_spawn_tasks`
+4. Wait for the task to complete (poll `mcp__todo-db__get_task` every 60 seconds, max 30 minutes)
+5. After the fix lands, re-check CI: `gh pr checks <number> --watch --fail-on-fail`
+6. If CI passes — proceed to merge
+7. If CI still fails — repeat from step 1 (max 3 iterations)
+8. After 3 failed iterations: Report to CTO and EXIT without merging
 
 ```bash
 gh pr merge {number} --merge
@@ -223,12 +251,19 @@ Demos: {verdict}"
 gh pr checks {number} --watch --fail-on-fail
 ```
 
-If CI fails after creating the PR:
+If CI fails after creating/finding the PR, enter the **CI Failure Self-Healing Loop:**
 1. Diagnose failures via `gh run view <run-id> --log-failed`
-2. Push fix commits to the source branch
-3. Wait for CI re-run: `gh pr checks <number> --watch --fail-on-fail`
-4. Repeat up to 5 times
-5. If still failing after 5 attempts, report to CTO and EXIT without merging
+2. Create an urgent `Standard Development` task via `mcp__todo-db__create_task`:
+   - Title: "Fix CI failure blocking staging promotion: {failure_summary}"
+   - Description: Include the full CI failure log output and the PR number
+   - Priority: `urgent`
+   - `assigned_by`: `"cto"` (gate-bypass for immediate spawning)
+3. Spawn the task immediately via `mcp__agent-tracker__force_spawn_tasks`
+4. Wait for the task to complete (poll `mcp__todo-db__get_task` every 60 seconds, max 30 minutes)
+5. After the fix lands, re-check CI: `gh pr checks <number> --watch --fail-on-fail`
+6. If CI passes — proceed to merge
+7. If CI still fails — repeat from step 1 (max 3 iterations)
+8. After 3 failed iterations: Report to CTO and EXIT without merging
 
 ```bash
 gh pr merge {number} --merge
@@ -273,7 +308,7 @@ Then call `mcp__todo-db__complete_task` if a task ID was provided.
 
 - This agent runs with `GENTYR_PROMOTION_PIPELINE=true` injected by its spawner (hourly-automation.js or trigger_preview_promotion MCP tool). This env var bypasses the staging-lock-guard, allowing the agent to create and merge PRs targeting staging.
 - This agent does NOT edit source files — it is a read-only quality review and promotion agent.
-- This agent does NOT create fix tasks — if issues are found, it reports them and exits. Fixes follow the normal feature branch flow.
+- This agent creates fix tasks only within self-healing loops (test failures at Step 3, coverage gaps at Step 3.5, CI failures at Step 5). It does NOT edit source files directly — fix tasks are delegated to code-writer/test-writer agents.
 - If any step fails, the agent records what it can, reports the failure via `report_to_deputy_cto`, and exits cleanly via `summarize_work`.
 - The `GENTYR_PROMOTION_ID` env var contains the promotion ID for artifact naming. If not set, generate one with the format `promo-{timestamp}-{random_hex}`.
 - Never log or expose secret values. All credential handling goes through MCP tools.

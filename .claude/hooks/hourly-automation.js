@@ -4781,14 +4781,80 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         const result = spawnPreviewPromotion(newCommits);
         if (result.error) {
           log(`Preview promotion: ${result.error}`);
+          // Do NOT save SHA on error — allows retry on next cycle
           return;
         }
+        // Save SHA only on successful enqueue — prevents re-spawning while running.
+        // If the promotion agent fails, promotion_retry_check clears this to allow retry.
+        state.lastPreviewPromotionSha = currentSha;
+        saveState(state);
       } catch (err) {
         log(`Preview promotion: failed to enqueue: ${err.message}`);
+        // Do NOT save SHA on failure — allows retry on next cycle
       }
+    },
+  });
 
-      state.lastPreviewPromotionSha = currentSha;
-      saveState(state);
+  // =========================================================================
+  // PROMOTION RETRY CHECK (5min cooldown, gate-exempt)
+  // Clears lastPreviewPromotionSha when a promotion agent fails, allowing
+  // the next preview_promotion cycle to retry the same commits.
+  // =========================================================================
+  await runIfDue('promotion_retry_check', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastPromotionRetryCheck',
+    config,
+    label: 'Promotion retry check',
+    fn: async () => {
+      if (!state.lastPreviewPromotionSha) return; // Nothing to retry
+
+      try {
+        const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+        if (!fs.existsSync(queueDbPath)) return;
+        const queueDb = new Database(queueDbPath, { readonly: true });
+        try {
+          // Check if the most recent preview-promotion session failed or completed without merge
+          const recent = queueDb.prepare(`
+            SELECT status, completed_at FROM queue_items
+            WHERE json_extract(metadata, '$.promotionId') IS NOT NULL
+              AND (tag_context = 'preview-promotion' OR title LIKE '%Preview%Staging%')
+            ORDER BY enqueued_at DESC LIMIT 1
+          `).get();
+
+          if (recent && recent.status === 'failed') {
+            log('Promotion retry: last promotion failed — clearing SHA to allow retry.');
+            state.lastPreviewPromotionSha = null;
+            saveState(state);
+          }
+
+          // Also check: if no promotion is running/queued and SHA is set but staging hasn't caught up
+          const active = queueDb.prepare(`
+            SELECT id FROM queue_items
+            WHERE (tag_context = 'preview-promotion' OR title LIKE '%Preview%Staging%')
+              AND status IN ('queued', 'running', 'spawning')
+            LIMIT 1
+          `).get();
+
+          if (!active && state.lastPreviewPromotionSha) {
+            // No active promotion — check if staging actually caught up
+            try {
+              const drift = execSync('git log --oneline origin/staging..origin/preview', {
+                cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+              }).trim();
+              if (drift) {
+                // Staging hasn't caught up and no promotion is running — clear SHA for retry
+                log('Promotion retry: no active promotion but staging behind — clearing SHA.');
+                state.lastPreviewPromotionSha = null;
+                saveState(state);
+              }
+            } catch { /* non-fatal */ }
+          }
+        } finally {
+          try { queueDb.close(); } catch { /* ignore */ }
+        }
+      } catch (err) {
+        log(`Promotion retry check: ${err.message}`);
+      }
     },
   });
 
