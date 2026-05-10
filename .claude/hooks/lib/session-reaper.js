@@ -258,6 +258,7 @@ export function diagnoseSessionFailure(sessionFile) {
   const lines = tail.split('\n').filter(l => l.trim());
   let consecutiveErrors = 0;
   let rateLimitCount = 0;
+  let usageQuotaCount = 0;
   let authErrorCount = 0;
   let sampleError = '';
 
@@ -285,7 +286,8 @@ export function diagnoseSessionFailure(sessionFile) {
 
       if (isRateLimit || isAuthError || isUsageLimit) {
         consecutiveErrors++;
-        if (isRateLimit || isUsageLimit) rateLimitCount++;
+        if (isRateLimit) rateLimitCount++;
+        if (isUsageLimit) usageQuotaCount++;
         if (isAuthError) authErrorCount++;
         if (!sampleError) {
           sampleError = (msgText || parsed.message || parsed.error || '').toString().slice(0, 200);
@@ -303,7 +305,11 @@ export function diagnoseSessionFailure(sessionFile) {
   let is_transient = false;
   let suggested_action = 'retry';
 
-  if (rateLimitCount > 0 && rateLimitCount >= authErrorCount) {
+  if (usageQuotaCount > 0) {
+    error_type = 'usage_quota';
+    is_transient = false;
+    suggested_action = 'kill';
+  } else if (rateLimitCount > 0 && rateLimitCount >= authErrorCount) {
     error_type = 'rate_limit';
     is_transient = true;
     suggested_action = 'cooldown';
@@ -759,6 +765,49 @@ export function reapSyncPass(db) {
             }
           }
         } catch (_) { /* non-fatal — fall through to normal elapsed check */ }
+      }
+
+      // Usage-quota stall: session is alive and retrying, but quota is exhausted.
+      // Unlike auth stalls, these sessions keep JSONL fresh via retries.
+      // No mtime gate — check JSONL content directly.
+      if (elapsed > AUTH_STALL_MS && item.agent_id && sessionDir) {
+        try {
+          const sessionFile = findSessionFileByAgentId(sessionDir, item.agent_id);
+          if (sessionFile) {
+            const quotaDiagnosis = diagnoseSessionFailure(sessionFile);
+            if (quotaDiagnosis.stalled && quotaDiagnosis.error_type === 'usage_quota') {
+              killProcessGroup(item.pid);
+              db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ?")
+                .run(item.id);
+
+              let metadata = {};
+              try { metadata = item.metadata ? JSON.parse(item.metadata) : {}; } catch { /* ignore */ }
+
+              result.reaped.push({
+                queueId: item.id,
+                agentId: item.agent_id,
+                pid: item.pid,
+                metadata,
+                revivalCandidate: true,
+                reapReason: 'usage_quota_stall',
+                diagnosis: quotaDiagnosis,
+              });
+
+              auditEvent('session_reaped_dead', {
+                queue_id: item.id,
+                agent_id: item.agent_id,
+                pid: item.pid,
+                reason: 'usage_quota_stall',
+              });
+
+              retireProgressFile(path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`));
+              if (item.agent_id) {
+                try { releaseAllResources(item.agent_id); removeFromAllQueues(item.agent_id); } catch (_) { /* non-fatal */ }
+              }
+              continue;
+            }
+          }
+        } catch (_) { /* non-fatal */ }
       }
 
       // Existing hard-kill threshold check (30 min)

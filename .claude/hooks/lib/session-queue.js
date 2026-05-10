@@ -801,6 +801,59 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
     return;
   }
 
+  const isUsageQuota = diagnosis?.error_type === 'usage_quota';
+  if (isUsageQuota) {
+    const cooldownMinutes = getCooldown('usage_quota_cooldown_minutes', 60);
+    log(`[persistent-revival] Usage quota exhausted for ${taskId} — ${cooldownMinutes}min cooldown`);
+
+    try {
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(ptDbPath)) {
+        const ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+        const cooldownUntil = new Date(Date.now() + cooldownMinutes * 60 * 1000).toISOString();
+
+        try {
+          const metaRow = ptDb.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
+          const meta = metaRow?.metadata ? JSON.parse(metaRow.metadata) : {};
+          meta.rate_limit_cooldown_until = cooldownUntil;
+          ptDb.prepare('UPDATE persistent_tasks SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), taskId);
+        } catch (_) { /* non-fatal */ }
+
+        try {
+          const tableExists = ptDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocker_diagnosis'").get();
+          if (tableExists) {
+            const existing = ptDb.prepare(
+              "SELECT id, fix_attempts FROM blocker_diagnosis WHERE persistent_task_id = ? AND error_type = 'usage_quota' AND status IN ('active', 'cooling_down') LIMIT 1"
+            ).get(taskId);
+            if (existing) {
+              ptDb.prepare("UPDATE blocker_diagnosis SET status = 'cooling_down', cooldown_until = ?, diagnosis_details = ? WHERE id = ?")
+                .run(cooldownUntil, JSON.stringify(diagnosis || { error_type: 'usage_quota', is_transient: false }), existing.id);
+            } else {
+              ptDb.prepare(
+                "INSERT INTO blocker_diagnosis (id, persistent_task_id, error_type, is_transient, diagnosis_details, status, cooldown_until, created_at) VALUES (?, ?, ?, 0, ?, 'cooling_down', ?, ?)"
+              ).run(generateQueueId(), taskId, 'usage_quota', JSON.stringify(diagnosis || { error_type: 'usage_quota', is_transient: false }), cooldownUntil, new Date().toISOString());
+            }
+          }
+        } catch (_) { /* non-fatal */ }
+
+        ptDb.close();
+      }
+    } catch (_) { /* non-fatal */ }
+
+    try {
+      db.prepare("INSERT INTO revival_events (id, task_id, reason, diagnosis, created_at) VALUES (?, ?, 'usage_quota_cooldown', ?, datetime('now'))")
+        .run(generateQueueId(), taskId, diagnosis ? JSON.stringify(diagnosis) : null);
+    } catch (_) { /* non-fatal */ }
+
+    const entries = _monitorRevivalTimestamps.get(taskId) || [];
+    entries.push({ ts: Date.now(), reason: 'usage_quota_cooldown' });
+    _monitorRevivalTimestamps.set(taskId, entries.filter(e => e.ts > Date.now() - 60 * 60 * 1000));
+
+    try { auditEvent('usage_quota_cooldown', { task_id: taskId, cooldown_minutes: cooldownMinutes, sample_error: diagnosis?.sample_error?.slice(0, 100) }); } catch (_) { /* non-fatal */ }
+    return;
+  }
+
   // Check if a rate-limit cooldown is still active (set by a previous rate-limit death)
   try {
     const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
@@ -848,12 +901,12 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
   let recentHardCount;
   if (memEntries.length > 0) {
     const recentEntries = memEntries.filter(e => e.ts > tenMinutesAgo);
-    recentHardCount = recentEntries.filter(e => e.reason !== 'stale_heartbeat' && e.reason !== 'rate_limit_cooldown' && e.reason !== 'crash_backoff').length;
+    recentHardCount = recentEntries.filter(e => e.reason !== 'stale_heartbeat' && e.reason !== 'rate_limit_cooldown' && e.reason !== 'usage_quota_cooldown' && e.reason !== 'crash_backoff').length;
   } else {
     // Cold-start: read from DB (survives process restart)
     try {
       const dbRecent = db.prepare(
-        "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown', 'crash_backoff')"
+        "SELECT COUNT(*) as cnt FROM revival_events WHERE task_id = ? AND created_at > datetime('now', '-10 minutes') AND reason NOT IN ('stale_heartbeat', 'rate_limit_cooldown', 'usage_quota_cooldown', 'crash_backoff')"
       ).get(taskId);
       recentHardCount = dbRecent?.cnt || 0;
     } catch (_) {
@@ -967,7 +1020,7 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
   // produces '2026-03-29 14:53:59' (space separator) while toISOString() produces
   // '2026-03-29T14:53:59.000Z' (T separator). String comparison breaks across formats.
   const dbRecentRevivals = db.prepare(
-    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown', 'crash_backoff')"
+    "SELECT COUNT(*) as cnt FROM queue_items WHERE lane = 'persistent' AND json_extract(metadata, '$.persistentTaskId') = ? AND enqueued_at > datetime('now', '-10 minutes') AND COALESCE(json_extract(metadata, '$.revivalReason'), '') NOT IN ('heartbeat_stale_revival', 'rate_limit_cooldown', 'usage_quota_cooldown', 'crash_backoff')"
   ).get(taskId);
   if (dbRecentRevivals && dbRecentRevivals.cnt >= 3) {
     const dbBackoffCycle = Math.floor(dbRecentRevivals.cnt / 3);

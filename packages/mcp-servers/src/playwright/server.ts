@@ -3238,11 +3238,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
           if (meta.deploying || meta.deployFailed) return { usingBaseImageFallback: true };
           if (!machineConfig!.projectImageEnabled) return { usingBaseImageFallback: true };
-          const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
-          if (fs.existsSync(lockfilePath) && meta.lockfileHash) {
-            const currentHash = crypto.createHash('sha256').update(fs.readFileSync(lockfilePath)).digest('hex');
-            if (currentHash !== meta.lockfileHash) return { usingBaseImageFallback: true };
-          }
+          // Removed: lockfile hash comparison — project image is always usable when deployed.
+          // pnpm install on the machine handles any lockfile delta (~30s).
           return { usingBaseImageFallback: false };
         } catch { return { usingBaseImageFallback: true }; }
       })();
@@ -7434,18 +7431,16 @@ async function runRemoteBatchSequence(
       const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
       if (!fs.existsSync(metaPath)) return true;
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      if (meta.deploying || meta.deployFailed || !baseMachineConfig.projectImageEnabled) return true;
-      const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
-      if (fs.existsSync(lockfilePath) && meta.lockfileHash) {
-        const currentHash = crypto.createHash('sha256').update(fs.readFileSync(lockfilePath)).digest('hex');
-        if (currentHash !== meta.lockfileHash) return true;
-      }
+      if (meta.deploying || meta.deployFailed) return true;
+      if (!baseMachineConfig.projectImageEnabled) return true;
+      // Removed: lockfile hash comparison — project image is always usable when deployed.
+      // pnpm install on the machine handles any lockfile delta (~30s).
       return false;
     } catch { return true; }
   })();
   const scenarioTimeoutMs = (args.scenario_timeout ?? 600000) + (_batchImageFallback ? 300_000 : 0);
   if (_batchImageFallback) {
-    process.stderr.write('[run_demo_batch] WARNING: Project image unavailable — using base image fallback. Stall/scenario timeouts extended by 5 minutes for cold install.\n');
+    process.stderr.write('[run_demo_batch] WARNING: No project image available — using base image. Cold install may add ~5 minutes per scenario.\n');
   }
 
   // ── Slot-based streaming execution model ──
@@ -7705,8 +7700,13 @@ async function runRemoteBatchSequence(
 
         // Pull artifacts and parse results (fallback if proactive pull didn't happen)
         if (!batchArtifactsPulled) {
-          try { const r = await flyRunnerMod.pullRemoteArtifacts(handle, scenarioMachineConfig, destDir); if (r.errors.length) process.stderr.write(`[fly-runner] Batch fallback pull errors: ${r.errors.join('; ')}\n`); }
-          catch { /* non-fatal — machine may already be destroyed */ }
+          try {
+            const r = await flyRunnerMod.pullRemoteArtifacts(handle, scenarioMachineConfig, destDir);
+            if (r.errors.length) process.stderr.write(`[fly-runner] Batch fallback pull errors: ${r.errors.join('; ')}\n`);
+            batchArtifactsPulled = true;
+          } catch (pullErr) {
+            process.stderr.write(`[fly-runner] Batch fallback pull failed (machine likely destroyed): ${pullErr instanceof Error ? pullErr.message : String(pullErr)}\n`);
+          }
         }
 
         // ── Per-scenario diagnostic extraction (parity with single-demo check_demo_result) ──
@@ -8159,7 +8159,7 @@ async function runRemoteBatchSequence(
  * Run a batch of demo scenarios sequentially.
  * Each batch gets its own output directory to prevent Playwright's cleanup from destroying previous recordings.
  */
-async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, scenarioEnvMap?: Map<string, Record<string, string>>, devServerReady?: boolean, effectiveBaseUrl?: string): Promise<void> {
+async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, scenarioEnvMap?: Map<string, Record<string, string>>, devServerReady?: boolean, effectiveBaseUrl?: string, remoteScenarioIds?: Set<string>): Promise<void> {
   const scenarios = state.scenarios;
   const batchSize = args.batch_size ?? scenarios.length; // Local batches: run all concurrently (no Fly machine limit)
   const totalBatches = Math.ceil(scenarios.length / batchSize);
@@ -8171,8 +8171,12 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
     state.progress.current_batch = batchIdx + 1;
     const batchStart = batchIdx * batchSize;
     const batchEnd = Math.min(batchStart + batchSize, scenarios.length);
-    // Only process pending scenarios — skip any already claimed by runRemoteBatchSequence
-    const batchScenarios = scenarios.slice(batchStart, batchEnd).filter(s => s.status === 'pending');
+    // Only process pending scenarios — skip any already claimed by runRemoteBatchSequence.
+    // Explicitly exclude remote-claimed scenarios by ID to prevent race conditions where
+    // a remote fallback reverts a scenario to 'pending' while the local runner is iterating.
+    const batchScenarios = scenarios.slice(batchStart, batchEnd).filter(
+      s => s.status === 'pending' && (!remoteScenarioIds || !remoteScenarioIds.has(s.scenario_id))
+    );
     if (batchScenarios.length === 0) continue;
 
     // Mark batch scenarios as running
@@ -8386,14 +8390,12 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
     }
   }
 
-  // All batches complete
-  if (state.status === 'running') {
-    state.status = state.progress.failed > 0 ? 'failed' : 'passed';
-    state.ended_at = new Date().toISOString();
-  }
+  // Local runner complete — clean up local-specific state.
+  // NOTE: Batch status finalization is handled by finalizeBatchState() in the
+  // shared completion handler, NOT here. This ensures correct finalization
+  // regardless of which combination of runners (local, remote, or both) was launched.
   state.current_pid = undefined;
   state.current_progress_file = undefined;
-  state.progress.current_scenario = undefined;
 
   // Clean up batch output directories
   try {
@@ -8599,7 +8601,10 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
     persistDemoBatches();
   }
 
-  // Launch execution — local and remote paths concurrently
+  // Launch execution — local and remote paths concurrently.
+  // Remote scenarios are pre-marked as 'remote_pending' (above) so the local runner
+  // skips them. The local runner also receives remoteScenarioIds to guard against
+  // race conditions where a remote fallback reverts a scenario to 'pending'.
   const executionPromises: Promise<void>[] = [];
 
   if (remoteScenarioIds.size > 0) {
@@ -8614,15 +8619,47 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   );
   if (hasLocalScenarios || remoteScenarioIds.size === 0) {
     executionPromises.push(
-      runBatchSequence(state, args, scenarioEnvMap, devServer.ready, effectiveBatchBaseUrl)
+      runBatchSequence(state, args, scenarioEnvMap, devServer.ready, effectiveBatchBaseUrl, remoteScenarioIds)
     );
   }
 
-  Promise.all(executionPromises).catch((err) => {
+  // Shared completion handler: finalize batch status after ALL runners complete.
+  // This replaces the old pattern where only runBatchSequence finalized the batch,
+  // which left the batch in 'running' state forever when only remote scenarios existed.
+  const finalizeBatchState = () => {
+    // Fail-loud: any scenario still in 'pending' or 'remote_pending' after all runners
+    // complete is an orphan — mark it as failed rather than leaving it silently stuck.
+    for (const s of state.scenarios) {
+      if (s.status === 'pending' || s.status === 'remote_pending') {
+        s.status = 'failed';
+        s.failure_summary = `Orphaned scenario: status was '${s.status}' after all runners completed. ` +
+          'This indicates a bug in scenario routing — neither the local nor remote runner executed this scenario.';
+        s.failure_classification = 'startup_failure';
+        state.progress.failed++;
+        state.progress.completed++;
+        process.stderr.write(
+          `[playwright] BUG: Orphaned scenario '${s.scenario_id}' (was '${s.status}'). ` +
+          'Marking as failed. This should not happen — please report.\n'
+        );
+      }
+    }
+
+    if (state.status === 'running') {
+      state.status = state.progress.failed > 0 ? 'failed' : 'passed';
+      state.ended_at = new Date().toISOString();
+    }
+    state.progress.current_scenario = undefined;
+    persistDemoBatches();
+  };
+
+  Promise.all(executionPromises).then(() => {
+    finalizeBatchState();
+  }).catch((err) => {
     state.status = 'failed';
     state.ended_at = new Date().toISOString();
     process.stderr.write(`[playwright] Batch ${batchId} crashed: ${err instanceof Error ? err.message : err}\n`);
-    persistDemoBatches();
+    // Still finalize orphans even on crash
+    finalizeBatchState();
   });
 
   return JSON.stringify({
@@ -9506,9 +9543,7 @@ const tools: AnyToolHandler[] = [
           }
         } catch { /* non-fatal */ }
 
-        // Check project image staleness via lockfile hash comparison (best-effort, non-fatal)
-        let projectImageStale = false;
-        let projectImageStaleReason = '';
+        // Check project image metadata (best-effort, non-fatal)
         let projectImageMetadata: Record<string, unknown> | null = null;
         let projectImageDeploying = false;
         try {
@@ -9527,24 +9562,46 @@ const tools: AnyToolHandler[] = [
                   projectImageDeploying = false;
                 }
               }
-
-              const storedHash = (projectImageMetadata as Record<string, string>).lockfileHash;
-              if (storedHash) {
-                // Compute current lockfile hash
-                const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
-                if (fs.existsSync(lockfilePath)) {
-                  const currentHash = crypto.createHash('sha256')
-                    .update(fs.readFileSync(lockfilePath))
-                    .digest('hex');
-                  if (currentHash !== storedHash) {
-                    projectImageStale = true;
-                    projectImageStaleReason = 'pnpm-lock.yaml has changed since the project image was built. Run deploy_project_image({ force: true }) to rebuild.';
-                  }
-                }
-              }
             }
           }
         } catch { /* non-fatal */ }
+
+        // Compute informational project image fields for agent decision-making
+        let projectImageAgeHours: number | null = null;
+        let projectImageGitRef: string | null = null;
+        let projectImageLockfileMatch: boolean | null = null;
+        let projectImageRecommendation: string | null = null;
+
+        if (projectImageMetadata) {
+          const deployedAt = (projectImageMetadata as Record<string, string>).deployedAt;
+          if (deployedAt) {
+            projectImageAgeHours = Math.round((Date.now() - new Date(deployedAt).getTime()) / 3600000);
+          }
+          projectImageGitRef = (projectImageMetadata as Record<string, string>).gitRef || null;
+
+          // Lockfile match is informational — a mismatch means minor dep changes, not a broken image
+          const storedHash = (projectImageMetadata as Record<string, string>).lockfileHash;
+          if (storedHash) {
+            const lockfilePath = path.join(EFFECTIVE_CWD, 'pnpm-lock.yaml');
+            if (fs.existsSync(lockfilePath)) {
+              const currentHash = crypto.createHash('sha256')
+                .update(fs.readFileSync(lockfilePath))
+                .digest('hex');
+              projectImageLockfileMatch = currentHash === storedHash;
+            }
+          }
+
+          // Recommendation based on image age
+          if (projectImageAgeHours != null) {
+            if (projectImageAgeHours > 24) {
+              projectImageRecommendation = `Image is ${projectImageAgeHours}h old. Recommend deploying a fresh image: deploy_project_image()`;
+            } else if (projectImageAgeHours > 4) {
+              projectImageRecommendation = `Image is ${projectImageAgeHours}h old. Consider redeploying if you see install_timeout failures.`;
+            }
+          }
+        } else if (!projectImageDeployed) {
+          projectImageRecommendation = 'No project image deployed. Cold installs will add ~5min. Deploy with: deploy_project_image()';
+        }
 
         // Read fly config's projectImageEnabled setting
         const projectImageEnabled = flySection.projectImageEnabled === true;
@@ -9560,10 +9617,12 @@ const tools: AnyToolHandler[] = [
           ...(imageStaleReason ? { imageStaleReason } : {}),
           projectImageDeployed,
           projectImageEnabled,
-          projectImageStale,
           projectImageDeploying,
+          projectImageAgeHours,
+          projectImageGitRef,
+          projectImageLockfileMatch,
+          ...(projectImageRecommendation ? { projectImageRecommendation } : {}),
           ...(projectImageMetadata ? { projectImageMetadata } : {}),
-          ...(projectImageStaleReason ? { projectImageStaleReason } : {}),
           appName: flyConfig.appName,
           region: flyConfig.region,
           machineSize: flyConfig.machineSize,
@@ -9743,6 +9802,23 @@ const tools: AnyToolHandler[] = [
         });
       }
 
+      // 2c. Deploy cooldown — avoid redundant deploys triggered by lockfile changes
+      if (!args.force && freshProjectMeta?.deployCompletedAt) {
+        const completedMs = new Date(freshProjectMeta.deployCompletedAt).getTime();
+        const ageMinutes = (Date.now() - completedMs) / 60000;
+        if (ageMinutes < 120) {
+          return JSON.stringify({
+            success: false,
+            skipped: true,
+            message: `Project image deployed ${Math.round(ageMinutes)}min ago. ` +
+              `Lockfile changes are handled by incremental pnpm install on the machine (~30s). ` +
+              `Use force: true to redeploy anyway if you see install_timeout failures.`,
+            lastDeployedAt: freshProjectMeta.deployCompletedAt,
+            ageMinutes: Math.round(ageMinutes),
+          });
+        }
+      }
+
       // 3. Check if project image already exists (skip unless force)
       if (!args.force) {
         try {
@@ -9844,6 +9920,10 @@ const tools: AnyToolHandler[] = [
           }
         }
       } catch { /* non-fatal — public repos work without token */ }
+      // Fallback: check process.env (set by mcp-launcher or CI environment)
+      if (!gitAuthToken) {
+        gitAuthToken = process.env.GITHUB_TOKEN || process.env.GIT_AUTH_TOKEN || '';
+      }
 
       // 7. Find Dockerfile.project
       const dockerfileCandidates = [
@@ -9885,24 +9965,36 @@ const tools: AnyToolHandler[] = [
         });
       }
 
-      // 11. Find or generate fly.toml for the deploy command
-      const flyTomlTemplateCandidates = [
-        path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright', 'fly.toml.template'),
-        path.join(PROJECT_DIR, 'infra', 'fly-playwright', 'fly.toml.template'),
+      // 11. Find fly.toml for the deploy command.
+      // Prefer fly-project-temp.toml which has dockerfile = 'Dockerfile.project' and is
+      // co-located with Dockerfile.project so flyctl resolves the path correctly.
+      // fall back to generating from fly.toml.template (which has dockerfile = 'Dockerfile',
+      // causing flyctl to look for a Dockerfile that doesn't exist in the temp dir).
+      const projectTomlCandidates = [
+        path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright', 'fly-project-temp.toml'),
+        path.join(PROJECT_DIR, 'infra', 'fly-playwright', 'fly-project-temp.toml'),
       ];
-      const flyTomlTemplate = flyTomlTemplateCandidates.find(p => fs.existsSync(p));
-      let flyTomlPath: string;
-      if (flyTomlTemplate) {
-        // Generate fly.toml from template with app name substituted
-        const tomlContent = fs.readFileSync(flyTomlTemplate, 'utf-8')
-          .replace(/\$\{?APP_NAME\}?/g, flySection.appName);
-        flyTomlPath = path.join(os.tmpdir(), `fly-project-image-${Date.now()}.toml`);
-        fs.writeFileSync(flyTomlPath, tomlContent);
-      } else {
-        return JSON.stringify({
-          success: false,
-          message: 'Could not find fly.toml.template. Ensure GENTYR is installed.',
-        });
+      let flyTomlPath: string | undefined = projectTomlCandidates.find(p => fs.existsSync(p));
+      if (!flyTomlPath) {
+        // Fallback: generate from template, writing next to the Dockerfile so the relative
+        // dockerfile = 'Dockerfile.project' reference resolves correctly.
+        const flyTomlTemplateCandidates = [
+          path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright', 'fly.toml.template'),
+          path.join(PROJECT_DIR, 'infra', 'fly-playwright', 'fly.toml.template'),
+        ];
+        const flyTomlTemplate = flyTomlTemplateCandidates.find(p => fs.existsSync(p));
+        if (flyTomlTemplate) {
+          const tomlContent = fs.readFileSync(flyTomlTemplate, 'utf-8')
+            .replace(/\$\{?APP_NAME\}?/g, flySection.appName)
+            .replace(/dockerfile\s*=\s*['"]Dockerfile['"]/g, "dockerfile = 'Dockerfile.project'");
+          flyTomlPath = path.join(path.dirname(dockerfilePath), `fly-project-${flySection.appName}.toml`);
+          fs.writeFileSync(flyTomlPath, tomlContent);
+        } else {
+          return JSON.stringify({
+            success: false,
+            message: 'Could not find fly-project-temp.toml or fly.toml.template. Ensure GENTYR is installed.',
+          });
+        }
       }
 
       // 12. Build deploy command with build args
@@ -10243,12 +10335,50 @@ const tools: AnyToolHandler[] = [
   },
 ];
 
+// Graceful shutdown: destroy active remote Fly.io machines before exit.
+// 10-second timeout prevents hanging if the Fly API is unresponsive.
+async function destroyActiveRemoteMachines(): Promise<void> {
+  const activeRemote = [...demoRuns.values()].filter(
+    e => e.remote && e.fly_machine_id && e.status === 'running',
+  );
+  if (activeRemote.length === 0) return;
+  process.stderr.write(`[playwright] Destroying ${activeRemote.length} active remote machine(s) before exit...\n`);
+  const timeout = new Promise<void>(resolve => setTimeout(resolve, 10_000));
+  const cleanup = (async () => {
+    try {
+      const flyConfig = getFlyConfigFromServices();
+      if (!flyConfig) return;
+      const { resolved: flyResolved } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
+      const { stopRemoteMachine } = await import('./fly-runner.js');
+      const flyMachineConfig = readFlyMachineConfig();
+      await Promise.allSettled(
+        activeRemote.map(entry =>
+          stopRemoteMachine(
+            { machineId: entry.fly_machine_id!, appName: entry.fly_app_name || flyConfig.appName, region: flyConfig.region || 'iad', startedAt: new Date(entry.started_at).getTime() },
+            { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: flyMachineConfig.machineRamHeadless, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3, projectImageEnabled: flyConfig.projectImageEnabled },
+          ).catch((e: unknown) => process.stderr.write(`[playwright] Failed to destroy machine ${entry.fly_machine_id}: ${e instanceof Error ? e.message : String(e)}\n`)),
+        ),
+      );
+    } catch (e: unknown) {
+      process.stderr.write(`[playwright] destroyActiveRemoteMachines error: ${e instanceof Error ? e.message : String(e)}\n`);
+    }
+  })();
+  await Promise.race([cleanup, timeout]);
+}
+
+process.on('SIGTERM', () => {
+  destroyActiveRemoteMachines().finally(() => process.exit(0));
+});
+process.on('SIGINT', () => {
+  destroyActiveRemoteMachines().finally(() => process.exit(0));
+});
+
 // Crash-safe persistence: if the server crashes, persist the latest demo state
 // so check_demo_result on restart can recover diagnostics instead of "unknown".
 process.on('uncaughtException', (err) => {
   process.stderr.write(`[playwright] Uncaught exception: ${err.message}\n${err.stack}\n`);
   try { persistDemoRuns(); } catch { /* last resort */ }
-  process.exit(1);
+  destroyActiveRemoteMachines().catch(() => {}).finally(() => process.exit(1));
 });
 
 const server = new McpServer({
