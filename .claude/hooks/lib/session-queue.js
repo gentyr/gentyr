@@ -505,13 +505,15 @@ export function enqueueSession(spec) {
 
   const db = getDb();
 
-  // Dedup: if this task is already queued or running, return the existing queue item
+  // Dedup: if this task is already queued or running in the same lane, return the existing queue item.
+  // Lane-scoped so audit-lane auditors are not blocked by the original task in standard lane.
   if (spec.metadata?.taskId) {
+    const effectiveLane = spec.lane || 'standard';
     const existing = db.prepare(
-      "SELECT id FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.taskId') = ?"
-    ).get(spec.metadata.taskId);
+      "SELECT id FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.taskId') = ? AND lane = ?"
+    ).get(spec.metadata.taskId, effectiveLane);
     if (existing) {
-      log(`Dedup: task ${spec.metadata.taskId} already has queue item ${existing.id} — skipping`);
+      log(`Dedup: task ${spec.metadata.taskId} already has queue item ${existing.id} in lane ${effectiveLane} — skipping`);
       return { queueId: existing.id, position: 0, drained: { spawned: 0, atCapacity: false } };
     }
   }
