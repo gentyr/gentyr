@@ -78,6 +78,7 @@ export const CompleteTaskArgsSchema = z.object({
 
 export const DeleteTaskArgsSchema = z.object({
   id: z.string().describe('Task UUID'),
+  reason: z.string().optional().describe('Reason for deleting the task (recorded in archive for audit trail)'),
 });
 
 export const GateApproveTaskArgsSchema = z.object({
