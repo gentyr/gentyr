@@ -203,6 +203,7 @@ const DEFAULTS = {
   plan_orphan_detection: 10,             // 10 minutes
   session_hard_kill_minutes: 60,         // 60 minutes
   screenshot_cleanup: 1440,              // daily (24h)
+  promotion_retry_check: 5,             // 5 minutes
   report_auto_resolve: 2,              // 2 minutes
   report_dedup: 30,                    // 30 minutes
   rate_limit_cooldown_minutes: 5,      // 5 minutes cooldown after rate limit death
