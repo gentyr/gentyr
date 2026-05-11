@@ -31,7 +31,7 @@ try {
 // Configuration
 // ============================================================================
 
-const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const WORKTREES_DIR = path.join(PROJECT_DIR, '.claude', 'worktrees');
 
 /** Default execSync options for all git commands */
@@ -678,8 +678,21 @@ export function createWorktree(branchName, baseBranch, options = {}) {
   if (fs.existsSync(worktreePath)) {
     const hasGitFile = fs.existsSync(path.join(worktreePath, '.git'));
     const hasMcpJson = fs.existsSync(path.join(worktreePath, '.mcp.json'));
-    if (hasGitFile && hasMcpJson) {
+
+    // Symlink health check: settings.json must resolve to a readable file.
+    // Broken symlinks (e.g., after gentyr sync rebuilt .claude/) cause silent agent failures.
+    const settingsPath = path.join(worktreePath, '.claude', 'settings.json');
+    let settingsValid = false;
+    try {
+      fs.accessSync(settingsPath, fs.constants.R_OK);
+      settingsValid = true;
+    } catch { /* broken or missing symlink */ }
+
+    if (hasGitFile && hasMcpJson && settingsValid) {
       return { path: worktreePath, branch: branchName, created: false };
+    }
+    if (!settingsValid) {
+      console.error(`[worktree-manager] Broken settings.json symlink in ${worktreePath} — re-provisioning`);
     }
     // Orphaned remnant (no .git or no .mcp.json) — remove and recreate
     try {

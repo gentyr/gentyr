@@ -89,6 +89,8 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'stale_wait_detection_minutes',
   'stale_wait_escalation_minutes',
   'stale_wait_tool_call_threshold',
+  'preview_promotion',
+  'promotion_retry_check',
 ]);
 
 /**

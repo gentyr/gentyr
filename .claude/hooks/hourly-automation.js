@@ -4806,7 +4806,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
     config,
     label: 'Promotion retry check',
     fn: async () => {
-      if (!state.lastPreviewPromotionSha) return; // Nothing to retry
+      if (!state.lastPreviewPromotionSha && !state.lastPreviewPromotionCheck) return; // Nothing to retry
 
       try {
         const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
@@ -4815,15 +4815,16 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         try {
           // Check if the most recent preview-promotion session failed or completed without merge
           const recent = queueDb.prepare(`
-            SELECT status, completed_at FROM queue_items
+            SELECT status, completed_at, error, metadata FROM queue_items
             WHERE json_extract(metadata, '$.promotionId') IS NOT NULL
               AND (tag_context = 'preview-promotion' OR title LIKE '%Preview%Staging%')
             ORDER BY enqueued_at DESC LIMIT 1
           `).get();
 
           if (recent && recent.status === 'failed') {
-            log('Promotion retry: last promotion failed — clearing SHA to allow retry.');
+            log('Promotion retry: last promotion failed — clearing SHA and cooldown to allow retry.');
             state.lastPreviewPromotionSha = null;
+            state.lastPreviewPromotionCheck = 0;
             saveState(state);
           }
 
@@ -4842,12 +4843,36 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
                 cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
               }).trim();
               if (drift) {
-                // Staging hasn't caught up and no promotion is running — clear SHA for retry
-                log('Promotion retry: no active promotion but staging behind — clearing SHA.');
+                // Staging hasn't caught up and no promotion is running — clear SHA and cooldown for retry
+                log('Promotion retry: no active promotion but staging behind — clearing SHA and cooldown.');
                 state.lastPreviewPromotionSha = null;
+                state.lastPreviewPromotionCheck = 0;
                 saveState(state);
               }
             } catch { /* non-fatal */ }
+          }
+
+          // Dead promoter detection: check for recently-crashed promoter with no merge
+          const deadPromoter = queueDb.prepare(`
+            SELECT id, status, error, metadata, completed_at FROM queue_items
+            WHERE tag_context = 'preview-promotion'
+              AND status IN ('failed', 'completed')
+              AND completed_at > datetime('now', '-30 minutes')
+            ORDER BY completed_at DESC LIMIT 1
+          `).get();
+
+          if (deadPromoter && (deadPromoter.error === 'no_output_crash' || deadPromoter.status === 'failed')) {
+            let promoMeta = {};
+            try { promoMeta = JSON.parse(deadPromoter.metadata || '{}'); } catch { /* ignore */ }
+            const artifactDir = path.join(PROJECT_DIR, '.claude', 'promotions', promoMeta.promotionId || '');
+            const hasArtifact = promoMeta.promotionId && fs.existsSync(path.join(artifactDir, 'manifest.json'));
+
+            if (!hasArtifact) {
+              log('Promotion retry: dead promoter detected with no merge artifact — resetting for immediate retry.');
+              state.lastPreviewPromotionSha = null;
+              state.lastPreviewPromotionCheck = 0;
+              saveState(state);
+            }
           }
         } finally {
           try { queueDb.close(); } catch { /* ignore */ }
