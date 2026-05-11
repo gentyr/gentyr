@@ -199,7 +199,7 @@ Tier enforcement is server-side in the `agent-reports` MCP server — `completeT
 
 ### Worktrees
 
-Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config (hooks, agents, commands) and a worktree-specific `.mcp.json` with absolute `CLAUDE_PROJECT_DIR` paths. Worktrees for merged branches are cleaned up every **5 minutes** by the hourly automation (`getCooldown('worktree_cleanup', 5)`). The project-manager is responsible for cleaning up worktrees immediately after self-merge; the 5-minute automation is a safety net for missed cleanups.
+Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/`. Each worktree is provisioned with symlinked GENTYR config (hooks, agents, commands) and a worktree-specific `.mcp.json` with absolute `CLAUDE_PROJECT_DIR` paths. `PROJECT_DIR` is normalized via `path.resolve()` to prevent trailing-slash mismatches in path operations. When `createWorktree()` detects an existing worktree, it performs a symlink health check on `.claude/settings.json` before reusing it — if the symlink is broken (e.g., after `npx gentyr sync` rebuilt `.claude/`), the worktree is re-provisioned instead of returned as-is. Worktrees for merged branches are cleaned up every **5 minutes** by the hourly automation (`getCooldown('worktree_cleanup', 5)`). The project-manager is responsible for cleaning up worktrees immediately after self-merge; the 5-minute automation is a safety net for missed cleanups.
 
 **Worktree freshness system**: Multi-layer defense ensuring worktrees stay current with the base branch. Layer 0: `scripts/preview-watcher.js` daemon (launchd KeepAlive) polls every 30s, auto-merges clean worktrees, broadcasts signals, and calls `syncWorktreeDeps()` after each merge to re-install dependencies if the lockfile changed. Layer 1: `worktree-freshness-check.js` PostToolUse hook nags agents every 2 minutes if stale. Layer 2: `plan-merge-tracker.js` broadcasts on PR merge. Layer 3: `run_demo` hard gate auto-syncs or blocks stale demos. Layer 4: `session-briefing.js` reports freshness at session start. Layer 5: `createWorktree()` verifies freshness after fetch. All layers use `git merge origin/{baseBranch} --no-edit` (not rebase) because merge commits are exempt from the branch age guard. `syncWorktreeDeps()` hashes the lockfile after install and re-installs + rebuilds only when the hash changes, preventing redundant installs. Agents in worktrees should never need to run `pnpm install` manually.
 
@@ -303,7 +303,7 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 
 **Orchestration layer**:
 - `pr-auto-merge-nudge.js`: Reminds agent to wait for CI after PR creation
-- `preview_promotion` automation block: Auto-spawns preview-promoter every 30 minutes
+- `preview_promotion` automation block: Auto-spawns preview-promoter every 30 minutes. Both `preview_promotion` and `promotion_retry_check` are in the `INFRASTRUCTURE_KEYS` set (not rate-multiplied). The retry check also resets the cooldown timer alongside the SHA to allow immediate re-promotion after a crash, and includes dead-promoter detection for `no_output_crash` sessions with no merge artifacts.
 
 **Enforcement layer**:
 - `staging-lock-guard.js` (PreToolUse, root-owned): DENIES `gh pr create --base staging`, `gh pr merge` targeting staging (runtime PR target check + CI check verification), `gh pr merge --admin` (admin CI bypass), `git push origin staging` for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`
@@ -923,7 +923,7 @@ All agent spawning routes through a single SQLite-backed queue (`session-queue.d
 
 Two-pass reaping engine that detects and cleans up dead or stuck sessions in the queue.
 
-**Sync pass** (`reapSyncPass(db)`): Called from `drainQueue()` on every drain cycle. Fast, synchronous, no process kills. Detects dead PIDs (process.kill(pid, 0) fails), marks their queue items `completed`, emits `session_reaped_dead` audit events, and returns a `stuckAlive` list for the async pass and an `auditRevivals` list for Step 1b.5 auditor re-spawning. Also kills stale persistent monitors directly in the sync pass (stale heartbeat detected via `persistent_heartbeat_stale_minutes`, default 5 min — configurable), triggering immediate revival via `requeueDeadPersistentMonitor()` in Step 1b rather than waiting for the async pass. **Audit revival detection**: When a dead session is in the `audit` lane and its linked task is still `pending_audit`, the sync pass preserves the audit gate state (does NOT reset the task to `pending`) and adds the item to `auditRevivals[]` for `drainQueue()` Step 1b.5 to re-spawn a fresh auditor. Handles four task types: todo-db tasks (queries `todo.db`), persistent tasks (queries `persistent-tasks.db`), plan tasks (`taskType === 'plan'` or `metadata.planId` set — queries `plans.db` for the `plan_tasks` row, checks `status === 'pending_audit'`), and authorization tasks (`taskType === 'authorization'` — queries `cto_decisions` table in `bypass-requests.db`, checks `status === 'audit_pending'`). All four paths use `buildAuditorSessionSpec()` from `lib/auditor-prompt.js` for the revival spawn.
+**Sync pass** (`reapSyncPass(db)`): Called from `drainQueue()` on every drain cycle. Fast, synchronous, no process kills. Detects dead PIDs (process.kill(pid, 0) fails) and classifies them: sessions that died within 30 seconds of spawning with no JSONL output are marked `failed` with `error = 'no_output_crash'` (crash death classification); all others are marked `completed`. Emits `session_reaped_dead` audit events and returns a `stuckAlive` list for the async pass and an `auditRevivals` list for Step 1b.5 auditor re-spawning. Also kills stale persistent monitors directly in the sync pass (stale heartbeat detected via `persistent_heartbeat_stale_minutes`, default 5 min — configurable), triggering immediate revival via `requeueDeadPersistentMonitor()` in Step 1b rather than waiting for the async pass. **Audit revival detection**: When a dead session is in the `audit` lane and its linked task is still `pending_audit`, the sync pass preserves the audit gate state (does NOT reset the task to `pending`) and adds the item to `auditRevivals[]` for `drainQueue()` Step 1b.5 to re-spawn a fresh auditor. Handles four task types: todo-db tasks (queries `todo.db`), persistent tasks (queries `persistent-tasks.db`), plan tasks (`taskType === 'plan'` or `metadata.planId` set — queries `plans.db` for the `plan_tasks` row, checks `status === 'pending_audit'`), and authorization tasks (`taskType === 'authorization'` — queries `cto_decisions` table in `bypass-requests.db`, checks `status === 'audit_pending'`). All four paths use `buildAuditorSessionSpec()` from `lib/auditor-prompt.js` for the revival spawn.
 
 **Auth-stall detection** (`isAuthStalled(sessionFile)`): Reads the JSONL tail of a running session's file. If the last 3+ consecutive entries are all auth errors (`"authentication_error"`, `"permission_error"`, or similar), the session is considered auth-stalled. The sync pass applies this check to ALL running sessions whose JSONL file hasn't been updated in `auth_stall_detection_minutes` (default 2 min). Auth-stalled sessions are killed immediately with `reapReason: 'auth_stall'` and linked TODO tasks are reset to `pending`.
 
@@ -1910,7 +1910,7 @@ After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 
 **Function:** `drainQueue()` in `session-queue.js` — 7 steps per cycle
 
-**Step 1: Reap stale running items** — Calls `reapSyncPass(db)`. Detects: dead PIDs, spawning zombies (5+ min no PID), stale persistent monitor heartbeats (default 5 min), auth-stalled sessions (default 2 min). Dead PID actions: mark `completed`, release all resource locks, remove from resource queues, reactive worktree cleanup (if clean), retire progress files, reset linked TODO task to `pending`.
+**Step 1: Reap stale running items** — Calls `reapSyncPass(db)`. Detects: dead PIDs, spawning zombies (5+ min no PID), stale persistent monitor heartbeats (default 5 min), auth-stalled sessions (default 2 min). Dead PID actions: mark `completed` (or `failed` with `no_output_crash` for sub-30s deaths with no JSONL), release all resource locks, remove from resource queues, reactive worktree cleanup (if clean), retire progress files, reset linked TODO task to `pending`.
 
 **Step 1b: Re-enqueue dead persistent monitors** — Calls `requeueDeadPersistentMonitor()`. Circuit breaker: max 3 hard revivals per task in 10 min → exponential backoff (5→10→20→60 min). Rate-limit detection: scans session tail, applies 5-min cooldown (excluded from crash counter). Self-healing: calls `handleBlocker()` → may escalate to CTO or spawn fix task.
 
@@ -1953,7 +1953,7 @@ After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 | Detection | Condition | Action | Kill? |
 |-----------|-----------|--------|-------|
 | Spawning zombie | `spawning` + no PID for 5+ min | Mark `failed` | No |
-| Dead PID | `running` + `process.kill(pid,0)` fails | Mark `completed`, release resources, cleanup | No (already dead) |
+| Dead PID | `running` + `process.kill(pid,0)` fails | Mark `completed` (or `failed` with `no_output_crash` if died <30s with no JSONL), release resources, cleanup | No (already dead) |
 | Stale heartbeat | Persistent monitor, heartbeat > 5 min stale, spawned > 60s ago | Kill process group, mark `completed` | Yes (sync kill) |
 | Auth stall | Non-persistent, file mtime > 2 min stale, 3+ consecutive auth errors | Kill process group, mark `completed` | Yes (sync kill) |
 | Stuck alive | Running > hard-kill threshold | Add to `stuckAlive` list for async pass | Deferred |
@@ -2061,6 +2061,7 @@ draft → active → paused ⇆ active → completed
 | Triage check | 5 min | Spawns triage agents for pending reports by tier |
 | Auto-rollback check | 2 min | Reads `synthetic-alerts.json`; triggers rollback on 3+ consecutive probe failures within 5 min of deploy |
 | Fly project image freshness | 30 min | Checks project image staleness (lockfile hash comparison); files deputy-CTO report when stale or stuck deploying |
+| Promotion retry check | configurable | Clears `lastPreviewPromotionSha` and resets cooldown when a promotion agent fails or crashes with `no_output_crash`, allowing immediate retry |
 
 **Gate-Required (CTO briefing within 24h):**
 

@@ -379,9 +379,32 @@ export function reapSyncPass(db) {
     if (!item.pid) continue;
 
     if (!isPidAlive(item.pid)) {
-      // Dead PID — mark completed (TOCTOU-safe: only transition from 'running' to prevent
-      // concurrent reap processes from adding the same item to their reaped lists)
-      const reapResult = db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ? AND status = 'running'").run(item.id);
+      // Dead PID — classify as 'completed' or 'failed' (no_output_crash) based on session output.
+      // Sessions that died within 30 seconds with no JSONL output are classified as crash deaths.
+      let reapStatus = 'completed';
+      let reapError = null;
+      const spawnedAt = item.spawned_at ? parseSqliteDatetime(item.spawned_at).getTime() : null;
+      if (spawnedAt && !isNaN(spawnedAt)) {
+        const durationMs = now - spawnedAt;
+        if (durationMs < 30000 && sessionDir && item.agent_id) {
+          try {
+            const sessFile = findSessionFileByAgentId(sessionDir, item.agent_id);
+            if (!sessFile) {
+              reapStatus = 'failed';
+              reapError = 'no_output_crash';
+            }
+          } catch { /* non-fatal — default to completed */ }
+        }
+      }
+
+      // TOCTOU-safe: only transition from 'running' to prevent concurrent reap processes
+      // from adding the same item to their reaped lists
+      let reapResult;
+      if (reapError) {
+        reapResult = db.prepare("UPDATE queue_items SET status = 'failed', error = ?, completed_at = datetime('now') WHERE id = ? AND status = 'running'").run(reapError, item.id);
+      } else {
+        reapResult = db.prepare("UPDATE queue_items SET status = 'completed', completed_at = datetime('now') WHERE id = ? AND status = 'running'").run(item.id);
+      }
       if (reapResult.changes === 0) continue; // Another process already reaped this item
 
       let metadata = {};
