@@ -130,6 +130,9 @@ import {
   TriggerPreviewPromotionArgsSchema,
   type TriggerPreviewPromotionArgs,
   type TriggerPreviewPromotionResult,
+  ForcePromoteToProdArgsSchema,
+  type ForcePromoteToProdArgs,
+  type ForcePromoteToProdResult,
 } from './types.js';
 
 // ============================================================================
@@ -2432,6 +2435,137 @@ async function triggerPreviewPromotion(args: TriggerPreviewPromotionArgs): Promi
 }
 
 // ============================================================================
+// Force Promote to Production
+// ============================================================================
+
+async function forcePromoteToProd(args: ForcePromoteToProdArgs): Promise<ForcePromoteToProdResult | ErrorResult> {
+  // 1. Verify CTO authorization exists
+  const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+  if (!fs.existsSync(bypassDbPath)) {
+    return { error: 'No CTO authorization database found. Call record_cto_decision first.' };
+  }
+
+  let decisionDb: InstanceType<typeof Database> | undefined;
+  try {
+    decisionDb = new Database(bypassDbPath, { readonly: true });
+    decisionDb.pragma('busy_timeout = 3000');
+
+    interface DecisionRow { id: string; status: string; decision_type: string; }
+    const decision = decisionDb.prepare(
+      "SELECT id, status, decision_type FROM cto_decisions WHERE decision_id = ? AND decision_type = 'force_prod_promotion'"
+    ).get(args.decision_id) as DecisionRow | undefined;
+
+    if (!decision) {
+      return { error: `No CTO authorization found for decision ID "${args.decision_id}". Call record_cto_decision with decision_type "force_prod_promotion" first.` };
+    }
+
+    if (decision.status === 'audit_pending') {
+      return { error: 'Authorization audit still pending. Wait for the auditor to verify, then retry.' };
+    }
+
+    if (decision.status !== 'verified' && decision.status !== 'audit_passed' && decision.status !== 'consumed') {
+      return { error: `CTO decision status is "${decision.status}" — expected "verified" or "audit_passed". Cannot proceed.` };
+    }
+  } finally {
+    try { decisionDb?.close(); } catch { /* ignore */ }
+  }
+
+  // 2. Fetch latest branches
+  try {
+    execSync('git fetch origin staging main --quiet', { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 15000, stdio: 'pipe' });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to fetch branches: ${message}` };
+  }
+
+  // 3. Check drift
+  let commits: string[];
+  try {
+    const output = execSync('git log --oneline origin/main..origin/staging', {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+    }).trim();
+    if (!output) {
+      return { error: 'Staging and main are in sync. Nothing to promote.' };
+    }
+    commits = output.split('\n');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to check drift: ${message}` };
+  }
+
+  // 4. Create PR
+  let prNumber: number;
+  let prUrl: string;
+  try {
+    // Check for existing open PR first
+    const existingJson = execSync('gh pr list --head staging --base main --state open --json number,url', {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+    }).trim();
+    const existing = JSON.parse(existingJson || '[]') as Array<{ number: number; url: string }>;
+
+    if (existing.length > 0) {
+      prNumber = existing[0].number;
+      prUrl = existing[0].url;
+    } else {
+      const createOutput = execSync(
+        `gh pr create --base main --head staging --title "FORCE: promote staging → main (${commits.length} commits)" --body "CTO-authorized force promotion. Decision ID: ${args.decision_id}. No quality gates applied."`,
+        { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 15000, stdio: 'pipe' },
+      ).trim();
+      // gh pr create outputs the PR URL
+      prUrl = createOutput;
+      // Extract PR number from URL
+      const match = prUrl.match(/\/pull\/(\d+)/);
+      prNumber = match ? parseInt(match[1], 10) : 0;
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `Failed to create PR: ${message}` };
+  }
+
+  // 5. Merge PR
+  try {
+    execSync(`gh pr merge ${prNumber} --merge`, {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+    });
+  } catch {
+    // Retry with --admin to bypass required status checks
+    try {
+      execSync(`gh pr merge ${prNumber} --merge --admin`, {
+        cwd: PROJECT_DIR, encoding: 'utf8', timeout: 30000, stdio: 'pipe',
+      });
+    } catch (err2) {
+      const message = err2 instanceof Error ? err2.message : String(err2);
+      return { error: `Failed to merge PR #${prNumber}: ${message}. PR was created at ${prUrl} but could not be merged.` };
+    }
+  }
+
+  // 6. Get final PR URL (may have changed after merge)
+  try {
+    prUrl = execSync(`gh pr view ${prNumber} --json url -q .url`, {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+  } catch { /* keep existing prUrl */ }
+
+  // 7. Mark decision as consumed
+  try {
+    const writeDb = new Database(bypassDbPath);
+    writeDb.pragma('busy_timeout = 3000');
+    writeDb.prepare("UPDATE cto_decisions SET status = 'consumed', consumed_at = datetime('now') WHERE decision_id = ? AND decision_type = 'force_prod_promotion'")
+      .run(args.decision_id);
+    writeDb.close();
+  } catch { /* non-fatal */ }
+
+  return {
+    success: true,
+    pr_url: prUrl,
+    pr_number: prNumber,
+    commits_promoted: commits.length,
+    decision_id: args.decision_id,
+    message: `Force promotion complete. PR #${prNumber} merged ${commits.length} commits from staging to main. ${prUrl}`,
+  };
+}
+
+// ============================================================================
 // Promotion Bypass Functions
 // ============================================================================
 
@@ -2869,6 +3003,12 @@ const tools: AnyToolHandler[] = [
     description: 'Trigger a preview → staging promotion. Spawns the preview-promoter agent with full quality gates (migration safety, tests, coverage, related demos). This is the ONLY correct way to manually trigger promotion — do NOT use create_task for staging promotion.',
     schema: TriggerPreviewPromotionArgsSchema,
     handler: triggerPreviewPromotion,
+  },
+  {
+    name: 'force_promote_to_prod',
+    description: 'Force-promote staging to main, bypassing all quality gates. Requires prior CTO authorization via record_cto_decision with decision_type "force_prod_promotion". Returns the merged PR URL.',
+    schema: ForcePromoteToProdArgsSchema,
+    handler: forcePromoteToProd,
   },
 ];
 
