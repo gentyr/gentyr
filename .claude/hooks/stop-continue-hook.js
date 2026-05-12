@@ -132,6 +132,28 @@ async function main() {
       }
     }
 
+    // Compaction exit bypass — if the agent called request_self_compact, allow exit.
+    // Persistent monitors auto-revive; blocking compaction creates a deadlock.
+    const compactTrackerPath = path.join(projectDir, '.claude', 'state', 'compact-tracker.json');
+    try {
+      if (fs.existsSync(compactTrackerPath)) {
+        const tracker = JSON.parse(fs.readFileSync(compactTrackerPath, 'utf8'));
+        const sessionId = input.session_id;
+        const agentId = process.env.CLAUDE_AGENT_ID;
+        // request_self_compact keys by sessionId || agentId || 'unknown'
+        const entry = (sessionId && tracker[sessionId]) || (agentId && tracker[agentId]);
+        if (entry?.compactRequested === true) {
+          debugLog('Decision: APPROVE (compaction exit — request_self_compact was called)', { sessionId, agentId });
+          gentyrDebugLog('stop-hook', 'decision', { decision: 'approve', reason: 'compaction_exit' });
+          console.log(JSON.stringify({ decision: 'approve' }));
+          process.exit(0);
+        }
+      }
+    } catch (e) {
+      debugLog('compact-tracker.json check (non-fatal)', { error: e.message });
+      // Fail open — fall through to normal gates
+    }
+
     // Plan manager completion gate — must run before the generic persistent monitor check
     if (process.env.GENTYR_PLAN_MANAGER === 'true' && process.env.GENTYR_PLAN_ID) {
       const planId = process.env.GENTYR_PLAN_ID;
