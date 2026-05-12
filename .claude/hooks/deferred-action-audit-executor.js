@@ -136,7 +136,8 @@ function executeBashCommand(args) {
 /**
  * Execute the default deferred action flow.
  * Loads the deferred action, computes approved_hmac, marks approved, and executes.
- * @param {string} decisionId - The decision_id which maps to the deferred action ID
+ * @param {string} decisionId - The cto_decisions row PK (e.g., "ctod-xxx"). The actual
+ *   deferred action ID is resolved via cto_decisions.decision_id lookup.
  */
 async function executeDefaultDeferredAction(decisionId) {
   let dbMod, executorMod;
@@ -162,8 +163,24 @@ async function executeDefaultDeferredAction(decisionId) {
   }
 
   try {
-    // Load the deferred action by decision_id
-    const action = dbMod.getDeferredAction(db, decisionId);
+    // Step 0: Resolve the actual deferred action ID from cto_decisions.
+    // The decisionId parameter is the cto_decisions row PK (e.g., "ctod-xxx").
+    // The deferred action ID is in cto_decisions.decision_id (e.g., "deferred-xxx").
+    let actualDeferredActionId = decisionId;
+    try {
+      const decisionRow = db.prepare(
+        'SELECT decision_id FROM cto_decisions WHERE id = ?'
+      ).get(decisionId);
+      if (decisionRow && decisionRow.decision_id) {
+        actualDeferredActionId = decisionRow.decision_id;
+        log(`Resolved cto_decisions.id=${decisionId} -> deferred action id=${actualDeferredActionId}`);
+      }
+    } catch (err) {
+      log(`Warning: Could not resolve cto_decisions row for ${decisionId}: ${err.message} — falling back to direct lookup`);
+    }
+
+    // Load the deferred action by the resolved ID
+    const action = dbMod.getDeferredAction(db, actualDeferredActionId);
     if (!action) {
       log(`No deferred action found for decision_id=${decisionId} — may be a bypass_request decision without a deferred action, skipping`);
       return;
@@ -195,7 +212,7 @@ async function executeDefaultDeferredAction(decisionId) {
     dbMod.markApproved(db, action.id, approvedHmac);
 
     // Re-fetch the action with updated approved_hmac
-    const approvedAction = dbMod.getDeferredAction(db, decisionId);
+    const approvedAction = dbMod.getDeferredAction(db, actualDeferredActionId);
     if (!approvedAction) {
       log(`Failed to re-fetch approved action ${decisionId}`);
       return;
