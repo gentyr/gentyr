@@ -55,8 +55,6 @@ Assess the scope of changes:
 git diff --stat origin/staging..origin/preview
 ```
 
-**Large promotion guard**: If the diff exceeds 3000 changed lines or 80 files, this is a large promotion that warrants CTO oversight. Report via `mcp__agent-reports__report_to_deputy_cto` with the message "Large promotion detected — CTO review recommended" including the commit count and file count, then call `mcp__agent-tracker__summarize_work` with a summary and exit.
-
 Get the full diff for quality review:
 
 ```bash
