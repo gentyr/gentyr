@@ -47,7 +47,7 @@ import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
 // inline these three utilities here instead of importing from revival-utils.js.
 // Mirrors the same pattern used in session-reaper.js.
 
-const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
 const LOG_FILE = path.join(PROJECT_DIR, '.claude', 'session-queue.log');
 // Legacy: focus-mode.json is replaced by automation-rate.json in config-reader.js
