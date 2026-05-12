@@ -268,7 +268,10 @@ export function compactSessionIfNeeded(sessionId, projectDir, options = {}) {
   const tokenTriggered = currentTokens >= minTokens;
   const timeTriggered = minutesSinceCompact >= maxMinutesSinceCompact && currentTokens >= Math.floor(minTokens / 2);
 
-  if (!tokenTriggered && !timeTriggered) return null;
+  // Also trigger if the agent explicitly requested compaction via request_self_compact
+  const tracker = readCompactTracker();
+  const agentRequested = tracker[sessionId]?.compactRequested === true;
+  if (!tokenTriggered && !timeTriggered && !agentRequested) return null;
 
   // Concurrency guard: atomic lock acquisition via O_EXCL
   let lockFd = -1;
