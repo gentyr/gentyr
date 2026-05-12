@@ -1477,6 +1477,18 @@ The ONLY path to production. Replaces the former automated midnight-window promo
 
 **Release Ledger**: `release-ledger` MCP server tracks PRs, sessions, reports, and tasks per release for post-mortem traceability.
 
+### /promote-to-prod-force — Emergency Force Promotion
+
+Emergency bypass for directly merging staging to main without quality gates. CTO-gated via the authorization system.
+
+**Command**: `/promote-to-prod-force`
+
+**Flow**: CTO reviews staging drift → types confirmation → agent calls `record_cto_decision` (type `force_prod_promotion`) → calls `mcp__deputy-cto__force_promote_to_prod({ decision_id })` → tool verifies CTO decision exists and is verified → creates or reuses a PR from staging to main → merges with `--admin` CI bypass → marks decision consumed → returns PR URL.
+
+**Gate enforcement**: `force_promote_to_prod` is registered in `protected-actions.json` so spawned agents are blocked by `protected-action-gate.js`. Only interactive CTO sessions can invoke the tool.
+
+**When to use**: Production incidents where the full `/promote-to-prod` quality pipeline cannot complete in time. Not for routine promotion.
+
 ## Plan Orchestrator MCP Server
 
 The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`) manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db` and the persistent task system. State is in `.claude/state/plans.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
@@ -1574,7 +1586,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | 1. Hooks | 91 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
 | 2. Agent Definitions | 23 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
-| 4. Slash Commands | 42 commands | User-initiated | Workflows, dashboards, configuration |
+| 4. Slash Commands | 46 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
 | 6. Session Briefing | 1 hook + content | Session start | One-time context dump: queue status, active tasks, bypass requests |
 | 7. Prompt Templates | ~10 builders | Agent spawn | Task-specific instructions injected into spawn prompts |
@@ -1778,7 +1790,7 @@ Key modules consumed by hooks:
 | agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, list/resolve_blocking_item, get_blocking_summary, peek_session, browse_session, set_automation_toggle, get_automation_toggles, record_cto_decision, check_cto_decision, cto_decision_audit_pass, cto_decision_audit_fail | Session queue, signals, locks, bypass, blocking queue, automation toggles, CTO authorization chain |
 | user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature, create/archive/switch/list/get/delete_persona_profile, verify_demo_completeness | Personas, features, scenarios, prerequisites, persona profiles, demo completeness gate |
 | product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
-| deputy-cto | create_report, list_reports, acknowledge_report | Reports, triage, delegation |
+| deputy-cto | create_report, list_reports, acknowledge_report, force_promote_to_prod | Reports, triage, delegation, CTO-gated force production promotion |
 | release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report, present_release_summary, record_cto_approval | Production release evidence chain (staging lock → CTO sign-off with cryptographic proof) |
 
 #### Infrastructure Servers (Tier 1 — shared daemon)
@@ -1809,14 +1821,14 @@ specs-browser, cto-report, cto-reports, show, setup-helper, feedback-explorer, i
 #### Feedback Agent Servers
 feedback-reporter, playwright-feedback, programmatic-feedback
 
-### Slash Commands (42)
+### Slash Commands (46)
 
 **Demo**: demo, demo-all, demo-autonomous, demo-bulk, demo-interactive, demo-session, demo-validate
 **Tasks**: spawn-tasks, task-queue, triage, persistent-task, persistent-tasks
 **Monitoring**: monitor, status
 **Plans**: plan, plan-progress, plan-timeline, plan-audit, plan-sessions
-**Config**: concurrent-sessions, configure-personas, focus-mode, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
-**Operations**: cto-dashboard, deputy-cto, promote-to-prod, session-queue, show, workstream
+**Config**: automation-rate, concurrent-sessions, configure-personas, focus-mode, global-monitor, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
+**Operations**: cto-dashboard, deputy-cto, promote-to-prod, promote-to-prod-force, promote-to-staging, session-queue, show, workstream
 **Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr, setup-fly
 **Analysis**: persona-feedback, product-manager, replay, run-feedback
 
