@@ -233,7 +233,7 @@ function getSessionDir(projectDir: string): string | null {
 }
 
 /**
- * Find a session JSONL file by scanning for [AGENT:id] marker in the first 2KB.
+ * Find a session JSONL file by scanning for [AGENT:id] marker in the first 16KB.
  * Ported from revival-utils.js:findSessionFileByAgentId().
  */
 function findSessionFileByAgentId(sessionDir: string, agentId: string): string | null {
@@ -250,8 +250,8 @@ function findSessionFileByAgentId(sessionDir: string, agentId: string): string |
     let fd: number | undefined;
     try {
       fd = fs.openSync(filePath, 'r');
-      const buf = Buffer.alloc(2000);
-      const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
+      const buf = Buffer.alloc(16384);
+      const bytesRead = fs.readSync(fd, buf, 0, 16384, 0);
       const head = buf.toString('utf8', 0, bytesRead);
       if (head.includes(marker)) return filePath;
     } catch {
@@ -3754,6 +3754,26 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
       sessionFile = findSessionFileByAgentId(sessionDir, agentId);
     }
   }
+  // Fallback: for --resume sessions, the JSONL file is the resumed session's file.
+  // The agent marker lands past the scan window, but the queue has the exact session ID.
+  if (!sessionFile && fs.existsSync(QUEUE_DB_PATH)) {
+    let qDb: InstanceType<typeof Database> | undefined;
+    try {
+      qDb = openReadonlyDb(QUEUE_DB_PATH);
+      const row = qDb.prepare(
+        'SELECT resume_session_id FROM queue_items WHERE agent_id = ? AND resume_session_id IS NOT NULL'
+      ).get(agentId) as { resume_session_id: string } | undefined;
+      if (row?.resume_session_id) {
+        const sessionDir = getSessionDir(PROJECT_DIR);
+        if (sessionDir) {
+          const candidate = path.join(sessionDir, `${row.resume_session_id}.jsonl`);
+          if (fs.existsSync(candidate)) sessionFile = candidate;
+        }
+      }
+    } catch { /* non-fatal */ } finally {
+      try { qDb?.close(); } catch { /* best-effort */ }
+    }
+  }
   if (!sessionFile) {
     return { error: `Session file not found for agent: ${agentId}` };
   }
@@ -6953,7 +6973,7 @@ const tools: AnyToolHandler[] = [
   // WS5 Session Introspection Tools
   {
     name: 'peek_session',
-    description: 'Peek at a running agent session\'s JSONL. Returns summary fields (lastText: up to 1000 chars, lastTools: last 10 with 200-char input previews) plus a chronological recentActivity array with assistant text (1000 chars each), tool calls (500-char inputs), and tool results from the window. Provide agent_id or queue_id. If the summary fields feel incomplete or you need more context, increase depth (e.g. depth: 48) or page backward using nextOffset from the previous response. Pagination: offset: 0 (default, latest), then pass nextOffset to page backward. Returns hasMore/nextOffset for continuation. Set include_compaction_context: true for pre-compaction summaries.',
+    description: 'Peek at a running agent session\'s JSONL. Returns summary fields (lastText: up to 1000 chars, lastTools: last 10 with 200-char input previews) plus a chronological recentActivity array with assistant text (1000 chars each), tool calls (500-char inputs), and tool results from the window. Provide agent_id or queue_id. IMPORTANT: agent_id (format "agent-xxx") and queue item id (format "sq-xxx") are DIFFERENT columns in session-queue.db — use the agent_id column, not the queue item id. If the summary fields feel incomplete or you need more context, increase depth (e.g. depth: 48) or page backward using nextOffset from the previous response. Pagination: offset: 0 (default, latest), then pass nextOffset to page backward. Returns hasMore/nextOffset for continuation. Set include_compaction_context: true for pre-compaction summaries.',
     schema: PeekSessionArgsSchema,
     handler: peekSession,
   },
