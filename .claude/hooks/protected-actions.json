@@ -167,9 +167,10 @@
       "phrase": "APPROVE BYPASS",
       "tools": [
         "request_bypass",
-        "execute_bypass"
+        "execute_bypass",
+        "force_promote_to_prod"
       ],
-      "description": "Deputy-CTO bypass system - prevents autonomous approval overrides"
+      "description": "Deputy-CTO bypass system and force production promotion - prevents autonomous approval overrides"
     },
     "elastic-logs": {
       "credentialKeys": [

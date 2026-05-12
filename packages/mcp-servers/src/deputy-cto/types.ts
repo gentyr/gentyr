@@ -589,6 +589,23 @@ export interface ExecuteHotfixPromotionResult {
 }
 
 // ============================================================================
+// Force Promote to Production
+// ============================================================================
+
+export const ForcePromoteToProdArgsSchema = z.object({
+  decision_id: z.string().describe('The CTO decision ID from record_cto_decision (force_prod_promotion type)'),
+});
+export type ForcePromoteToProdArgs = z.infer<typeof ForcePromoteToProdArgsSchema>;
+export interface ForcePromoteToProdResult {
+  success: boolean;
+  pr_url: string;
+  pr_number: number;
+  commits_promoted: number;
+  decision_id: string;
+  message: string;
+}
+
+// ============================================================================
 // Trigger Preview Promotion
 // ============================================================================
 

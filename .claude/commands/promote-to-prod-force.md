@@ -1,17 +1,15 @@
 # Force Promote Staging to Production
 
 Emergency direct promotion of staging to main, bypassing all quality gates.
-Gated by CTO approval system for audit trail.
+Gated by CTO authorization system — the MCP tool verifies a CTO decision exists before executing.
 
 ## Steps
 
-### Step 1: Fetch Latest Branches
+### Step 1: Fetch and Check Drift
 
 ```bash
 git fetch origin staging main --quiet
 ```
-
-### Step 2: Check Drift
 
 ```bash
 git log --oneline origin/main..origin/staging
@@ -19,15 +17,15 @@ git log --oneline origin/main..origin/staging
 
 If the output is empty: Show "Staging and main are in sync. Nothing to promote." and stop.
 
-### Step 3: Show Summary
+### Step 2: Show Summary
 
-Count the commits from Step 2 and show the changed files summary:
+Show the commit count and changed files:
 
 ```bash
 git diff --stat origin/main..origin/staging | tail -3
 ```
 
-### Step 4: CTO Confirmation
+### Step 3: CTO Confirmation
 
 Ask the CTO:
 
@@ -37,11 +35,11 @@ Ask the CTO:
 >
 > Type "FORCE PROMOTE" to confirm.
 
-Wait for the CTO to type their confirmation. Do NOT proceed until the CTO responds.
+Wait for the CTO to type their confirmation. Do NOT proceed until they respond.
 
-### Step 5: Record CTO Decision
+### Step 4: Record CTO Decision
 
-Generate a unique decision ID using the format: `force-prod-{timestamp}` (e.g., `force-prod-1778512110189`).
+Generate a unique decision ID: `force-prod-{Date.now()}`
 
 Call:
 
@@ -49,44 +47,30 @@ Call:
 mcp__agent-tracker__record_cto_decision({
   decision_type: "force_prod_promotion",
   decision_id: "<generated decision ID>",
-  verbatim_text: "<CTO's exact words from Step 4>"
+  verbatim_text: "<CTO's exact words from Step 3>"
 })
 ```
 
 If the decision is not verified (status is not `verified`), show the error and stop.
 
-### Step 6: Create and Merge PR
+### Step 5: Execute Force Promotion
 
-Create the PR:
+Call:
 
-```bash
-gh pr create --base main --head staging --title "FORCE: promote staging → main ({N} commits)" --body "CTO-authorized force promotion. No quality gates applied. Decision ID: {decision_id}."
+```
+mcp__deputy-cto__force_promote_to_prod({ decision_id: "<decision ID from Step 4>" })
 ```
 
-Extract the PR number from the output, then merge:
+The tool verifies the CTO decision exists, then creates a PR from staging to main, merges it, and returns the result.
 
-```bash
-gh pr merge {number} --merge
-```
+If the tool returns an error about "audit still pending", wait 30 seconds and retry once. The authorization auditor needs time to verify.
 
-If merge fails due to required status checks, retry with admin bypass:
+### Step 6: Show Result
 
-```bash
-gh pr merge {number} --merge --admin
-```
-
-### Step 7: Show Result
-
-After the merge completes, fetch the PR URL:
-
-```bash
-gh pr view {number} --json url -q .url
-```
-
-Show the CTO:
+Show the CTO the result from the tool:
 
 > **Production promotion complete.**
 >
-> PR: {url}
-> Commits promoted: {N}
+> PR: {pr_url}
+> Commits promoted: {commits_promoted}
 > Decision ID: {decision_id}
