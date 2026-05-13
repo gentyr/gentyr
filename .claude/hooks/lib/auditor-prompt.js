@@ -106,7 +106,7 @@ You are an INDEPENDENT authorization auditor. Verify that:
 4. The CTO's response indicates understanding and intentional approval
 
 ## Process
-1. Use peek_session to read the session where the CTO made this decision
+1. Use peek_session with session_id="${sessionId}" to read the CTO's session (this is an interactive session — use session_id, not agent_id)
 2. Find the agent's explanation of what was blocked and why
 3. Compare the agent's description against the actual decision_context above
 4. Check for scope mismatches or hidden escalation

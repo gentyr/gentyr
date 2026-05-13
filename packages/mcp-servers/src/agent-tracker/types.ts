@@ -382,6 +382,7 @@ export const GetSessionSummaryArgsSchema = z.object({
 export const PeekSessionArgsSchema = z.object({
   agent_id: z.string().optional().describe('Agent ID to peek'),
   queue_id: z.string().optional().describe('Queue ID to peek'),
+  session_id: z.string().optional().describe('JSONL session UUID to peek directly (for interactive sessions that have no agent_id/queue_id)'),
   depth: z.number().optional().default(24).describe('KB of JSONL to read per page (default 24). Increase to 32-48 for comprehensive analysis.'),
   offset: z.number().min(0).optional().default(0).describe('Bytes from end of file to start reading. 0 = latest. Use next_offset from previous response to page backward.'),
   include_compaction_context: z.boolean().optional().default(false)
@@ -392,7 +393,8 @@ export const PeekSessionArgsSchema = z.object({
 export type PeekSessionArgs = z.infer<typeof PeekSessionArgsSchema>;
 
 export const BrowseSessionArgsSchema = z.object({
-  agent_id: z.string().describe('Agent ID to browse'),
+  agent_id: z.string().optional().describe('Agent ID to browse'),
+  session_id: z.string().optional().describe('JSONL session UUID to browse directly (for interactive sessions that have no agent_id)'),
   page_size: z.number().min(5).max(50).optional().default(20).describe('Messages per page (default 20)'),
   before_index: z.number().min(0).optional().describe('Return messages before this index (for paging backward). Omit for latest.'),
   subagent_id: z.string().optional()

@@ -3803,69 +3803,87 @@ async function acknowledgeSessionSignal(args: AcknowledgeSignalArgs): Promise<ob
  * Extracts last tool calls, last assistant text, sub-agent spawns, and git commits.
  */
 async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult> {
+  let sessionFile: string | null = null;
+
+  // Direct session UUID lookup (for interactive sessions that have no agent_id/queue_id)
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  if (!args.agent_id && !args.queue_id && args.session_id) {
+    if (UUID_REGEX.test(args.session_id)) {
+      const sessionDir = getSessionDir(PROJECT_DIR);
+      if (sessionDir) {
+        const candidate = path.join(sessionDir, `${args.session_id}.jsonl`);
+        if (fs.existsSync(candidate)) sessionFile = candidate;
+      }
+    }
+    if (!sessionFile) {
+      return { error: `Session file not found for session_id: ${args.session_id}` };
+    }
+  }
+
   // Resolve agent_id from either agent_id or queue_id
   let agentId = args.agent_id;
 
-  if (!agentId && args.queue_id) {
-    // Look up agent_id directly from the queue DB's agent_id column (set by spawnQueueItem)
-    if (fs.existsSync(QUEUE_DB_PATH)) {
-      let queueDb;
-      try {
-        queueDb = openReadonlyDb(QUEUE_DB_PATH);
-        const row = queueDb.prepare('SELECT agent_id FROM queue_items WHERE id = ?').get(args.queue_id) as { agent_id: string | null } | undefined;
-        if (!row) {
-          return { error: `Queue item not found: ${args.queue_id}` };
-        }
-        if (row.agent_id) {
-          agentId = row.agent_id;
-        } else {
-          return { error: `Queue item ${args.queue_id} has not been spawned yet (no agent_id)` };
-        }
-      } finally {
-        try { queueDb?.close(); } catch { /* best-effort */ }
-      }
-    }
-  }
-
-  if (!agentId) {
-    return { error: 'Must provide agent_id or a resolvable queue_id' };
-  }
-
-  // Find the session JSONL file — use findSessionFile(agentRecord) which handles
-  // worktree session dirs; fall back to direct search when no tracker record exists
-  const history = readHistory();
-  const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
-  let sessionFile: string | null = null;
-  if (agentRecord) {
-    sessionFile = findSessionFile(agentRecord);
-  } else {
-    const sessionDir = getSessionDir(PROJECT_DIR);
-    if (sessionDir) {
-      sessionFile = findSessionFileByAgentId(sessionDir, agentId);
-    }
-  }
-  // Fallback: for --resume sessions, the JSONL file is the resumed session's file.
-  // The agent marker lands past the scan window, but the queue has the exact session ID.
-  if (!sessionFile && fs.existsSync(QUEUE_DB_PATH)) {
-    let qDb: InstanceType<typeof Database> | undefined;
-    try {
-      qDb = openReadonlyDb(QUEUE_DB_PATH);
-      const row = qDb.prepare(
-        'SELECT resume_session_id FROM queue_items WHERE agent_id = ? AND resume_session_id IS NOT NULL'
-      ).get(agentId) as { resume_session_id: string } | undefined;
-      if (row?.resume_session_id) {
-        const sessionDir = getSessionDir(PROJECT_DIR);
-        if (sessionDir) {
-          const candidate = path.join(sessionDir, `${row.resume_session_id}.jsonl`);
-          if (fs.existsSync(candidate)) sessionFile = candidate;
-        }
-      }
-    } catch { /* non-fatal */ } finally {
-      try { qDb?.close(); } catch { /* best-effort */ }
-    }
-  }
   if (!sessionFile) {
-    return { error: `Session file not found for agent: ${agentId}` };
+    if (!agentId && args.queue_id) {
+      // Look up agent_id directly from the queue DB's agent_id column (set by spawnQueueItem)
+      if (fs.existsSync(QUEUE_DB_PATH)) {
+        let queueDb;
+        try {
+          queueDb = openReadonlyDb(QUEUE_DB_PATH);
+          const row = queueDb.prepare('SELECT agent_id FROM queue_items WHERE id = ?').get(args.queue_id) as { agent_id: string | null } | undefined;
+          if (!row) {
+            return { error: `Queue item not found: ${args.queue_id}` };
+          }
+          if (row.agent_id) {
+            agentId = row.agent_id;
+          } else {
+            return { error: `Queue item ${args.queue_id} has not been spawned yet (no agent_id)` };
+          }
+        } finally {
+          try { queueDb?.close(); } catch { /* best-effort */ }
+        }
+      }
+    }
+
+    if (!agentId) {
+      return { error: 'Must provide agent_id, queue_id, or session_id' };
+    }
+
+    // Find the session JSONL file — use findSessionFile(agentRecord) which handles
+    // worktree session dirs; fall back to direct search when no tracker record exists
+    const history = readHistory();
+    const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
+    if (agentRecord) {
+      sessionFile = findSessionFile(agentRecord);
+    } else {
+      const sessionDir = getSessionDir(PROJECT_DIR);
+      if (sessionDir) {
+        sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+      }
+    }
+    // Fallback: for --resume sessions, the JSONL file is the resumed session's file.
+    // The agent marker lands past the scan window, but the queue has the exact session ID.
+    if (!sessionFile && fs.existsSync(QUEUE_DB_PATH)) {
+      let qDb: InstanceType<typeof Database> | undefined;
+      try {
+        qDb = openReadonlyDb(QUEUE_DB_PATH);
+        const row = qDb.prepare(
+          'SELECT resume_session_id FROM queue_items WHERE agent_id = ? AND resume_session_id IS NOT NULL'
+        ).get(agentId) as { resume_session_id: string } | undefined;
+        if (row?.resume_session_id) {
+          const sessionDir = getSessionDir(PROJECT_DIR);
+          if (sessionDir) {
+            const candidate = path.join(sessionDir, `${row.resume_session_id}.jsonl`);
+            if (fs.existsSync(candidate)) sessionFile = candidate;
+          }
+        }
+      } catch { /* non-fatal */ } finally {
+        try { qDb?.close(); } catch { /* best-effort */ }
+      }
+    }
+    if (!sessionFile) {
+      return { error: `Session file not found for agent: ${agentId}` };
+    }
   }
 
   // If subagent_id is provided, redirect to sub-agent JSONL
@@ -4114,22 +4132,39 @@ function formatBrowseMessage(entry: any, index: number): BrowseMessage | null {
 }
 
 async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorResult> {
-  const agentId = args.agent_id;
-  if (!agentId) return { error: 'agent_id is required' };
-
-  // Find session file (same pattern as peekSession)
-  const history = readHistory();
-  const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
   let sessionFile: string | null = null;
-  if (agentRecord) {
-    sessionFile = findSessionFile(agentRecord);
-  } else {
-    const sessionDir = getSessionDir(PROJECT_DIR);
-    if (sessionDir) {
-      sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+
+  // Direct session UUID lookup (for interactive sessions)
+  const UUID_REGEX_BROWSE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  if (!args.agent_id && args.session_id) {
+    if (UUID_REGEX_BROWSE.test(args.session_id)) {
+      const sessionDir = getSessionDir(PROJECT_DIR);
+      if (sessionDir) {
+        const candidate = path.join(sessionDir, `${args.session_id}.jsonl`);
+        if (fs.existsSync(candidate)) sessionFile = candidate;
+      }
     }
+    if (!sessionFile) return { error: `Session file not found for session_id: ${args.session_id}` };
   }
-  if (!sessionFile) return { error: `Session file not found for agent: ${agentId}` };
+
+  // Fall back to agent_id resolution
+  if (!sessionFile) {
+    const agentId = args.agent_id;
+    if (!agentId) return { error: 'Must provide agent_id or session_id' };
+
+    // Find session file (same pattern as peekSession)
+    const history = readHistory();
+    const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
+    if (agentRecord) {
+      sessionFile = findSessionFile(agentRecord);
+    } else {
+      const sessionDir = getSessionDir(PROJECT_DIR);
+      if (sessionDir) {
+        sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+      }
+    }
+    if (!sessionFile) return { error: `Session file not found for agent: ${agentId}` };
+  }
 
   // If subagent_id is provided, redirect to sub-agent JSONL
   if (args.subagent_id) {
@@ -4200,7 +4235,7 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
   }
 
   return {
-    agent_id: agentId,
+    agent_id: args.agent_id || args.session_id || null,
     total_messages: totalMessages,
     range: { start_index: startIndex, end_index: endIndex },
     messages,

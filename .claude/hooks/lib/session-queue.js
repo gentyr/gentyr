@@ -134,7 +134,7 @@ const CLAUDE_PROJECTS_DIR_SQ = path.join(os.homedir(), '.claude', 'projects');
  * @param {string} projectDir
  * @returns {string|null}
  */
-function getSessionDir(projectDir) {
+export function getSessionDir(projectDir) {
   const projectPath = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
   const sessionDir = path.join(CLAUDE_PROJECTS_DIR_SQ, projectPath);
   if (fs.existsSync(sessionDir)) return sessionDir;
@@ -151,7 +151,7 @@ function getSessionDir(projectDir) {
  * @param {string} agentId
  * @returns {string|null}
  */
-function findSessionFileByAgentId(sessionDir, agentId) {
+export function findSessionFileByAgentId(sessionDir, agentId) {
   const marker = `[AGENT:${agentId}]`;
   let files;
   try {
@@ -163,17 +163,11 @@ function findSessionFileByAgentId(sessionDir, agentId) {
 
   for (const file of files) {
     const filePath = path.join(sessionDir, file);
-    let fd;
     try {
-      fd = fs.openSync(filePath, 'r');
-      const buf = Buffer.alloc(16384);
-      const bytesRead = fs.readSync(fd, buf, 0, 16384, 0);
-      const head = buf.toString('utf8', 0, bytesRead);
-      if (head.includes(marker)) return filePath;
+      const content = fs.readFileSync(filePath, 'utf8');
+      if (content.includes(marker)) return filePath;
     } catch (err) {
       log(`Warning: ${err.message}`);
-    } finally {
-      if (fd !== undefined) fs.closeSync(fd);
     }
   }
 
@@ -185,7 +179,7 @@ function findSessionFileByAgentId(sessionDir, agentId) {
  * @param {string} transcriptPath
  * @returns {string|null}
  */
-function extractSessionIdFromPath(transcriptPath) {
+export function extractSessionIdFromPath(transcriptPath) {
   if (!transcriptPath) return null;
   const basename = path.basename(transcriptPath, '.jsonl');
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

@@ -227,23 +227,28 @@ describe('block-no-verify.js (PreToolUse Hook)', () => {
       await assertBlocked('git commit -m "test" -n', tempDir.path);
     });
 
-    it('should allow git clone -n (not a git commit -n)', async () => {
-      // -n in git clone means --no-checkout, not --no-verify
-      // The pattern /\bgit\b.*\s-n\s/ only matches -n with spaces around it
-      // git clone -n repo would match but is not a commit, however the
-      // hook blocks all -n flag usage in git commands as a conservative measure.
-      // This documents that behavior.
-      const result = await runHook({
-        tool_name: 'Bash',
-        tool_input: { command: 'git log -n 5' },
-        cwd: tempDir.path,
-      });
-      assert.strictEqual(result.exitCode, 0);
-      // git log -n 5 should be blocked because it matches \bgit\b.*\s-n\s
-      // This is intentional conservative behavior — document it here.
-      // (The -n pattern targets commit bypass, but applies broadly.)
-      // Result: either blocked or allowed depending on regex match
-      // We document this test as a known conservative behavior
+    it('should allow git log -n 5 (not a commit/push -n)', async () => {
+      await assertAllowed('git log -n 5', tempDir.path);
+    });
+
+    it('should allow git clone -n repo (not a commit/push -n)', async () => {
+      await assertAllowed('git clone -n https://github.com/example/repo', tempDir.path);
+    });
+
+    it('should allow grep -n in piped git commands', async () => {
+      await assertAllowed('git show origin/preview:scripts/demo.sh | grep -n -A1 "DEMO"', tempDir.path);
+    });
+
+    it('should block git push -n', async () => {
+      await assertBlocked('git push -n origin main', tempDir.path, '-n');
+    });
+
+    it('should block git merge -n', async () => {
+      await assertBlocked('git merge -n feature-branch', tempDir.path, '-n');
+    });
+
+    it('should block git rebase -n', async () => {
+      await assertBlocked('git rebase -n main', tempDir.path, '-n');
     });
   });
 
@@ -739,9 +744,9 @@ describe('block-no-verify.js (PreToolUse Hook)', () => {
         cwd: tempDir.path,
       });
 
-      // Should contain CTO bypass instructions
-      assert.match(result.stderr, /APPROVE BYPASS|mcp__deputy-cto__request_bypass/,
-        'Should include bypass instructions');
+      // Should contain CTO authorization instructions
+      assert.match(result.stderr, /record_cto_decision|Deferred Action/,
+        'Should include CTO authorization instructions');
     });
 
     it('should truncate long commands in block message', async () => {
