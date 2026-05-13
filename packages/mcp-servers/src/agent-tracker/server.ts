@@ -3064,54 +3064,99 @@ async function setLockdownMode(args: SetLockdownModeArgs): Promise<object | Erro
     };
   }
 
-  // Disabling lockdown requires a valid HMAC-signed approval token (APPROVE BYPASS flow).
+  // Disabling lockdown requires CTO authorization via the Unified CTO Authorization System.
+  // A deferred action is created and the agent must call record_cto_decision with the CTO's
+  // verbatim approval. An independent auditor verifies, then deferred-action-audit-executor.js
+  // executes the state change autonomously.
   if (!args.enabled) {
-    const tokenModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'bypass-approval-token.js');
-    let tokenResult: { valid: boolean; code?: string; request_id?: string; reason?: string };
+    let dbMod: { openDb: () => ReturnType<typeof Database>; findDuplicatePending: (db: ReturnType<typeof Database>, server: string, tool: string, argsHash: string) => { id: string } | undefined; createDeferredAction: (db: ReturnType<typeof Database>, action: object) => { id: string } };
+    let executorMod: { computePendingHmac: (code: string, server: string, tool: string, argsHash: string) => string | null };
+    const dbModPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'deferred-action-db.js');
+    const executorModPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'deferred-action-executor.js');
+
     try {
-      const mod = await import(tokenModulePath);
-      tokenResult = mod.verifyAndConsumeApprovalToken(PROJECT_DIR);
+      dbMod = await import(dbModPath);
     } catch (err) {
-      return {
-        error: `G001 FAIL-CLOSED: Could not load bypass-approval-token module: ${(err as Error).message}`,
-      };
+      return { error: `G001 FAIL-CLOSED: Could not load deferred-action-db module: ${(err as Error).message}` };
+    }
+    try {
+      executorMod = await import(executorModPath);
+    } catch (err) {
+      return { error: `G001 FAIL-CLOSED: Could not load deferred-action-executor module: ${(err as Error).message}` };
     }
 
-    if (!tokenResult.valid) {
+    const db = dbMod.openDb();
+    if (!db) {
+      return { error: 'G001 FAIL-CLOSED: Could not open bypass-requests.db for deferred action creation' };
+    }
+
+    try {
+      const argsHash = crypto.createHash('sha256').update(JSON.stringify({ enabled: false })).digest('hex');
+
+      // Dedup: check for existing pending deferred action
+      const existing = dbMod.findDuplicatePending(db, 'agent-tracker', 'set_lockdown_mode', argsHash);
+      if (existing) {
+        return {
+          blocked: true,
+          deferred_action_id: existing.id,
+          message: [
+            `A lockdown disable request is already pending (ID: ${existing.id}).`,
+            ``,
+            `Call record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${existing.id}", verbatim_text: "<CTO's exact words>" })`,
+            `after the CTO confirms approval in chat.`,
+          ].join('\n'),
+        };
+      }
+
+      // Create deferred action
+      const code = crypto.randomBytes(3).toString('hex').toUpperCase();
+      const pendingHmac = executorMod.computePendingHmac(code, 'agent-tracker', 'set_lockdown_mode', argsHash);
+      if (!pendingHmac) {
+        return { error: 'G001 FAIL-CLOSED: Could not compute pending HMAC — protection key may be missing' };
+      }
+
+      const result = dbMod.createDeferredAction(db, {
+        server: 'agent-tracker',
+        tool: 'set_lockdown_mode',
+        args: { enabled: false },
+        argsHash,
+        code,
+        phrase: 'UNIFIED',
+        pendingHmac,
+        sourceHook: 'set_lockdown_mode',
+      });
+
       return {
-        error: [
-          `Disabling lockdown requires CTO approval via APPROVE BYPASS flow.`,
-          `Token check failed: ${tokenResult.reason || 'no valid token'}.`,
+        blocked: true,
+        deferred_action_id: result.id,
+        message: [
+          `Disabling lockdown requires CTO authorization.`,
           ``,
-          `To disable lockdown:`,
-          `  1. Call mcp__deputy-cto__request_bypass with reason "Disable interactive session lockdown"`,
-          `  2. CTO types "APPROVE BYPASS <code>" in chat (code returned by step 1)`,
-          `  3. Call mcp__agent-tracker__set_lockdown_mode({ enabled: false }) again`,
+          `Ask the CTO to confirm by typing their approval in chat (e.g., "yes, disable lockdown").`,
+          `Then call:`,
+          `  record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${result.id}", verbatim_text: "<CTO's exact words>" })`,
           ``,
-          `The agent cannot forge the 6-char code (server-generated, stored in deputy-cto.db) `,
-          `or the HMAC signature (signed with .claude/protection-key).`,
+          `The system will verify the CTO's approval via an independent auditor and auto-execute.`,
+          `Do NOT retry set_lockdown_mode — the deferred action system handles execution autonomously.`,
         ].join('\n'),
       };
+    } finally {
+      try { db.close(); } catch { /* ignore */ }
     }
   }
 
-  // Token was valid (already consumed) OR we're enabling. Proceed with state change.
+  // Enabling lockdown is always unrestricted. Proceed with state change.
   const config = readAutomationConfig();
-  if (args.enabled) {
-    delete config.interactiveLockdownDisabled;
-  } else {
-    config.interactiveLockdownDisabled = true;
-  }
+  delete config.interactiveLockdownDisabled;
   writeAutomationConfig(config);
 
   // Emit audit event to session-audit.log
-  const auditEventName = args.enabled ? 'lockdown_enabled' : 'lockdown_disabled';
   try {
     const auditPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js');
     if (fs.existsSync(auditPath)) {
       import(auditPath).then((auditModule: { auditEvent?: (event: string, data?: object) => void }) => {
         if (typeof auditModule.auditEvent === 'function') {
-          auditModule.auditEvent(auditEventName, { enabled: args.enabled });
+          auditModule.auditEvent('lockdown_enabled', { enabled: true });
         }
       }).catch(() => { /* non-fatal */ });
     }
@@ -3121,10 +3166,8 @@ async function setLockdownMode(args: SetLockdownModeArgs): Promise<object | Erro
 
   return {
     success: true,
-    lockdown_enabled: args.enabled,
-    message: args.enabled
-      ? 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console. File-editing and code-modifying agents are blocked.'
-      : 'Lockdown DISABLED — all tools available in interactive sessions. HMAC-verified CTO approval token was consumed. Re-enable with set_lockdown_mode({ enabled: true }).',
+    lockdown_enabled: true,
+    message: 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console. File-editing and code-modifying agents are blocked.',
   };
 }
 
@@ -3158,61 +3201,108 @@ async function setLocalMode(args: SetLocalModeArgs): Promise<object> {
     };
   }
 
-  // Disabling local mode (re-enabling remote servers) requires CTO APPROVE BYPASS
+  // Disabling local mode (re-enabling remote servers) requires CTO authorization
+  // via the Unified CTO Authorization System.
   if (!args.enabled) {
-    const tokenModulePath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'bypass-approval-token.js');
-    let tokenResult: { valid: boolean; code?: string; request_id?: string; reason?: string };
+    let dbMod: { openDb: () => ReturnType<typeof Database>; findDuplicatePending: (db: ReturnType<typeof Database>, server: string, tool: string, argsHash: string) => { id: string } | undefined; createDeferredAction: (db: ReturnType<typeof Database>, action: object) => { id: string } };
+    let executorMod: { computePendingHmac: (code: string, server: string, tool: string, argsHash: string) => string | null };
+    const dbModPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'deferred-action-db.js');
+    const executorModPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'deferred-action-executor.js');
+
     try {
-      const mod = await import(tokenModulePath);
-      tokenResult = mod.verifyAndConsumeApprovalToken(PROJECT_DIR);
+      dbMod = await import(dbModPath);
     } catch (err) {
-      return {
-        error: `G001 FAIL-CLOSED: Could not load bypass-approval-token module: ${(err as Error).message}`,
-      };
+      return { error: `G001 FAIL-CLOSED: Could not load deferred-action-db module: ${(err as Error).message}` };
+    }
+    try {
+      executorMod = await import(executorModPath);
+    } catch (err) {
+      return { error: `G001 FAIL-CLOSED: Could not load deferred-action-executor module: ${(err as Error).message}` };
     }
 
-    if (!tokenResult.valid) {
+    const db = dbMod.openDb();
+    if (!db) {
+      return { error: 'G001 FAIL-CLOSED: Could not open bypass-requests.db for deferred action creation' };
+    }
+
+    try {
+      const argsHash = crypto.createHash('sha256').update(JSON.stringify({ enabled: false })).digest('hex');
+
+      // Dedup: check for existing pending deferred action
+      const existing = dbMod.findDuplicatePending(db, 'agent-tracker', 'set_local_mode', argsHash);
+      if (existing) {
+        return {
+          blocked: true,
+          deferred_action_id: existing.id,
+          message: [
+            `A local mode disable request is already pending (ID: ${existing.id}).`,
+            ``,
+            `Call record_cto_decision({ decision_type: "local_mode_toggle", decision_id: "${existing.id}", verbatim_text: "<CTO's exact words>" })`,
+            `after the CTO confirms approval in chat.`,
+          ].join('\n'),
+        };
+      }
+
+      // Create deferred action
+      const code = crypto.randomBytes(3).toString('hex').toUpperCase();
+      const pendingHmac = executorMod.computePendingHmac(code, 'agent-tracker', 'set_local_mode', argsHash);
+      if (!pendingHmac) {
+        return { error: 'G001 FAIL-CLOSED: Could not compute pending HMAC — protection key may be missing' };
+      }
+
+      const result = dbMod.createDeferredAction(db, {
+        server: 'agent-tracker',
+        tool: 'set_local_mode',
+        args: { enabled: false },
+        argsHash,
+        code,
+        phrase: 'UNIFIED',
+        pendingHmac,
+        sourceHook: 'set_local_mode',
+      });
+
       return {
-        error: [
-          `Disabling local mode requires CTO approval via APPROVE BYPASS flow.`,
-          `Token check failed: ${tokenResult.reason || 'no valid token'}.`,
+        blocked: true,
+        deferred_action_id: result.id,
+        message: [
+          `Disabling local mode requires CTO authorization.`,
           ``,
-          `To disable local mode:`,
-          `  1. Call mcp__deputy-cto__request_bypass with reason "Disable local prototyping mode"`,
-          `  2. CTO types "APPROVE BYPASS <code>" in chat (code returned by step 1)`,
-          `  3. Call mcp__agent-tracker__set_local_mode({ enabled: false }) again`,
+          `Ask the CTO to confirm by typing their approval in chat (e.g., "yes, disable local mode").`,
+          `Then call:`,
+          `  record_cto_decision({ decision_type: "local_mode_toggle", decision_id: "${result.id}", verbatim_text: "<CTO's exact words>" })`,
           ``,
-          `After disabling, run "npx gentyr sync" and restart Claude Code to restore remote MCP servers.`,
+          `The system will verify the CTO's approval via an independent auditor and auto-execute.`,
+          `Do NOT retry set_local_mode — the deferred action system handles execution autonomously.`,
+          `After the action completes, run "npx gentyr sync" and restart Claude Code to restore remote MCP servers.`,
         ].join('\n'),
       };
+    } finally {
+      try { db.close(); } catch { /* ignore */ }
     }
   }
 
-  // Write the state file directly (no dynamic import needed -- simple JSON write)
+  // Enabling local mode is unrestricted. Write the state file directly.
   const stateDir = path.join(PROJECT_DIR, '.claude', 'state');
   if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
-  const state = { enabled: args.enabled, enabledAt: new Date().toISOString(), enabledBy: 'mcp-tool' };
+  const state = { enabled: true, enabledAt: new Date().toISOString(), enabledBy: 'mcp-tool' };
   fs.writeFileSync(path.join(stateDir, 'local-mode.json'), JSON.stringify(state, null, 2));
 
   // Emit audit event
   try {
     const auditPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js');
     const auditMod = await import(auditPath);
-    auditMod.auditEvent(args.enabled ? 'local_mode_enabled' : 'local_mode_disabled', {});
+    auditMod.auditEvent('local_mode_enabled', {});
   } catch {
     // Audit emission is non-fatal
   }
 
-  const action = args.enabled ? 'ENABLED' : 'DISABLED';
   const nextSteps = 'Run "npx gentyr sync" then restart Claude Code to update MCP servers.';
 
   return {
     success: true,
-    local_mode_enabled: args.enabled,
-    message: args.enabled
-      ? `Local mode ${action} — remote servers will be excluded from .mcp.json. Credential checks and remote automation skipped. ${nextSteps}`
-      : `Local mode ${action} — all servers will be restored. ${nextSteps}`,
-    excluded_servers: args.enabled ? REMOTE_SERVERS_LIST : [],
+    local_mode_enabled: true,
+    message: `Local mode ENABLED — remote servers will be excluded from .mcp.json. Credential checks and remote automation skipped. ${nextSteps}`,
+    excluded_servers: REMOTE_SERVERS_LIST,
     next_steps: nextSteps,
   };
 }
@@ -5187,7 +5277,7 @@ function getBypassDb(): InstanceType<typeof Database> {
       audit_evidence TEXT,
       audit_completed_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
+      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'local_mode_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
       CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed', 'audit_pending', 'audit_passed', 'audit_failed', 'audit_overridden'))
     );
     CREATE INDEX IF NOT EXISTS idx_cto_decisions_lookup ON cto_decisions(decision_type, decision_id, status);
@@ -5209,18 +5299,18 @@ function getBypassDb(): InstanceType<typeof Database> {
     }
   } catch { /* best-effort migration */ }
 
-  // Migration: expand cto_decisions CHECK constraint to include deputy decision types and audit status values
+  // Migration: expand cto_decisions CHECK constraint to include all decision types and audit status values
   // SQLite CHECK constraints cannot be altered, so we must recreate the table.
-  // We detect the old constraint by attempting a test insert/rollback.
+  // We detect the old constraint by attempting a test insert/rollback with the newest decision type.
   try {
     const testId = '__migration_check_' + Date.now();
     try {
       db.exec('BEGIN');
       db.prepare(
         `INSERT INTO cto_decisions (id, decision_type, decision_id, verbatim_text, session_id, status, created_at)
-         VALUES (?, 'deputy_bypass_resolution', '__test__', '__test__', '__test__', 'verified', datetime('now'))`
+         VALUES (?, 'local_mode_toggle', '__test__', '__test__', '__test__', 'verified', datetime('now'))`
       ).run(testId);
-      // Worked — constraint already includes new types or doesn't have CHECK
+      // Worked — constraint already includes all types or doesn't have CHECK
       db.exec('ROLLBACK');
     } catch (checkErr: unknown) {
       // If the insert fails with CHECK constraint violation, recreate the table
@@ -5264,7 +5354,7 @@ function getBypassDb(): InstanceType<typeof Database> {
             status TEXT NOT NULL DEFAULT 'verified',
             consumed_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
+            CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'local_mode_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
             CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed', 'audit_pending', 'audit_passed', 'audit_failed', 'audit_overridden'))
           );
           INSERT INTO cto_decisions_new (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, audit_session_id, audit_verdict, audit_evidence, audit_completed_at, status, consumed_at, created_at)
@@ -6858,7 +6948,7 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'set_lockdown_mode',
-    description: 'Enable or disable the interactive session lockdown. Enabling is unrestricted. Disabling requires a valid HMAC-signed approval token from the APPROVE BYPASS flow (CTO must physically type APPROVE BYPASS <code> in chat). Spawned sessions are blocked server-side.',
+    description: 'Enable or disable the interactive session lockdown. Enabling is unrestricted. Disabling creates a deferred action — call record_cto_decision with the CTO\'s verbatim approval, and the system auto-executes after independent audit. Spawned sessions are blocked server-side.',
     schema: SetLockdownModeArgsSchema,
     handler: setLockdownMode,
   },
@@ -6871,7 +6961,7 @@ const tools: AnyToolHandler[] = [
   // Local Mode Tools
   {
     name: 'set_local_mode',
-    description: 'Enable or disable local prototyping mode. When enabled, remote MCP servers (GitHub, Cloudflare, Supabase, Vercel, Render, Codecov, Resend, Elastic, 1Password, Secret-Sync) are excluded from .mcp.json and credential-dependent automation is skipped. Enabling is unrestricted. Disabling requires CTO APPROVE BYPASS. Spawned sessions are blocked. After toggling, run "npx gentyr sync" and restart Claude Code.',
+    description: 'Enable or disable local prototyping mode. When enabled, remote MCP servers (GitHub, Cloudflare, Supabase, Vercel, Render, Codecov, Resend, Elastic, 1Password, Secret-Sync) are excluded from .mcp.json and credential-dependent automation is skipped. Enabling is unrestricted. Disabling creates a deferred action — call record_cto_decision with the CTO\'s verbatim approval, and the system auto-executes after independent audit. Spawned sessions are blocked. After toggling, run "npx gentyr sync" and restart Claude Code.',
     schema: SetLocalModeArgsSchema,
     handler: setLocalMode,
   },

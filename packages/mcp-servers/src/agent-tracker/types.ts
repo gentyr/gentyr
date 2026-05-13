@@ -611,6 +611,7 @@ export const CTO_DECISION_TYPES = [
   'bypass_request',
   'protected_action',
   'lockdown_toggle',
+  'local_mode_toggle',
   'release_signoff',
   'staging_override',
   'deputy_bypass_resolution',
