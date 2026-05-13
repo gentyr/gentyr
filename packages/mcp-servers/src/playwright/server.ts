@@ -2850,7 +2850,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         region: flyConfig!.region || 'iad',
         machineSize: flyConfig!.machineSize || 'shared-cpu-2x',
         machineRam: effectiveRam,
-        maxConcurrentMachines: flyConfig!.maxConcurrentMachines || 3,
+        maxConcurrentMachines: flyConfig!.maxConcurrentMachines || 10,
         projectImageEnabled: flyConfig!.projectImageEnabled,
       } : null;
 
@@ -2886,7 +2886,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         remoteEligible,
         explicitRemote: args.remote,
         activeMachineCount,
-        maxConcurrentMachines: flyConfig?.maxConcurrentMachines || 3,
+        maxConcurrentMachines: flyConfig?.maxConcurrentMachines || 10,
         stealthRequired,
         dualInstance,
         steelConfigured: steelAvailable && !!resolvedSteelKey,
@@ -4353,7 +4353,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         region: flyConfig.region || 'iad',
         machineSize: flyConfig.machineSize || 'shared-cpu-2x',
         machineRam: checkRamConfig.machineRamHeadless,
-        maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+        maxConcurrentMachines: flyConfig.maxConcurrentMachines || 10,
         projectImageEnabled: flyConfig.projectImageEnabled,
       };
       const remoteHandle = {
@@ -5286,7 +5286,7 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
         const { stopRemoteMachine } = await import('./fly-runner.js');
         await stopRemoteMachine(
           { machineId: entry.fly_machine_id, appName: entry.fly_app_name || flyConfig.appName, region: flyConfig.region || 'iad', startedAt: new Date(entry.started_at).getTime() },
-          { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: readFlyMachineConfig().machineRamHeadless, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3, projectImageEnabled: flyConfig.projectImageEnabled },
+          { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: readFlyMachineConfig().machineRamHeadless, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 10, projectImageEnabled: flyConfig.projectImageEnabled },
         );
       }
     } catch (e) {
@@ -7542,7 +7542,7 @@ async function runRemoteBatchSequence(
     region: flyConfig.region || 'iad',
     machineSize: flyConfig.machineSize || 'shared-cpu-2x',
     machineRam: batchEffectiveRam,
-    maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3,
+    maxConcurrentMachines: flyConfig.maxConcurrentMachines || 10,
     projectImageEnabled: flyConfig.projectImageEnabled,
   };
 
@@ -9550,7 +9550,7 @@ const tools: AnyToolHandler[] = [
           region: flySection.region || 'iad',
           machineSize: flySection.machineSize || 'shared-cpu-2x',
           machineRam: flySection.machineRam || 2048,
-          maxConcurrentMachines: flySection.maxConcurrentMachines || 3,
+          maxConcurrentMachines: flySection.maxConcurrentMachines || 10,
         };
 
         // listActiveMachines serves as the health check: if the Fly API responds,
@@ -10482,7 +10482,7 @@ async function destroyActiveRemoteMachines(): Promise<void> {
         activeRemote.map(entry =>
           stopRemoteMachine(
             { machineId: entry.fly_machine_id!, appName: entry.fly_app_name || flyConfig.appName, region: flyConfig.region || 'iad', startedAt: new Date(entry.started_at).getTime() },
-            { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: flyMachineConfig.machineRamHeadless, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 3, projectImageEnabled: flyConfig.projectImageEnabled },
+            { apiToken: flyResolved['FLY_API_TOKEN'], appName: flyConfig.appName, region: flyConfig.region || 'iad', machineSize: flyConfig.machineSize || 'shared-cpu-2x', machineRam: flyMachineConfig.machineRamHeadless, maxConcurrentMachines: flyConfig.maxConcurrentMachines || 10, projectImageEnabled: flyConfig.projectImageEnabled },
           ).catch((e: unknown) => process.stderr.write(`[playwright] Failed to destroy machine ${entry.fly_machine_id}: ${e instanceof Error ? e.message : String(e)}\n`)),
         ),
       );
