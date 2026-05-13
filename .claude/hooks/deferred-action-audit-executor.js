@@ -7,9 +7,10 @@
  * approved tool call fires without requiring the original agent to retry.
  *
  * Handles four decision types:
- * 1. Default (deferred_action / protected_action_gate / command_bypass / demo_local / lockdown_toggle):
+ * 1. Default (deferred_action / protected_action_gate / command_bypass / demo_local / lockdown_toggle / local_mode_toggle):
  *    - Load deferred action by decision_id
  *    - Compute approved_hmac, mark approved, execute via MCP daemon (Tier 1) or Bash
+ *    - Special inline execution for set_lockdown_mode and set_local_mode (Tier 2 servers)
  * 2. bypass_request:
  *    - CTO-approved bypass request resolution; reuses executeDeputyBypassResolution
  *      from deputy-resolution-executor.js (reads decision_context for request details)
@@ -253,6 +254,94 @@ async function executeDefaultDeferredAction(decisionId) {
       } else {
         dbMod.markFailed(db, approvedAction.id, execResult.error || 'Bash execution failed');
       }
+    } else if (approvedAction.tool === 'set_lockdown_mode') {
+      // Lockdown toggle: agent-tracker is Tier 2 (per-session stdio), so execute
+      // the state change inline rather than via MCP daemon.
+      const hmacCheck = executorMod.verifyActionHmac(approvedAction);
+      if (!hmacCheck.valid) {
+        dbMod.markFailed(db, approvedAction.id, `HMAC verification failed: ${hmacCheck.reason}`);
+        log(`HMAC verification failed for lockdown action ${decisionId}: ${hmacCheck.reason}`);
+        return;
+      }
+
+      if (!dbMod.markExecuting(db, approvedAction.id)) {
+        log(`Could not transition lockdown action ${decisionId} to executing`);
+        return;
+      }
+
+      try {
+        const configPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+        let config = {};
+        try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { /* empty */ }
+
+        let lockdownArgs = approvedAction.args;
+        if (typeof lockdownArgs === 'string') {
+          try { lockdownArgs = JSON.parse(lockdownArgs); } catch { lockdownArgs = {}; }
+        }
+
+        if (lockdownArgs.enabled === false) {
+          config.interactiveLockdownDisabled = true;
+        } else {
+          delete config.interactiveLockdownDisabled;
+        }
+
+        const dir = path.dirname(configPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+
+        dbMod.markCompleted(db, approvedAction.id, JSON.stringify({ success: true, lockdown_enabled: !!lockdownArgs.enabled }));
+        execResult = { success: true, result: `Lockdown ${lockdownArgs.enabled ? 'enabled' : 'disabled'}` };
+
+        try {
+          const auditMod = await import('./lib/session-audit.js');
+          if (typeof auditMod.auditEvent === 'function') {
+            auditMod.auditEvent(lockdownArgs.enabled ? 'lockdown_enabled' : 'lockdown_disabled', { enabled: lockdownArgs.enabled, via: 'deferred-action-audit-executor' });
+          }
+        } catch { /* non-fatal */ }
+      } catch (err) {
+        dbMod.markFailed(db, approvedAction.id, `Lockdown config write failed: ${err.message}`);
+        execResult = { success: false, error: err.message };
+      }
+
+    } else if (approvedAction.tool === 'set_local_mode') {
+      // Local mode toggle: same as lockdown — Tier 2, execute inline.
+      const hmacCheck = executorMod.verifyActionHmac(approvedAction);
+      if (!hmacCheck.valid) {
+        dbMod.markFailed(db, approvedAction.id, `HMAC verification failed: ${hmacCheck.reason}`);
+        log(`HMAC verification failed for local-mode action ${decisionId}: ${hmacCheck.reason}`);
+        return;
+      }
+
+      if (!dbMod.markExecuting(db, approvedAction.id)) {
+        log(`Could not transition local-mode action ${decisionId} to executing`);
+        return;
+      }
+
+      try {
+        let localModeArgs = approvedAction.args;
+        if (typeof localModeArgs === 'string') {
+          try { localModeArgs = JSON.parse(localModeArgs); } catch { localModeArgs = {}; }
+        }
+
+        const localStateDir = path.join(PROJECT_DIR, '.claude', 'state');
+        if (!fs.existsSync(localStateDir)) fs.mkdirSync(localStateDir, { recursive: true });
+        const localState = { enabled: !!localModeArgs.enabled, enabledAt: new Date().toISOString(), enabledBy: 'deferred-action-executor' };
+        fs.writeFileSync(path.join(localStateDir, 'local-mode.json'), JSON.stringify(localState, null, 2));
+
+        dbMod.markCompleted(db, approvedAction.id, JSON.stringify({ success: true, local_mode_enabled: !!localModeArgs.enabled }));
+        execResult = { success: true, result: `Local mode ${localModeArgs.enabled ? 'enabled' : 'disabled'}` };
+
+        try {
+          const auditMod = await import('./lib/session-audit.js');
+          if (typeof auditMod.auditEvent === 'function') {
+            auditMod.auditEvent(localModeArgs.enabled ? 'local_mode_enabled' : 'local_mode_disabled', { enabled: localModeArgs.enabled, via: 'deferred-action-audit-executor' });
+          }
+        } catch { /* non-fatal */ }
+      } catch (err) {
+        dbMod.markFailed(db, approvedAction.id, `Local mode state write failed: ${err.message}`);
+        execResult = { success: false, error: err.message };
+      }
+
     } else {
       // MCP tool calls — use the standard executeAction pipeline
       execResult = await executorMod.executeAction(db, approvedAction);
@@ -393,7 +482,7 @@ process.stdin.on('end', async () => {
 
       default:
         // Default path: deferred_action, protected_action_gate, command_bypass,
-        // demo_local, lockdown_toggle, or any other type
+        // demo_local, lockdown_toggle, local_mode_toggle, or any other type
         await executeDefaultDeferredAction(decisionId);
         break;
     }

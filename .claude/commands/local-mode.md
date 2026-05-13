@@ -56,13 +56,15 @@ console.log(JSON.stringify(newState));
 
 ### If currently ENABLED → Disable local mode
 
-Disabling requires the CTO APPROVE BYPASS flow (same as lockdown). Use the MCP tool:
+Disabling requires CTO authorization via the Unified CTO Authorization System. Call:
 
 ```
 mcp__agent-tracker__set_local_mode({ enabled: false })
 ```
 
-This will require an HMAC-signed approval token. Follow the instructions returned by the tool.
+The tool returns a deferred action ID. Ask the CTO to confirm by typing their approval.
+Then call `record_cto_decision` with the CTO's verbatim text and the deferred action ID.
+The system auto-executes after independent audit pass.
 
 ## Step 3: Apply MCP Server Changes
 
@@ -105,7 +107,7 @@ AUTOMATION CHANGES (immediate):
 NEXT STEPS:
   1. Run: npx gentyr sync
   2. Restart Claude Code session
-  3. Run /local-mode again to re-enable remote servers (requires CTO bypass via MCP tool)
+  3. Run /local-mode again to re-enable remote servers (requires CTO authorization via MCP tool)
 ```
 
 **If local mode is now DISABLED:**
