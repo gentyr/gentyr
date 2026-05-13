@@ -186,6 +186,15 @@ To check the approval tier, read services.json via `mcp__secret-sync__get_servic
 3. Do NOT advance to Phase 5 (Demo Coverage Audit) or CTO sign-off until coverage is verified at 100%
 4. Record coverage verification results in `coverage-report.json` in the release artifact directory
 
+## Fly.io Image Health Gate (Phase 4)
+
+Before advancing Phase 4 demo execution:
+1. Call `get_fly_status` — verify `imageDeployed: true` and `imageStale: false`
+2. Verify `projectImageGitRef` matches the release's staging branch (`staging`)
+3. If the image is stale or built from the wrong branch, spawn a precursor task to call `deploy_project_image({ git_ref: 'staging' })` and wait for completion before retrying demos
+4. Do NOT delegate demo execution to multiple parallel todo tasks — the Phase 4 persistent task monitor should run ONE large `run_demo_batch` call covering all enabled remote-eligible scenarios
+5. After any demo fix lands, verify the project image is rebuilt from staging before re-running the batch
+
 ## CI Gate Before CTO Sign-off
 
 Before advancing to any phase that requires CTO approval (typically the sign-off phase):

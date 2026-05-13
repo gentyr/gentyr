@@ -170,6 +170,18 @@ rl.on('close', () => {
       process.exit(0);
     }
 
+    // Read actual maxConcurrentMachines from services.json
+    let maxMachines = 10;
+    try {
+      const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+      if (fs.existsSync(servicesPath)) {
+        const services = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+        if (services?.fly?.maxConcurrentMachines) {
+          maxMachines = services.fly.maxConcurrentMachines;
+        }
+      }
+    } catch { /* non-fatal — use default */ }
+
     // Track sequential calls for batch detection
     const recentCallCount = trackSequentialCall();
 
@@ -218,7 +230,7 @@ rl.on('close', () => {
           '  })',
           '',
           'run_demo_batch with remote: true runs scenarios CONCURRENTLY across multiple Fly.io machines',
-          `(up to ${3} at a time). This is dramatically faster than sequential local runs.`,
+          `(up to ${maxMachines} at a time). This is dramatically faster than sequential local runs.`,
           'Switch to batch execution immediately.',
         );
       } else {

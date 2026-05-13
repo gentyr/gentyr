@@ -457,9 +457,31 @@ process.stdin.on('end', () => {
       process.exit(0);
     }
 
-    // Process up to 3 failed scenarios
+    // During a release, only spawn repairs after batch completes (not mid-batch)
+    // and limit to 1 repair agent to avoid redundant parallel fixes
+    const isRelease = !!process.env.GENTYR_RELEASE_ID;
+    if (isRelease) {
+      // Check if the batch is still running — don't spawn mid-batch
+      const batchStatus = response?.status;
+      if (batchStatus === 'running') {
+        log('Release mode: skipping repair spawn — batch still running. Will spawn after batch completes.');
+        // Still inject skipped context if present
+        if (skippedContext) {
+          console.log(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PostToolUse',
+              additionalContext: skippedContext,
+            },
+          }));
+        }
+        process.exit(0);
+      }
+    }
+
+    // Process failed scenarios — limit to 1 during releases, 3 otherwise
+    const maxRepairs = isRelease ? 1 : 3;
     let spawned = 0;
-    for (const scenario of failedScenarios.slice(0, 3)) {
+    for (const scenario of failedScenarios.slice(0, maxRepairs)) {
       // Dedup check
       if (isRepairInFlight(scenario.id)) {
         log(`Skipping "${scenario.title}" (${scenario.id}) — repair already in flight`);
