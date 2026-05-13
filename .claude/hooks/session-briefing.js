@@ -739,6 +739,29 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
+  // Lockdown-off worktree workflow notice
+  try {
+    const lockdownConfigPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+    if (fs.existsSync(lockdownConfigPath)) {
+      const lockdownConfig = JSON.parse(fs.readFileSync(lockdownConfigPath, 'utf-8'));
+      if (lockdownConfig.interactiveLockdownDisabled) {
+        const wt = lockdownConfig.ctoWorktreePath || '';
+        lines.push('=== LOCKDOWN OFF — CTO WORKTREE WORKFLOW ===');
+        if (wt) {
+          lines.push(`Worktree: ${wt}`);
+          lines.push('');
+          lines.push('BEFORE making any changes, cd into your worktree.');
+        } else {
+          lines.push('No worktree provisioned — run /lockdown off to create one.');
+        }
+        lines.push('Git mutations (stash, checkout, merge, commit, push) are BLOCKED in the main tree.');
+        lines.push('Write/Edit to main-tree files are also BLOCKED.');
+        lines.push('When done: commit, push, create PR to preview, /lockdown on.');
+        lines.push('');
+      }
+    }
+  } catch { /* non-fatal */ }
+
   // Logging health (one-line status, cross-references .mcp.json for elastic-logs server)
   if (!localMode) {
     try {
