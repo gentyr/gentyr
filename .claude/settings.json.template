@@ -514,6 +514,14 @@
         ]
       },
       {
+        "matcher": "EnterWorktree",
+        "hooks": [{
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-enter-provision.js",
+          "timeout": 15
+        }]
+      },
+      {
         "matcher": "mcp__todo-db__complete_task",
         "hooks": [
           {
