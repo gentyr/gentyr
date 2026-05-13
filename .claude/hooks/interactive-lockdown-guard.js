@@ -261,12 +261,59 @@ async function main() {
 
   // Check lockdown disabled flag (interactive sessions only)
   if (isLockdownDisabled()) {
-    const warning = '[LOCKDOWN DISABLED] The deputy-CTO lockdown is currently disabled. You have full tool access. Remember to re-enable via /lockdown on for proper GENTYR workflow.';
+    // Read CTO worktree path from config
+    let ctoWorktreePath = '';
+    try {
+      const configPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      ctoWorktreePath = config.ctoWorktreePath || '';
+    } catch { /* non-fatal */ }
+
+    // Block Write/Edit/NotebookEdit to main tree — all code edits must go through the worktree
+    if (['Write', 'Edit', 'NotebookEdit'].includes(toolName)) {
+      const filePath = path.resolve(event?.tool_input?.file_path || '');
+      const worktreesDir = path.join(PROJECT_DIR, '.claude', 'worktrees');
+      const claudeDir = path.join(PROJECT_DIR, '.claude');
+      const homeClaudeDir = path.join(os.homedir(), '.claude');
+
+      const isInWorktree = filePath.startsWith(worktreesDir + path.sep);
+      const isFrameworkFile = filePath.startsWith(claudeDir + path.sep);
+      const isMemoryFile = filePath.startsWith(homeClaudeDir + path.sep);
+
+      if (filePath && !isInWorktree && !isFrameworkFile && !isMemoryFile) {
+        const wtHint = ctoWorktreePath || 'Run /lockdown off to provision a worktree';
+        const reason = [
+          'BLOCKED: Main-tree edits are not allowed even with lockdown off.',
+          '',
+          `Use your CTO worktree: cd ${wtHint}`,
+          'Then edit the equivalent file path inside the worktree.',
+          '',
+          'This prevents conflicts with other running agents.',
+          'When done: commit, push, create PR to preview, then /lockdown on.',
+        ].join('\n');
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: reason,
+          },
+        }));
+        return;
+      }
+    }
+
+    // Approve all other tools with workflow guidance
+    const guidance = [
+      '[LOCKDOWN OFF] Worktree workflow active.',
+      ctoWorktreePath ? `Worktree: ${ctoWorktreePath}` : 'No worktree provisioned — run /lockdown off to create one.',
+      'All code edits must happen in the worktree.',
+      'When done: commit, push, create PR to preview, then /lockdown on.',
+    ].join(' | ');
     process.stdout.write(JSON.stringify({
       decision: 'approve',
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        additionalContext: warning,
+        additionalContext: guidance,
       },
     }));
     return;
