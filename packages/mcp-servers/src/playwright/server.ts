@@ -6702,6 +6702,118 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
     checks.push({ name: 'extension_manifest', status: 'skip', message: args.project ? `Project "${args.project}" is not an extension project` : 'No project specified', duration_ms: 0 });
   }
 
+  // 10. Fly.io image health (only when Fly is configured and enabled)
+  const preflightFlyConfig = getFlyConfigFromServices();
+  if (preflightFlyConfig?.enabled) {
+    // Check 10a: Base image deployed — read local metadata file (no network call)
+    checks.push(runCheck('fly_image', () => {
+      const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-image-metadata.json');
+      if (!fs.existsSync(metaPath)) {
+        return {
+          status: 'fail' as const,
+          message: 'Fly.io image not deployed — remote demos will fail. Run deploy_fly_image first.',
+        };
+      }
+
+      let imageMetadata: Record<string, unknown>;
+      try {
+        imageMetadata = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      } catch {
+        return {
+          status: 'fail' as const,
+          message: 'Fly.io image metadata file is corrupt. Run deploy_fly_image to rebuild.',
+        };
+      }
+
+      const deployedAt = imageMetadata.deployedAt;
+      if (!deployedAt || typeof deployedAt !== 'string') {
+        return {
+          status: 'fail' as const,
+          message: 'Fly.io image not deployed — remote demos will fail. Run deploy_fly_image first.',
+        };
+      }
+
+      const ageHours = Math.round((Date.now() - new Date(deployedAt).getTime()) / 3600000);
+
+      // Check infra file staleness (same logic as get_fly_status)
+      let imageStale = false;
+      try {
+        const infraDirCandidates = [
+          path.join(PROJECT_DIR, 'node_modules', 'gentyr', 'infra', 'fly-playwright'),
+          path.join(PROJECT_DIR, 'infra', 'fly-playwright'),
+        ];
+        const infraDir = infraDirCandidates.find(d => fs.existsSync(d));
+        if (infraDir) {
+          const currentDockerfileHash = crypto.createHash('sha256')
+            .update(fs.readFileSync(path.join(infraDir, 'Dockerfile'))).digest('hex');
+          const currentRunnerHash = crypto.createHash('sha256')
+            .update(fs.readFileSync(path.join(infraDir, 'remote-runner.sh'))).digest('hex');
+          imageStale = currentDockerfileHash !== (imageMetadata as Record<string, string>).dockerfileHash ||
+            currentRunnerHash !== (imageMetadata as Record<string, string>).remoteRunnerHash;
+        }
+      } catch { /* non-fatal — skip staleness check */ }
+
+      if (imageStale) {
+        return {
+          status: 'warn' as const,
+          message: `Fly.io image deployed (${ageHours}h ago) but STALE — infra files changed since last deploy. Run deploy_fly_image({ force: true }) to rebuild.`,
+        };
+      }
+
+      return {
+        status: 'pass' as const,
+        message: `Fly.io image deployed (${ageHours}h ago, stale: false)`,
+      };
+    }));
+
+    // Check 10b: Project image branch (release-aware)
+    const projectMetaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+    if (fs.existsSync(projectMetaPath)) {
+      checks.push(runCheck('project_image_branch', () => {
+        let projectMeta: Record<string, unknown>;
+        try {
+          projectMeta = JSON.parse(fs.readFileSync(projectMetaPath, 'utf-8'));
+        } catch {
+          return {
+            status: 'warn' as const,
+            message: 'Could not read project image metadata file.',
+          };
+        }
+
+        // Skip if still deploying
+        if (projectMeta.deploying === true) {
+          return {
+            status: 'warn' as const,
+            message: 'Project image deployment is currently in progress.',
+          };
+        }
+
+        const gitRef = typeof projectMeta.gitRef === 'string' ? projectMeta.gitRef : null;
+        if (!gitRef) {
+          return {
+            status: 'warn' as const,
+            message: 'Project image deployed but git ref is unknown.',
+          };
+        }
+
+        const isRelease = !!process.env.GENTYR_RELEASE_ID;
+        const gitRefOk = !isRelease || gitRef === 'staging';
+
+        if (!gitRefOk) {
+          return {
+            status: 'warn' as const,
+            message: `Project image built from '${gitRef}', not 'staging'. Call deploy_project_image({ git_ref: 'staging' }) before running release demos.`,
+          };
+        }
+
+        return {
+          status: 'pass' as const,
+          message: `Project image from ${gitRef}`,
+        };
+      }));
+    }
+  }
+
   // Aggregate results
   for (const check of checks) {
     if (check.status === 'fail') {
@@ -6750,6 +6862,9 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         break;
       case 'code_freshness':
         recoverySteps.push('Restart the dev server to recompile source changes, or wait for HMR to complete');
+        break;
+      case 'fly_image':
+        recoverySteps.push('Deploy the Fly.io Docker image: call deploy_fly_image() and poll get_fly_status() until imageDeployed is true');
         break;
     }
   }
