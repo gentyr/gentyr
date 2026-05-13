@@ -1383,7 +1383,13 @@ function persistDemoResult(opts: {
 }): void {
   try {
     const dbPath = getUserFeedbackDbPath();
-    if (!fs.existsSync(dbPath)) return;
+    if (!fs.existsSync(dbPath)) {
+      const isRelease = !!process.env.GENTYR_RELEASE_ID;
+      if (isRelease) {
+        console.error(`[persistDemoResult] WARNING: user-feedback.db not found at ${dbPath} during release ${process.env.GENTYR_RELEASE_ID}. Demo result will be LOST.`);
+      }
+      return;
+    }
     const db = new Database(dbPath);
     try {
       // Defensive column auto-migration (same pattern as CTO Dashboard process-runner.ts)
@@ -1544,6 +1550,10 @@ function classifyFailure(opts: {
  * Get the current git branch name. Returns null on detached HEAD or error.
  */
 function getDemoBranch(): string | null {
+  // During a release, all demo results are attributed to staging
+  if (process.env.GENTYR_RELEASE_ID) {
+    return 'staging';
+  }
   try {
     const ref = execSync('git rev-parse --abbrev-ref HEAD', {
       cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000,
@@ -9901,6 +9911,8 @@ const tools: AnyToolHandler[] = [
       }
       if (args.git_ref) {
         gitRef = args.git_ref;
+      } else if (process.env.GENTYR_RELEASE_ID) {
+        gitRef = 'staging';
       } else {
         try {
           gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe' }).trim();
