@@ -568,10 +568,15 @@ async function recycleAutomatedSessions(projectDir) {
 
     const title = item.title || item.id;
 
-    // Resolve session ID for --resume via shared utility (scans full JSONL files)
+    // Resolve session ID for --resume. Priority:
+    // 1. resume_session_id already stored on queue item (backfilled by drain cycle)
+    // 2. File scan fallback (full JSONL read)
+    // 3. Skip with warning — never spawn fresh (progress would be lost)
     let spawnType = 'fresh';
-    let resumeSessionId = null;
-    if (findSessionFile && item.agent_id) {
+    let resumeSessionId = item.resume_session_id || null;
+    if (resumeSessionId) {
+      spawnType = 'resume';
+    } else if (findSessionFile && item.agent_id) {
       for (const sDir of sessionDirs) {
         const sessionFile = findSessionFile(sDir, item.agent_id);
         if (sessionFile) {
@@ -583,6 +588,10 @@ async function recycleAutomatedSessions(projectDir) {
           break;
         }
       }
+    }
+    if (spawnType === 'fresh') {
+      console.log(`  ${YELLOW}Warning: Cannot find session file for "${title}" (agent_id: ${item.agent_id || 'null'}) — skipping to avoid progress loss${NC}`);
+      continue;
     }
 
     try {
