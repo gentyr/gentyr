@@ -203,12 +203,18 @@ fi
 
 # Install the correct browser version for the project's Playwright version.
 # Skip if this is a project image (browsers already installed during image build).
-if [[ ! -f /app/.project-image ]]; then
-  log "Installing Playwright browsers (matching project's @playwright/test version)..."
-  npx playwright install chromium 2>&1 | tee -a /app/.error.log || true
-  echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
-else
+# Also skip if Chromium is already present from the base image.
+if [[ -f /app/.project-image ]]; then
   log "Project image — Playwright browsers already installed"
+else
+  # Check if Chromium binary exists (pre-installed in base image or cached)
+  if npx playwright install --dry-run chromium 2>&1 | grep -qi "already installed\|is already downloaded"; then
+    log "Chromium already available — skipping download"
+  else
+    log "Installing Playwright browsers (matching project's @playwright/test version)..."
+    npx playwright install chromium 2>&1 | tee -a /app/.error.log || true
+  fi
+  echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 fi
 # Use development mode — Fly machines run dev servers, and production mode
 # triggers strict env validation (e.g. CREDENTIAL_ENCRYPTION_KEY required).

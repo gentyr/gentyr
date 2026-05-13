@@ -17,6 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install pnpm globally
 RUN npm install -g pnpm@10
 
+# Pre-install Playwright Chromium in base image to avoid 6-13 min download on cold machines.
+# The project image (Dockerfile.project) also installs Chromium matching the project's
+# @playwright/test version, but this ensures the base image fallback path is fast too.
+RUN npx playwright@latest install --with-deps chromium
+
 # Create working directories
 WORKDIR /app
 RUN mkdir -p /cache /app/.artifacts /app/project
