@@ -1277,16 +1277,16 @@ describe('Agent Tracker Server', () => {
   });
 
   // ============================================================================
-  // setLockdownMode — spawned-session guard and HMAC token verification
+  // setLockdownMode — spawned-session guard and deferred action authorization
   // ============================================================================
 
-  describe('setLockdownMode security and HMAC token verification', () => {
+  describe('setLockdownMode security and deferred action authorization', () => {
     // These tests exercise the inline logic that mirrors server.ts setLockdownMode().
     // Because server.ts does not export its handlers, we replicate the exact guard
     // conditions here.  When the server changes, the tests break immediately.
 
     // ------------------------------------------------------------------
-    // Inline helpers: crypto utilities mirroring bypass-approval-token.js
+    // Inline types and mock infrastructure for deferred action system
     // ------------------------------------------------------------------
 
     interface SetLockdownModeArgs {
@@ -1297,84 +1297,51 @@ describe('Agent Tracker Server', () => {
       success: true;
       lockdown_enabled: boolean;
       message: string;
-      audit_event?: string;
+    }
+
+    interface BlockedResult {
+      blocked: true;
+      deferred_action_id: string;
+      message: string;
     }
 
     interface ErrorResult {
       error: string;
     }
 
-    /** Write a base64-encoded random protection key to <projectDir>/.claude/protection-key */
-    function writeProtectionKey(projectDir: string): string {
-      const key = crypto.randomBytes(32).toString('base64');
-      const claudeDir = path.join(projectDir, '.claude');
-      fs.mkdirSync(claudeDir, { recursive: true });
-      fs.writeFileSync(path.join(claudeDir, 'protection-key'), key + '\n');
-      return key;
+    // Mock deferred action store (replaces HMAC token infrastructure)
+    const mockPendingActions = new Map<string, { id: string }>();
+
+    function mockFindDuplicatePending(_server: string, tool: string, argsHash: string): { id: string } | undefined {
+      const key = `${tool}:${argsHash}`;
+      return mockPendingActions.get(key);
     }
 
-    /** Compute HMAC exactly as bypass-approval-token.js does. */
-    function computeHmac(keyBase64: string, code: string, requestId: string, expiresTimestamp: number): string {
-      const keyBuffer = Buffer.from(keyBase64, 'base64');
-      return crypto
-        .createHmac('sha256', keyBuffer)
-        .update([code, requestId, String(expiresTimestamp), 'bypass-approved'].join('|'))
-        .digest('hex');
+    function mockCreateDeferredAction(params: { tool: string; argsHash: string }): { id: string } {
+      const id = `deferred-test-${crypto.randomBytes(6).toString('hex')}`;
+      const key = `${params.tool}:${params.argsHash}`;
+      const record = { id };
+      mockPendingActions.set(key, record);
+      return record;
     }
 
-    /** Write a valid (or intentionally invalid) token to <projectDir>/.claude/bypass-approval-token.json */
-    function writeToken(
-      projectDir: string,
-      token: Record<string, unknown>,
-    ): void {
-      const claudeDir = path.join(projectDir, '.claude');
-      fs.mkdirSync(claudeDir, { recursive: true });
-      fs.writeFileSync(path.join(claudeDir, 'bypass-approval-token.json'), JSON.stringify(token));
-    }
-
-    /** Write a fully valid HMAC-signed token and return it. */
-    function writeValidToken(
-      projectDir: string,
-      key: string,
-      overrides: Partial<{ code: string; request_id: string; expires_timestamp: number; hmac: string }> = {},
-    ): { code: string; request_id: string; expires_timestamp: number; hmac: string } {
-      const code = overrides.code ?? 'K7N9M3';
-      const requestId = overrides.request_id ?? 'req-test-' + Date.now();
-      const expiresTimestamp = overrides.expires_timestamp ?? (Date.now() + 5 * 60 * 1000);
-      const hmac = overrides.hmac ?? computeHmac(key, code, requestId, expiresTimestamp);
-      const token = { code, request_id: requestId, expires_timestamp: expiresTimestamp, hmac };
-      writeToken(projectDir, token);
-      return token;
-    }
-
-    /** Read the current token file content. */
-    function readTokenFile(projectDir: string): Record<string, unknown> | null {
-      const p = path.join(projectDir, '.claude', 'bypass-approval-token.json');
-      if (!fs.existsSync(p)) return null;
-      return JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>;
-    }
+    beforeEach(() => {
+      mockPendingActions.clear();
+    });
 
     /**
      * Inline re-implementation of the setLockdownMode handler guards.
      *
-     * Accepts the env var `CLAUDE_SPAWNED_SESSION` via an explicit parameter so
-     * tests can inject it without mutating process.env.
-     *
-     * Also accepts an optional `projectDir` parameter so tests can inject token files.
-     * When omitted, token verification returns invalid (no token).
-     *
      * Mirrors the current server.ts logic:
      *  1. Reject `enabled: false` when CLAUDE_SPAWNED_SESSION === 'true' (hard guard)
-     *  2. Require valid HMAC token when disabling (APPROVE BYPASS flow)
-     *  3. Write config on success
-     *  4. Emit audit event on success
+     *  2. Create a deferred action when disabling (returns blocked + deferred_action_id)
+     *  3. Write config and return success when enabling
      */
     function setLockdownModeImpl(
       args: SetLockdownModeArgs,
       configDir: string,
       spawnedSession: string | undefined,
-      tokenProjectDir?: string,
-    ): LockdownResult | ErrorResult {
+    ): LockdownResult | BlockedResult | ErrorResult {
       // SECURITY: spawned sessions NEVER allowed to disable lockdown (hard guard)
       if (!args.enabled && spawnedSession === 'true') {
         return {
@@ -1383,83 +1350,43 @@ describe('Agent Tracker Server', () => {
         };
       }
 
-      // Disabling lockdown requires a valid HMAC-signed approval token
+      // Disabling lockdown creates a deferred action (CTO authorization required)
       if (!args.enabled) {
-        const projectDir = tokenProjectDir ?? configDir;
-        // Inline token verification (mirrors bypass-approval-token.js)
-        const tokenValid = (() => {
-          const tokenPath = path.join(projectDir, '.claude', 'bypass-approval-token.json');
-          const keyPath = path.join(projectDir, '.claude', 'protection-key');
+        const argsHash = crypto.createHash('sha256').update(JSON.stringify({ enabled: false })).digest('hex');
 
-          if (!fs.existsSync(keyPath)) return { valid: false, reason: 'Protection key missing (G001 fail-closed)' };
-          const keyBase64 = fs.readFileSync(keyPath, 'utf8').trim();
-          if (!keyBase64) return { valid: false, reason: 'Protection key is empty' };
-
-          if (!fs.existsSync(tokenPath)) return { valid: false, reason: 'No bypass approval token found' };
-
-          let token: Record<string, unknown>;
-          try {
-            token = JSON.parse(fs.readFileSync(tokenPath, 'utf8')) as Record<string, unknown>;
-          } catch {
-            return { valid: false, reason: 'Token file malformed' };
-          }
-
-          if (!token.code && !token.request_id && !token.expires_timestamp) {
-            return { valid: false, reason: 'Token already consumed or not yet written' };
-          }
-          if (!token.code || !token.request_id || !token.expires_timestamp) {
-            // Clear partial token (forgery attempt)
-            try { fs.writeFileSync(tokenPath, '{}'); } catch { /* ignore */ }
-            return { valid: false, reason: 'Token missing required fields (possible forgery)' };
-          }
-          if (Date.now() > (token.expires_timestamp as number)) {
-            try { fs.writeFileSync(tokenPath, '{}'); } catch { /* ignore */ }
-            return { valid: false, reason: 'Token expired' };
-          }
-          if (!token.hmac) {
-            try { fs.writeFileSync(tokenPath, '{}'); } catch { /* ignore */ }
-            return { valid: false, reason: 'Token missing HMAC field' };
-          }
-
-          const expected = computeHmac(keyBase64, token.code as string, token.request_id as string, token.expires_timestamp as number);
-          let hmacValid = false;
-          try {
-            const expectedBuf = Buffer.from(expected, 'hex');
-            const actualBuf = Buffer.from(token.hmac as string, 'hex');
-            if (expectedBuf.length === actualBuf.length) {
-              hmacValid = crypto.timingSafeEqual(expectedBuf, actualBuf);
-            }
-          } catch { hmacValid = false; }
-
-          if (!hmacValid) {
-            try { fs.writeFileSync(tokenPath, '{}'); } catch { /* ignore */ }
-            return { valid: false, reason: 'Token HMAC verification failed (possible forgery)' };
-          }
-
-          // Token is valid — consume it
-          try { fs.writeFileSync(tokenPath, '{}'); } catch { /* ignore */ }
-          return { valid: true, reason: undefined };
-        })();
-
-        if (!tokenValid.valid) {
+        // Dedup check
+        const existing = mockFindDuplicatePending('agent-tracker', 'set_lockdown_mode', argsHash);
+        if (existing) {
           return {
-            error: [
-              `Disabling lockdown requires CTO approval via APPROVE BYPASS flow.`,
-              `Token check failed: ${tokenValid.reason || 'no valid token'}.`,
-              ``,
-              `To disable lockdown:`,
-              `  1. Call mcp__deputy-cto__request_bypass with reason "Disable interactive session lockdown"`,
-              `  2. CTO types "APPROVE BYPASS <code>" in chat (code returned by step 1)`,
-              `  3. Call mcp__agent-tracker__set_lockdown_mode({ enabled: false }) again`,
-              ``,
-              `The agent cannot forge the 6-char code (server-generated, stored in deputy-cto.db) `,
-              `or the HMAC signature (signed with .claude/protection-key).`,
-            ].join('\n'),
+            blocked: true,
+            deferred_action_id: existing.id,
+            message: `A lockdown disable request is already pending (ID: ${existing.id}).`,
           };
         }
+
+        // Create deferred action
+        const result = mockCreateDeferredAction({
+          tool: 'set_lockdown_mode',
+          argsHash,
+        });
+
+        return {
+          blocked: true,
+          deferred_action_id: result.id,
+          message: [
+            `Disabling lockdown requires CTO authorization.`,
+            ``,
+            `Ask the CTO to confirm by typing their approval in chat.`,
+            `Then call:`,
+            `  record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${result.id}", verbatim_text: "<CTO's exact words>" })`,
+            ``,
+            `The system will verify the CTO's approval via an independent auditor and auto-execute.`,
+            `Do NOT retry set_lockdown_mode — the deferred action system handles execution autonomously.`,
+          ].join('\n'),
+        };
       }
 
-      // Token was valid (already consumed) OR we're enabling. Proceed with state change.
+      // Enabling lockdown is always unrestricted. Proceed with state change.
       const configPath = path.join(configDir, 'automation-config.json');
       let config: Record<string, unknown> = {};
       try {
@@ -1468,24 +1395,14 @@ describe('Agent Tracker Server', () => {
         // File absent — start fresh
       }
 
-      if (args.enabled) {
-        delete config.interactiveLockdownDisabled;
-      } else {
-        config.interactiveLockdownDisabled = true;
-      }
+      delete config.interactiveLockdownDisabled;
       fs.mkdirSync(configDir, { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 
-      // Emit audit event
-      const auditEventName = args.enabled ? 'lockdown_enabled' : 'lockdown_disabled';
-
       return {
         success: true,
-        lockdown_enabled: args.enabled,
-        message: args.enabled
-          ? 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console. File-editing and code-modifying agents are blocked.'
-          : 'Lockdown DISABLED — all tools available in interactive sessions. HMAC-verified CTO approval token was consumed. Re-enable with set_lockdown_mode({ enabled: true }).',
-        audit_event: auditEventName,
+        lockdown_enabled: true,
+        message: 'Lockdown ENABLED — interactive sessions operate as deputy-CTO console. File-editing and code-modifying agents are blocked.',
       };
     }
 
@@ -1505,23 +1422,18 @@ describe('Agent Tracker Server', () => {
         expect((result as ErrorResult).error).toMatch(/CLAUDE_SPAWNED_SESSION/);
       });
 
-      it('spawned-session guard fires even when a valid HMAC token exists', () => {
-        // The spawned-session block is a hard guard — it must fire BEFORE token check.
-        const key = writeProtectionKey(tempSessionDir);
-        writeValidToken(tempSessionDir, key);
-
+      it('spawned-session guard fires before deferred action creation', () => {
         const result = setLockdownModeImpl(
           { enabled: false },
           tempSessionDir,
           'true',
-          tempSessionDir,
         );
         expect(result).toHaveProperty('error');
+        expect(result).not.toHaveProperty('blocked');
         expect((result as ErrorResult).error).toMatch(/Spawned sessions cannot disable lockdown/i);
       });
 
-      it('allows enabled:true (re-enabling lockdown) from a spawned session — no token needed', () => {
-        // Spawned sessions MUST be able to re-enable lockdown.
+      it('allows enabled:true (re-enabling lockdown) from a spawned session', () => {
         const result = setLockdownModeImpl(
           { enabled: true },
           tempSessionDir,
@@ -1556,169 +1468,81 @@ describe('Agent Tracker Server', () => {
     });
 
     // ------------------------------------------------------------------
-    // HMAC token required to disable lockdown
+    // Deferred action created when disabling lockdown
     // ------------------------------------------------------------------
 
-    describe('HMAC token required for disabling lockdown', () => {
-      it('fails when no token file exists', () => {
-        // No protection key, no token file
+    describe('deferred action required for disabling lockdown', () => {
+      it('returns blocked with deferred_action_id when disabling', () => {
         const result = setLockdownModeImpl(
           { enabled: false },
           tempSessionDir,
           undefined,
         );
-        expect(result).toHaveProperty('error');
-        expect((result as ErrorResult).error).toMatch(/APPROVE BYPASS flow/i);
+        expect(result).toHaveProperty('blocked', true);
+        expect(result).toHaveProperty('deferred_action_id');
+        expect((result as BlockedResult).deferred_action_id).toMatch(/^deferred-test-/);
       });
 
-      it('fails when token file contains empty object {} (already consumed)', () => {
-        writeProtectionKey(tempSessionDir);
-        writeToken(tempSessionDir, {});
-
+      it('message includes record_cto_decision instructions', () => {
         const result = setLockdownModeImpl(
           { enabled: false },
           tempSessionDir,
           undefined,
-          tempSessionDir,
-        );
-        expect(result).toHaveProperty('error');
-        expect((result as ErrorResult).error).toMatch(/APPROVE BYPASS flow/i);
+        ) as BlockedResult;
+        expect(result.message).toMatch(/record_cto_decision/);
+        expect(result.message).toMatch(/lockdown_toggle/);
+        expect(result.message).toMatch(/Do NOT retry set_lockdown_mode/);
       });
 
-      it('fails when token is expired', () => {
-        const key = writeProtectionKey(tempSessionDir);
-        writeValidToken(tempSessionDir, key, { expires_timestamp: Date.now() - 10_000 });
-
-        const result = setLockdownModeImpl(
+      it('dedup: second call returns same deferred action ID', () => {
+        const first = setLockdownModeImpl(
           { enabled: false },
           tempSessionDir,
           undefined,
-          tempSessionDir,
-        );
-        expect(result).toHaveProperty('error');
-        expect((result as ErrorResult).error).toMatch(/APPROVE BYPASS flow/i);
-        expect((result as ErrorResult).error).toMatch(/expired/i);
-      });
+        ) as BlockedResult;
 
-      it('fails when token has a bad HMAC', () => {
-        const key = writeProtectionKey(tempSessionDir);
-        writeValidToken(tempSessionDir, key, {
-          hmac: 'deadbeef00000000000000000000000000000000000000000000000000000000',
-        });
-
-        const result = setLockdownModeImpl(
+        const second = setLockdownModeImpl(
           { enabled: false },
           tempSessionDir,
           undefined,
-          tempSessionDir,
-        );
-        expect(result).toHaveProperty('error');
-        expect((result as ErrorResult).error).toMatch(/APPROVE BYPASS flow/i);
+        ) as BlockedResult;
+
+        expect(second.blocked).toBe(true);
+        expect(second.deferred_action_id).toBe(first.deferred_action_id);
+        expect(second.message).toMatch(/already pending/);
       });
 
-      it('fails when protection-key is missing (G001 fail-closed)', () => {
-        // Write a plausible-looking token without a protection key
-        writeToken(tempSessionDir, {
-          code: 'K7N9M3',
-          request_id: 'req-test',
-          expires_timestamp: Date.now() + 5 * 60 * 1000,
-          hmac: 'abc123',
-        });
-        // Ensure protection-key is absent
-        const keyPath = path.join(tempSessionDir, '.claude', 'protection-key');
-        if (fs.existsSync(keyPath)) fs.unlinkSync(keyPath);
-
-        const result = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-          tempSessionDir,
-        );
-        expect(result).toHaveProperty('error');
-        expect((result as ErrorResult).error).toMatch(/APPROVE BYPASS flow|G001/i);
-      });
-
-      it('succeeds when a valid HMAC token exists (interactive session)', () => {
-        const key = writeProtectionKey(tempSessionDir);
-        writeValidToken(tempSessionDir, key);
-
-        const result = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-          tempSessionDir,
-        );
-        expect(result).not.toHaveProperty('error');
-        expect((result as LockdownResult).success).toBe(true);
-        expect((result as LockdownResult).lockdown_enabled).toBe(false);
-      });
-
-      it('token is consumed (overwritten with {}) after successful disable', () => {
-        const key = writeProtectionKey(tempSessionDir);
-        writeValidToken(tempSessionDir, key);
+      it('does not write config file when returning blocked', () => {
+        const configPath = path.join(tempSessionDir, 'automation-config.json');
+        if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
 
         setLockdownModeImpl(
           { enabled: false },
           tempSessionDir,
           undefined,
-          tempSessionDir,
         );
 
-        const tokenContent = readTokenFile(tempSessionDir);
-        expect(tokenContent).toEqual({});
-      });
-
-      it('second call fails after token was consumed (one-time use)', () => {
-        const key = writeProtectionKey(tempSessionDir);
-        writeValidToken(tempSessionDir, key);
-
-        const first = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-          tempSessionDir,
-        );
-        expect(first).not.toHaveProperty('error');
-
-        // Re-use the now-consumed token
-        const second = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-          tempSessionDir,
-        );
-        expect(second).toHaveProperty('error');
-        expect((second as ErrorResult).error).toMatch(/APPROVE BYPASS flow/i);
-      });
-
-      it('error message includes APPROVE BYPASS flow instructions', () => {
-        const result = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-        ) as ErrorResult;
-        expect(result.error).toMatch(/mcp__deputy-cto__request_bypass/i);
-        expect(result.error).toMatch(/APPROVE BYPASS/i);
-        expect(result.error).toMatch(/set_lockdown_mode/i);
+        expect(fs.existsSync(configPath)).toBe(false);
       });
     });
 
     // ------------------------------------------------------------------
-    // Enabling lockdown — unrestricted (no token required)
+    // Enabling lockdown — unrestricted (no authorization required)
     // ------------------------------------------------------------------
 
     describe('enabling lockdown is unrestricted', () => {
-      it('enabled:true succeeds without any token (from interactive session)', () => {
+      it('enabled:true succeeds without any authorization (from interactive session)', () => {
         const result = setLockdownModeImpl(
           { enabled: true },
           tempSessionDir,
           undefined,
         );
         expect(result).not.toHaveProperty('error');
+        expect(result).not.toHaveProperty('blocked');
         expect((result as LockdownResult).lockdown_enabled).toBe(true);
       });
 
-      it('enabled:true succeeds without any token (from spawned session)', () => {
+      it('enabled:true succeeds without any authorization (from spawned session)', () => {
         const result = setLockdownModeImpl(
           { enabled: true },
           tempSessionDir,
@@ -1727,96 +1551,66 @@ describe('Agent Tracker Server', () => {
         expect(result).not.toHaveProperty('error');
         expect((result as LockdownResult).lockdown_enabled).toBe(true);
       });
+
+      it('writes config file when enabling', () => {
+        const configPath = path.join(tempSessionDir, 'automation-config.json');
+        fs.mkdirSync(tempSessionDir, { recursive: true });
+        fs.writeFileSync(configPath, JSON.stringify({ interactiveLockdownDisabled: true }, null, 2));
+
+        setLockdownModeImpl(
+          { enabled: true },
+          tempSessionDir,
+          undefined,
+        );
+
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        expect(config).not.toHaveProperty('interactiveLockdownDisabled');
+      });
     });
 
     // ------------------------------------------------------------------
-    // Audit events emitted after successful toggles
+    // Result shape validation
     // ------------------------------------------------------------------
 
-    describe('audit events emitted on lockdown toggle', () => {
-      it('emits lockdown_enabled audit event when enabling lockdown', () => {
+    describe('result shape', () => {
+      it('blocked result has blocked, deferred_action_id, and message', () => {
+        const result = setLockdownModeImpl(
+          { enabled: false },
+          tempSessionDir,
+          undefined,
+        ) as BlockedResult;
+        expect(result.blocked).toBe(true);
+        expect(typeof result.deferred_action_id).toBe('string');
+        expect(typeof result.message).toBe('string');
+        expect(result).not.toHaveProperty('success');
+        expect(result).not.toHaveProperty('error');
+      });
+
+      it('success result has success, lockdown_enabled, and message', () => {
         const result = setLockdownModeImpl(
           { enabled: true },
           tempSessionDir,
           undefined,
         ) as LockdownResult;
         expect(result.success).toBe(true);
-        expect(result.audit_event).toBe('lockdown_enabled');
+        expect(result.lockdown_enabled).toBe(true);
+        expect(typeof result.message).toBe('string');
+        expect(result).not.toHaveProperty('blocked');
+        expect(result).not.toHaveProperty('error');
       });
 
-      it('emits lockdown_disabled audit event when disabling lockdown with valid token', () => {
-        const key = writeProtectionKey(tempSessionDir);
-        writeValidToken(tempSessionDir, key);
-        const result = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-          tempSessionDir,
-        ) as LockdownResult;
-        expect(result.success).toBe(true);
-        expect(result.audit_event).toBe('lockdown_disabled');
-      });
-
-      it('audit event distinguishes enable from disable', () => {
-        const key = writeProtectionKey(tempSessionDir);
-        const enableResult = setLockdownModeImpl(
-          { enabled: true },
-          tempSessionDir,
-          undefined,
-        ) as LockdownResult;
-        writeValidToken(tempSessionDir, key);
-        const disableResult = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-          tempSessionDir,
-        ) as LockdownResult;
-
-        expect(enableResult.audit_event).toBe('lockdown_enabled');
-        expect(disableResult.audit_event).toBe('lockdown_disabled');
-        expect(enableResult.audit_event).not.toBe(disableResult.audit_event);
-      });
-
-      it('no audit event on spawned-session rejection', () => {
-        const result = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          'true',
-        );
-        expect(result).not.toHaveProperty('audit_event');
-        expect(result).toHaveProperty('error');
-      });
-    });
-
-    // ------------------------------------------------------------------
-    // Result shape — no bypass_request_id field (removed from new flow)
-    // ------------------------------------------------------------------
-
-    describe('result shape — no bypass_request_id (removed in HMAC flow)', () => {
-      it('successful disable result does NOT contain bypass_request_id', () => {
-        const key = writeProtectionKey(tempSessionDir);
-        writeValidToken(tempSessionDir, key);
-        const result = setLockdownModeImpl(
-          { enabled: false },
-          tempSessionDir,
-          undefined,
-          tempSessionDir,
-        );
-        expect(result).not.toHaveProperty('bypass_request_id');
-      });
-
-      it('successful enable result does NOT contain bypass_request_id', () => {
+      it('enable result always returns lockdown_enabled: true', () => {
         const result = setLockdownModeImpl(
           { enabled: true },
           tempSessionDir,
           undefined,
-        );
-        expect(result).not.toHaveProperty('bypass_request_id');
+        ) as LockdownResult;
+        expect(result.lockdown_enabled).toBe(true);
       });
     });
 
     // ------------------------------------------------------------------
-    // cto_bypass parameter is still absent (regression guard)
+    // SetLockdownModeArgs interface regression guard
     // ------------------------------------------------------------------
 
     describe('SetLockdownModeArgs interface has no cto_bypass field', () => {
