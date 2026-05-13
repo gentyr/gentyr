@@ -3111,6 +3111,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       let devServerCmd: string | undefined;
       let devServerPort: number | undefined;
       let devServerHealthCheck: string | undefined;
+      let buildCmd: string | undefined;
+      let buildHealthCheck: string | undefined;
       try {
         const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
         if (fs.existsSync(servicesPath)) {
@@ -3125,6 +3127,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               devServerHealthCheck = `curl -sf http://localhost:${devServerPort}`;
             }
           }
+          // Build config for Fly.io machines
+          buildCmd = services.worktreeBuildCommand || undefined;
+          buildHealthCheck = services.worktreeBuildHealthCheck || undefined;
         }
       } catch { /* non-fatal */ }
 
@@ -3211,7 +3216,8 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         devServerCmd,
         devServerPort,
         devServerHealthCheck,
-        buildCmd: undefined,
+        buildCmd,
+        buildHealthCheck,
         scenarioId: args.scenario_id,
         runId,
         servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
@@ -7693,6 +7699,8 @@ async function runRemoteBatchSequence(
 
         // Dev server config
         let devServerCmd: string | undefined, devServerPort: number | undefined, devServerHealthCheck: string | undefined;
+        let buildCmd: string | undefined;
+        let buildHealthCheck: string | undefined;
         try {
           const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
           if (fs.existsSync(servicesPath)) {
@@ -7705,6 +7713,9 @@ async function runRemoteBatchSequence(
                 devServerHealthCheck = `curl -sf http://localhost:${devServerPort}`;
               }
             }
+            // Build config for Fly.io machines
+            buildCmd = services.worktreeBuildCommand || undefined;
+            buildHealthCheck = services.worktreeBuildHealthCheck || undefined;
           }
         } catch { /* non-fatal */ }
 
@@ -7745,6 +7756,8 @@ async function runRemoteBatchSequence(
           devServerCmd,
           devServerPort,
           devServerHealthCheck,
+          buildCmd,
+          buildHealthCheck,
           scenarioId: batchScenario.scenario_id,
           runId: batchRunId,
           servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
@@ -10140,8 +10153,14 @@ const tools: AnyToolHandler[] = [
       if (gitAuthToken) {
         buildArgs.push('--build-arg', `GIT_TOKEN=${gitAuthToken}`);
       }
-      if (args.build_cmd) {
-        buildArgs.push('--build-arg', `BUILD_CMD=${args.build_cmd}`);
+      const effectiveBuildCmd = args.build_cmd || (() => {
+        try {
+          const services = loadServicesConfig(path.join(PROJECT_DIR, '.claude', 'config', 'services.json'));
+          return services?.worktreeBuildCommand || null;
+        } catch { return null; }
+      })();
+      if (effectiveBuildCmd) {
+        buildArgs.push('--build-arg', `BUILD_CMD=${effectiveBuildCmd}`);
       }
 
       // 13. Spawn in background (takes 5-15 minutes for remote build with install)
@@ -10171,6 +10190,7 @@ const tools: AnyToolHandler[] = [
           baseImageTag,
           imageLabel,
           appName: flySection.appName,
+          buildCmd: effectiveBuildCmd || null,
         };
         fs.writeFileSync(metaPath, JSON.stringify(metadata, null, 2) + '\n');
       } catch { /* non-fatal */ }
