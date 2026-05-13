@@ -526,32 +526,40 @@ async function recycleAutomatedSessions(projectDir) {
   // Ensure PROJECT_DIR resolves correctly when session-queue.js is loaded
   process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-  let enqueueSession, drainQueue;
+  let enqueueSession, drainQueue, findSessionFile, getSessionDirFn, extractSessionId;
   try {
     const queueModulePath = path.join(projectDir, '.claude', 'hooks', 'lib', 'session-queue.js');
     const queueModule = await import(queueModulePath);
     enqueueSession = queueModule.enqueueSession;
     drainQueue = queueModule.drainQueue;
+    findSessionFile = queueModule.findSessionFileByAgentId;
+    getSessionDirFn = queueModule.getSessionDir;
+    extractSessionId = queueModule.extractSessionIdFromPath;
   } catch (err) {
     console.log(`  ${YELLOW}Warning: Could not load session-queue.js: ${err.message}${NC}`);
     return;
   }
 
-  // Resolve session directories for --resume support (main + worktree directories)
-  const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
-  const projectPathEncoded = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
-  let sessionDirs = [];
-  try {
-    const allDirs = fs.readdirSync(claudeProjectsDir);
-    // Match main project dir and any worktree dirs (which encode the worktree path)
-    const prefix = projectPathEncoded.replace(/^-/, '');
-    for (const dir of allDirs) {
-      if (dir === projectPathEncoded || dir === prefix || dir.startsWith(prefix)) {
+  // Resolve session directories for --resume support
+  const sessionDirs = [];
+  if (getSessionDirFn) {
+    // Main project session dir
+    const mainDir = getSessionDirFn(projectDir);
+    if (mainDir) sessionDirs.push(mainDir);
+    // Also scan worktree session dirs (worktrees encode a different path)
+    try {
+      const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+      const projectPathEncoded = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
+      const prefix = projectPathEncoded.replace(/^-/, '');
+      const allDirs = fs.readdirSync(claudeProjectsDir);
+      for (const dir of allDirs) {
         const full = path.join(claudeProjectsDir, dir);
-        try { if (fs.statSync(full).isDirectory()) sessionDirs.push(full); } catch { /* skip */ }
+        if (dir.startsWith(prefix) && !sessionDirs.includes(full)) {
+          try { if (fs.statSync(full).isDirectory()) sessionDirs.push(full); } catch { /* skip */ }
+        }
       }
-    }
-  } catch { /* no session dirs found */ }
+    } catch { /* no worktree session dirs found */ }
+  }
 
   const revived = []; // { title, oldQueueId, newQueueId }
 
@@ -560,34 +568,20 @@ async function recycleAutomatedSessions(projectDir) {
 
     const title = item.title || item.id;
 
-    // Resolve session ID for --resume (scan JSONL files for [AGENT:id] marker)
+    // Resolve session ID for --resume via shared utility (scans full JSONL files)
     let spawnType = 'fresh';
     let resumeSessionId = null;
-    if (sessionDirs.length > 0 && item.agent_id) {
-      const marker = `[AGENT:${item.agent_id}]`;
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-      outer: for (const sDir of sessionDirs) {
-        try {
-          const files = fs.readdirSync(sDir).filter(f => f.endsWith('.jsonl'));
-          for (const file of files) {
-            let fd;
-            try {
-              fd = fs.openSync(path.join(sDir, file), 'r');
-              const buf = Buffer.alloc(2000);
-              const bytesRead = fs.readSync(fd, buf, 0, 2000, 0);
-              if (buf.toString('utf8', 0, bytesRead).includes(marker)) {
-                const basename = path.basename(file, '.jsonl');
-                if (uuidRegex.test(basename)) {
-                  spawnType = 'resume';
-                  resumeSessionId = basename;
-                }
-                break outer;
-              }
-            } finally {
-              if (fd !== undefined) fs.closeSync(fd);
-            }
+    if (findSessionFile && item.agent_id) {
+      for (const sDir of sessionDirs) {
+        const sessionFile = findSessionFile(sDir, item.agent_id);
+        if (sessionFile) {
+          const sid = extractSessionId?.(sessionFile);
+          if (sid) {
+            spawnType = 'resume';
+            resumeSessionId = sid;
           }
-        } catch { /* skip this dir */ }
+          break;
+        }
       }
     }
 

@@ -169,14 +169,10 @@ function findSessionFileByAgentId(sessionDir, agentId) {
 
   for (const file of files) {
     const filePath = path.join(sessionDir, file);
-    let fd;
     try {
-      fd = fs.openSync(filePath, 'r');
-      const buf = Buffer.alloc(16000);
-      const bytesRead = fs.readSync(fd, buf, 0, 16000, 0);
-      if (buf.toString('utf8', 0, bytesRead).includes(marker)) return filePath;
+      const content = fs.readFileSync(filePath, 'utf8');
+      if (content.includes(marker)) return filePath;
     } catch { /* skip */ }
-    finally { if (fd !== undefined) fs.closeSync(fd); }
   }
   return null;
 }
