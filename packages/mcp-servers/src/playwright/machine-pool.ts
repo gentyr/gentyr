@@ -67,19 +67,15 @@ function getDb(): ReturnType<typeof Database> {
 }
 
 /**
- * Read max_slots from pool_config. On first access, seeds from services.json
- * maxConcurrentMachines value.
+ * Read max_slots from services.json on every call, keeping the DB in sync.
+ * Previously this only read services.json on first access (when no DB row existed),
+ * which caused the DB to cache a stale value after config changes.
  */
 export function getMaxSlots(): number {
   try {
     const db = getDb();
-    const row = db.prepare('SELECT value FROM pool_config WHERE key = ?').get('max_slots') as { value: string } | undefined;
-    if (row) {
-      const n = parseInt(row.value, 10);
-      if (Number.isFinite(n) && n > 0) return n;
-    }
 
-    // Seed from services.json
+    // Always read the authoritative value from services.json
     let maxFromConfig = 10; // default
     try {
       const worktreeIdx = PROJECT_DIR.indexOf('/.claude/worktrees/');
@@ -94,7 +90,15 @@ export function getMaxSlots(): number {
       }
     } catch { /* non-fatal — use default */ }
 
-    db.prepare('INSERT OR REPLACE INTO pool_config (key, value) VALUES (?, ?)').run('max_slots', String(maxFromConfig));
+    // Read current DB value
+    const row = db.prepare('SELECT value FROM pool_config WHERE key = ?').get('max_slots') as { value: string } | undefined;
+    const currentDbValue = row ? parseInt(row.value, 10) : null;
+
+    // Update DB if services.json value differs (or no row exists)
+    if (currentDbValue !== maxFromConfig) {
+      db.prepare('INSERT OR REPLACE INTO pool_config (key, value) VALUES (?, ?)').run('max_slots', String(maxFromConfig));
+    }
+
     return maxFromConfig;
   } catch (err) {
     process.stderr.write(`[fly-pool] getMaxSlots error: ${err instanceof Error ? err.message : String(err)}\n`);
