@@ -72,6 +72,18 @@ async function main() {
     return;
   }
 
+  // When lockdown is disabled, CTO has full developer access — allow all agent types
+  try {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const configPath = join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'state', 'automation-config.json');
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    if (config.interactiveLockdownDisabled === true) {
+      process.stdout.write(JSON.stringify({ allow: true }));
+      return;
+    }
+  } catch { /* lockdown is on (default) — continue to enforcement */ }
+
   // Extract subagent_type (defaults to 'general-purpose' if omitted)
   const subagentType = event?.tool_input?.subagent_type || 'general-purpose';
 

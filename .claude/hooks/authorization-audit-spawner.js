@@ -230,14 +230,26 @@ process.stdin.on('end', async () => {
             try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { /* empty */ }
             if (actionArgs.enabled === false) {
               config.interactiveLockdownDisabled = true;
+
+              // Auto-provision a CTO worktree for safe editing
+              let worktreeResult = null;
+              try {
+                const wtMod = await import('./lib/worktree-manager.js');
+                worktreeResult = wtMod.createWorktree('cto-interactive');
+                config.ctoWorktreePath = worktreeResult.path;
+                log(`CTO worktree provisioned at ${worktreeResult.path} (branch: ${worktreeResult.branch})`);
+              } catch (err) {
+                log(`Warning: Could not provision CTO worktree: ${err.message}`);
+              }
             } else {
               delete config.interactiveLockdownDisabled;
+              delete config.ctoWorktreePath;
             }
             const dir = path.dirname(configPath);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
             db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, completed_at = datetime('now') WHERE id = ?").run(
-              JSON.stringify({ success: true, lockdown_enabled: !!actionArgs.enabled }), action.id
+              JSON.stringify({ success: true, lockdown_enabled: !!actionArgs.enabled, ctoWorktreePath: config.ctoWorktreePath || null }), action.id
             );
             log(`Lockdown ${actionArgs.enabled ? 'enabled' : 'disabled'} via inline execution`);
           } else if (action.tool === 'set_local_mode') {
