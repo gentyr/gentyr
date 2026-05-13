@@ -526,7 +526,7 @@ async function recycleAutomatedSessions(projectDir) {
   // Ensure PROJECT_DIR resolves correctly when session-queue.js is loaded
   process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-  let enqueueSession, drainQueue, findSessionFile, getSessionDirFn, extractSessionId;
+  let enqueueSession, drainQueue, findSessionFile, getSessionDirFn, getSessionDirForCwdFn, extractSessionId;
   try {
     const queueModulePath = path.join(projectDir, '.claude', 'hooks', 'lib', 'session-queue.js');
     const queueModule = await import(queueModulePath);
@@ -534,31 +534,11 @@ async function recycleAutomatedSessions(projectDir) {
     drainQueue = queueModule.drainQueue;
     findSessionFile = queueModule.findSessionFileByAgentId;
     getSessionDirFn = queueModule.getSessionDir;
+    getSessionDirForCwdFn = queueModule.getSessionDirForCwd;
     extractSessionId = queueModule.extractSessionIdFromPath;
   } catch (err) {
     console.log(`  ${YELLOW}Warning: Could not load session-queue.js: ${err.message}${NC}`);
     return;
-  }
-
-  // Resolve session directories for --resume support
-  const sessionDirs = [];
-  if (getSessionDirFn) {
-    // Main project session dir
-    const mainDir = getSessionDirFn(projectDir);
-    if (mainDir) sessionDirs.push(mainDir);
-    // Also scan worktree session dirs (worktrees encode a different path)
-    try {
-      const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
-      const projectPathEncoded = projectDir.replace(/[^a-zA-Z0-9]/g, '-');
-      const prefix = projectPathEncoded.replace(/^-/, '');
-      const allDirs = fs.readdirSync(claudeProjectsDir);
-      for (const dir of allDirs) {
-        const full = path.join(claudeProjectsDir, dir);
-        if (dir.startsWith(prefix) && !sessionDirs.includes(full)) {
-          try { if (fs.statSync(full).isDirectory()) sessionDirs.push(full); } catch { /* skip */ }
-        }
-      }
-    } catch { /* no worktree session dirs found */ }
   }
 
   const revived = []; // { title, oldQueueId, newQueueId }
@@ -570,22 +550,34 @@ async function recycleAutomatedSessions(projectDir) {
 
     // Resolve session ID for --resume. Priority:
     // 1. resume_session_id already stored on queue item (backfilled by drain cycle)
-    // 2. File scan fallback (full JSONL read)
+    // 2. Targeted file scan — CWD-specific dir first, then main project dir
     // 3. Skip with warning — never spawn fresh (progress would be lost)
     let spawnType = 'fresh';
     let resumeSessionId = item.resume_session_id || null;
     if (resumeSessionId) {
       spawnType = 'resume';
     } else if (findSessionFile && item.agent_id) {
-      for (const sDir of sessionDirs) {
-        const sessionFile = findSessionFile(sDir, item.agent_id);
-        if (sessionFile) {
-          const sid = extractSessionId?.(sessionFile);
-          if (sid) {
-            spawnType = 'resume';
-            resumeSessionId = sid;
+      // Try CWD-specific directory first (fast — targets the exact worktree dir)
+      const cwdPath = item.cwd || item.worktree_path;
+      if (cwdPath && getSessionDirForCwdFn) {
+        const cwdDir = getSessionDirForCwdFn(cwdPath);
+        if (cwdDir) {
+          const sessionFile = findSessionFile(cwdDir, item.agent_id);
+          if (sessionFile) {
+            const sid = extractSessionId?.(sessionFile);
+            if (sid) { spawnType = 'resume'; resumeSessionId = sid; }
           }
-          break;
+        }
+      }
+      // Fall back to main project session directory
+      if (spawnType === 'fresh' && getSessionDirFn) {
+        const mainDir = getSessionDirFn(projectDir);
+        if (mainDir) {
+          const sessionFile = findSessionFile(mainDir, item.agent_id);
+          if (sessionFile) {
+            const sid = extractSessionId?.(sessionFile);
+            if (sid) { spawnType = 'resume'; resumeSessionId = sid; }
+          }
         }
       }
     }

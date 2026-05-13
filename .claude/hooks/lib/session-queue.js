@@ -163,14 +163,36 @@ export function findSessionFileByAgentId(sessionDir, agentId) {
 
   for (const file of files) {
     const filePath = path.join(sessionDir, file);
+    let fd;
     try {
-      const content = fs.readFileSync(filePath, 'utf8');
-      if (content.includes(marker)) return filePath;
+      fd = fs.openSync(filePath, 'r');
+      const buf = Buffer.alloc(65536); // 64KB — marker is always in the first message (prompt)
+      const bytesRead = fs.readSync(fd, buf, 0, 65536, 0);
+      if (buf.toString('utf8', 0, bytesRead).includes(marker)) return filePath;
     } catch (err) {
       log(`Warning: ${err.message}`);
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
     }
   }
 
+  return null;
+}
+
+/**
+ * Compute the session directory for a specific CWD path.
+ * Use this to find session files for agents spawned in worktrees — their JSONL
+ * is in a worktree-specific directory, not the main project session directory.
+ * @param {string} cwd - The CWD path (worktree path or project path)
+ * @returns {string|null}
+ */
+export function getSessionDirForCwd(cwd) {
+  if (!cwd) return null;
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  const sessionDir = path.join(CLAUDE_PROJECTS_DIR_SQ, encoded);
+  if (fs.existsSync(sessionDir)) return sessionDir;
+  const alt = path.join(CLAUDE_PROJECTS_DIR_SQ, encoded.replace(/^-/, ''));
+  if (fs.existsSync(alt)) return alt;
   return null;
 }
 
@@ -193,27 +215,34 @@ export function extractSessionIdFromPath(transcriptPath) {
  * @param {string} projectDir
  * @returns {string|null} Session UUID or null
  */
-function discoverSessionId(agentId, projectDir) {
-  const sessionDir = getSessionDir(projectDir);
-  if (!sessionDir) return null;
+function discoverSessionId(agentId, projectDir, cwd) {
+  // Try the CWD-specific session directory first (fast — targets the exact dir)
+  // Then fall back to the project-level session directory
+  const dirsToTry = [];
+  if (cwd && cwd !== projectDir) {
+    const cwdDir = getSessionDirForCwd(cwd);
+    if (cwdDir) dirsToTry.push(cwdDir);
+  }
+  const mainDir = getSessionDir(projectDir);
+  if (mainDir && !dirsToTry.includes(mainDir)) dirsToTry.push(mainDir);
+  if (dirsToTry.length === 0) return null;
 
   // Poll up to 3 times (0ms, 1s, 2s) for the JSONL to appear
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) {
-      // Synchronous sleep via Atomics.wait (doesn't block the event loop in workers,
-      // and for the main thread this is a brief poll during spawn — acceptable)
       try {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
       } catch {
-        // Fallback: busy-wait 1s (only if SharedArrayBuffer unavailable)
         const end = Date.now() + 1000;
         while (Date.now() < end) { /* spin */ }
       }
     }
 
-    const sessionFile = findSessionFileByAgentId(sessionDir, agentId);
-    if (sessionFile) {
-      return extractSessionIdFromPath(sessionFile);
+    for (const dir of dirsToTry) {
+      const sessionFile = findSessionFileByAgentId(dir, agentId);
+      if (sessionFile) {
+        return extractSessionIdFromPath(sessionFile);
+      }
     }
   }
 
@@ -2074,7 +2103,7 @@ function spawnQueueItem(db, item) {
   // Discover and store the session UUID for reliable --resume on recycle.
   // The JSONL file appears shortly after spawn. Poll briefly (up to 3s).
   if (item.spawn_type !== 'resume' || !item.resume_session_id) {
-    const discoveredId = discoverSessionId(agentId, item.project_dir || PROJECT_DIR);
+    const discoveredId = discoverSessionId(agentId, item.project_dir || PROJECT_DIR, effectiveCwd);
     if (discoveredId) {
       try {
         db.prepare("UPDATE queue_items SET resume_session_id = ? WHERE id = ? AND resume_session_id IS NULL")
