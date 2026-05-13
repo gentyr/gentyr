@@ -187,14 +187,32 @@ function findSessionFileByAgentId(sessionDir, agentId) {
 
   for (const file of files) {
     const filePath = path.join(sessionDir, file);
+    let fd;
     try {
-      const content = fs.readFileSync(filePath, 'utf8');
-      if (content.includes(marker)) return filePath;
+      fd = fs.openSync(filePath, 'r');
+      const buf = Buffer.alloc(65536); // 64KB — marker is always in the first message
+      const bytesRead = fs.readSync(fd, buf, 0, 65536, 0);
+      if (buf.toString('utf8', 0, bytesRead).includes(marker)) return filePath;
     } catch (err) {
       console.error('[session-reaper] Warning:', err.message);
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
     }
   }
 
+  return null;
+}
+
+/**
+ * Compute session directory for a specific CWD (worktree-aware).
+ */
+function getSessionDirForCwd(cwd) {
+  if (!cwd) return null;
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  const dir = path.join(os.homedir(), '.claude', 'projects', encoded);
+  if (fs.existsSync(dir)) return dir;
+  const alt = path.join(os.homedir(), '.claude', 'projects', encoded.replace(/^-/, ''));
+  if (fs.existsSync(alt)) return alt;
   return null;
 }
 
@@ -387,12 +405,21 @@ export function reapSyncPass(db) {
   // This ensures sync recycling can always --resume instead of starting fresh.
   try {
     const missingSessionId = db.prepare(
-      "SELECT id, agent_id, project_dir FROM queue_items WHERE status = 'running' AND resume_session_id IS NULL AND agent_id IS NOT NULL"
+      "SELECT id, agent_id, project_dir, cwd, worktree_path FROM queue_items WHERE status = 'running' AND resume_session_id IS NULL AND agent_id IS NOT NULL"
     ).all();
     for (const item of missingSessionId) {
-      const itemSessionDir = getSessionDir(item.project_dir || projectDir);
-      if (!itemSessionDir) continue;
-      const sessionFile = findSessionFileByAgentId(itemSessionDir, item.agent_id);
+      // Try CWD-specific directory first (fast — targets the worktree dir)
+      const cwdPath = item.cwd || item.worktree_path;
+      let sessionFile = null;
+      if (cwdPath) {
+        const cwdDir = getSessionDirForCwd(cwdPath);
+        if (cwdDir) sessionFile = findSessionFileByAgentId(cwdDir, item.agent_id);
+      }
+      // Fall back to main project session dir
+      if (!sessionFile) {
+        const mainDir = getSessionDir(item.project_dir || projectDir);
+        if (mainDir) sessionFile = findSessionFileByAgentId(mainDir, item.agent_id);
+      }
       if (sessionFile) {
         const sessionId = extractSessionIdFromPath(sessionFile);
         if (sessionId) {
