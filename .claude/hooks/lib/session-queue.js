@@ -186,6 +186,40 @@ export function extractSessionIdFromPath(transcriptPath) {
   return uuidRegex.test(basename) ? basename : null;
 }
 
+/**
+ * Discover the session JSONL UUID for a recently spawned agent.
+ * Polls briefly (up to 3s) for the file to appear.
+ * @param {string} agentId
+ * @param {string} projectDir
+ * @returns {string|null} Session UUID or null
+ */
+function discoverSessionId(agentId, projectDir) {
+  const sessionDir = getSessionDir(projectDir);
+  if (!sessionDir) return null;
+
+  // Poll up to 3 times (0ms, 1s, 2s) for the JSONL to appear
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      // Synchronous sleep via Atomics.wait (doesn't block the event loop in workers,
+      // and for the main thread this is a brief poll during spawn — acceptable)
+      try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+      } catch {
+        // Fallback: busy-wait 1s (only if SharedArrayBuffer unavailable)
+        const end = Date.now() + 1000;
+        while (Date.now() < end) { /* spin */ }
+      }
+    }
+
+    const sessionFile = findSessionFileByAgentId(sessionDir, agentId);
+    if (sessionFile) {
+      return extractSessionIdFromPath(sessionFile);
+    }
+  }
+
+  return null;
+}
+
 // ============================================================================
 // Database Initialization
 // ============================================================================
@@ -2036,6 +2070,19 @@ function spawnQueueItem(db, item) {
   updateAgent(agentId, { pid: claude.pid, status: 'running' });
 
   log(`Spawned ${item.id} as agent ${agentId} (PID ${claude.pid}): "${item.title}"`);
+
+  // Discover and store the session UUID for reliable --resume on recycle.
+  // The JSONL file appears shortly after spawn. Poll briefly (up to 3s).
+  if (item.spawn_type !== 'resume' || !item.resume_session_id) {
+    const discoveredId = discoverSessionId(agentId, item.project_dir || PROJECT_DIR);
+    if (discoveredId) {
+      try {
+        db.prepare("UPDATE queue_items SET resume_session_id = ? WHERE id = ? AND resume_session_id IS NULL")
+          .run(discoveredId, item.id);
+        log(`Stored resume_session_id=${discoveredId} for ${item.id}`);
+      } catch { /* non-fatal */ }
+    }
+  }
 
   // Write monitor_pid/monitor_agent_id to persistent_tasks if this is a persistent monitor
   try {

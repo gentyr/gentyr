@@ -187,11 +187,25 @@ function findSessionFileByAgentId(sessionDir, agentId) {
 
   for (const file of files) {
     const filePath = path.join(sessionDir, file);
-    const head = readHead(filePath, HEAD_BYTES);
-    if (head.includes(marker)) return filePath;
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      if (content.includes(marker)) return filePath;
+    } catch (err) {
+      console.error('[session-reaper] Warning:', err.message);
+    }
   }
 
   return null;
+}
+
+/**
+ * Extract session UUID from a JSONL file path.
+ */
+function extractSessionIdFromPath(filePath) {
+  if (!filePath) return null;
+  const basename = path.basename(filePath, '.jsonl');
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  return uuidRegex.test(basename) ? basename : null;
 }
 
 /**
@@ -368,6 +382,25 @@ export function reapSyncPass(db) {
       log(`Cleaned up ${zombieResult.changes} spawning zombie(s)`);
     }
   } catch (_) { /* non-fatal */ }
+
+  // Backfill resume_session_id for running sessions that are missing it.
+  // This ensures sync recycling can always --resume instead of starting fresh.
+  try {
+    const missingSessionId = db.prepare(
+      "SELECT id, agent_id, project_dir FROM queue_items WHERE status = 'running' AND resume_session_id IS NULL AND agent_id IS NOT NULL"
+    ).all();
+    for (const item of missingSessionId) {
+      const itemSessionDir = getSessionDir(item.project_dir || projectDir);
+      if (!itemSessionDir) continue;
+      const sessionFile = findSessionFileByAgentId(itemSessionDir, item.agent_id);
+      if (sessionFile) {
+        const sessionId = extractSessionIdFromPath(sessionFile);
+        if (sessionId) {
+          db.prepare("UPDATE queue_items SET resume_session_id = ? WHERE id = ?").run(sessionId, item.id);
+        }
+      }
+    }
+  } catch { /* non-fatal backfill */ }
 
   // Only operate on 'running' items — 'suspended' items are intentionally paused
   // (preempted by CTO tasks) and must NOT be reaped. They have their own re-enqueue path.
