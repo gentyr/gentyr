@@ -5332,6 +5332,12 @@ function getBypassDb(): InstanceType<typeof Database> {
     if (!cols.some(c => c.name === 'escalation_urgency')) {
       db.exec("ALTER TABLE bypass_requests ADD COLUMN escalation_urgency TEXT");
     }
+    if (!cols.some(c => c.name === 'auto_resume_at')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN auto_resume_at TEXT");
+    }
+    if (!cols.some(c => c.name === 'pause_duration_minutes')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN pause_duration_minutes INTEGER");
+    }
   } catch { /* best-effort migration */ }
 
   // Migration: expand cto_decisions CHECK constraint to include all decision types and audit status values
@@ -5489,10 +5495,18 @@ async function submitBypassRequest(args: SubmitBypassRequestArgs): Promise<objec
     const requestId = generateBypassId();
     const agentId = process.env.CLAUDE_AGENT_ID || null;
 
+    // Compute auto_resume_at for timed pauses (≤60 min auto-resume without CTO approval)
+    const duration = args.pause_duration_minutes;
+    let autoResumeAt: string | null = null;
+    if (duration && duration <= 60) {
+      const resumeTime = new Date(Date.now() + duration * 60 * 1000);
+      autoResumeAt = resumeTime.toISOString();
+    }
+
     db.prepare(`
-      INSERT INTO bypass_requests (id, task_type, task_id, task_title, agent_id, category, summary, details)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(requestId, args.task_type, args.task_id, taskTitle, agentId, args.category, args.summary, args.details || null);
+      INSERT INTO bypass_requests (id, task_type, task_id, task_title, agent_id, category, summary, details, pause_duration_minutes, auto_resume_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(requestId, args.task_type, args.task_id, taskTitle, agentId, args.category, args.summary, args.details || null, duration || null, autoResumeAt);
 
     // Pause the task to block revival
     if (args.task_type === 'persistent') {
@@ -5555,29 +5569,50 @@ async function submitBypassRequest(args: SubmitBypassRequestArgs): Promise<objec
     }
 
     const isPersistent = args.task_type === 'persistent';
-    const instructions = [
-      'BYPASS REQUEST SUBMITTED SUCCESSFULLY.',
-      '',
-      'Your request for CTO authorization has been recorded. The CTO will see it',
-      'at their next session start. You MUST now follow this exit protocol:',
-      '',
-      '1. STOP all work on this task immediately',
-      '2. Call summarize_work with a summary that includes:',
-      '   - What you accomplished before hitting the bypass point',
-      '   - What specific action requires CTO authorization',
-      '   - Any relevant context the CTO should know',
-      '3. Exit gracefully — do NOT continue working or attempt workarounds',
-      '',
-      'The CTO may take hours or days to respond. When they decide, your task',
-      'will be handled with their decision context included.',
-      ...(isPersistent ? ['', '4. Your persistent task has been paused. It will NOT be auto-resumed until the CTO resolves this request.'] : []),
-    ].join('\n');
+    const isTimedAutoResume = !!autoResumeAt;
+
+    let instructions: string;
+    if (isTimedAutoResume) {
+      instructions = [
+        `TIMED PAUSE SUBMITTED — auto-resuming in ${duration} minutes.`,
+        '',
+        'No CTO approval needed. The system will automatically resume your task',
+        `at ${autoResumeAt}.`,
+        '',
+        '1. STOP all work on this task immediately',
+        '2. Call summarize_work with a summary of what you accomplished',
+        '3. Exit gracefully — the system will revive you when the pause expires',
+      ].join('\n');
+    } else {
+      const needsCtoNote = duration && duration > 60
+        ? `\nNote: You requested a ${duration}-minute pause. Pauses over 60 minutes require CTO approval.`
+        : '';
+      instructions = [
+        'BYPASS REQUEST SUBMITTED SUCCESSFULLY.',
+        '',
+        'Your request for CTO authorization has been recorded. The CTO will see it',
+        'at their next session start. You MUST now follow this exit protocol:',
+        '',
+        '1. STOP all work on this task immediately',
+        '2. Call summarize_work with a summary that includes:',
+        '   - What you accomplished before hitting the bypass point',
+        '   - What specific action requires CTO authorization',
+        '   - Any relevant context the CTO should know',
+        '3. Exit gracefully — do NOT continue working or attempt workarounds',
+        '',
+        'The CTO may take hours or days to respond. When they decide, your task',
+        'will be handled with their decision context included.',
+        ...(isPersistent ? ['', '4. Your persistent task has been paused. It will NOT be auto-resumed until the CTO resolves this request.'] : []),
+        needsCtoNote,
+      ].filter(Boolean).join('\n');
+    }
 
     return {
       bypass_request_id: requestId,
       status: 'pending',
       task_title: taskTitle,
       task_type: args.task_type,
+      ...(isTimedAutoResume ? { auto_resume_at: autoResumeAt } : {}),
       instructions,
     };
   } finally {
@@ -7198,7 +7233,7 @@ const tools: AnyToolHandler[] = [
   // CTO Bypass Request tools
   {
     name: 'submit_bypass_request',
-    description: 'Submit a CTO bypass request to pause your task and request authorization. The CTO will see this in their next session briefing. After submitting, you MUST summarize your work and exit — do NOT continue working.',
+    description: 'Submit a bypass request to pause your task. Use pause_duration_minutes for timed pauses: ≤60 min auto-resumes without CTO approval (preferred for waiting on builds, deploys, or other tasks). >60 min or omitted requires CTO approval (use only when genuinely blocked). After submitting, you MUST summarize your work and exit.',
     schema: SubmitBypassRequestArgsSchema,
     handler: submitBypassRequest,
   },
