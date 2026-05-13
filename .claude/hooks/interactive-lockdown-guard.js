@@ -302,6 +302,52 @@ async function main() {
       }
     }
 
+    // Block dangerous git commands in the main tree — mutations must happen in the worktree
+    if (toolName === 'Bash') {
+      const command = event?.tool_input?.command || '';
+      const cwd = process.cwd();
+      const worktreesDir = path.join(PROJECT_DIR, '.claude', 'worktrees');
+      const isInWorktree = cwd.startsWith(worktreesDir + path.sep);
+
+      if (!isInWorktree && command) {
+        const BLOCKED_GIT_PATTERNS = [
+          /\bgit\s+stash\b/,
+          /\bgit\s+checkout\b/,
+          /\bgit\s+switch\b/,
+          /\bgit\s+merge\b/,
+          /\bgit\s+pull\b/,
+          /\bgit\s+rebase\b/,
+          /\bgit\s+reset\b/,
+          /\bgit\s+clean\b/,
+          /\bgit\s+add\b/,
+          /\bgit\s+commit\b/,
+          /\bgit\s+push\b/,
+          /\bgit\s+worktree\s+remove\b/,
+        ];
+
+        for (const pattern of BLOCKED_GIT_PATTERNS) {
+          if (pattern.test(command)) {
+            const wtHint = ctoWorktreePath || 'Run /lockdown off to provision one';
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: [
+                  `BLOCKED: Git mutations are not allowed in the main tree when lockdown is off.`,
+                  '',
+                  `Use your CTO worktree: cd ${wtHint}`,
+                  'Run git commands from within the worktree, not the main tree.',
+                  '',
+                  'Read-only git commands (log, diff, status, show, branch) are allowed here.',
+                ].join('\n'),
+              },
+            }));
+            return;
+          }
+        }
+      }
+    }
+
     // Approve all other tools with workflow guidance
     const guidance = [
       '[LOCKDOWN OFF] Worktree workflow active.',
