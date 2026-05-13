@@ -1015,11 +1015,11 @@ Rules:
 
 Agents blocked by access, authorization, or resource constraints can pause themselves and request CTO authorization rather than failing silently or spinning in retry loops. The CTO sees pending requests in the next interactive session briefing and resolves them with a single MCP tool call.
 
-**DB**: `.claude/state/bypass-requests.db` (SQLite, auto-created). Three tables: `bypass_requests` with `id`, `task_type` (`persistent`/`todo`), `task_id`, `task_title`, `agent_id`, `category`, `summary`, `details`, `status` (`pending`/`approved`/`rejected`/`cancelled`), `resolution_context`, `resolved_at`, `resolved_by`, `created_at`; `blocking_queue` (see below); and `deferred_actions` (see Deferred Protected Actions section). Two indexes on `status` and `(task_type, task_id)` for `bypass_requests`.
+**DB**: `.claude/state/bypass-requests.db` (SQLite, auto-created). Three tables: `bypass_requests` with `id`, `task_type` (`persistent`/`todo`), `task_id`, `task_title`, `agent_id`, `category`, `summary`, `details`, `status` (`pending`/`approved`/`rejected`/`cancelled`), `resolution_context`, `resolved_at`, `resolved_by`, `pause_duration_minutes` (optional — when set, the pause auto-expires without CTO action), `auto_resume_at` (ISO timestamp — computed as `created_at + pause_duration_minutes` when `pause_duration_minutes` is set), `created_at`; `blocking_queue` (see below); and `deferred_actions` (see Deferred Protected Actions section). Two indexes on `status` and `(task_type, task_id)` for `bypass_requests`.
 
 **Bypass categories** (passed as `category` to `submit_bypass_request`): guides the CTO on what kind of authorization is needed — e.g., `"infrastructure"`, `"secrets"`, `"scope"`, `"access"`, or any custom string.
 
-**Agent workflow**: An agent that needs CTO authorization calls `submit_bypass_request` with `task_type`, `task_id`, `category`, `summary`, and `details`. The tool pauses the relevant task (persistent → `paused` with `reason: 'cto_bypass_request'`; todo → `pending` so spawning is blocked by the bypass guard), emits a signal to the CTO's interactive session, and returns instructions: write a `last_summary`, then exit. The agent MUST call `summarize_work` and stop — it must not continue working.
+**Agent workflow**: An agent that needs CTO authorization calls `submit_bypass_request` with `task_type`, `task_id`, `category`, `summary`, and `details`. Optionally, `pause_duration_minutes` (integer, 1–60) can be passed for short bounded pauses that do not require CTO approval — the pause auto-expires and the task resumes automatically when the timer elapses. Pauses >60 min or with no duration require CTO action. The tool pauses the relevant task (persistent → `paused` with `reason: 'cto_bypass_request'`; todo → `pending` so spawning is blocked by the bypass guard), emits a signal to the CTO's interactive session (unless the pause is timed), and returns instructions: write a `last_summary`, then exit. The agent MUST call `summarize_work` and stop — it must not continue working.
 
 **Dedup guard**: `submit_bypass_request` checks for an existing `pending` request for the same `(task_type, task_id)` pair before inserting. Duplicate submissions are rejected with an error pointing to the existing request ID.
 
@@ -1028,7 +1028,7 @@ Agents blocked by access, authorization, or resource constraints can pause thems
 **Auto-cancel**: `list_bypass_requests` (and `resolve_bypass_request`) auto-cancel requests for tasks that no longer exist or are already `completed`/`cancelled`, returning `auto_cancelled: true` so the CTO knows no action is needed.
 
 **Revival guard** (`lib/bypass-guard.js`): Shared read-only module with two exports:
-- `checkBypassBlock(taskType, taskId)` — returns `{ blocked: true, requestId, summary, category }` if a `pending` request exists; `{ blocked: false }` otherwise. Fail-open on any error (never blocks revival due to DB unavailability).
+- `checkBypassBlock(taskType, taskId)` — returns `{ blocked: true, requestId, summary, category, auto_resume_at? }` if a `pending` request exists; `{ blocked: false }` otherwise. `auto_resume_at` is included when the pause is timed (i.e., set to auto-expire). Fail-open on any error (never blocks revival due to DB unavailability).
 - `getBypassResolutionContext(taskType, taskId)` — returns the most-recent resolved (`approved`/`rejected`) request's `{ decision, context, requestId, category, summary }` for injection into revival prompts.
 
 **Integration points** (bypass guard applied at 4 locations):
@@ -1048,8 +1048,10 @@ Agents blocked by access, authorization, or resource constraints can pause thems
 - `resolve_blocking_item` — manually mark a blocking item resolved with optional `resolution_context`
 - `get_blocking_summary` — aggregate count of active blocking items by level and plan
 
+**Timed pause auto-resume**: `hourly-automation.js` runs a `timed_pause_auto_resume` gate-exempt check every 1 minute. It queries `bypass_requests` for `pending` rows where `auto_resume_at IS NOT NULL AND auto_resume_at <= now`. For each expired timed pause: the bypass request is auto-resolved (status set to `approved`, `resolved_by: 'timed_pause_auto_resume'`), the linked persistent task is re-activated via `resume_persistent_task`, and `propagateResumeToPlan` clears any `blocking_queue` entries. CTO is NOT notified for timed pauses — they resolve autonomously. Cooldown key: `timed_pause_auto_resume: 1` in `config-reader.js` DEFAULTS.
+
 **3 MCP tools** (on `agent-tracker` server, version 9.3.0):
-- `submit_bypass_request` — agent-facing; submits a bypass request and pauses the task. After submitting, the agent MUST summarize work and exit.
+- `submit_bypass_request` — agent-facing; submits a bypass request and pauses the task. Accepts optional `pause_duration_minutes` (1–60) for short auto-expiring pauses that don't require CTO approval. After submitting, the agent MUST summarize work and exit.
 - `resolve_bypass_request` — CTO-facing; approves or rejects a pending request. On approval of a persistent task, immediately enqueues a revival monitor.
 - `list_bypass_requests` — CTO-facing; lists requests by status (default: `pending`). Auto-cancels stale requests for gone/completed tasks.
 
@@ -2064,6 +2066,7 @@ draft → active → paused ⇆ active → completed
 | Session reviver | 10 min | Scans history for dead sessions, revives up to 3 |
 | Session reaper (async) | 30 min | Hard-kills stuck sessions, reconciles TODO tasks |
 | Persistent monitor health | 15 min | Detects dead/stale monitors, re-enqueues |
+| Timed pause auto-resume | 1 min | Auto-resolves expired timed bypass pauses (≤60 min) without CTO action |
 | Stale-pause auto-resume | 15 min | Resumes persistent tasks paused > 30 min |
 | Rate-limit cooldown recovery | 30 min | Clears expired rate-limit cooldowns, re-enqueues |
 | Self-heal fix check | 5 min | Checks fix task completion, resolves/escalates blockers |
