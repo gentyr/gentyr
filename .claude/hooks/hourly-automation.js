@@ -3580,6 +3580,104 @@ async function main() {
   });
 
   // =========================================================================
+  // TIMED PAUSE AUTO-RESUME (1-minute runIfDue cooldown, gate-exempt)
+  // Auto-resolves bypass requests with auto_resume_at <= now. These are
+  // short-duration pauses (≤60 min) that don't need CTO approval.
+  // =========================================================================
+  await runIfDue('timed_pause_auto_resume', {
+    state, now,
+    stateKey: 'lastTimedPauseAutoResumeRun',
+    label: 'Timed pause auto-resume',
+    gateExempt: true,
+    fn: async () => {
+      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+      if (!Database || !fs.existsSync(bypassDbPath)) return;
+
+      let db;
+      try {
+        db = new Database(bypassDbPath);
+        db.pragma('journal_mode = WAL');
+        db.pragma('busy_timeout = 3000');
+
+        // Find expired timed pauses
+        const expired = db.prepare(
+          "SELECT id, task_type, task_id, task_title, summary, pause_duration_minutes FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NOT NULL AND auto_resume_at <= datetime('now')"
+        ).all();
+
+        if (!expired || expired.length === 0) return;
+
+        for (const req of expired) {
+          // Mark as approved (auto-resolved)
+          db.prepare(
+            "UPDATE bypass_requests SET status = 'approved', resolution_context = ?, resolved_at = datetime('now'), resolved_by = 'timed_auto_resume' WHERE id = ? AND status = 'pending'"
+          ).run(`Auto-resumed after ${req.pause_duration_minutes || '?'}-minute timed pause.`, req.id);
+
+          log(`[timed-pause-auto-resume] Auto-resolved bypass request ${req.id} for ${req.task_type} task ${req.task_id} (${req.task_title})`);
+
+          // Resume the task
+          if (req.task_type === 'persistent') {
+            const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+            let ptDb;
+            try {
+              ptDb = new Database(ptDbPath);
+              ptDb.pragma('busy_timeout = 3000');
+              const result = ptDb.prepare(
+                "UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'"
+              ).run(req.task_id);
+
+              if (result.changes > 0) {
+                // Record resumed event
+                ptDb.prepare(
+                  "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
+                ).run(
+                  crypto.randomUUID(),
+                  req.task_id,
+                  JSON.stringify({ reason: 'timed_pause_expired', bypass_request_id: req.id, pause_duration_minutes: req.pause_duration_minutes }),
+                );
+
+                // Load full task object for revival prompt
+                const task = ptDb.prepare(
+                  "SELECT id, title, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?"
+                ).get(req.task_id);
+
+                if (task) {
+                  // Enqueue monitor revival
+                  const revivalResult = await buildRevivalPrompt(task, `Timed pause expired after ${req.pause_duration_minutes || '?'} minutes. Resume work where you left off.`);
+                  if (revivalResult) {
+                    enqueueSession({
+                      ...revivalResult,
+                      title: `[Revival] Timed pause expired: ${req.task_title}`,
+                      source: 'timed-pause-auto-resume',
+                      priority: 'urgent',
+                      lane: 'persistent',
+                    });
+                  }
+                }
+
+                // Propagate resume to plan layer
+                try {
+                  const ppPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
+                  const { propagateResumeToPlan } = await import(ppPath);
+                  propagateResumeToPlan(req.task_id);
+                } catch { /* non-fatal */ }
+              }
+            } finally {
+              try { ptDb?.close(); } catch { /* ignore */ }
+            }
+          } else {
+            // For todo tasks, status was reset to 'pending' — normal spawning resumes
+            log(`[timed-pause-auto-resume] Todo task ${req.task_id} auto-unblocked — normal spawning will resume`);
+          }
+        }
+      } catch (err) {
+        log(`[timed-pause-auto-resume] Error: ${err.message}`);
+      } finally {
+        try { db?.close(); } catch { /* ignore */ }
+      }
+    },
+  });
+
+  // =========================================================================
   // PERSISTENT STALE PAUSE AUTO-RESUME (15-minute runIfDue cooldown)
   // Detects paused tasks whose pause event is older than the configured
   // threshold and auto-resumes them. Rate limits and other transient issues

@@ -530,6 +530,8 @@ export const SubmitBypassRequestArgsSchema = z.object({
     .describe('1-3 sentence explanation of what CTO authorization is needed for'),
   details: z.string().max(5000).optional()
     .describe('Extended context: what was attempted, options considered, file paths involved'),
+  pause_duration_minutes: z.number().int().min(1).max(1440).optional()
+    .describe('How long to pause before auto-resuming. Pauses ≤60 min auto-resume without CTO approval. Pauses >60 min require CTO approval (use only when genuinely blocked). Omit for indefinite pause (requires CTO approval).'),
 });
 export type SubmitBypassRequestArgs = z.infer<typeof SubmitBypassRequestArgsSchema>;
 

@@ -200,6 +200,7 @@ const DEFAULTS = {
   stale_worktree_reaper: 20,           // 20 minutes
   stale_work_detector: 2880,           // 48 hours
   demo_validation: 1440,               // daily
+  timed_pause_auto_resume: 1,          // 1 minute (check frequently for expired timed pauses)
   persistent_stale_pause_resume: 5,    // 5 minutes
   persistent_heartbeat_stale_minutes: 5, // 5 minutes
   plan_orphan_detection: 10,             // 10 minutes

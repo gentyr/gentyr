@@ -38,11 +38,17 @@ export function checkBypassBlock(taskType, taskId) {
     db.pragma('busy_timeout = 1000');
 
     const request = db.prepare(
-      "SELECT id, summary, category FROM bypass_requests WHERE task_type = ? AND task_id = ? AND status = 'pending' LIMIT 1"
+      "SELECT id, summary, category, auto_resume_at FROM bypass_requests WHERE task_type = ? AND task_id = ? AND status = 'pending' LIMIT 1"
     ).get(taskType, taskId);
 
     if (!request) return { blocked: false };
-    return { blocked: true, requestId: request.id, summary: request.summary, category: request.category };
+    return {
+      blocked: true,
+      requestId: request.id,
+      summary: request.summary,
+      category: request.category,
+      ...(request.auto_resume_at ? { auto_resume_at: request.auto_resume_at } : {}),
+    };
   } catch (_) {
     // On any error, fail open (don't block revival)
     return { blocked: false };
