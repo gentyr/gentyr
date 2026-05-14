@@ -20,6 +20,7 @@ import * as path from 'path';
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const CONFIG_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
 const AUTOMATION_RATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-rate.json');
+const QUOTA_EXHAUSTION_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'quota-exhaustion.json');
 
 // ============================================================================
 // Automation Rate System
@@ -86,6 +87,7 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'fly_image_freshness',
   'fly_project_image_freshness',
   'global_monitor_health',
+  'quota_exhaustion_check',
   'stale_wait_detection_minutes',
   'stale_wait_escalation_minutes',
   'stale_wait_tool_call_threshold',
@@ -236,6 +238,7 @@ const DEFAULTS = {
   fly_project_image_freshness: 30,             // 30 minutes
   global_monitor_health: 5,                    // 5 minutes
   global_monitor_idle_check: 1,                // 1 minute — fast idle pause/resume
+  quota_exhaustion_check: 5,                   // 5 minutes — proactive usage API check
   stale_wait_detection_minutes: 8,             // minutes before first stale-wait nudge
   stale_wait_escalation_minutes: 5,            // minutes after detection before instruction signal
   stale_wait_tool_call_threshold: 20,          // minimum non-progress tool calls to trigger
@@ -349,4 +352,58 @@ export function getDefaults() {
  */
 export function getConfigPath() {
   return CONFIG_PATH;
+}
+
+// ============================================================================
+// Quota Exhaustion State
+// ============================================================================
+
+/**
+ * Get the current quota exhaustion state.
+ * Fail-open: returns { exhausted: false } on any error (never blocks by accident).
+ * @returns {{ exhausted: boolean, exhausted_at: string|null, resets_at: string|null, window: string|null, utilization: number|null }}
+ */
+export function getQuotaExhaustion() {
+  const empty = { exhausted: false, exhausted_at: null, resets_at: null, window: null, utilization: null };
+  try {
+    if (!fs.existsSync(QUOTA_EXHAUSTION_PATH)) return empty;
+    const state = JSON.parse(fs.readFileSync(QUOTA_EXHAUSTION_PATH, 'utf8'));
+    if (!state || !state.exhausted) return empty;
+    return {
+      exhausted: true,
+      exhausted_at: state.exhausted_at || null,
+      resets_at: state.resets_at || null,
+      window: state.window || null,
+      utilization: state.utilization ?? null,
+    };
+  } catch (_) {
+    return empty;
+  }
+}
+
+/**
+ * Set the quota exhaustion state.
+ * @param {{ exhausted: boolean, resets_at?: string, window?: string, utilization?: number, sessions_killed?: number }} state
+ */
+export function setQuotaExhaustion(state) {
+  const data = {
+    exhausted: state.exhausted,
+    exhausted_at: state.exhausted ? new Date().toISOString() : null,
+    resets_at: state.resets_at || null,
+    window: state.window || null,
+    utilization: state.utilization ?? null,
+    sessions_killed: state.sessions_killed || 0,
+    cleared_at: state.exhausted ? null : new Date().toISOString(),
+  };
+  const dir = path.dirname(QUOTA_EXHAUSTION_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(QUOTA_EXHAUSTION_PATH, JSON.stringify(data, null, 2));
+  return data;
+}
+
+/**
+ * Clear the quota exhaustion state.
+ */
+export function clearQuotaExhaustion() {
+  return setQuotaExhaustion({ exhausted: false });
 }

@@ -23,7 +23,7 @@ import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tr
 import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
 import { reapSyncPass, diagnoseSessionFailure } from './session-reaper.js';
-import { getCooldown, getAutomationRate, setAutomationRate as _setAutomationRate, getAutomationRateState } from '../config-reader.js';
+import { getCooldown, getAutomationRate, setAutomationRate as _setAutomationRate, getAutomationRateState, getQuotaExhaustion } from '../config-reader.js';
 import { killProcessGroup, isClaudeProcess } from './process-tree.js';
 import { compactSessionIfNeeded } from './compact-session.js';
 import { auditEvent } from './session-audit.js';
@@ -670,6 +670,15 @@ export function enqueueSession(spec) {
     }
   }
 
+  // Quota exhaustion gate: when aggregate Anthropic quota is exhausted,
+  // block ALL sessions except CTO-priority (the CTO's own interactive session).
+  const quotaExhaustion = getQuotaExhaustion();
+  if (quotaExhaustion.exhausted && spec.priority !== 'cto') {
+    log(`Quota exhausted BLOCKED: "${spec.title}" (source: ${spec.source}, priority: ${spec.priority || 'normal'}, resets: ${quotaExhaustion.resets_at})`);
+    auditEvent('session_enqueue_blocked', { reason: 'quota_exhausted', title: spec.title, source: spec.source, priority: spec.priority || 'normal', resets_at: quotaExhaustion.resets_at });
+    return { queueId: null, blocked: 'quota_exhausted', title: spec.title, resets_at: quotaExhaustion.resets_at };
+  }
+
   const id = generateQueueId();
   const projectDir = spec.projectDir || PROJECT_DIR;
   const ttlMs = spec.ttlMs ?? DEFAULT_TTL_MS;
@@ -874,6 +883,14 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
 
   const isUsageQuota = diagnosis?.error_type === 'usage_quota';
   if (isUsageQuota) {
+    // If global quota exhaustion is active, defer to the quota-recovery-daemon.
+    // Don't write per-task cooldowns that would compete with bulk recovery.
+    const globalExhaustion = getQuotaExhaustion();
+    if (globalExhaustion.exhausted) {
+      log(`[persistent-revival] Usage quota exhausted globally for ${taskId} — deferring to quota-recovery-daemon`);
+      return;
+    }
+
     const cooldownMinutes = getCooldown('usage_quota_cooldown_minutes', 60);
     log(`[persistent-revival] Usage quota exhausted for ${taskId} — ${cooldownMinutes}min cooldown`);
 
@@ -1694,6 +1711,14 @@ export function drainQueue() {
         log(`Step 1d revival re-enqueue error (non-fatal): ${err.message}`);
       }
     }
+  }
+
+  // Quota exhaustion guard — allow cleanup/reaping above but skip spawning below.
+  // The quota-recovery-daemon handles resume when quota clears.
+  const quotaGuard = getQuotaExhaustion();
+  if (quotaGuard.exhausted) {
+    debugLog('session-queue', 'drain_quota_exhausted', { resets_at: quotaGuard.resets_at });
+    return result;
   }
 
   // Step 2: Expire old queued items past TTL
@@ -2546,6 +2571,87 @@ export function cancelSessionsByTaskId(taskId, reason) {
 }
 
 // ============================================================================
+// Quota Exhaustion Kill Sweep
+// ============================================================================
+
+/**
+ * Kill all running/spawning/suspended/queued sessions for quota exhaustion.
+ * Skips CTO-priority sessions. Marks killed sessions as failed with 'quota_exhausted'.
+ *
+ * @returns {{ killed: number, cancelled: number, skippedCto: number }}
+ */
+export function killAllForQuotaExhaustion() {
+  const db = getDb();
+  const result = { killed: 0, cancelled: 0, skippedCto: 0 };
+
+  // Helper: reset linked TODO task to pending so it can be re-spawned on recovery
+  function resetLinkedTask(item) {
+    try {
+      const meta = item.metadata ? JSON.parse(item.metadata) : {};
+      if (meta.taskId) {
+        const todoDbPath = path.join(item.project_dir || PROJECT_DIR, '.claude', 'todo.db');
+        if (fs.existsSync(todoDbPath)) {
+          const todoDb = new Database(todoDbPath);
+          todoDb.pragma('busy_timeout = 3000');
+          todoDb.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'").run(meta.taskId);
+          todoDb.close();
+        }
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  // Kill running and spawning sessions
+  const running = db.prepare(
+    "SELECT id, pid, agent_id, priority, title, metadata, project_dir FROM queue_items WHERE status IN ('running', 'spawning')"
+  ).all();
+
+  for (const item of running) {
+    if (item.priority === 'cto') { result.skippedCto++; continue; }
+    if (item.pid) killProcessGroup(item.pid, 'SIGTERM');
+    db.prepare("UPDATE queue_items SET status = 'failed', error = 'quota_exhausted', completed_at = datetime('now') WHERE id = ?").run(item.id);
+    if (item.agent_id) {
+      try { releaseAllResources(item.agent_id); } catch (_) {}
+      try { removeFromAllQueues(item.agent_id); } catch (_) {}
+    }
+    resetLinkedTask(item);
+    auditEvent('session_quota_killed', { queue_id: item.id, agent_id: item.agent_id, pid: item.pid, title: item.title });
+    result.killed++;
+  }
+
+  // Kill suspended sessions (SIGKILL since they're frozen via SIGTSTP)
+  const suspended = db.prepare(
+    "SELECT id, pid, agent_id, priority, title, metadata, project_dir FROM queue_items WHERE status = 'suspended'"
+  ).all();
+
+  for (const item of suspended) {
+    if (item.priority === 'cto') { result.skippedCto++; continue; }
+    if (item.pid) killProcessGroup(item.pid, 'SIGKILL');
+    db.prepare("UPDATE queue_items SET status = 'failed', error = 'quota_exhausted', completed_at = datetime('now') WHERE id = ?").run(item.id);
+    if (item.agent_id) {
+      try { releaseAllResources(item.agent_id); } catch (_) {}
+      try { removeFromAllQueues(item.agent_id); } catch (_) {}
+    }
+    resetLinkedTask(item);
+    result.killed++;
+  }
+
+  // Cancel queued sessions
+  const queued = db.prepare(
+    "SELECT id, priority, title, metadata, project_dir FROM queue_items WHERE status = 'queued'"
+  ).all();
+
+  for (const item of queued) {
+    if (item.priority === 'cto') { result.skippedCto++; continue; }
+    db.prepare("UPDATE queue_items SET status = 'cancelled', error = 'quota_exhausted', completed_at = datetime('now') WHERE id = ?").run(item.id);
+    resetLinkedTask(item);
+    result.cancelled++;
+  }
+
+  log(`killAllForQuotaExhaustion: killed=${result.killed}, cancelled=${result.cancelled}, skippedCto=${result.skippedCto}`);
+  return result;
+}
+
+// ============================================================================
 // Mark Completed
 // ============================================================================
 
@@ -2648,6 +2754,7 @@ export function getQueueStatus() {
     automationRate: getAutomationRate(),
     focusMode: isFocusModeEnabled(), // backward compat: true when rate is 'none'
     localMode: isLocalModeEnabled(),
+    quotaExhaustion: getQuotaExhaustion(),
     running: activeRunning.length,
     standardRunning,
     automatedRunning,

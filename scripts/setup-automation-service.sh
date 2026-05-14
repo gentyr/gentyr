@@ -493,6 +493,7 @@ PREVIEW_WATCHER_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-preview-watcher.plist"
 SESSION_ACTIVITY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-session-activity-broadcaster.plist"
 LIVE_FEED_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-live-feed-daemon.plist"
 SYNTHETIC_MONITOR_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-synthetic-monitor.plist"
+QUOTA_RECOVERY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-quota-recovery-daemon.plist"
 LAUNCHD_UID=$(id -u)
 LAUNCHD_DOMAIN="gui/$LAUNCHD_UID"
 
@@ -621,6 +622,59 @@ EOF
     fi
   else
     log_warn "Revival daemon script not found — skipping revival daemon service."
+  fi
+
+  # --- Quota Recovery Daemon (KeepAlive, sub-10s resume when quota resets) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/quota-recovery-daemon.js" ]; then
+    cat > "$QUOTA_RECOVERY_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-quota-recovery-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/quota-recovery-daemon.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/quota-recovery-daemon.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/quota-recovery-daemon.log</string>
+</dict>
+</plist>
+EOF
+
+    if launchd_load "$QUOTA_RECOVERY_PLIST_FILE" "com.local.gentyr-quota-recovery-daemon"; then
+      log_info "Quota recovery daemon service loaded (KeepAlive, RunAtLoad)."
+    else
+      log_warn "Quota recovery daemon service FAILED to load — check: launchctl list | grep gentyr-quota-recovery"
+    fi
+  else
+    log_warn "Quota recovery daemon script not found — skipping."
   fi
 
   # --- Shared MCP Server Daemon (KeepAlive, HTTP transport on port 18090) ---
@@ -988,6 +1042,11 @@ remove_macos() {
   launchd_unload "$SYNTHETIC_MONITOR_PLIST_FILE" "com.local.gentyr-synthetic-monitor"
   rm -f "$SYNTHETIC_MONITOR_PLIST_FILE"
   log_info "Synthetic monitor daemon service removed."
+
+  # Unload and remove quota recovery daemon
+  launchd_unload "$QUOTA_RECOVERY_PLIST_FILE" "com.local.gentyr-quota-recovery-daemon"
+  rm -f "$QUOTA_RECOVERY_PLIST_FILE"
+  log_info "Quota recovery daemon service removed."
 
   # Unload and remove automation agent
   launchd_unload "$PLIST_FILE" "com.local.${SERVICE_NAME}"
