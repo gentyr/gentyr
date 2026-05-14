@@ -4557,6 +4557,117 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
   });
 
   // =========================================================================
+  // QUOTA EXHAUSTION CHECK (gate-exempt, 5-min cooldown)
+  // Proactively polls aggregate Anthropic usage quota. When utilization >= 99%
+  // on EITHER 5-hour or 7-day window → kills all non-CTO sessions, blocks enqueues.
+  // Recovery handled by the quota-recovery-daemon (sub-10s resume at reset time).
+  // =========================================================================
+  await runIfDue('quota_exhaustion_check', {
+    state, now,
+    stateKey: 'lastQuotaExhaustionCheck',
+    label: 'Quota exhaustion check (gate-exempt)',
+    fn: async () => {
+      const { getQuotaExhaustion: getQE, setQuotaExhaustion: setQE, clearQuotaExhaustion: clearQE } = await import('./config-reader.js');
+      const currentState = getQE();
+
+      // If already exhausted, check if resets_at has passed (safety net for daemon)
+      if (currentState.exhausted && currentState.resets_at) {
+        const resetTime = new Date(currentState.resets_at).getTime();
+        if (Date.now() >= resetTime + 60000) {
+          log('Quota exhaustion: reset time passed — clearing (safety net)');
+          clearQE();
+          try { drainQueue(); } catch (_) {}
+          try { auditEvent('quota_exhaustion_cleared', { source: 'hourly-automation-safety-net' }); } catch (_) {}
+        }
+        return;
+      }
+
+      // Resolve OAuth token (same chain as cto-notification-hook.js)
+      let token = process.env['CLAUDE_CODE_OAUTH_TOKEN'] || null;
+      if (!token && process.platform === 'darwin') {
+        try {
+          const { username } = os.userInfo();
+          const raw = execFileSync('security', [
+            'find-generic-password', '-s', 'Claude Code-credentials', '-a', username, '-w',
+          ], { encoding: 'utf8', timeout: 3000 }).trim();
+          const creds = JSON.parse(raw);
+          token = creds.claudeAiOauth?.accessToken || null;
+          if (token && creds.claudeAiOauth.expiresAt && creds.claudeAiOauth.expiresAt < Date.now()) token = null;
+        } catch { /* fall through */ }
+      }
+      if (!token) {
+        try {
+          const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
+          if (fs.existsSync(credPath)) {
+            const creds = JSON.parse(fs.readFileSync(credPath, 'utf8'));
+            token = creds.claudeAiOauth?.accessToken || null;
+          }
+        } catch { /* fall through */ }
+      }
+      if (!token) return;
+
+      try {
+        const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'claude-code/2.1.14',
+            'anthropic-beta': 'oauth-2025-04-20',
+          },
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (!response.ok) return;
+
+        const data = await response.json();
+        const THRESHOLD = 99;
+
+        let exhaustedWindow = null;
+        let exhaustedUtilization = null;
+        let resetsAt = null;
+
+        if (data.five_hour && data.five_hour.utilization >= THRESHOLD) {
+          exhaustedWindow = 'five_hour';
+          exhaustedUtilization = data.five_hour.utilization;
+          resetsAt = data.five_hour.resets_at;
+        }
+        if (data.seven_day && data.seven_day.utilization >= THRESHOLD) {
+          if (!exhaustedWindow || new Date(data.seven_day.resets_at) < new Date(resetsAt)) {
+            exhaustedWindow = 'seven_day';
+            exhaustedUtilization = data.seven_day.utilization;
+            resetsAt = data.seven_day.resets_at;
+          }
+        }
+
+        if (exhaustedWindow && !currentState.exhausted) {
+          log(`QUOTA EXHAUSTED: ${exhaustedWindow} at ${exhaustedUtilization}%, resets at ${resetsAt}`);
+          const { killAllForQuotaExhaustion } = await import('./lib/session-queue.js');
+          const killResult = killAllForQuotaExhaustion();
+
+          setQE({
+            exhausted: true, resets_at: resetsAt, window: exhaustedWindow,
+            utilization: exhaustedUtilization, sessions_killed: killResult.killed + killResult.cancelled,
+          });
+
+          log(`Quota exhaustion: killed ${killResult.killed}, cancelled ${killResult.cancelled}, preserved ${killResult.skippedCto} CTO sessions`);
+          try { auditEvent('quota_exhaustion_triggered', {
+            window: exhaustedWindow, utilization: exhaustedUtilization, resets_at: resetsAt,
+            killed: killResult.killed, cancelled: killResult.cancelled, cto_preserved: killResult.skippedCto,
+          }); } catch (_) {}
+        } else if (!exhaustedWindow && currentState.exhausted) {
+          log('Quota recovered (hourly automation safety net)');
+          clearQE();
+          try { drainQueue(); } catch (_) {}
+          try { auditEvent('quota_exhaustion_cleared', { source: 'hourly-automation' }); } catch (_) {}
+        }
+      } catch (err) {
+        log(`Quota exhaustion check error: ${err.message}`);
+      }
+    },
+  });
+
+  // =========================================================================
   // Global monitor idle auto-pause / auto-resume (gate-exempt, 1-min cooldown)
   // Pauses the global monitor when no work sessions are active.
   // Resumes immediately (next cycle) when sessions reappear.

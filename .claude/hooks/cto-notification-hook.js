@@ -935,6 +935,19 @@ async function main() {
     quotaPart = `Quota${emailLabel}: 5h ${progressBar(fh.utilization, 8)} ${Math.round(fh.utilization)}% (resets ${formatHours(fh.resets_in_hours)}) | 7d ${progressBar(sd.utilization, 8)} ${Math.round(sd.utilization)}% (resets ${formatHours(sd.resets_in_hours)})`;
   }
 
+  // Quota exhaustion alert
+  try {
+    const quotaStatePath = path.join(PROJECT_DIR, '.claude', 'state', 'quota-exhaustion.json');
+    if (fs.existsSync(quotaStatePath)) {
+      const qeState = JSON.parse(fs.readFileSync(quotaStatePath, 'utf8'));
+      if (qeState && qeState.exhausted) {
+        const resetAt = qeState.resets_at ? new Date(qeState.resets_at) : null;
+        const resetsIn = resetAt ? formatHours((resetAt.getTime() - Date.now()) / (1000 * 60 * 60)) : 'unknown';
+        quotaPart = `QUOTA EXHAUSTED (${qeState.window || 'aggregate'}) — all agents paused, resets ${resetsIn} | ${quotaPart}`;
+      }
+    }
+  } catch { /* non-fatal */ }
+
   // Build message based on state
   let message;
   if (isCritical) {
