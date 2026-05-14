@@ -827,11 +827,15 @@ function buildInteractiveBriefing() {
               } else if (projFreshness.freshnessTier === 'stale') {
                 lines.push(`Fly.io: project image ${projFreshness.ageHours}h old — use get_fly_status() to check health if demo installs seem slow`);
               } else if (projFreshness.deployFailed) {
-                lines.push(`Fly.io: project image deploy FAILED at ${projFreshness.meta?.deployFailedAt || 'unknown time'}. Run deploy_project_image({ force: true }) to retry.`);
+                const failedRef = projFreshness.meta?.gitRef || 'unknown';
+                lines.push(`Fly.io: project image deploy FAILED (from '${failedRef}'). Run deploy_project_image({ git_ref: 'staging', force: true }) to retry.`);
               } else if (!svcConfig.fly.projectImageEnabled) {
                 lines.push(`Fly.io: project image deployed but NOT ENABLED — set fly.projectImageEnabled=true or it will auto-enable on next successful deploy`);
+              } else {
+                // Healthy — show branch so agents know which ref the image is from
+                const healthyRef = projFreshness.meta?.gitRef || 'unknown';
+                lines.push(`Fly.io: project image from '${healthyRef}' (${projFreshness.ageHours}h old)`);
               }
-              // If healthy, don't add noise — the base image line is enough
             }
           } catch { /* non-fatal */ }
           lines.push('');
