@@ -324,9 +324,59 @@ The SQL fix in `pre-commit-review.js` (`AND question_id IS NOT NULL`) ensures th
 
 ---
 
+## Quota Exhaustion Auto-Pause/Resume
+
+Distinct from the usage optimizer (which *adjusts cooldowns*), the quota exhaustion system *stops all agent spawning* when the aggregate Anthropic API usage reaches 99% and *resumes automatically* within 10 seconds of quota reset.
+
+### Trigger Condition
+
+When either the 5-hour or 7-day usage window reaches ≥ 99% utilization, the `quota_exhaustion_check` block in `hourly-automation.js` (5-minute cycle, gate-exempt) calls `killAllForQuotaExhaustion()`:
+
+1. Sends SIGTERM to all `running` and `spawning` sessions (except `priority: 'cto'`)
+2. Cancels all `queued` items
+3. Resets linked TODO tasks to `pending`
+4. Writes `.claude/state/quota-exhaustion.json` with `{ exhausted: true, resets_at, window, utilization }`
+
+### Blocking
+
+While `quota-exhaustion.json` is present and `exhausted: true`:
+
+- `enqueueSession()` blocks all non-CTO spawns (returns `{ blocked: 'quota_exhausted' }`)
+- `drainQueue()` skips the spawn phase entirely (reaping still runs so dead PIDs are cleaned up)
+- Only `priority: 'cto'` sessions pass through both gates
+
+The CTO notification hook shows `QUOTA EXHAUSTED (window) — all agents paused, resets Xh` in the status line. `get_session_queue_status` returns `quotaExhaustion` with the current state.
+
+### Recovery
+
+`scripts/quota-recovery-daemon.js` runs as a KeepAlive launchd service (`com.local.gentyr-quota-recovery-daemon`). It:
+
+1. Watches `quota-exhaustion.json` via `fs.watch` + 30s poll fallback
+2. On detecting exhaustion, calculates `setTimeout` to `resets_at - 15s`
+3. Near reset time, polls the usage API every 5 seconds
+4. When usage drops below the threshold, clears `quota-exhaustion.json` and calls `drainQueue()` to resume all queued work
+
+This yields sub-10-second resume latency after quota reset.
+
+`requeueDeadPersistentMonitor()` also respects the exhaustion state — when exhaustion is active, per-task revival is deferred to the recovery daemon rather than attempting immediate revival against blocked enqueue gates.
+
+To manually clear an exhaustion state: `rm .claude/state/quota-exhaustion.json`
+
+### Relationship to Usage Optimizer
+
+| System | When it fires | What it does |
+|--------|--------------|-------------|
+| Usage optimizer | Always, every cycle | Scales all 18 cooldowns to target 90% utilization |
+| Quota exhaustion | Only at ≥ 99% | Kills all sessions, blocks new spawns until reset |
+
+The usage optimizer prevents reaching 99% under normal conditions; the quota exhaustion system is the hard stop for unexpected spikes.
+
+---
+
 ## State Files
 
 | File | Scope | Written By | Read By |
 |------|-------|-----------|---------|
 | `.claude/state/automation-config.json` | Project | usage-optimizer | config-reader (all hooks) |
 | `.claude/state/usage-snapshots.json` | Project | usage-optimizer | usage-optimizer, cto-dashboard |
+| `.claude/state/quota-exhaustion.json` | Project | hourly-automation (quota_exhaustion_check) | enqueueSession, drainQueue, quota-recovery-daemon, cto-notification-hook |
