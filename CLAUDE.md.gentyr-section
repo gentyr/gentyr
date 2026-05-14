@@ -100,6 +100,12 @@ GENTYR enforces a strict merge chain: **feature -> preview -> staging -> product
 
 **Local pre-commit checks**: Every commit runs ESLint (--max-warnings 0), lint config integrity, protected branch guard, and branch age guard locally. These are UNBYPASSABLE and run in <10 seconds.
 
+**Git hook compliance (MANDATORY)**: NEVER use `--no-verify`, `-n`, or `--no-gpg-sign` flags on any git command. These are hard-blocked by the `block-no-verify` enforcement hook. If pre-commit hooks fail, diagnose and fix the root cause:
+- **Missing hooks in worktree**: Check that `.claude/hooks` symlink exists in your worktree's `.claude/` directory. If missing, create it: `ln -s <main-project>/.claude/hooks <worktree>/.claude/hooks`
+- **Branch too old (age guard)**: Create a fresh branch from the base branch instead of trying to commit to a stale branch. Run `git fetch origin && git merge origin/<base> --no-edit` to bring the branch up to date.
+- **Lint failures**: Fix the lint errors. Do NOT suppress warnings with `--quiet` or `--max-warnings`.
+- **Build failures in worktree (pre-push)**: Run `pnpm install` in the worktree if `tsc` or build tools are missing.
+
 **Autonomous safety systems**: Migration safety enforcement blocks destructive migrations before staging. Auto-rollback reverts code (not migrations) on deployment failure. DORA metrics track deployment frequency, lead time, change failure rate, and MTTR daily.
 
 **Forbidden merges:** Feature branches can NEVER merge directly into `staging` or `main`. Preview can NEVER merge directly into `main`.

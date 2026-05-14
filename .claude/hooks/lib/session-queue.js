@@ -1062,6 +1062,13 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
     }
   } catch (_) { /* non-fatal — taskEarly stays null, second DB read below handles it */ }
 
+  // Task status check: skip revival if the task is no longer active
+  // (e.g., paused by idle auto-pause, cancelled, completed, or failed)
+  if (taskEarly && taskEarly.status !== 'active') {
+    log(`[persistent-revival] Skipping revival for ${taskId}: task is ${taskEarly.status}`);
+    return;
+  }
+
   // Plan-level dedup: if this task serves a plan, check if ANY monitor for the same plan
   // is already queued/running (regardless of persistentTaskId). Prevents duplicate monitors
   // when reviveOrphanedPlan() created multiple persistent tasks for the same plan.

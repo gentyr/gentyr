@@ -235,6 +235,7 @@ const DEFAULTS = {
   fly_image_freshness: 60,                     // 1 hour
   fly_project_image_freshness: 30,             // 30 minutes
   global_monitor_health: 5,                    // 5 minutes
+  global_monitor_idle_check: 1,                // 1 minute — fast idle pause/resume
   stale_wait_detection_minutes: 8,             // minutes before first stale-wait nudge
   stale_wait_escalation_minutes: 5,            // minutes after detection before instruction signal
   stale_wait_tool_call_threshold: 20,          // minimum non-progress tool calls to trigger

@@ -213,11 +213,11 @@ describe('block-no-verify.js (PreToolUse Hook)', () => {
       await assertAllowed('git status', tempDir.path);
     });
 
-    it('should block git commit --no-verify even in a chained command', async () => {
+    it('should block chained command containing --no-verify', async () => {
       await assertBlocked('git add file.txt && git commit --no-verify -m "test"', tempDir.path);
     });
 
-    it('should allow git add in a chain where --no-verify is NOT present', async () => {
+    it('should allow chained command without --no-verify', async () => {
       await assertAllowed('git add file.txt && git commit -m "normal commit"', tempDir.path);
     });
   });

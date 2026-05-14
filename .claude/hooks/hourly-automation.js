@@ -4381,9 +4381,21 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
 
         if (existingTask) {
           // Task exists — check its status
-          if (existingTask.status === 'paused' || existingTask.status === 'cancelled' || existingTask.status === 'completed' || existingTask.status === 'failed') {
-            // CTO explicitly stopped it or it was paused by circuit breaker — do not re-create
+          if (existingTask.status === 'cancelled' || existingTask.status === 'completed' || existingTask.status === 'failed') {
+            // CTO explicitly stopped it — do not re-create
             debugLog('hourly-automation', 'global_monitor_health', { taskId: existingTask.id, status: existingTask.status, action: 'skip_terminal' });
+            return;
+          }
+          if (existingTask.status === 'paused') {
+            // Paused — let the idle check block handle resume if it's an idle pause.
+            // For non-idle pauses (CTO, circuit breaker), skip.
+            const meta = existingTask.metadata ? JSON.parse(existingTask.metadata) : {};
+            if (!meta.auto_idle_pause) {
+              debugLog('hourly-automation', 'global_monitor_health', { taskId: existingTask.id, status: 'paused', action: 'skip_manual_pause' });
+              return;
+            }
+            // idle pause — the idle_check block handles resume
+            debugLog('hourly-automation', 'global_monitor_health', { taskId: existingTask.id, status: 'paused', action: 'skip_idle_pause_handled_by_idle_check' });
             return;
           }
 
@@ -4480,6 +4492,13 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
           'You operate in continuous alignment monitoring mode (GENTYR_DEPUTY_CTO_MONITOR=true).',
           'Your job is to ensure all active sessions are aligned with CTO intent.',
           '',
+          '## Operating Mode: CONTINUOUS',
+          'You run as an ongoing session that NEVER self-pauses or self-stops.',
+          'The automation layer handles your lifecycle:',
+          '- When no work sessions are active, automation auto-pauses you (you do NOT need to detect idle state)',
+          '- When sessions resume, automation auto-resumes you with fresh context',
+          '- Your job is to monitor continuously while active — do NOT call pause_persistent_task',
+          '',
           '## Cycle',
           'On each 5-minute cycle:',
           '1. Enumerate active tasks and persistent tasks',
@@ -4488,6 +4507,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
           '4. Detect zombies (sessions alive >2h with no recent tool calls)',
           '5. Oversee stuck audit gates',
           '6. Call heartbeat on your persistent task',
+          '7. Sleep 5 minutes, then repeat',
           '',
           '## Escalation Framework',
           '- Minor drift: send a signal to the agent (~50%)',
@@ -4496,10 +4516,11 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
           '',
           '## Signal Throttling',
           'Max 1 signal per agent per 30 minutes.',
-          'If >5 signals are firing per hour, self-pause and escalate a diagnostic report to the CTO.',
+          'If >5 signals are firing per hour, escalate a diagnostic report to the CTO.',
           '',
           '## Important',
           '- This task has do_not_complete=true — never complete it',
+          '- NEVER call pause_persistent_task — automation handles pausing',
           '- Use heartbeat to stay alive',
           '- You are a deputy-cto agent with GENTYR_DEPUTY_CTO_MONITOR=true',
         ].join('\n');
@@ -4531,6 +4552,132 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         debugLog('hourly-automation', 'global_monitor_health', { taskId, action: 'created_and_enqueued' });
       } finally {
         try { ptDb.close(); } catch (_) { /* non-fatal */ }
+      }
+    },
+  });
+
+  // =========================================================================
+  // Global monitor idle auto-pause / auto-resume (gate-exempt, 1-min cooldown)
+  // Pauses the global monitor when no work sessions are active.
+  // Resumes immediately (next cycle) when sessions reappear.
+  // =========================================================================
+  await runIfDue('global_monitor_idle_check', {
+    state, now,
+    stateKey: 'lastGlobalMonitorIdleCheckRun',
+    label: 'Global monitor idle check',
+    fn: async () => {
+      const toggleValue = config.globalMonitorEnabled;
+      if (toggleValue === false) return;
+
+      const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+      const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+      if (!Database || !fs.existsSync(ptDbPath) || !fs.existsSync(queueDbPath)) return;
+
+      let ptDb, queueDb;
+      try {
+        ptDb = new Database(ptDbPath);
+        ptDb.pragma('busy_timeout = 3000');
+        queueDb = new Database(queueDbPath, { readonly: true });
+        queueDb.pragma('busy_timeout = 3000');
+      } catch (err) {
+        log(`Global monitor idle check: DB open failed: ${err.message}`);
+        try { ptDb?.close(); } catch (_) {}
+        try { queueDb?.close(); } catch (_) {}
+        return;
+      }
+
+      try {
+        const monitorTask = ptDb.prepare(
+          "SELECT id, title, status, metadata FROM persistent_tasks WHERE metadata LIKE '%\"task_type\":\"global_monitor\"%' LIMIT 1"
+        ).get();
+        if (!monitorTask) return;
+
+        // Count active work sessions (exclude monitor itself, gate, audit, alignment lanes)
+        const activeWorkSessions = queueDb.prepare(
+          `SELECT COUNT(*) as cnt FROM queue_items
+           WHERE status IN ('running', 'spawning')
+           AND lane NOT IN ('gate', 'audit', 'alignment')
+           AND (metadata IS NULL OR json_extract(metadata, '$.task_type') != 'global_monitor')`
+        ).get();
+        const hasActiveSessions = (activeWorkSessions?.cnt || 0) > 0;
+
+        const meta = monitorTask.metadata ? JSON.parse(monitorTask.metadata) : {};
+
+        if (monitorTask.status === 'active' && !hasActiveSessions) {
+          // No active work sessions — check if monitor is actually running
+          const monitorSession = queueDb.prepare(
+            "SELECT id, pid FROM queue_items WHERE lane = 'persistent' AND status = 'running' AND metadata LIKE ? LIMIT 1"
+          ).get(`%"persistentTaskId":"${monitorTask.id}"%`);
+
+          if (!monitorSession) return; // Not running, nothing to pause
+
+          log(`Global monitor idle check: no active work sessions — pausing monitor (taskId: ${monitorTask.id})`);
+
+          // Kill the monitor session
+          try {
+            process.kill(monitorSession.pid, 'SIGTERM');
+          } catch (_) { /* already dead */ }
+
+          // Pause the persistent task with idle flag
+          meta.auto_idle_pause = true;
+          meta.auto_idle_paused_at = new Date().toISOString();
+          meta.do_not_auto_resume = true; // Prevent stale-pause auto-resume from fighting
+          ptDb.prepare("UPDATE persistent_tasks SET status = 'paused', metadata = ?, updated_at = datetime('now') WHERE id = ?")
+            .run(JSON.stringify(meta), monitorTask.id);
+          ptDb.prepare(
+            "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'paused', ?, datetime('now'))"
+          ).run(randomUUID(), monitorTask.id, JSON.stringify({ reason: 'auto_idle_pause', message: 'No active work sessions — pausing until sessions resume' }));
+
+          try { auditEvent('global_monitor_idle_paused', { task_id: monitorTask.id }); } catch (_) {}
+          log('Global monitor idle check: monitor paused (will auto-resume when sessions are active)');
+          return;
+        }
+
+        if (monitorTask.status === 'paused' && meta.auto_idle_pause && hasActiveSessions) {
+          // Sessions are active again — resume the monitor
+          log(`Global monitor idle check: active sessions detected — resuming idle-paused monitor (taskId: ${monitorTask.id})`);
+
+          delete meta.auto_idle_pause;
+          delete meta.auto_idle_paused_at;
+          delete meta.do_not_auto_resume;
+          ptDb.prepare("UPDATE persistent_tasks SET status = 'active', metadata = ?, updated_at = datetime('now') WHERE id = ?")
+            .run(JSON.stringify(meta), monitorTask.id);
+          ptDb.prepare(
+            "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
+          ).run(randomUUID(), monitorTask.id, JSON.stringify({ reason: 'auto_idle_resume', message: 'Active sessions detected — resuming monitor' }));
+
+          // Enqueue a new monitor session
+          try {
+            const { prompt, extraEnv, metadata: revivalMeta, agent } = await buildRevivalPrompt(monitorTask, 'auto_idle_resume');
+            const result = enqueueSession({
+              title: `[Global Monitor] Deputy-CTO Alignment Monitor`,
+              agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+              hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+              tagContext: 'global-monitor',
+              source: 'hourly-automation',
+              priority: 'critical',
+              lane: 'persistent',
+              ttlMs: 0,
+              prompt,
+              projectDir: PROJECT_DIR,
+              extraEnv: { ...extraEnv, GENTYR_DEPUTY_CTO_MONITOR: 'true' },
+              metadata: { ...revivalMeta, task_type: 'global_monitor' },
+              agent: 'deputy-cto',
+            });
+            log(`Global monitor idle check: resumed and enqueued (queueId: ${result.queueId})`);
+            try { auditEvent('global_monitor_idle_resumed', { task_id: monitorTask.id, queue_id: result.queueId }); } catch (_) {}
+          } catch (err) {
+            log(`Global monitor idle check: failed to enqueue monitor: ${err.message}`);
+            // Roll back status so the next cycle retries
+            try {
+              ptDb.prepare("UPDATE persistent_tasks SET status = 'paused' WHERE id = ?").run(monitorTask.id);
+            } catch (_) {}
+          }
+          return;
+        }
+      } finally {
+        try { ptDb?.close(); } catch (_) {}
+        try { queueDb?.close(); } catch (_) {}
       }
     },
   });
