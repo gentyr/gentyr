@@ -227,6 +227,25 @@ function spawnRepairAgent(scenario) {
           ``,
           `Do NOT increase timeouts — the service is not starting at all, not starting slowly.`,
         ] : [];
+        // Project image health context for install_timeout failures
+        let imageHealthGuidance = [];
+        try {
+          const imgMetaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+          if (fs.existsSync(imgMetaPath)) {
+            const imgMeta = JSON.parse(fs.readFileSync(imgMetaPath, 'utf8'));
+            const imgRef = imgMeta.gitRef || 'unknown';
+            const imgFailed = imgMeta.deployFailed || false;
+            imageHealthGuidance = [
+              ``,
+              `## Fly.io Project Image Health`,
+              `- Built from branch: ${imgRef}`,
+              `- Deploy failed: ${imgFailed}`,
+              imgFailed ? `- ACTION: Run deploy_project_image({ git_ref: 'staging', force: true }) BEFORE retrying demos.` : '',
+              failure_classification === 'install_timeout' ? `- install_timeout detected: check get_fly_status().projectImageLockfileMatch — if false, the image is from the wrong branch. Redeploy from staging.` : '',
+              `- Do NOT call deploy_project_image() without git_ref — it defaults to staging, but always be explicit.`,
+            ].filter(Boolean);
+          }
+        } catch { /* non-fatal */ }
         return [
           `[Automation][task-runner-demo-manager][AGENT:${agentId}] You are a demo repair agent. A demo scenario failed.`,
           ``,
@@ -240,6 +259,7 @@ function spawnRepairAgent(scenario) {
           prereqBlock,
           ...stallGuidance,
           ...infraGuidance,
+          ...imageHealthGuidance,
           ``,
           `## Instructions`,
           ``,

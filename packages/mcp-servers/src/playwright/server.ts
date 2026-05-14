@@ -1486,10 +1486,20 @@ function classifyFailure(opts: {
   // Install timeout: stall during dependency installation (base image fallback)
   if (/STALL DETECTED/i.test(stderrTail) &&
       /pnpm install|install_start|Installing dependencies|playwright install/i.test(stderrTail)) {
+    // Read project image metadata for branch context
+    let imageGitRef = 'unknown';
+    try {
+      const metaPath = path.join(PROJECT_DIR, '.claude', 'state', 'fly-project-image-metadata.json');
+      if (fs.existsSync(metaPath)) {
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+        imageGitRef = meta.gitRef || 'unknown';
+      }
+    } catch { /* non-fatal */ }
+
     return {
       classification: 'install_timeout',
-      reason: 'Stalled during dependency installation — project image unavailable, cold install exceeded timeout',
-      suggestion: 'The project image is stale or disabled, causing a full cold install (~5min). Fix: call deploy_project_image({ force: true }) to rebuild.',
+      reason: `Stalled during dependency installation. Project image built from '${imageGitRef}' — lockfile may not match current branch.`,
+      suggestion: `Check get_fly_status().projectImageGitRef and projectImageLockfileMatch. If the image is from the wrong branch, redeploy: deploy_project_image({ git_ref: 'staging', force: true }). Do NOT deploy without specifying git_ref.`,
     };
   }
 
@@ -6803,12 +6813,19 @@ async function preflightCheck(args: PreflightCheckArgs): Promise<PreflightCheckR
         }
 
         const isRelease = !!process.env.GENTYR_RELEASE_ID;
-        const gitRefOk = !isRelease || gitRef === 'staging';
+        const isStableBranch = ['staging', 'main'].includes(gitRef);
 
-        if (!gitRefOk) {
+        if (isRelease && gitRef !== 'staging') {
+          return {
+            status: 'fail' as const,
+            message: `RELEASE: Project image built from '${gitRef}', must be 'staging'. Call deploy_project_image({ git_ref: 'staging', force: true }).`,
+          };
+        }
+
+        if (!isStableBranch) {
           return {
             status: 'warn' as const,
-            message: `Project image built from '${gitRef}', not 'staging'. Call deploy_project_image({ git_ref: 'staging' }) before running release demos.`,
+            message: `Project image built from '${gitRef}' (not staging/main). Lockfile may not match. Consider: deploy_project_image({ git_ref: 'staging' }).`,
           };
         }
 
@@ -9892,7 +9909,9 @@ const tools: AnyToolHandler[] = [
       'Build and deploy a project-specific Fly.io Docker image with pre-installed dependencies. ' +
       'Layers on top of the base image (from deploy_fly_image): clones the project repo, runs pnpm install, ' +
       'installs Playwright browsers, and optionally runs a build command. Reduces cold start from ~90s to ~10s. ' +
-      'After deploying, set fly.projectImageEnabled=true in services.json via update_services_config to activate.',
+      'IMPORTANT: When git_ref is omitted, defaults to staging > preview > main (never HEAD). ' +
+      'For release demos, always specify git_ref: "staging". ' +
+      'Check get_fly_status().projectImageGitRef to see which branch the current image was built from.',
     schema: DeployProjectImageArgsSchema,
     handler: async (args: DeployProjectImageArgs) => {
       // 1. Read fly config
@@ -10042,10 +10061,17 @@ const tools: AnyToolHandler[] = [
       } else if (process.env.GENTYR_RELEASE_ID) {
         gitRef = 'staging';
       } else {
-        try {
-          gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe' }).trim();
-        } catch {
-          gitRef = 'main';
+        // Smart default: prefer stable branches over HEAD.
+        // Feature/preview branches should never be the source for shared project images.
+        const stableBranches = ['staging', 'preview', 'main'];
+        gitRef = 'main'; // ultimate fallback
+        for (const branch of stableBranches) {
+          try {
+            const result = execSync(`git ls-remote --heads origin ${branch}`, {
+              cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+            }).trim();
+            if (result) { gitRef = branch; break; }
+          } catch { /* try next */ }
         }
       }
 
