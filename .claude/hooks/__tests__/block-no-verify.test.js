@@ -212,6 +212,14 @@ describe('block-no-verify.js (PreToolUse Hook)', () => {
     it('should allow git status (unrelated git command)', async () => {
       await assertAllowed('git status', tempDir.path);
     });
+
+    it('should block git commit --no-verify even in a chained command', async () => {
+      await assertBlocked('git add file.txt && git commit --no-verify -m "test"', tempDir.path);
+    });
+
+    it('should allow git add in a chain where --no-verify is NOT present', async () => {
+      await assertAllowed('git add file.txt && git commit -m "normal commit"', tempDir.path);
+    });
   });
 
   // ==========================================================================
@@ -301,6 +309,14 @@ describe('block-no-verify.js (PreToolUse Hook)', () => {
 
     it('should block git config --global core.hooksPath', async () => {
       await assertBlocked('git config --global core.hooksPath /tmp/fake', tempDir.path, 'core.hooksPath');
+    });
+
+    it('should allow reading core.hooksPath (no value = read operation)', async () => {
+      await assertAllowed('git config core.hooksPath', tempDir.path);
+    });
+
+    it('should allow reading core.hooksPath with --get flag', async () => {
+      await assertAllowed('git config --get core.hooksPath', tempDir.path);
     });
 
     it('should allow rm on non-protected directories', async () => {
