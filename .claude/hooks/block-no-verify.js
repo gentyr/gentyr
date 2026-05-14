@@ -23,10 +23,11 @@ import { computePendingHmac } from './lib/deferred-action-executor.js';
 
 // Patterns that indicate hook bypass attempts
 const forbiddenPatterns = [
-  { pattern: /--no-verify/i, reason: 'Using --no-verify skips pre-commit hooks (lint, deputy-cto review)' },
-  { pattern: /\bgit\s+(commit|push|merge|rebase|cherry-pick|revert|am)\b.*\s-n(\s|$)/, reason: 'The -n flag is shorthand for --no-verify, which skips pre-commit hooks' },
+  { pattern: /\bgit\s+(commit|push|merge|rebase|cherry-pick|revert|am)\b[^;&|]*--no-verify/i, reason: 'Using --no-verify skips pre-commit hooks (lint, deputy-cto review)' },
+  { pattern: /(?:exec(?:File)?(?:Sync)?|spawn(?:Sync)?)\s*\(.*--no-verify/i, reason: 'Using --no-verify skips pre-commit hooks (programmatic bypass via child_process)' },
+  { pattern: /\bgit\s+(commit|push|merge|rebase|cherry-pick|revert|am)\b[^;&|]*\s-n(\s|$)/, reason: 'The -n flag is shorthand for --no-verify, which skips pre-commit hooks' },
   { pattern: /--(no-)?gpg-sign/i, reason: 'Skipping GPG signing bypasses commit verification' },
-  { pattern: /\bgit\s+config\s+.*core\.hooksPath/i, reason: 'Changing core.hooksPath redirects or disables git hooks' },
+  { pattern: /\bgit\s+config\s+(?:.*--unset.*core\.hooksPath|.*core\.hooksPath\s+\S)/i, reason: 'Changing core.hooksPath redirects or disables git hooks' },
   { pattern: /\brm\s+(-rf?|--recursive)?\s+.*\.husky/i, reason: 'Deleting .husky/ removes the git hook infrastructure' },
   { pattern: /\brm\s+(-rf?|--recursive)?\s+.*\.claude\/hooks/i, reason: 'Deleting .claude/hooks/ removes Claude Code hook enforcement' },
 ];
