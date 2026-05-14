@@ -412,7 +412,7 @@ When adding a new "must always happen" behavior:
 | `.claude/hooks/interactive-lockdown-guard.js` | Block file edits in CTO sessions | Yes |
 | `.claude/hooks/credential-file-guard.js` | Block access to credential files | Yes |
 | `.claude/hooks/branch-checkout-guard.js` | Block branch switching in main tree | Yes |
-| `.claude/hooks/block-no-verify.js` | Block --no-verify on git commands | Yes |
+| `.claude/hooks/block-no-verify.js` | Block hook bypass and lint-weakening commands (--no-verify, --no-gpg-sign, core.hooksPath writes, ESLint weakening, 1Password CLI access) | Yes |
 | `.claude/hooks/gate-confirmation-enforcer.js` | Block task completion during audit | Yes |
 | `.claude/hooks/signal-compliance-gate.js` | Block malformed inter-agent signals | Yes |
 | `.claude/hooks/demo-local-guard.js` | Block local demo execution by spawned agents | Yes |
@@ -1617,7 +1617,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | Hook | Matcher | Purpose |
 |------|---------|---------|
 | interactive-lockdown-guard.js | `""` (all) | Block file-editing tools in interactive CTO sessions |
-| block-no-verify.js | `Bash` | Block `--no-verify` on git commands |
+| block-no-verify.js | `Bash` | Block hook bypass and lint-weakening commands: `--no-verify`, `-n` shorthand, `--no-gpg-sign`, `core.hooksPath` writes/unset, `.husky` or `.claude/hooks` deletion, ESLint `--quiet`/`--max-warnings N`; also blocks 1Password CLI access — all secrets must flow through MCP env fields |
 | credential-file-guard.js | `Bash,Read,Write,Edit,NotebookEdit,Grep,Glob` | Block access to credential files |
 | playwright-cli-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block direct Playwright CLI via Bash or secret_run_command (use MCP tools) |
 | branch-checkout-guard.js | `Bash` | Block branch switching in main tree |
@@ -1929,7 +1929,7 @@ After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 
 **Step 1: Reap stale running items** — Calls `reapSyncPass(db)`. Detects: dead PIDs, spawning zombies (5+ min no PID), stale persistent monitor heartbeats (default 5 min), auth-stalled sessions (default 2 min). Dead PID actions: mark `completed` (or `failed` with `no_output_crash` for sub-30s deaths with no JSONL), release all resource locks, remove from resource queues, reactive worktree cleanup (if clean), retire progress files, reset linked TODO task to `pending`.
 
-**Step 1b: Re-enqueue dead persistent monitors** — Calls `requeueDeadPersistentMonitor()`. Circuit breaker: max 3 hard revivals per task in 10 min → exponential backoff (5→10→20→60 min). Rate-limit detection: scans session tail, applies 5-min cooldown (excluded from crash counter). Self-healing: calls `handleBlocker()` → may escalate to CTO or spawn fix task.
+**Step 1b: Re-enqueue dead persistent monitors** — Calls `requeueDeadPersistentMonitor()`. Skips tasks that are not in `active` status (e.g., idle-paused or manually paused monitors are left alone — prevents the reaper from fighting the idle pause). Circuit breaker: max 3 hard revivals per task in 10 min → exponential backoff (5→10→20→60 min). Rate-limit detection: scans session tail, applies 5-min cooldown (excluded from crash counter). Self-healing: calls `handleBlocker()` → may escalate to CTO or spawn fix task.
 
 **Step 1b.5: Audit session revival** — For each item in `reaperResult.auditRevivals`, dedup-checks for an existing auditor in `queued/running/spawning` state for the same task ID (via `json_extract(metadata, '$.taskId')`). If none found, enqueues the appropriate auditor (type determined by `taskType` — `universal-auditor` for todo/persistent, `plan-auditor` for plan, `authorization-auditor` for authorization) in the `audit` lane with an 8-minute TTL. Source tagged `session-reaper-audit-revival`. Emits `audit_session_revived` audit event. This prevents tasks from being permanently stuck in `pending_audit` when an auditor crashes. Covers all four audit types including CTO authorization decisions.
 
@@ -1990,7 +1990,7 @@ After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 | 5 | **Stop-continue hook** (Stop hook) | Agent attempts to stop | Real-time | N/A (gates exit) | N/A | Blocks until conditions met | Persistent task status, plan completion, worktree cleanup |
 | 6 | **Stale-pause auto-resume** (hourly automation) | Persistent task paused > 30 min | ~15 min cycle | critical | persistent | Unlimited (unless self-pause circuit breaker) | Bypass guard, 1Password check, do_not_auto_resume flag, self-pause circuit breaker |
 | 7 | **Orphan catch-all** (drainQueue Step 1c) | Every drain cycle | Per-drain | critical | persistent | Unlimited | Bypass guard, dedup |
-| 8 | **requeueDeadPersistentMonitor** (drainQueue Step 1b) | Dead persistent PID detected | Immediate | critical | persistent | 3/10-min (then exponential backoff) | Rate-limit detection, crash-loop circuit breaker, dedup, self-healing |
+| 8 | **requeueDeadPersistentMonitor** (drainQueue Step 1b) | Dead persistent PID detected | Immediate | critical | persistent | 3/10-min (then exponential backoff) | Paused task skip (idle-paused tasks are not revived), rate-limit detection, crash-loop circuit breaker, dedup, self-healing |
 
 **Circuit Breaker (dual-layer):** Layer 1 (in-memory): `_monitorRevivalTimestamps` Map — max 3 hard revivals per task in 10 min. Layer 2 (DB): `revival_events` table — survives process restart. Backoff: 5 min → 10 → 20 → 60 min (exponential, capped). Stale heartbeat revivals excluded from crash counter.
 
@@ -2080,6 +2080,8 @@ draft → active → paused ⇆ active → completed
 | Auto-rollback check | 2 min | Reads `synthetic-alerts.json`; triggers rollback on 3+ consecutive probe failures within 5 min of deploy |
 | Fly project image freshness | 30 min | Checks project image staleness (lockfile hash comparison); files deputy-CTO report when stale or stuck deploying |
 | Promotion retry check | configurable | Clears `lastPreviewPromotionSha` and resets cooldown when a promotion agent fails or crashes with `no_output_crash`, allowing immediate retry |
+| Global monitor health | 5 min | Ensures a `global_monitor` persistent task exists and a monitor session is live; creates the task on first run, re-enqueues on crash |
+| Global monitor idle check | 1 min | Auto-pauses the monitor when no work sessions are active; auto-resumes within 1 minute when sessions reappear |
 
 **Gate-Required (CTO briefing within 24h):**
 
