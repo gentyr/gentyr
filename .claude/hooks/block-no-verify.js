@@ -23,9 +23,8 @@ import { computePendingHmac } from './lib/deferred-action-executor.js';
 
 // Patterns that indicate hook bypass attempts
 const forbiddenPatterns = [
-  { pattern: /\bgit\s+(commit|push|merge|rebase|cherry-pick|revert|am)\b[^;&|]*--no-verify/i, reason: 'Using --no-verify skips pre-commit hooks (lint, deputy-cto review)' },
-  { pattern: /(?:exec(?:File)?(?:Sync)?|spawn(?:Sync)?)\s*\(.*--no-verify/i, reason: 'Using --no-verify skips pre-commit hooks (programmatic bypass via child_process)' },
-  { pattern: /\bgit\s+(commit|push|merge|rebase|cherry-pick|revert|am)\b[^;&|]*\s-n(\s|$)/, reason: 'The -n flag is shorthand for --no-verify, which skips pre-commit hooks' },
+  { pattern: /--no-verify/i, reason: 'Using --no-verify skips pre-commit hooks (lint, security checks). Fix the root cause instead — if hooks fail in a worktree, check that .claude/hooks symlink exists; if the branch is stale, create a fresh branch from the base' },
+  { pattern: /\bgit\s+(commit|push|merge|rebase|cherry-pick|revert|am)\b.*\s-n(\s|$)/, reason: 'The -n flag is shorthand for --no-verify, which skips pre-commit hooks. Fix the root cause instead of bypassing hooks' },
   { pattern: /--(no-)?gpg-sign/i, reason: 'Skipping GPG signing bypasses commit verification' },
   { pattern: /\bgit\s+config\s+(?:.*--unset.*core\.hooksPath|.*core\.hooksPath\s+\S)/i, reason: 'Changing core.hooksPath redirects or disables git hooks' },
   { pattern: /\brm\s+(-rf?|--recursive)?\s+.*\.husky/i, reason: 'Deleting .husky/ removes the git hook infrastructure' },
@@ -126,13 +125,24 @@ function blockCommand(command, reason, category) {
         '  Failed to create deferred action. Contact the CTO directly.',
       ].join('\n');
 
+  const rootCauseGuide = category === 'Security Hook Bypass Attempt'
+    ? [
+        '',
+        'INSTEAD OF BYPASSING HOOKS, fix the root cause:',
+        '  1. Missing hooks in worktree → ln -s <project>/.claude/hooks <worktree>/.claude/hooks',
+        '  2. Branch too old → git fetch origin && git merge origin/<base> --no-edit',
+        '  3. Lint failures → fix the lint errors',
+        '  4. Build failures → pnpm install in the worktree',
+      ].join('\n')
+    : '';
+
   const fullReason = [
     `BLOCKED: ${category}`,
     '',
     `Why: ${reason}`,
     '',
     `Command: ${command.substring(0, 100)}${command.length > 100 ? '...' : ''}`,
-    '',
+    rootCauseGuide,
     deferredInfo,
   ].join('\n');
 
