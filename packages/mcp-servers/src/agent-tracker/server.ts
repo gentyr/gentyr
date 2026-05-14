@@ -3861,6 +3861,10 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
         sessionFile = findSessionFileByAgentId(sessionDir, agentId);
       }
     }
+    // Fallback: search worktree session dirs (agent may run in a worktree with its own session dir)
+    if (!sessionFile) {
+      sessionFile = findSessionFileAcrossProject(PROJECT_DIR, agentId);
+    }
     // Fallback: for --resume sessions, the JSONL file is the resumed session's file.
     // The agent marker lands past the scan window, but the queue has the exact session ID.
     if (!sessionFile && fs.existsSync(QUEUE_DB_PATH)) {
@@ -3871,11 +3875,8 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
           'SELECT resume_session_id FROM queue_items WHERE agent_id = ? AND resume_session_id IS NOT NULL'
         ).get(agentId) as { resume_session_id: string } | undefined;
         if (row?.resume_session_id) {
-          const sessionDir = getSessionDir(PROJECT_DIR);
-          if (sessionDir) {
-            const candidate = path.join(sessionDir, `${row.resume_session_id}.jsonl`);
-            if (fs.existsSync(candidate)) sessionFile = candidate;
-          }
+          // Search main session dir first, then all worktree session dirs
+          sessionFile = findSessionFileByIdAcrossProject(PROJECT_DIR, row.resume_session_id);
         }
       } catch { /* non-fatal */ } finally {
         try { qDb?.close(); } catch { /* best-effort */ }
@@ -4162,6 +4163,10 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
       if (sessionDir) {
         sessionFile = findSessionFileByAgentId(sessionDir, agentId);
       }
+    }
+    // Fallback: search worktree session dirs
+    if (!sessionFile) {
+      sessionFile = findSessionFileAcrossProject(PROJECT_DIR, agentId);
     }
     if (!sessionFile) return { error: `Session file not found for agent: ${agentId}` };
   }
