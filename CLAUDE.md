@@ -2108,6 +2108,7 @@ draft → active → paused ⇆ active → completed
 | Live feed daemon | `scripts/live-feed-daemon.js` | 60s | Generates AI commentary for CTO dashboard Page 5 |
 | MCP shared daemon | `scripts/mcp-server-daemon.js` | Always-on | Hosts Tier 1 MCP servers on port 18090 |
 | Synthetic monitor | `scripts/synthetic-monitor.js` | 60s prod / 5 min staging | Probes health endpoints from `services.json`; writes alerts to `synthetic-alerts.json`; stores metrics in `synthetic-metrics.db` |
+| Quota recovery daemon | `scripts/quota-recovery-daemon.js` | fs.watch + 5s poll near reset | Watches `quota-exhaustion.json`; uses `setTimeout` to `resets_at - 15s`, then polls usage API every 5s — clears state and drains queue within 10s of quota recovery |
 
 ### Cross-Cutting Guards
 
@@ -2115,6 +2116,7 @@ draft → active → paused ⇆ active → completed
 |-------|------|---------------|
 | Memory pressure | Spawn gate | Blocks non-critical spawns at high/critical RAM pressure |
 | Focus mode | Enqueue gate | Blocks non-essential automation (allows CTO/critical/persistent) |
+| Quota exhaustion | Enqueue + spawn gate | Blocks all non-CTO spawns and queue draining when usage ≥ 99%; cleared by quota-recovery-daemon |
 | Bypass request | Enqueue + revival gate | Blocks task spawn/revival when CTO decision pending |
 | CTO activity gate | Automation gate | Blocks gate-required hourly automation when no CTO briefing in 24h |
 | Worktree exclusivity | Enqueue gate | Blocks sessions targeting same worktree |
