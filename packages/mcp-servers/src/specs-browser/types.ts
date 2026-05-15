@@ -171,6 +171,7 @@ export const CreateSpecSchema = z.object({
   title: z.string().min(1).describe('Spec title'),
   content: z.string().describe('Full markdown content'),
   user_prompt_refs: z.array(z.string()).optional().describe('UUIDs of user prompts this spec derives from'),
+  file_patterns: z.array(z.string()).optional().describe('File paths or glob patterns this spec applies to (auto-populates spec-file-mappings.json for get_specs_for_file discovery)'),
 });
 
 export const EditSpecSchema = z.object({
@@ -316,6 +317,21 @@ export interface DeleteSuiteResult {
 // ============================================================================
 // Utility Schemas
 // ============================================================================
+
+export const MapSpecToFilesSchema = z.object({
+  spec_id: z.string().min(1).describe('Spec ID to map'),
+  file_patterns: z.array(z.string()).min(1).describe('File paths or glob patterns this spec applies to'),
+  priority: z.enum(['high', 'medium', 'low']).optional().default('medium').describe('Priority level for this mapping'),
+});
+
+export type MapSpecToFilesArgs = z.infer<typeof MapSpecToFilesSchema>;
+
+export interface MapSpecToFilesResult {
+  success: boolean;
+  spec_id: string;
+  patterns_added: number;
+  total_patterns: number;
+}
 
 export const GetSpecsForFileSchema = z.object({
   file_path: z.string().min(1).describe('File path (relative or absolute) to check for applicable specs'),

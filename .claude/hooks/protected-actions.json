@@ -214,7 +214,8 @@
         "delete_spec",
         "create_suite",
         "edit_suite",
-        "delete_suite"
+        "delete_suite",
+        "map_spec_to_files"
       ],
       "description": "Specification write operations require CTO approval. Read tools (list_specs, get_spec, get_specs_for_file, list_suites, get_suite) remain unrestricted."
     }

@@ -26,6 +26,7 @@ import {
   EditSuiteSchema,
   DeleteSuiteSchema,
   GetSpecsForFileSchema,
+  MapSpecToFilesSchema,
   FRAMEWORK_CATEGORY_INFO,
   DEFAULT_PROJECT_CATEGORY_INFO,
   SpecsConfigSchema,
@@ -39,6 +40,7 @@ import {
   type EditSuiteArgs,
   type DeleteSuiteArgs,
   type GetSpecsForFileArgs,
+  type MapSpecToFilesArgs,
   type ListSpecsResult,
   type GetSpecResult,
   type GetSpecErrorResult,
@@ -51,6 +53,7 @@ import {
   type EditSuiteResult,
   type DeleteSuiteResult,
   type GetSpecsForFileResult,
+  type MapSpecToFilesResult,
   type SpecForFile,
   type SubspecForFile,
   type SpecMetadata,
@@ -245,6 +248,47 @@ function loadSpecFileMappings(): SpecFileMappings | null {
   }
 }
 
+/**
+ * Save spec-file-mappings.json
+ */
+function saveSpecFileMappings(mappings: SpecFileMappings): void {
+  const dir = path.dirname(MAPPING_FILE_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(MAPPING_FILE_PATH, JSON.stringify(mappings, null, 2), 'utf8');
+}
+
+/**
+ * Add file patterns to spec-file-mappings.json for a given spec.
+ * Creates the mappings file if it doesn't exist.
+ * Returns the number of new patterns added.
+ */
+function addSpecFileMapping(specId: string, filePatterns: string[], priority: string = 'medium'): number {
+  const mappings = loadSpecFileMappings() || { specs: {} };
+  const specKey = `${specId}.md`;
+
+  if (!mappings.specs[specKey]) {
+    mappings.specs[specKey] = { priority, files: [] };
+  }
+
+  let added = 0;
+  for (const pattern of filePatterns) {
+    const normalized = pattern.startsWith('./') ? pattern.slice(2) : pattern;
+    const existing = mappings.specs[specKey].files.find(f => f.path === normalized);
+    if (!existing) {
+      mappings.specs[specKey].files.push({ path: normalized, lastVerified: null });
+      added++;
+    }
+  }
+
+  if (added > 0) {
+    saveSpecFileMappings(mappings);
+  }
+
+  return added;
+}
+
 // ============================================================================
 // Tool Implementations
 // ============================================================================
@@ -431,6 +475,11 @@ function createSpec(args: CreateSpecArgs): CreateSpecResult {
   }
   fullContent += content;
   fs.writeFileSync(filepath, fullContent, 'utf8');
+
+  // Auto-populate spec-file-mappings if file_patterns provided
+  if (args.file_patterns?.length) {
+    addSpecFileMapping(spec_id, args.file_patterns);
+  }
 
   return { success: true, file: `${basePath}/${filename}` };
 }
@@ -649,6 +698,29 @@ function deleteSuite(args: DeleteSuiteArgs): DeleteSuiteResult {
 }
 
 /**
+ * Map a spec to file paths/patterns in spec-file-mappings.json
+ */
+function mapSpecToFiles(args: MapSpecToFilesArgs): MapSpecToFilesResult {
+  // Verify spec exists
+  const result = getSpec({ spec_id: args.spec_id });
+  if ('error' in result) {
+    throw new Error(`Spec not found: ${args.spec_id}. Create it first with create_spec.`);
+  }
+
+  const added = addSpecFileMapping(args.spec_id, args.file_patterns, args.priority || 'medium');
+  const mappings = loadSpecFileMappings();
+  const specKey = `${args.spec_id}.md`;
+  const totalPatterns = mappings?.specs[specKey]?.files?.length || 0;
+
+  return {
+    success: true,
+    spec_id: args.spec_id,
+    patterns_added: added,
+    total_patterns: totalPatterns,
+  };
+}
+
+/**
  * Get all specs (main and subspecs) that apply to a file
  */
 function getSpecsForFile(args: GetSpecsForFileArgs): GetSpecsForFileResult {
@@ -767,7 +839,7 @@ export const tools: AnyToolHandler[] = [
   // Spec management tools
   {
     name: 'create_spec',
-    description: 'Create a new spec file in a category or suite. Creates directories if needed.',
+    description: 'Create a new spec file in a category or suite. Creates directories if needed. Pass file_patterns to auto-populate spec-file-mappings.json so get_specs_for_file can discover this spec.',
     schema: CreateSpecSchema,
     handler: createSpec,
   },
@@ -813,6 +885,13 @@ export const tools: AnyToolHandler[] = [
     description: 'Delete a suite from config. Does not delete the spec files, just the suite configuration.',
     schema: DeleteSuiteSchema,
     handler: deleteSuite,
+  },
+  // Mapping tools
+  {
+    name: 'map_spec_to_files',
+    description: 'Map a spec to file paths/patterns so get_specs_for_file can discover it. Use after creating a spec to link it to the files it governs.',
+    schema: MapSpecToFilesSchema,
+    handler: mapSpecToFiles,
   },
   // Utility tools
   {
