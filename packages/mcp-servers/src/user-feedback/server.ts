@@ -454,6 +454,17 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN compute_size TEXT DEFAULT NULL");
     }
 
+    // Auto-migration: add steel_profile_id column.
+    // Stores the Steel.dev Profile ID persisted by a stealth run with
+    // steel_persist_profile=true. Subsequent stealth runs of this scenario
+    // auto-load the profile (cookies, localStorage, fingerprint, auth tokens)
+    // — useful for skipping repeated logins on stealth flows.
+    try {
+      db.prepare("SELECT steel_profile_id FROM demo_scenarios LIMIT 0").run();
+    } catch {
+      db.exec("ALTER TABLE demo_scenarios ADD COLUMN steel_profile_id TEXT DEFAULT NULL");
+    }
+
     // Auto-migration: create demo_prerequisites table if missing
     try {
       db.prepare("SELECT id FROM demo_prerequisites LIMIT 0").run();

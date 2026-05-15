@@ -136,6 +136,45 @@ describe('createSteelSession()', () => {
     expect(body.useProxy).toBe(true);
   });
 
+  it('should include sessionContext when options.sessionContext is provided', async () => {
+    fetchMock.mockResolvedValue(makeFetchResponse({ id: 'sess-sc', status: 'active', createdAt: '' }));
+    const sessionContext = {
+      cookies: [{ name: 'sid', value: 'abc', domain: 'example.com' }],
+      localStorage: [{ origin: 'https://example.com', items: [{ name: 'auth', value: 'token' }] }],
+    };
+
+    await createSteelSession(BASE_CONFIG, { sessionContext });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.sessionContext).toEqual(sessionContext);
+  });
+
+  it('should omit sessionContext when not provided', async () => {
+    fetchMock.mockResolvedValue(makeFetchResponse({ id: 'sess-no-sc', status: 'active', createdAt: '' }));
+
+    await createSteelSession(BASE_CONFIG);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body).not.toHaveProperty('sessionContext');
+  });
+
+  it('should include persistProfile and profileId when set', async () => {
+    fetchMock.mockResolvedValue(makeFetchResponse({ id: 'sess-prof', status: 'active', createdAt: '', profileId: 'prof-xyz' }));
+
+    const handle = await createSteelSession(BASE_CONFIG, {
+      profileId: 'prof-existing',
+      persistProfile: true,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body.persistProfile).toBe(true);
+    expect(body.profileId).toBe('prof-existing');
+    expect(handle.profileId).toBe('prof-xyz');
+  });
+
   it('should include solveCaptcha when options.solveCaptcha is true', async () => {
     fetchMock.mockResolvedValue(makeFetchResponse({ id: 'sess-c', status: 'active', createdAt: '' }));
 
