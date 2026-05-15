@@ -229,6 +229,7 @@ function matchesGlob(filePath: string, pattern: string): boolean {
 interface SpecFileMappings {
   specs: Record<string, {
     priority: string;
+    category?: string;
     files: Array<{
       path: string;
       lastVerified: string | null;
@@ -264,12 +265,14 @@ function saveSpecFileMappings(mappings: SpecFileMappings): void {
  * Creates the mappings file if it doesn't exist.
  * Returns the number of new patterns added.
  */
-function addSpecFileMapping(specId: string, filePatterns: string[], priority: string = 'medium'): number {
+function addSpecFileMapping(specId: string, filePatterns: string[], priority: string = 'medium', category?: string): number {
   const mappings = loadSpecFileMappings() || { specs: {} };
   const specKey = `${specId}.md`;
 
   if (!mappings.specs[specKey]) {
-    mappings.specs[specKey] = { priority, files: [] };
+    mappings.specs[specKey] = { priority, category, files: [] };
+  } else if (category && !mappings.specs[specKey].category) {
+    mappings.specs[specKey].category = category;
   }
 
   let added = 0;
@@ -478,7 +481,7 @@ function createSpec(args: CreateSpecArgs): CreateSpecResult {
 
   // Auto-populate spec-file-mappings if file_patterns provided
   if (args.file_patterns?.length) {
-    addSpecFileMapping(spec_id, args.file_patterns);
+    addSpecFileMapping(spec_id, args.file_patterns, 'medium', category);
   }
 
   return { success: true, file: `${basePath}/${filename}` };
@@ -707,7 +710,7 @@ function mapSpecToFiles(args: MapSpecToFilesArgs): MapSpecToFilesResult {
     throw new Error(`Spec not found: ${args.spec_id}. Create it first with create_spec.`);
   }
 
-  const added = addSpecFileMapping(args.spec_id, args.file_patterns, args.priority || 'medium');
+  const added = addSpecFileMapping(args.spec_id, args.file_patterns, args.priority || 'medium', result.category);
   const mappings = loadSpecFileMappings();
   const specKey = `${args.spec_id}.md`;
   const totalPatterns = mappings?.specs[specKey]?.files?.length || 0;
@@ -745,9 +748,11 @@ function getSpecsForFile(args: GetSpecsForFileArgs): GetSpecsForFileResult {
     for (const [specName, specData] of Object.entries(mappings.specs || {})) {
       const fileEntry = specData.files?.find(f => f.path === filePath);
       if (fileEntry) {
+        // Use stored category to build correct path; fall back to global for legacy entries
+        const cat = specData.category || 'global';
         specs.push({
           spec_id: specName.replace('.md', ''),
-          file: `specs/global/${specName}`,
+          file: `specs/${cat}/${specName}`,
           priority: specData.priority,
           lastVerified: fileEntry.lastVerified,
         });
