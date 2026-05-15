@@ -3153,13 +3153,20 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           });
 
           // Steel (stealth) path: Playwright runs locally and connects to the
-          // Steel cloud browser via CDP. Inject Steel env vars and fall through
-          // to the local Playwright execution path below remoteRoutingBlock.
+          // Steel cloud browser via CDP. Inject Steel env vars into both
+          // args.extra_env (for DemoRunState bookkeeping) AND the already-built
+          // `env` map (which is what spawn() actually receives). The `env`
+          // variable was constructed from a snapshot of mergedExtraEnv earlier
+          // in this function, so mutating args.extra_env alone leaves `env`
+          // stale and the test process sees no STEEL_CDP_URL.
           if (!args.extra_env) args.extra_env = {};
           args.extra_env.STEEL_CDP_URL = session.cdpUrl;
           args.extra_env.STEEL_SESSION_ID = session.sessionId;
+          env.STEEL_CDP_URL = session.cdpUrl;
+          env.STEEL_SESSION_ID = session.sessionId;
           if (session.sessionViewerUrl) {
             args.extra_env.STEEL_SESSION_VIEWER_URL = session.sessionViewerUrl;
+            env.STEEL_SESSION_VIEWER_URL = session.sessionViewerUrl;
           }
 
           // Store the Steel session ID so cleanup paths can release it.
