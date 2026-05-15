@@ -157,9 +157,10 @@
       "credentialKeys": [
         "OP_SERVICE_ACCOUNT_TOKEN",
         "RENDER_API_KEY",
-        "VERCEL_TOKEN"
+        "VERCEL_TOKEN",
+        "FLY_API_TOKEN"
       ],
-      "description": "Secret syncing — reads from 1Password and pushes to Render/Vercel"
+      "description": "Secret syncing — reads from 1Password and pushes to Render/Vercel/Fly.io"
     },
     "deputy-cto": {
       "protection": "approval-only",

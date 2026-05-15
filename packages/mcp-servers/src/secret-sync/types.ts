@@ -12,18 +12,18 @@ import { z } from 'zod';
 // ============================================================================
 
 export const SyncSecretsArgsSchema = z.object({
-  target: z.enum(['render-production', 'render-staging', 'vercel', 'local', 'all'])
+  target: z.enum(['render-production', 'render-staging', 'vercel', 'fly', 'local', 'all'])
     .describe('Target platform to sync secrets to'),
 });
 
 export const ListMappingsArgsSchema = z.object({
-  target: z.enum(['render-production', 'render-staging', 'vercel', 'local', 'all'])
+  target: z.enum(['render-production', 'render-staging', 'vercel', 'fly', 'local', 'all'])
     .optional()
     .describe('Target platform to list mappings for (default: all)'),
 });
 
 export const VerifySecretsArgsSchema = z.object({
-  target: z.enum(['render-production', 'render-staging', 'vercel', 'local', 'all'])
+  target: z.enum(['render-production', 'render-staging', 'vercel', 'fly', 'local', 'all'])
     .describe('Target platform to verify secrets on'),
 });
 
@@ -402,6 +402,10 @@ export const ServicesConfigSchema = z.object({
       z.array(VercelSecretEntrySchema).min(1),
     ])).optional(),
     local: z.record(z.string(), z.string().regex(/^op:\/\//, 'Local secrets must be op:// references')).optional(),
+    fly: z.record(
+      z.string().describe('Fly app name (e.g., "myapp-playwright")'),
+      z.record(z.string(), z.string().regex(/^op:\/\//, 'Must be op:// reference')),
+    ).optional().describe('Fly.io app secrets — map of app name → env var → op:// reference'),
     manual: z.array(z.object({
       service: z.string(),
       key: z.string(),

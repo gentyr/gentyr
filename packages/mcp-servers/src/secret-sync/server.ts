@@ -427,6 +427,37 @@ async function vercelDeleteAllEnvVarsForKey(projectId: string, key: string): Pro
   return matching.length;
 }
 
+// ── Fly.io Secrets API ──────────────────────────────────────────────────────
+
+async function flySetSecrets(
+  appName: string,
+  secrets: Array<{ label: string; value: string }>,
+  flyApiToken: string,
+): Promise<void> {
+  const response = await fetch(
+    `https://api.machines.dev/v1/apps/${appName}/secrets`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${flyApiToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(secrets.map(s => ({
+        label: s.label,
+        type: 'opaque',
+        value: s.value,
+      }))),
+      signal: AbortSignal.timeout(15000),
+    },
+  );
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Fly secrets API ${response.status}: ${body}`);
+  }
+}
+
+// ── Sync Orchestrator ───────────────────────────────────────────────────────
+
 async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
   const config = loadServicesConfig();
   const synced: SyncedSecret[] = [];
@@ -434,7 +465,7 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
   const manual = config.secrets.manual || [];
 
   const targets = args.target === 'all'
-    ? ['render-production', 'render-staging', 'vercel'] as const
+    ? ['render-production', 'render-staging', 'vercel', 'fly'] as const
     : [args.target];
 
   for (const target of targets) {
@@ -524,6 +555,54 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
       }
     }
 
+    if (target === 'fly') {
+      const flySecrets = config.secrets?.fly;
+      const flyConfig = config.fly;
+      if (!flySecrets || Object.keys(flySecrets).length === 0) {
+        errors.push({ key: 'N/A', service: 'fly', error: 'No secrets.fly mappings configured' });
+        continue;
+      }
+      if (!flyConfig?.apiToken) {
+        errors.push({ key: 'N/A', service: 'fly', error: 'No fly.apiToken configured in services.json' });
+        continue;
+      }
+
+      let flyToken: string;
+      try {
+        flyToken = opRead(flyConfig.apiToken);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push({ key: 'FLY_API_TOKEN', service: 'fly', error: `Failed to resolve fly.apiToken: ${message}` });
+        continue;
+      }
+
+      for (const [appName, appSecrets] of Object.entries(flySecrets)) {
+        const resolvedSecrets: Array<{ label: string; value: string }> = [];
+        for (const [key, ref] of Object.entries(appSecrets)) {
+          try {
+            const value = opRead(ref);
+            resolvedSecrets.push({ label: key, value });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            synced.push({ key, service: `fly:${appName}`, status: 'error', error: message });
+          }
+        }
+        if (resolvedSecrets.length > 0) {
+          try {
+            await flySetSecrets(appName, resolvedSecrets, flyToken);
+            for (const s of resolvedSecrets) {
+              synced.push({ key: s.label, service: `fly:${appName}`, status: 'created' });
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            for (const s of resolvedSecrets) {
+              synced.push({ key: s.label, service: `fly:${appName}`, status: 'error', error: message });
+            }
+          }
+        }
+      }
+    }
+
     if (target === 'local') {
       const secrets = config.secrets.local || {};
       const confFile = safeProjectPath(config.local?.confFile || 'op-secrets.conf');
@@ -568,7 +647,7 @@ async function listMappings(args: ListMappingsArgs): Promise<MappingResult> {
   const mappings: SecretMapping[] = [];
 
   const targets = args.target === 'all' || !args.target
-    ? ['render-production', 'render-staging', 'vercel'] as const
+    ? ['render-production', 'render-staging', 'vercel', 'fly'] as const
     : [args.target];
 
   for (const target of targets) {
@@ -612,7 +691,7 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
   const errors: Array<{ service: string; error: string }> = [];
 
   const targets = args.target === 'all'
-    ? ['render-production', 'render-staging', 'vercel'] as const
+    ? ['render-production', 'render-staging', 'vercel', 'fly'] as const
     : [args.target];
 
   for (const target of targets) {
