@@ -1397,7 +1397,7 @@ A unified framework for recording scripted demos, validating features via E2E te
 
 **MCP Tools** — `run_demo` (launch), `check_demo_result` (poll status/artifacts), `stop_demo` (kill), `run_demo_batch` (concurrent), `check_demo_batch_result` (batch poll), `get_demo_screenshot` (retrieve by timestamp), `extract_video_frames` (ffprobe+ffmpeg)
 
-**Configuration** — services.json: fly.enabled/appName/region/machineRam, steel.enabled/apiKey/sessionLimit. Scenario DB flags: remote_eligible, headed, stealth_required, dual_instance, telemetry.
+**Configuration** — services.json: fly.enabled/appName/region/machineRam, steel.enabled/apiKey/sessionLimit. Scenario DB flags: remote_eligible, headed, stealth_required, telemetry.
 
 **Batch lifecycle** — `run_demo_batch` runs scenarios sequentially in batches (partitioned by `batch_size`). No polling requirement — batches run to completion independently. Agents call `check_demo_batch_result` to read progress, and `stop_demo_batch` for manual stop. Fly.io machines have `auto_destroy: true` and manage their own lifecycle. Formerly had a 2-minute poll-or-die auto-kill timer (`DEMO_BATCH_AUTO_KILL_MS`) that killed entire batches if the monitoring agent died — removed (PR #601) because it caused cascading failures when agents hit quota limits.
 
