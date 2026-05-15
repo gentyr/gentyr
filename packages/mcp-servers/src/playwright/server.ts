@@ -1364,6 +1364,107 @@ function persistScenarioRecording(scenarioId: string, videoPath: string): void {
 }
 
 /**
+ * Map a DemoRunState entry to its execution mode for persistDemoResult.
+ * Resolves to 'fly' | 'steel' | 'local' based on the run's execution_target,
+ * falling back to fly_machine_id / steel_session_id heuristics when missing.
+ */
+function executionModeFromEntry(entry: DemoRunState): 'local' | 'fly' | 'steel' {
+  if (entry.execution_target === 'fly' || entry.execution_target === 'steel' || entry.execution_target === 'local') {
+    return entry.execution_target;
+  }
+  if (entry.steel_session_id) return 'steel';
+  if (entry.fly_machine_id) return 'fly';
+  return 'local';
+}
+
+/**
+ * Detect-and-rebuild migration for the demo_results.execution_mode CHECK constraint.
+ *
+ * Older schemas declared `CONSTRAINT valid_mode CHECK (execution_mode IN ('local', 'remote'))`.
+ * Since SQLite has no `ALTER TABLE DROP CONSTRAINT`, we must rebuild the table to
+ * remove the constraint. Without this, INSERTs with execution_mode='fly' or 'steel'
+ * fail with SQLITE_CONSTRAINT_CHECK on any DB created before the routing refactor.
+ *
+ * Idempotent: detects the legacy clause in sqlite_master.sql and skips if absent.
+ * Runs inside a transaction so partial failure cannot corrupt the table.
+ */
+function rebuildDemoResultsIfLegacyCheck(db: InstanceType<typeof Database>): void {
+  let sql: string | null = null;
+  try {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='demo_results'")
+      .get() as { sql?: string } | undefined;
+    sql = row?.sql ?? null;
+  } catch {
+    return; // Table doesn't exist yet — nothing to rebuild
+  }
+  if (!sql) return;
+  const hasLegacyCheck = /CHECK\s*\(\s*execution_mode\s+IN\s*\(\s*'local'\s*,\s*'remote'\s*\)\s*\)/i.test(sql);
+  if (!hasLegacyCheck) return;
+
+  const cols = db.prepare("PRAGMA table_info('demo_results')").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>;
+  if (cols.length === 0) return;
+
+  const colDefs = cols
+    .map((c) => {
+      const parts: string[] = [`"${c.name}" ${c.type || 'TEXT'}`];
+      if (c.pk) parts.push('PRIMARY KEY');
+      if (c.notnull) parts.push('NOT NULL');
+      if (c.dflt_value !== null) parts.push(`DEFAULT ${c.dflt_value}`);
+      return parts.join(' ');
+    })
+    .join(', ');
+
+  const extraConstraints: string[] = [];
+  const validStatusMatch = sql.match(/CONSTRAINT\s+valid_status\s+CHECK\s*\([^)]+\)/i);
+  if (validStatusMatch) extraConstraints.push(validStatusMatch[0]);
+  const fkMatch = sql.match(/FOREIGN\s+KEY\s*\(\s*scenario_id\s*\)\s+REFERENCES\s+demo_scenarios\s*\(\s*id\s*\)(?:\s+ON\s+DELETE\s+\w+)?/i);
+  if (fkMatch) extraConstraints.push(fkMatch[0]);
+
+  const createNew =
+    `CREATE TABLE demo_results_new (${colDefs}` +
+    (extraConstraints.length > 0 ? ', ' + extraConstraints.join(', ') : '') +
+    ')';
+
+  const selectList = cols
+    .map((c) =>
+      c.name === 'execution_mode'
+        ? "CASE WHEN execution_mode = 'remote' THEN 'fly' ELSE execution_mode END AS execution_mode"
+        : `"${c.name}"`,
+    )
+    .join(', ');
+  const colList = cols.map((c) => `"${c.name}"`).join(', ');
+
+  const indexRows = db
+    .prepare(
+      "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='demo_results' AND sql IS NOT NULL",
+    )
+    .all() as Array<{ name: string; sql: string }>;
+
+  db.exec('BEGIN');
+  try {
+    db.exec(createNew);
+    db.exec(`INSERT INTO demo_results_new (${colList}) SELECT ${selectList} FROM demo_results`);
+    db.exec('DROP TABLE demo_results');
+    db.exec('ALTER TABLE demo_results_new RENAME TO demo_results');
+    for (const idx of indexRows) {
+      const idempotent = idx.sql.replace(/^CREATE\s+(UNIQUE\s+)?INDEX\s+/i, (m) => `${m}IF NOT EXISTS `);
+      try { db.exec(idempotent); } catch { /* */ }
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* */ }
+    throw err;
+  }
+}
+
+/**
  * Persist a demo result row to user-feedback.db demo_results table.
  * Mirrors the CTO Dashboard's recordDemoResult() so agent-initiated demo runs
  * are tracked in the same table as dashboard-initiated runs.
@@ -1372,7 +1473,7 @@ function persistScenarioRecording(scenarioId: string, videoPath: string): void {
 function persistDemoResult(opts: {
   scenarioId: string;
   status: 'passed' | 'failed';
-  executionMode: 'local' | 'remote';
+  executionMode: 'local' | 'fly' | 'steel';
   startedAt: string;
   completedAt: string;
   durationMs: number;
@@ -1396,6 +1497,11 @@ function persistDemoResult(opts: {
       try { db.prepare('SELECT branch FROM demo_results LIMIT 0').run(); } catch { db.exec('ALTER TABLE demo_results ADD COLUMN branch TEXT'); }
       try { db.prepare('SELECT failure_reason FROM demo_results LIMIT 0').run(); } catch { db.exec('ALTER TABLE demo_results ADD COLUMN failure_reason TEXT'); }
       try { db.prepare('SELECT recording_path FROM demo_results LIMIT 0').run(); } catch { db.exec('ALTER TABLE demo_results ADD COLUMN recording_path TEXT'); }
+
+      // Rebuild the table without the legacy `execution_mode IN ('local','remote')`
+      // CHECK constraint (idempotent). Must run before any INSERT to prevent
+      // SQLITE_CONSTRAINT_CHECK errors on 'fly' / 'steel' values.
+      rebuildDemoResultsIfLegacyCheck(db);
 
       // Look up recording path from scenario if passed and not explicitly provided
       let recordingPath = opts.recordingPath ?? null;
@@ -1425,8 +1531,12 @@ function persistDemoResult(opts: {
     } finally {
       db.close();
     }
-  } catch {
-    // Non-fatal — result persistence must never block demo execution
+  } catch (err) {
+    // Non-fatal for the demo run itself, but surface to stderr so the failure
+    // is observable. Silent swallowing previously masked SQLITE_CONSTRAINT_CHECK
+    // errors caused by the legacy 'local','remote' CHECK constraint.
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[persistDemoResult] Failed to persist result for scenario ${opts.scenarioId}: ${msg}\n`);
   }
 }
 
@@ -1552,7 +1662,7 @@ function classifyFailure(opts: {
   return {
     classification: 'unknown',
     reason: `Exit code: ${exitCode} — no specific failure pattern matched`,
-    suggestion: 'Check stderr_tail and fly_machine_log for clues. Consider running the demo locally with run_demo({ remote: false }) to reproduce.',
+    suggestion: 'Check stderr_tail and fly_machine_log for clues. Consider running the demo locally with run_demo({ local: true }) to reproduce.',
   };
 }
 
@@ -2471,9 +2581,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
   }
 
-  // ── Spawned-session remote enforcement ──
-  // Spawned agents (non-interactive sessions) MUST use remote Fly.io execution
-  // UNLESS the CTO approved a demo_local bypass request for their task.
+  // ── Spawned-session local execution enforcement ──
+  // Spawned agents (non-interactive sessions) MUST use remote execution (Fly.io
+  // or Steel) UNLESS the CTO approved a demo_local bypass request for their task.
+  // Structural local overrides (chrome-bridge / remote_eligible=false) are
+  // checked further down at the routing-resolver layer.
   const isSpawnedSession = process.env.CLAUDE_SPAWNED_SESSION === 'true';
   let hasLocalBypassApproval = false;
   if (isSpawnedSession) {
@@ -2491,23 +2603,17 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
     } catch { /* non-fatal — fail-closed (no approval) */ }
 
-    if (!hasLocalBypassApproval) {
-      const flyConfig = getFlyConfigFromServices();
-      const flyAvailableForEnforcement = flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
-      if (flyAvailableForEnforcement) {
-        // Force remote execution — override whatever the caller passed
-        args.remote = true;
-      } else {
-        // Fly.io not configured — fail-closed, spawned agents cannot run local demos
-        return {
-          success: false,
-          project,
-          message: 'Spawned agents are not allowed to run demos locally. Fly.io remote execution is required but not configured. ' +
-            'Configure Fly.io via /setup-fly, or ask the CTO to run this demo from the live dashboard or an interactive session.',
-        };
-      }
+    if (!hasLocalBypassApproval && args.local === true) {
+      // Spawned agent asked for local execution without CTO approval — block.
+      // The demo-local-guard hook should have caught this; this is defense in depth.
+      return {
+        success: false,
+        project,
+        message: 'Spawned agents are not allowed to request local demo execution without CTO approval. ' +
+          'File a bypass request via submit_bypass_request({ category: "demo_local", ... }) and summarize_work.',
+      };
     }
-    // If hasLocalBypassApproval: respect the agent's remote: false (CTO approved local execution)
+    // If hasLocalBypassApproval: respect the agent's local=true (CTO approved local execution)
   }
 
   // All demos run headed with video recording. The headless parameter is
@@ -2517,9 +2623,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     args.skip_recording = false; // always record
   }
 
-  // When remote: true + Fly configured, skip ALL local setup — the remote machine
-  // handles its own clone, install, prerequisites, dev server, and test execution.
-  const skipLocalSetup = args.remote === true && (() => {
+  // When the caller has not explicitly requested local AND Fly.io is configured,
+  // we expect to route to Fly.io. Skip local setup in that case — the remote
+  // machine handles its own clone, install, prerequisites, dev server, and tests.
+  // Stealth routing (Steel) still runs Playwright locally, so it needs local setup.
+  const skipLocalSetup = !args.local && !args.stealth && (() => {
     const flyConfig = getFlyConfigFromServices();
     return flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
   })();
@@ -2593,9 +2701,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
 
   // Display lock guard for headed demos — serialize to prevent window capture conflicts.
   // When headless=false AND running locally, require the caller to hold the display lock.
-  // Skip when remote=true — Fly.io uses Xvfb, not the local display.
+  // Skip when local execution is not requested — Fly.io/Steel don't use the local display.
   let displayLockAutoAcquired = false;
-  if (!args.headless && args.remote !== true) {
+  if (!args.headless && args.local === true) {
     try {
       const displayLockMod = await loadDisplayLock();
       if (displayLockMod) {
@@ -2761,12 +2869,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     };
   }
 
-  // ── Remote/Steel execution routing ──
+  // ── Execution routing (local / fly / steel) ──
   // All dynamic imports use .js extension for ESM. Both modules may not exist
   // in all environments — all errors fall through to local execution.
-  let remoteRoutingWarning = '';
-  let executionTargetResult: { target: 'local' | 'remote' | 'steel'; reason: string } | null = null;
-  let steelOnlySessionId: string | undefined; // Set when stealth-only Steel session created (for cleanup in local path)
+  let executionTargetResult: { target: 'local' | 'fly' | 'steel'; reason: string } | null = null;
+  let steelOnlySessionId: string | undefined; // Set when stealth Steel session created (for cleanup in local Playwright path)
   let scenarioComputeSize: 'standard' | 'large' | undefined;
   let computeSizeUsed: 'standard' | 'large' = 'standard';
   remoteRoutingBlock: {
@@ -2794,24 +2901,20 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       break remoteRoutingBlock;
     }
 
-    let scenarioHeaded = false;
     let usesChromeBridge = false;
     let remoteEligible: boolean | undefined;
     let stealthRequired = false;
-    let dualInstance = false;
     if (args.scenario_id) {
       try {
         const feedbackDbPath = getUserFeedbackDbPath();
         if (fs.existsSync(feedbackDbPath)) {
           const scenarioDb = new Database(feedbackDbPath, { readonly: true });
           try {
-            const scenarioRow = scenarioDb.prepare('SELECT headed, remote_eligible, stealth_required, dual_instance, compute_size FROM demo_scenarios WHERE id = ?')
-              .get(args.scenario_id) as { headed: number | null; remote_eligible: number | null; stealth_required: number | null; dual_instance: number | null; compute_size: string | null } | undefined;
-            if (scenarioRow?.headed === 1) scenarioHeaded = true;
+            const scenarioRow = scenarioDb.prepare('SELECT remote_eligible, stealth_required, compute_size FROM demo_scenarios WHERE id = ?')
+              .get(args.scenario_id) as { remote_eligible: number | null; stealth_required: number | null; compute_size: string | null } | undefined;
             if (scenarioRow?.remote_eligible === 0) remoteEligible = false;
             else if (scenarioRow?.remote_eligible === 1) remoteEligible = true;
             if (scenarioRow?.stealth_required === 1) stealthRequired = true;
-            if (scenarioRow?.dual_instance === 1) dualInstance = true;
             if (scenarioRow?.compute_size === 'large') scenarioComputeSize = 'large';
             else if (scenarioRow?.compute_size === 'standard') scenarioComputeSize = 'standard';
           } catch { /* column may not exist */ }
@@ -2824,17 +2927,6 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       const chromeBridgePatterns = [/\bext-[^/]+\.demo\.ts$/, /\bplatform[^/]*\.demo\.ts$/i, /\/extension\//i, /\/platform-fixtures/i];
       usesChromeBridge = chromeBridgePatterns.some(p => p.test(effectiveTestFile!));
     }
-
-    let displayLockContended = false;
-    try {
-      const displayLockMod = await loadDisplayLock();
-      if (displayLockMod) {
-        const lockStatus = displayLockMod.getDisplayLockStatus();
-        const callerAgentId = getCallerAgentId();
-        const holderAgentId = lockStatus.holder ? (lockStatus.holder as Record<string, unknown>)['agent_id'] as string : null;
-        displayLockContended = lockStatus.locked && holderAgentId !== callerAgentId;
-      }
-    } catch { /* non-fatal */ }
 
     // Per-scenario compute_size: 'large' = 8192MB, 'standard'/null = use global per-mode default
     computeSizeUsed = scenarioComputeSize === 'large' ? 'large' : 'standard';
@@ -2887,18 +2979,15 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
 
       const target = resolveExecutionTarget({
-        headless: args.headless,
-        flyConfigured: flyAvailable && !!resolvedFlyToken,
-        flyHealthy: flyAvailable && !!resolvedFlyToken,
-        displayLockContended,
-        scenarioHeaded,
+        local: args.local,
+        stealth: args.stealth,
         usesChromeBridge,
         remoteEligible,
-        explicitRemote: args.remote,
+        stealthRequired,
+        flyConfigured: flyAvailable && !!resolvedFlyToken,
+        flyHealthy: flyAvailable && !!resolvedFlyToken,
         activeMachineCount,
         maxConcurrentMachines: flyConfig?.maxConcurrentMachines || 10,
-        stealthRequired,
-        dualInstance,
         steelConfigured: steelAvailable && !!resolvedSteelKey,
         steelHealthy,
         activeSteelSessionCount,
@@ -2917,7 +3006,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
 
       // ── Post-routing spawned-agent local guard ──
-      // If the resolver routed to local for a spawned agent (despite args.remote=true),
+      // If the resolver routed to local for a spawned agent (e.g., remote_eligible=false),
       // block unless CTO approved a demo_local bypass. This catches cases where
       // remote_eligible=false or usesChromeBridge forced local routing.
       if (isSpawnedSession && target.target === 'local' && !hasLocalBypassApproval) {
@@ -2954,95 +3043,18 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
             timeout: args.timeout ?? steelConfig.defaultTimeout,
           });
 
-          if (dualInstance && machineConfig) {
-            // Dual-instance: also spawn Fly.io machine with Steel CDP URL as env var
-            const remoteEnv: Record<string, string> = {};
-            if (scenarioEnvVars) Object.assign(remoteEnv, scenarioEnvVars);
-            if (args.extra_env) Object.assign(remoteEnv, args.extra_env);
+          // Steel (stealth) path: Playwright runs locally and connects to the
+          // Steel cloud browser via CDP. Inject Steel env vars and fall through
+          // to the local Playwright execution path below remoteRoutingBlock.
+          if (!args.extra_env) args.extra_env = {};
+          args.extra_env.STEEL_CDP_URL = session.cdpUrl;
+          args.extra_env.STEEL_SESSION_ID = session.sessionId;
 
-            // Profile-scoped secret resolution: only resolve secrets needed by this scenario
-            const dualSecrets = resolveProfileScopedSecrets(args.scenario_id, true /* stealth */);
-            Object.assign(remoteEnv, dualSecrets.resolved);
-            if (dualSecrets.warnings.length > 0) {
-              process.stderr.write(`[steel-runner] Skipped secrets: ${dualSecrets.warnings.join('; ')}\n`);
-            }
-            if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
-            if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GITHUB_TOKEN;
-
-            // Inject Steel env vars for the test code on Fly.io
-            remoteEnv.STEEL_CDP_URL = session.cdpUrl;
-            remoteEnv.STEEL_SESSION_ID = session.sessionId;
-            remoteEnv.STEEL_DUAL_INSTANCE = '1';
-
-            let gitRemote = '';
-            let gitRef = 'main';
-            try {
-              gitRemote = execSync('git remote get-url origin', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
-              if (gitRemote.startsWith('git@github.com:')) gitRemote = gitRemote.replace('git@github.com:', 'https://github.com/');
-              gitRef = execSync('git rev-parse --abbrev-ref HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
-              if (gitRef === 'HEAD') gitRef = execSync('git rev-parse HEAD', { cwd: EFFECTIVE_CWD, encoding: 'utf8', timeout: 5000 }).trim();
-            } catch { /* non-fatal */ }
-
-            const handle = await spawnRemoteMachine(machineConfig, {
-              gitRemote,
-              gitRef,
-              testFile: effectiveTestFile || '',
-              env: remoteEnv,
-              timeout: args.timeout ?? 1800000,
-              slowMo: args.slow_mo ?? 0,
-              headless: args.headless,
-              scenarioId: args.scenario_id,
-              runId,
-              servicesJsonPath: path.join(PROJECT_DIR, '.claude', 'config', 'services.json'),
-            });
-
-            // Synthetic PID in the Steel range (-1_000_001 to -2_000_000)
-            const syntheticPid = -(Math.abs(hashCode(session.sessionId)) % 1_000_000 + 1_000_001);
-            const steelDemoState: DemoRunState = {
-              pid: syntheticPid,
-              project,
-              test_file: effectiveTestFile,
-              started_at: new Date().toISOString(),
-              status: 'running',
-              scenario_id: args.scenario_id,
-              remote: true,
-              fly_machine_id: handle.machineId,
-              fly_app_name: handle.appName,
-              steel_session_id: session.sessionId,
-              dual_instance: true,
-              execution_target: 'steel',
-              compute_size_used: computeSizeUsed,
-            };
-            demoRuns.set(syntheticPid, steelDemoState);
-            persistDemoRuns();
-
-            return {
-              success: true,
-              project,
-              message: `Dual-instance demo started: Steel session ${session.sessionId} + Fly.io machine ${handle.machineId}. Use check_demo_result with pid=${syntheticPid} to poll.`,
-              pid: syntheticPid,
-              test_file: effectiveTestFile,
-              remote: true,
-              execution_target: 'steel',
-              execution_target_reason: target.reason,
-              fly_machine_id: handle.machineId,
-              steel_session_id: session.sessionId,
-            };
-          } else {
-            // Stealth-only: inject Steel env vars and fall through to the
-            // local Playwright execution path below remoteRoutingBlock.
-            // The local path will spawn Playwright with these env vars,
-            // and the test code connects to the Steel browser via STEEL_CDP_URL.
-            if (!args.extra_env) args.extra_env = {};
-            args.extra_env.STEEL_CDP_URL = session.cdpUrl;
-            args.extra_env.STEEL_SESSION_ID = session.sessionId;
-
-            // Store the Steel session ID so cleanup paths can release it
-            steelOnlySessionId = session.sessionId;
-            // Fall through to local execution path
-            executionTargetResult = { target: 'steel', reason: 'Steel-only scenario: local Playwright connecting to Steel cloud browser via CDP' };
-            break remoteRoutingBlock;
-          }
+          // Store the Steel session ID so cleanup paths can release it
+          steelOnlySessionId = session.sessionId;
+          // Fall through to local execution path
+          executionTargetResult = { target: 'steel', reason: target.reason };
+          break remoteRoutingBlock;
         } catch (steelErr) {
           // Stealth scenarios must NOT fall back — fail-closed
           return {
@@ -3055,13 +3067,13 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         }
       }
 
-      if (target.target !== 'remote') {
+      if (target.target !== 'fly') {
         executionTargetResult = { target: target.target, reason: target.reason };
         break remoteRoutingBlock;
       }
-      // Fly.io is guaranteed available when target === 'remote'
+      // Fly.io is guaranteed available when target === 'fly'
       if (!machineConfig) {
-        executionTargetResult = { target: 'local', reason: 'Fly.io machine config unavailable despite remote routing decision' };
+        executionTargetResult = { target: 'local', reason: 'Fly.io machine config unavailable despite Fly routing decision' };
         break remoteRoutingBlock;
       }
 
@@ -3241,7 +3253,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         started_at: new Date().toISOString(),
         status: 'running',
         scenario_id: args.scenario_id,
-        remote: true,
+        execution_target: 'fly',
         fly_machine_id: handle.machineId,
         fly_app_name: handle.appName,
         run_id: runId,
@@ -3433,18 +3445,17 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       return {
         success: true,
         project,
-        message: `Demo launched remotely on Fly.io machine ${handle.machineId} in ${handle.region}. Use check_demo_result with pid ${syntheticPid} to get results.`,
+        message: `Demo launched on Fly.io machine ${handle.machineId} in ${handle.region}. Use check_demo_result with pid ${syntheticPid} to get results.`,
         pid: syntheticPid,
         slow_mo: args.slow_mo,
         test_file: effectiveTestFile,
-        remote: true,
-        execution_target: 'remote',
+        execution_target: 'fly',
         execution_target_reason: target.reason,
         fly_machine_id: handle.machineId,
       };
     } catch (remoteErr) {
       const errMsg = remoteErr instanceof Error ? remoteErr.message : String(remoteErr);
-      process.stderr.write(`[fly-runner] Remote execution failed: ${errMsg}\n`);
+      process.stderr.write(`[fly-runner] Fly.io execution failed: ${errMsg}\n`);
 
       // Detect image-not-found errors and add actionable guidance
       // Anchored to Fly-specific patterns to avoid false positives on unrelated "not found" errors
@@ -3453,23 +3464,16 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         ? '. No Docker image is deployed to the Fly app. Fix: call deploy_fly_image() to build and push the image, then retry.'
         : '';
 
-      // If the agent explicitly forced remote, surface the error — don't silently fall back
-      if (args.remote === true) {
-        return {
-          success: false,
-          project,
-          message: `Remote execution failed: ${errMsg}${imageFixHint}`,
-          test_file: effectiveTestFile,
-          remote: true,
-          execution_target: 'remote',
-          execution_target_reason: 'Explicitly requested remote execution (remote: true)',
-        } as RunDemoResult;
-      }
-
-      // Auto-routed: fall back to local but record a warning for check_demo_result to surface
-      process.stderr.write(`[fly-runner] Falling back to local execution\n`);
-      remoteRoutingWarning = `Remote execution attempted but failed (falling back to local): ${errMsg}${imageFixHint}`;
-      executionTargetResult = { target: 'local', reason: `Auto-routed remote execution failed, falling back to local: ${errMsg}` };
+      // Fail-closed: Fly.io execution errors do NOT silently fall back to local.
+      // The caller must explicitly pass local: true (subject to demo-local-guard) to run locally.
+      return {
+        success: false,
+        project,
+        message: `Fly.io execution failed: ${errMsg}${imageFixHint}`,
+        test_file: effectiveTestFile,
+        execution_target: 'fly',
+        execution_target_reason: 'Default routing to Fly.io',
+      } as RunDemoResult;
     }
   }
 
@@ -3684,11 +3688,6 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       demoState.execution_target = 'steel';
     }
     demoRuns.set(demoPid, demoState);
-
-    // Attach remote routing warning so check_demo_result can surface it
-    if (remoteRoutingWarning) {
-      demoState.remote_routing_warning = remoteRoutingWarning;
-    }
 
     persistDemoRuns();
 
@@ -4005,7 +4004,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         persistDemoResult({
           scenarioId: entry.scenario_id,
           status: entry.status,
-          executionMode: entry.remote ? 'remote' : 'local',
+          executionMode: executionModeFromEntry(entry),
           startedAt: entry.started_at,
           completedAt: entry.ended_at ?? new Date().toISOString(),
           durationMs: entry.ended_at
@@ -4350,8 +4349,8 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     };
   }
 
-  // ── Remote demo result check ──
-  if (entry.remote && entry.fly_machine_id) {
+  // ── Fly.io demo result check ──
+  if (entry.execution_target === 'fly' && entry.fly_machine_id) {
     try {
       const flyConfig = getFlyConfigFromServices();
       if (!flyConfig) {
@@ -4416,7 +4415,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           duration_seconds: durationSeconds,
           progress: remoteProgress ?? undefined,
           degraded_features: extractDegradedFeatures(remoteProgress),
-          remote: true,
+          execution_target: 'fly',
           fly_machine_id: entry.fly_machine_id,
           message: runningMessage,
         };
@@ -4497,7 +4496,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         persistDemoResult({
           scenarioId: entry.scenario_id,
           status: remoteStatus as 'passed' | 'failed',
-          executionMode: 'remote',
+          executionMode: 'fly',
           startedAt: entry.started_at,
           completedAt: remoteCompletedAt,
           durationMs: new Date(remoteCompletedAt).getTime() - new Date(entry.started_at).getTime(),
@@ -4674,9 +4673,9 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           ? `REQUIRED: ${remoteScreenshotHint ? `Review screenshots via get_demo_screenshot and ` : ''}Review the video recording at ${remoteRecordingPath} to verify the demo ran correctly. Use extract_video_frames to inspect specific moments.${remoteTraceSummary ? ' Also review trace_summary for the play-by-play of browser actions.' : ''}`
           : buildRemoteAnalysisGuidance(remoteStatus, remoteTraceSummary, destDir),
         message: remoteExitCode === 0
-          ? `Remote demo passed on Fly.io (${remoteDuration}s).${remoteScreenshotHint ? ' Screenshots available via get_demo_screenshot.' : ''}${remoteTraceSummary ? ' Trace available in trace_summary.' : ''}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`
-          : `Remote demo failed (exit ${remoteExitCode}, ${remoteDuration}s). ${structuredFailureSummary || 'Check stderr_tail.'}${remoteScreenshotHint ? ' Screenshots available via get_demo_screenshot.' : ''}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`,
-        remote: true,
+          ? `Fly.io demo passed (${remoteDuration}s).${remoteScreenshotHint ? ' Screenshots available via get_demo_screenshot.' : ''}${remoteTraceSummary ? ' Trace available in trace_summary.' : ''}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`
+          : `Fly.io demo failed (exit ${remoteExitCode}, ${remoteDuration}s). ${structuredFailureSummary || 'Check stderr_tail.'}${remoteScreenshotHint ? ' Screenshots available via get_demo_screenshot.' : ''}${remoteRecordingPath ? ` Recording at ${remoteRecordingPath}.` : ''} Artifacts at ${destDir}`,
+        execution_target: 'fly',
         fly_machine_id: entry.fly_machine_id,
         fly_region: remoteMachineConfig.region,
         ...(artifactErrors.length > 0 ? { artifact_errors: artifactErrors } : {}),
@@ -4820,7 +4819,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           persistDemoResult({
             scenarioId: entry.scenario_id,
             status: entry.status,
-            executionMode: entry.remote ? 'remote' : 'local',
+            executionMode: executionModeFromEntry(entry),
             startedAt: entry.started_at,
             completedAt: entry.ended_at ?? new Date().toISOString(),
             durationMs: entry.ended_at
@@ -4898,7 +4897,6 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           screenshot_hint: screenshotHint1,
           failure_frames: failureFrames1,
           analysis_guidance: analysisGuidance1,
-          ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
           ...(entry.image_staleness_warning ? { image_staleness_warning: entry.image_staleness_warning } : {}),
           message: entry.status === 'passed'
             ? `Demo completed successfully in ${durationSec}s (process terminated after suite completion).${degradedSuffix}`
@@ -4964,7 +4962,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         persistDemoResult({
           scenarioId: entry.scenario_id,
           status: entry.status as 'passed' | 'failed',
-          executionMode: entry.remote ? 'remote' : 'local',
+          executionMode: executionModeFromEntry(entry),
           startedAt: entry.started_at,
           completedAt: entry.ended_at ?? new Date().toISOString(),
           durationMs: entry.ended_at
@@ -5052,7 +5050,6 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         screenshot_hint: screenshotHint2,
         failure_frames: failureFrames2,
         analysis_guidance: analysisGuidance2,
-        ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
         ...(entry.image_staleness_warning ? { image_staleness_warning: entry.image_staleness_warning } : {}),
         message: statusMsg,
       };
@@ -5164,7 +5161,7 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
   let computeSizeSuggestion: string | undefined;
   if (entry.status === 'failed') {
     let localMachineLogContent = '';
-    if (entry.remote && entry.artifacts_dest_dir) {
+    if (entry.execution_target === 'fly' && entry.artifacts_dest_dir) {
       try {
         const machineLogPath = path.join(entry.artifacts_dest_dir, 'fly-machine.log');
         if (fs.existsSync(machineLogPath)) localMachineLogContent = fs.readFileSync(machineLogPath, 'utf-8');
@@ -5215,7 +5212,6 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     screenshot_hint: screenshotHintFinal,
     failure_frames: failureFramesFinal,
     analysis_guidance: analysisGuidanceFinal,
-    ...(entry.remote_routing_warning ? { remote_routing_warning: entry.remote_routing_warning } : {}),
     ...(entry.image_staleness_warning ? { image_staleness_warning: entry.image_staleness_warning } : {}),
     run_id: entry.run_id,
     telemetry_dir: entry.telemetry_dir,
@@ -5293,8 +5289,8 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
     };
   }
 
-  // ── Remote demo stop ──
-  if (entry.remote && entry.fly_machine_id) {
+  // ── Fly.io demo stop ──
+  if (entry.execution_target === 'fly' && entry.fly_machine_id) {
     try {
       const flyConfig = getFlyConfigFromServices();
       if (flyConfig) {
@@ -5324,12 +5320,12 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
     const entryWithInterval = entry as DemoRunState & { _remotePollInterval?: ReturnType<typeof setInterval> };
     if (entryWithInterval._remotePollInterval) clearInterval(entryWithInterval._remotePollInterval);
 
-    // Persist demo result to user-feedback.db (remote stop is always 'failed' with 'stopped' reason)
+    // Persist demo result to user-feedback.db (Fly.io stop is always 'failed' with 'stopped' reason)
     if (entry.scenario_id && !entry.result_persisted) {
       persistDemoResult({
         scenarioId: entry.scenario_id,
         status: 'failed',
-        executionMode: 'remote',
+        executionMode: executionModeFromEntry(entry),
         startedAt: entry.started_at,
         completedAt: new Date().toISOString(),
         durationMs: Date.now() - new Date(entry.started_at).getTime(),
@@ -5454,7 +5450,7 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
     persistDemoResult({
       scenarioId: entry.scenario_id,
       status: 'failed',
-      executionMode: entry.remote ? 'remote' : 'local',
+      executionMode: executionModeFromEntry(entry),
       startedAt: entry.started_at,
       completedAt: entry.ended_at ?? new Date().toISOString(),
       durationMs: entry.ended_at
@@ -7512,21 +7508,15 @@ async function runRemoteBatchSequence(
 ): Promise<void> {
   const flyConfig = getFlyConfigFromServices();
   if (!flyConfig || !flyConfig.appName || !flyConfig.apiToken) {
-    // Fly.io not configured — revert remote_pending scenarios
+    // Fly.io not configured — fail-closed for all remote_pending scenarios.
+    // Default routing is Fly.io; without it the batch cannot run.
     for (const entry of state.scenarios) {
       if (entry.status === 'remote_pending') {
-        if (args.remote === true) {
-          // Explicit remote: true — fail loudly, don't silently fall back to local
-          entry.status = 'failed';
-          entry.failure_summary = 'Fly.io not configured but remote execution was explicitly requested';
-          entry.failure_classification = 'startup_failure';
-          state.progress.failed++;
-          state.progress.completed++;
-        } else {
-          // Auto-routing — fall back to local
-          entry.status = 'pending';
-          process.stderr.write(`[run_demo_batch] WARNING: Remote-eligible scenario '${entry.scenario_id}' falling back to local execution (Fly.io not configured)\n`);
-        }
+        entry.status = 'failed';
+        entry.failure_summary = 'Fly.io is not configured but is required for default batch routing';
+        entry.failure_classification = 'startup_failure';
+        state.progress.failed++;
+        state.progress.completed++;
       }
     }
     persistDemoBatches();
@@ -7535,19 +7525,14 @@ async function runRemoteBatchSequence(
 
   const { resolved: flyResolved, failedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
   if (failedKeys.length > 0) {
-    // Token resolution failed — revert remote_pending scenarios
+    // Token resolution failed — fail-closed for all remote_pending scenarios.
     for (const entry of state.scenarios) {
       if (entry.status === 'remote_pending') {
-        if (args.remote === true) {
-          entry.status = 'failed';
-          entry.failure_summary = `Fly.io API token resolution failed (${failedKeys.join(', ')}) but remote execution was explicitly requested`;
-          entry.failure_classification = 'startup_failure';
-          state.progress.failed++;
-          state.progress.completed++;
-        } else {
-          entry.status = 'pending';
-          process.stderr.write(`[run_demo_batch] WARNING: Remote-eligible scenario '${entry.scenario_id}' falling back to local execution (Fly.io token resolution failed)\n`);
-        }
+        entry.status = 'failed';
+        entry.failure_summary = `Fly.io API token resolution failed (${failedKeys.join(', ')})`;
+        entry.failure_classification = 'startup_failure';
+        state.progress.failed++;
+        state.progress.completed++;
       }
     }
     persistDemoBatches();
@@ -7933,7 +7918,7 @@ async function runRemoteBatchSequence(
           persistDemoResult({
             scenarioId: batchScenario.scenario_id,
             status: batchScenario.status,
-            executionMode: 'remote',
+            executionMode: 'fly',
             startedAt: state.started_at,
             completedAt: remoteBatchCompletedAt,
             durationMs: batchScenario.duration_ms ?? (new Date(remoteBatchCompletedAt).getTime() - new Date(state.started_at).getTime()),
@@ -7952,7 +7937,7 @@ async function runRemoteBatchSequence(
         persistDemoResult({
           scenarioId: batchScenario.scenario_id,
           status: 'failed',
-          executionMode: 'remote',
+          executionMode: 'fly',
           startedAt: state.started_at,
           completedAt: remoteBatchErrorCompletedAt,
           durationMs: new Date(remoteBatchErrorCompletedAt).getTime() - new Date(state.started_at).getTime(),
@@ -8255,7 +8240,7 @@ async function runRemoteBatchSequence(
             persistDemoResult({
               scenarioId: scenario.scenario_id,
               status: scenario.status,
-              executionMode: 'remote',
+              executionMode: 'fly',
               startedAt: new Date(retryStartedAt).toISOString(),
               completedAt: new Date().toISOString(),
               durationMs: scenario.duration_ms ?? 0,
@@ -8589,17 +8574,11 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
       }
     } catch { /* non-fatal */ }
 
-    if (!hasBatchLocalBypass) {
-      const flyConfig = getFlyConfigFromServices();
-      const flyAvailableForBatch = flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
-      if (flyAvailableForBatch) {
-        args.remote = true;
-      } else {
-        return JSON.stringify({
-          error: 'Spawned agents are not allowed to run demos locally. Fly.io remote execution is required but not configured. ' +
-            'Configure Fly.io via /setup-fly, or ask the CTO to run this demo from the live dashboard or an interactive session.',
-        });
-      }
+    if (!hasBatchLocalBypass && args.local === true) {
+      return JSON.stringify({
+        error: 'Spawned agents are not allowed to request local batch demo execution without CTO approval. ' +
+          'File a bypass request via submit_bypass_request({ category: "demo_local", ... }) and summarize_work.',
+      });
     }
   }
 
@@ -8688,10 +8667,24 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
   demoBatches.set(batchId, state);
   persistDemoBatches();
 
-  // Determine remote-eligible scenarios
+  // ── Batch-level routing conflict check ──
+  if (args.local && args.stealth) {
+    return JSON.stringify({
+      error: 'Conflicting flags: cannot request both local=true and stealth=true on a batch.',
+    });
+  }
+
+  // Determine Fly.io-eligible scenarios. The new model:
+  //   - args.local === true   → run all eligible scenarios locally (CTO-gated)
+  //   - args.stealth === true → route the entire batch via Steel (stealth path
+  //                              still runs Playwright locally per scenario)
+  //   - default (neither set) → route to Fly.io
+  // Structural local overrides (remote_eligible=false, chrome-bridge) are
+  // ALWAYS skipped — they cannot run on Fly.io regardless of flags.
   const remoteScenarioIds = new Set<string>();
   const batchFlyConfig = getFlyConfigFromServices();
-  if (batchFlyConfig && batchFlyConfig.enabled !== false && batchFlyConfig.appName && args.remote !== false) {
+  const wantFlyBatch = !args.local && !args.stealth;
+  if (wantFlyBatch && batchFlyConfig && batchFlyConfig.enabled !== false && batchFlyConfig.appName) {
     try {
       const executionTargetMod = await import('./execution-target.js');
       for (const scenario of state.scenarios) {
@@ -8705,16 +8698,12 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
               const row = db.prepare('SELECT test_file, headed, remote_eligible FROM demo_scenarios WHERE id = ?')
                 .get(scenario.scenario_id) as { test_file: string | null; headed: number | null; remote_eligible: number | null } | undefined;
               if (row?.test_file) scenarioTestFile = row.test_file;
-              // NOTE: headed flag is ignored — all demos run headed with video recording.
-              // Headed scenarios run remotely via Xvfb + ffmpeg just like all others.
               if (row?.remote_eligible === 0) {
-                // When remote requested, skip remote-ineligible scenarios (don't run locally)
-                if (args.remote === true) {
-                  scenario.status = 'skipped';
-                  scenario.failure_summary = 'Skipped — scenario marked remote_eligible=false, cannot run on Fly.io';
-                  state.progress.skipped++;
-                  state.progress.completed++;
-                }
+                // Structural local override — skip on Fly.io batch
+                scenario.status = 'skipped';
+                scenario.failure_summary = 'Skipped — scenario marked remote_eligible=false, cannot run on Fly.io';
+                state.progress.skipped++;
+                state.progress.completed++;
                 db.close(); continue;
               }
             } catch { /* */ }
@@ -8724,20 +8713,17 @@ async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
 
         const usesChromeBridge = executionTargetMod.detectChromeBridgeUsage(scenarioTestFile);
         if (usesChromeBridge) {
-          // Chrome-bridge scenarios can't run remotely
-          if (args.remote === true) {
-            scenario.status = 'skipped';
-            scenario.failure_summary = 'Skipped — chrome-bridge scenario requires local Chrome extension';
-            state.progress.skipped++;
-            state.progress.completed++;
-          }
+          // Chrome-bridge scenarios can't run on Fly.io — skip
+          scenario.status = 'skipped';
+          scenario.failure_summary = 'Skipped — chrome-bridge scenario requires local Chrome extension';
+          state.progress.skipped++;
+          state.progress.completed++;
           continue;
         }
-        // All demos run headed (args.headless forced false at line 8340).
-        // Remote machines handle headed mode via Xvfb+ffmpeg.
+        // Fly.io can run headed (Xvfb+ffmpeg) and headless equally.
         remoteScenarioIds.add(scenario.scenario_id);
       }
-    } catch { /* non-fatal — all local */ }
+    } catch { /* non-fatal — leave scenarios pending and they'll run locally */ }
   }
 
   // Persist skipped scenarios before launching
@@ -9266,15 +9252,18 @@ const tools: AnyToolHandler[] = [
   {
     name: 'run_demo',
     description:
-      'Run a demo scenario. Two main flags: "recorded" (default true — captures video) and "remote" (default true — runs on Fly.io). ' +
-      'ALWAYS prefer remote+recorded (the defaults) unless the CTO explicitly requests local execution. ' +
-      'Remote execution avoids display lock contention, runs in parallel, and produces identical recordings via Xvfb+ffmpeg. ' +
+      'Run a demo scenario. Routing follows a 3-rule model: pass `local: true` to force local execution, ' +
+      '`stealth: true` to route to Steel.dev, or no flags (the default) to route to Fly.io. ' +
+      'ALWAYS prefer the default Fly.io routing with recorded=true unless the CTO explicitly requests local execution. ' +
+      'Fly.io avoids display lock contention, runs in parallel, and produces identical recordings via Xvfb+ffmpeg. ' +
+      '`local` and `stealth` are mutually exclusive. ' +
       'RECORDING: When recorded=true (default), runs headed with video recording. Locally uses ScreenCaptureKit; ' +
-      'remotely uses Xvfb + ffmpeg. Screenshots extracted at 3s intervals in both cases. ' +
+      'on Fly.io uses Xvfb + ffmpeg. Screenshots extracted at 3s intervals in both cases. ' +
       'When recorded=false, runs headless without video. ' +
-      'REMOTE: When remote=true (default), runs on Fly.io with auto-push of worktree branches. ' +
-      'When remote=false, runs locally — only use this when the CTO asks to watch live, or when chrome-bridge/extension interaction is required. ' +
-      'Spawned agents must use remote execution (Fly.io). Local demos are reserved for the CTO dashboard and interactive sessions. ' +
+      'LOCAL: When local=true, runs locally — only use this when the CTO asks to watch live, or when chrome-bridge/extension interaction is required. ' +
+      'Spawned agents are blocked from passing `local: true` without CTO approval (demo-local-guard.js). ' +
+      'STEALTH: When stealth=true, routes to Steel.dev cloud browser. Fail-closed if Steel is not configured. ' +
+      'Local demos are reserved for the CTO dashboard, interactive sessions, and structurally-local scenarios (remote_eligible=false / chrome-bridge). ' +
       'Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`. ' +
       'Prerequisites execute automatically if registered via register_prerequisite. ' +
       'If this tool fails on prerequisites, run preflight_check to diagnose.',
@@ -9439,9 +9428,11 @@ const tools: AnyToolHandler[] = [
     description:
       'Run demo scenarios concurrently on Fly.io. ' +
       'Defaults to maxConcurrentMachines parallelism (typically 10). Multiple concurrent batch runs share the Fly machine pool. ' +
-      'Defaults: headless=true, remote=true, retry_infra_failures=1. ' +
-      'Spawned agents must use remote execution (Fly.io). Local batch demos are reserved for the CTO dashboard and interactive sessions. ' +
-      'remote_eligible=false scenarios are automatically excluded from remote batches and from the production promotion pipeline (verify_demo_completeness). ' +
+      'Defaults: headless=true, retry_infra_failures=1. Routing follows the same 3-rule model as run_demo: ' +
+      'pass `local: true` to force local execution (blocked for spawned agents without CTO approval), ' +
+      '`stealth: true` to route to Steel.dev, or no flags (the default) to route to Fly.io. ' +
+      'Local batch demos are reserved for the CTO dashboard and interactive sessions. ' +
+      'remote_eligible=false scenarios are automatically excluded from Fly.io batches and from the production promotion pipeline (verify_demo_completeness). ' +
       'Do NOT run remote-ineligible scenarios unless explicitly directed by the CTO — they require local Chrome/display access. ' +
       'Discovers scenarios from user-feedback.db — filter by scenario_ids, persona_ids, or category. ' +
       'Returns a batch_id for polling via check_demo_batch_result. ' +
@@ -10512,7 +10503,7 @@ const tools: AnyToolHandler[] = [
 // 10-second timeout prevents hanging if the Fly API is unresponsive.
 async function destroyActiveRemoteMachines(): Promise<void> {
   const activeRemote = [...demoRuns.values()].filter(
-    e => e.remote && e.fly_machine_id && e.status === 'running',
+    e => e.execution_target === 'fly' && e.fly_machine_id && e.status === 'running',
   );
   if (activeRemote.length === 0) return;
   process.stderr.write(`[playwright] Destroying ${activeRemote.length} active remote machine(s) before exit...\n`);

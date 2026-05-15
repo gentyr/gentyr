@@ -75,8 +75,8 @@ rl.on('close', () => {
 
         if (ranLocally && wasHeadless) {
           additionalContext = [
-            'Note: This headless demo ran locally. Fly.io is configured — pass `remote: true`',
-            '(or omit it — auto-routing picks Fly.io for headless runs) for remote execution.',
+            'Note: This headless demo ran locally. Fly.io is configured — call `run_demo` without',
+            '`local: true` (the default routes to Fly.io) for remote execution.',
             'For multiple scenarios, run_demo_batch runs them concurrently across Fly.io machines.',
           ].join(' ');
         }
@@ -123,8 +123,8 @@ rl.on('close', () => {
           additionalContext = [
             `WARNING — DISPLAY LOCK CONTENDED (position ${position}).`,
             'Spawned agents should NOT wait for the display lock for validation runs.',
-            'Use remote execution instead: run_demo({ remote: true, recorded: true }) or',
-            'run_demo_batch({ remote: true, recorded: true }) for concurrent Fly.io execution.',
+            'Use remote execution instead: run_demo({ recorded: true }) or',
+            'run_demo_batch({ recorded: true }) — both default to Fly.io for concurrent execution.',
             'Remote Fly.io demos produce identical video recordings via Xvfb+ffmpeg.',
             'Only acquire the display lock for chrome-bridge or CTO-requested headed demos.',
           ].join(' ');
@@ -132,7 +132,7 @@ rl.on('close', () => {
           additionalContext = [
             `Display lock contended (position ${position} in queue).`,
             'If your demo does not need ScreenCaptureKit, run it on Fly.io instead:',
-            '  run_demo({ remote: true, recorded: true })',
+            '  run_demo({ recorded: true })  // default routes to Fly.io',
             'Remote execution produces identical video recordings and bypasses the display queue.',
           ].join(' ');
         }

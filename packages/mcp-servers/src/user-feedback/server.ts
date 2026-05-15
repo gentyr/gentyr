@@ -440,12 +440,6 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     } catch {
       db.exec("ALTER TABLE demo_scenarios ADD COLUMN stealth_required INTEGER NOT NULL DEFAULT 0");
     }
-    // Auto-migration: add dual_instance column to demo_scenarios if missing
-    try {
-      db.prepare("SELECT dual_instance FROM demo_scenarios LIMIT 0").run();
-    } catch {
-      db.exec("ALTER TABLE demo_scenarios ADD COLUMN dual_instance INTEGER NOT NULL DEFAULT 0");
-    }
     // Auto-migration: add telemetry column to demo_scenarios if missing
     try {
       db.prepare("SELECT telemetry FROM demo_scenarios LIMIT 0").run();
@@ -498,11 +492,15 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     try {
       db.prepare("SELECT id FROM demo_results LIMIT 0").run();
     } catch {
+      // NOTE: No CHECK constraint on execution_mode — values are 'local', 'fly',
+      // or 'steel' under the 3-rule routing model. The legacy valid_mode CHECK
+      // (`IN ('local', 'remote')`) is rebuilt away by recordDemoResult /
+      // persistDemoResult migration paths for any pre-existing DBs.
       db.exec(`
         CREATE TABLE IF NOT EXISTS demo_results (
             id TEXT PRIMARY KEY,
             scenario_id TEXT NOT NULL,
-            execution_mode TEXT NOT NULL DEFAULT 'local',
+            execution_mode TEXT NOT NULL DEFAULT 'fly',
             status TEXT NOT NULL,
             started_at TEXT NOT NULL,
             completed_at TEXT NOT NULL,
@@ -510,7 +508,6 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
             fly_machine_id TEXT,
             output_file TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            CONSTRAINT valid_mode CHECK (execution_mode IN ('local', 'remote')),
             CONSTRAINT valid_status CHECK (status IN ('passed', 'failed')),
             FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE
         );
@@ -624,7 +621,6 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
       headed: record.headed === 1,
       remote_eligible: record.remote_eligible === 1,
       stealth_required: record.stealth_required === 1,
-      dual_instance: record.dual_instance === 1,
       telemetry: record.telemetry === 1,
       compute_size: (record.compute_size === 'standard' || record.compute_size === 'large') ? record.compute_size : null,
       created_at: record.created_at,
@@ -1517,8 +1513,8 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
 
     try {
       db.prepare(`
-        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, stealth_required, dual_instance, telemetry, compute_size, created_at, created_timestamp, updated_at, env_vars)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, stealth_required, telemetry, compute_size, created_at, created_timestamp, updated_at, env_vars)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         args.persona_id,
@@ -1531,7 +1527,6 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
         args.headed ? 1 : 0,
         args.remote_eligible ? 1 : 0,
         args.stealth_required ? 1 : 0,
-        args.dual_instance ? 1 : 0,
         args.telemetry ? 1 : 0,
         args.compute_size ?? null,
         created_at,
@@ -1601,7 +1596,6 @@ export function createUserFeedbackServer(config: UserFeedbackConfig): McpServer 
     if (args.headed !== undefined) { updates.push('headed = ?'); params.push(args.headed ? 1 : 0); }
     if (args.remote_eligible !== undefined) { updates.push('remote_eligible = ?'); params.push(args.remote_eligible ? 1 : 0); }
     if (args.stealth_required !== undefined) { updates.push('stealth_required = ?'); params.push(args.stealth_required ? 1 : 0); }
-    if (args.dual_instance !== undefined) { updates.push('dual_instance = ?'); params.push(args.dual_instance ? 1 : 0); }
     if (args.telemetry !== undefined) { updates.push('telemetry = ?'); params.push(args.telemetry ? 1 : 0); }
     if (args.compute_size !== undefined) { updates.push('compute_size = ?'); params.push(args.compute_size); }
     if (args.env_vars !== undefined) {

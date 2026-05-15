@@ -15,8 +15,8 @@
  *   - Interactive (CTO) sessions — get softer guidance, never blocked
  *   - Chrome-bridge scenarios (require local Chrome)
  *   - Scenarios with remote_eligible=false in the DB
- *   - Explicit remote: false passed with a documented reason
- *   - run_demo calls that already ran remotely
+ *   - Explicit local: true passed with a documented reason
+ *   - run_demo calls that already ran remotely (fly or steel)
  *
  * PostToolUse hooks MUST always exit 0 (the tool already ran).
  *
@@ -143,11 +143,13 @@ rl.on('close', () => {
       try { return JSON.parse(toolResponse); } catch { return null; }
     })();
 
-    // Determine if the demo ran locally (Steel.dev counts as remote)
-    const ranRemotely = responseParsed?.execution_target === 'remote' ||
-      responseParsed?.execution_target === 'steel' ||
-      !!responseParsed?.fly_machine_id ||
-      !!responseParsed?.steel_session_id;
+    // Determine if the demo ran remotely. The server emits execution_target as
+    // one of 'local' | 'fly' | 'steel'. Treat 'fly' and 'steel' as remote.
+    // Do NOT fall back to fly_machine_id / steel_session_id presence — those
+    // fields may be absent on Fly runs that failed before machine allocation,
+    // which would otherwise be misclassified as local.
+    const target = responseParsed?.execution_target;
+    const ranRemotely = target === 'fly' || target === 'steel';
     const ranLocally = !ranRemotely;
 
     // Skip if already running remotely — correct behavior
@@ -191,24 +193,28 @@ rl.on('close', () => {
     if (ranLocally) {
       if (IS_SPAWNED) {
         // CRITICAL enforcement for spawned agents — this should not happen since
-        // the server-side check in run_demo forces remote: true for spawned sessions.
-        // If we see a local run from a spawned agent, the server-side guard was bypassed.
+        // the server-side check in run_demo blocks `local: true` for spawned sessions
+        // (via demo-local-guard.js) and the default routing is Fly.io.
+        // If we see a local run from a spawned agent, the server-side guard was bypassed
+        // or the scenario is structurally local (remote_eligible=false / chrome-bridge).
         parts.push(
           'CRITICAL — LOCAL DEMO BY SPAWNED AGENT DETECTED: This demo ran locally from a spawned session.',
-          'This should NOT happen — the run_demo server enforces remote execution for all spawned agents.',
-          'Spawned agents are NEVER allowed to run demos locally. Local demos are reserved for the CTO dashboard and interactive CTO sessions.',
-          'If Fly.io is configured, the server should have forced remote: true automatically.',
-          'If Fly.io is NOT configured, the server should have returned an error.',
+          'Spawned agents are NEVER allowed to run demos locally unless the scenario is structurally local',
+          '(remote_eligible=false in user-feedback.db, or chrome-bridge / extension scenario).',
+          'The default routing for run_demo is Fly.io — passing no flags routes to Fly.io.',
+          'For stealth scenarios pass `stealth: true` (routes to Steel.dev).',
           'Do NOT attempt to run demos locally again. Either:',
-          '  1. Use run_demo_batch with remote: true for concurrent remote execution, or',
-          '  2. Report this as a bug — the server-side enforcement was bypassed.',
-          'This result should not be trusted. Re-run with remote: true explicitly.',
+          '  1. Call run_demo({}) (default — routes to Fly.io), or',
+          '  2. Call run_demo({ stealth: true }) for stealth scenarios, or',
+          '  3. Call run_demo_batch({ project, scenario_ids }) for concurrent execution across Fly.io machines, or',
+          '  4. Report this as a bug — the server-side enforcement was bypassed.',
+          'This result should not be trusted. Re-run with the default Fly.io routing.',
         );
       } else {
         // Soft guidance for interactive (CTO) sessions
         parts.push(
-          'Note: This demo ran locally. Fly.io is configured — remote execution is available',
-          'for identical video recordings without local resource contention.',
+          'Note: This demo ran locally. Fly.io is configured — the default run_demo routing',
+          'sends to Fly.io for identical video recordings without local resource contention.',
         );
       }
     }
@@ -225,12 +231,11 @@ rl.on('close', () => {
           '  run_demo_batch({',
           '    project: "demo",',
           '    scenario_ids: ["<id1>", "<id2>", ...],',
-          '    remote: true,',
           '    recorded: true',
           '  })',
           '',
-          'run_demo_batch with remote: true runs scenarios CONCURRENTLY across multiple Fly.io machines',
-          `(up to ${maxMachines} at a time). This is dramatically faster than sequential local runs.`,
+          'run_demo_batch defaults to Fly.io routing and runs scenarios CONCURRENTLY across multiple machines',
+          `(up to ${maxMachines} at a time). This is dramatically faster than sequential single calls.`,
           'Switch to batch execution immediately.',
         );
       } else {

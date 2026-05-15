@@ -124,13 +124,19 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (activePanel === 'demos') {
         const scenario = data.scenarios.find(s => s.id === selectedScenarioId);
         if (!scenario) return;
-        if (executionMode === 'remote' && !scenario.remoteEligible) {
-          setStatusMessage(`Cannot run "${scenario.title}" remotely \u2014 scenario is local-only`);
+        if (executionMode === 'steel') {
+          setStatusMessage('STEALTH launches from the dashboard are not yet supported. Use run_demo({ stealth: true }) via MCP.');
+          if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+          statusTimerRef.current = setTimeout(() => setStatusMessage(null), 6000);
+          return;
+        }
+        if (executionMode === 'fly' && !scenario.remoteEligible) {
+          setStatusMessage(`Cannot run "${scenario.title}" on Fly.io \u2014 scenario is local-only`);
           if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
           statusTimerRef.current = setTimeout(() => setStatusMessage(null), 5000);
           return;
         }
-        const proc = executionMode === 'remote'
+        const proc = executionMode === 'fly'
           ? await launchRemoteDemo(scenario, selectedEnv.branch)
           : await launchDemo(scenario, selectedEnv.baseUrl, selectedEnv.branch);
         setRunningProcess(proc);
@@ -151,7 +157,7 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
 
   const handleStop = useCallback(() => {
     if (runningProcess?.status === 'running') {
-      if (runningProcess.executionMode === 'remote') {
+      if (runningProcess.executionMode === 'fly') {
         killRemoteProcess(runningProcess).catch(() => { /* non-fatal */ });
       } else {
         killProcess(runningProcess);
@@ -230,14 +236,22 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
     }
     if (input === 'r') {
       if (!data.flyStatus.configured) {
-        setStatusMessage(`Remote unavailable: ${data.flyStatus.reason || 'Fly.io not configured — run /setup-fly'}`);
+        setStatusMessage(`Fly.io/Stealth unavailable: ${data.flyStatus.reason || 'Fly.io not configured — run /setup-fly'}`);
         if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
         statusTimerRef.current = setTimeout(() => setStatusMessage(null), 5000);
         return;
       }
-      const next: DemoExecutionMode = executionMode === 'local' ? 'remote' : 'local';
+      // Cycle: local → fly → steel → local
+      const cycle: DemoExecutionMode[] = ['local', 'fly', 'steel'];
+      const idx = cycle.indexOf(executionMode);
+      const next = cycle[(idx + 1) % cycle.length];
       setExecutionMode(next);
-      setStatusMessage(`Execution: ${next === 'remote' ? `REMOTE (${data.flyStatus.appName}.fly.dev)` : 'LOCAL'}`);
+      const label = next === 'fly'
+        ? `FLY (${data.flyStatus.appName}.fly.dev)`
+        : next === 'steel'
+          ? 'STEALTH (Steel.dev)'
+          : 'LOCAL';
+      setStatusMessage(`Execution: ${label}`);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
       statusTimerRef.current = setTimeout(() => setStatusMessage(null), 3000);
       return;
@@ -292,9 +306,14 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
                   : <Text dimColor>{' LOCAL '}</Text>}
               </Box>
               <Box marginRight={1}>
-                {executionMode === 'remote'
-                  ? <Text bold inverse color="cyan">{' REMOTE '}</Text>
-                  : <Text dimColor>{' REMOTE '}</Text>}
+                {executionMode === 'fly'
+                  ? <Text bold inverse color="cyan">{' FLY '}</Text>
+                  : <Text dimColor>{' FLY '}</Text>}
+              </Box>
+              <Box marginRight={1}>
+                {executionMode === 'steel'
+                  ? <Text bold inverse color="magenta">{' STEALTH '}</Text>
+                  : <Text dimColor>{' STEALTH '}</Text>}
               </Box>
               <Text dimColor>(r)</Text>
             </>

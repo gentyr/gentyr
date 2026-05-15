@@ -2,23 +2,24 @@
 /**
  * PreToolUse Hook: Demo Local Execution Guard
  *
- * Blocks spawned agents from running demos locally. Local demo execution
- * requires physical Chrome/display access that automated agents cannot
- * reliably provide.
+ * Blocks spawned agents from explicitly requesting local demo execution.
+ * The routing model is: local (caller flag), stealth (Steel.dev), or fly (default).
+ * Spawned agents must use Fly.io (default) or Steel (stealth: true) — they cannot
+ * pass local: true without CTO approval via a deferred action.
  *
  * Matched tools: run_demo, run_demo_batch, run_tests, launch_ui_mode
  *
  * Exemptions:
  *   - CTO interactive sessions (CLAUDE_SPAWNED_SESSION !== 'true')
  *   - CTO Dashboard GUI (launches via process-runner.ts, not MCP)
- *   - run_demo/run_demo_batch with remote=true (default — remote is allowed)
+ *   - run_demo/run_demo_batch with local !== true (default routes to Fly.io)
  *
  * On block, creates a deferred action via the Unified CTO Authorization System.
  * The agent does NOT retry — the deferred action auto-executes after CTO approval + audit pass.
  *
  * SECURITY: This file should be root-owned via npx gentyr protect
  *
- * @version 2.0.0
+ * @version 3.0.0
  */
 
 import { createInterface } from 'readline';
@@ -64,28 +65,20 @@ rl.on('close', () => {
         break;
 
       case 'run_demo': {
-        // remote defaults to true. Only block if explicitly false or headed without explicit remote
-        const remoteArg = toolInput.remote;
-        const headlessArg = toolInput.headless;
-
-        if (remoteArg === false) {
+        // local defaults to false. Block only if explicitly true.
+        if (toolInput.local === true) {
           wouldRunLocally = true;
-          reason = 'run_demo called with remote: false (explicit local execution)';
-        } else if (headlessArg === false && remoteArg !== true) {
-          wouldRunLocally = true;
-          reason = 'run_demo called with headless: false without remote: true (headed mode defaults to local)';
+          reason = 'run_demo called with local: true (explicit local execution)';
         }
-        // remote=true or remote=undefined (defaults to true) → allowed
+        // local=false or undefined → routed to fly (default) or steel — allowed
         break;
       }
 
       case 'run_demo_batch': {
-        const batchRemoteArg = toolInput.remote;
-        if (batchRemoteArg === false) {
+        if (toolInput.local === true) {
           wouldRunLocally = true;
-          reason = 'run_demo_batch called with remote: false (explicit local execution)';
+          reason = 'run_demo_batch called with local: true (explicit local execution)';
         }
-        // remote=true or remote=undefined (defaults to true) → allowed
         break;
       }
 
@@ -94,7 +87,7 @@ rl.on('close', () => {
         break;
     }
 
-    // If remote execution — allow immediately
+    // If not local execution — allow immediately
     if (!wouldRunLocally) {
       process.stdout.write(JSON.stringify({ permissionDecision: 'allow' }));
       process.exit(0);
@@ -140,7 +133,7 @@ rl.on('close', () => {
 
     const denyMessage =
       `LOCAL DEMO BLOCKED: ${reason}. ` +
-      `Spawned agents must use remote execution (Fly.io).` +
+      `Spawned agents must use Fly.io (default) or Steel (stealth: true) execution.` +
       (deferredInfo || ` If local execution is genuinely required, file a bypass request: ` +
       `submit_bypass_request({ task_type: 'todo', task_id: YOUR_TASK_ID, ` +
       `category: 'demo_local', summary: '${reason}' }) ` +

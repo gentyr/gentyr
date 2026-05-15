@@ -176,7 +176,7 @@ export interface ReleaseStatus {
 // Page 2: Demos & Tests
 // ============================================================================
 
-export type DemoExecutionMode = 'local' | 'remote';
+export type DemoExecutionMode = 'local' | 'fly' | 'steel';
 
 export type DemoFailureReason = 'stopped' | 'killed' | 'interrupted' | 'test_failure' | null;
 

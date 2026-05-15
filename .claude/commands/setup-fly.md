@@ -374,8 +374,8 @@ Fly.io Remote Execution — Configured
   Test it:
     run_demo({ scenario_id: "<any scenario>", headless: true })
 
-  Force remote explicitly:
-    run_demo({ scenario_id: "<any scenario>", remote: true })
+  Default routing is Fly.io — no flag needed. To force local instead (CTO-gated for spawned agents):
+    run_demo({ scenario_id: "<any scenario>", local: true })
 ```
 
 ## Troubleshooting

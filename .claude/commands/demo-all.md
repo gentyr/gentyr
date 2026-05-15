@@ -40,11 +40,10 @@ Call `mcp__playwright__run_demo({
   project: "demo",
   slow_mo: 1200,
   recorded: true,
-  remote: true,
   success_pause_ms: 5000
 })`.
 
-Video recording is always enabled. Runs remotely on Fly.io by default. No `test_file` filter — this runs the entire
+Video recording is always enabled. Routing defaults to Fly.io — pass no execution flag. No `test_file` filter — this runs the entire
 suite. Per-scenario recordings are associated with their demo files by the
 Playwright server via the `scenario_id` embedded in each `*.demo.ts` file.
 

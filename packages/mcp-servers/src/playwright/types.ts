@@ -269,8 +269,10 @@ export const RunDemoArgsSchema = z.object({
       'Use for replay data (REPLAY_SESSION_ID, REPLAY_AUDIT_DATA) or custom flags. ' +
       'Max 25 keys, max 512KB total size. Values are not persisted to demo-runs.json.'
     ),
-  remote: z.coerce.boolean().optional().default(true)
-    .describe('Run on remote Fly.io machine (default: true). Auto-routes to Fly.io when configured. Pass false to force local execution.'),
+  local: z.coerce.boolean().optional().default(false)
+    .describe('Force local execution (default: false). CTO-gated for spawned agents via demo-local-guard. Structural local overrides (chrome-bridge, remote_eligible=false) apply automatically and do not require this flag. Conflicts with stealth=true.'),
+  stealth: z.coerce.boolean().optional().default(false)
+    .describe('Force Steel.dev stealth cloud browser execution (default: false). Fail-closed if Steel is not configured, unhealthy, or at session capacity. Implied automatically when the scenario has stealth_required=true in the DB. Conflicts with local=true.'),
   telemetry: z.coerce.boolean().optional().default(false)
     .describe('Enable maximum telemetry capture (browser console/network/errors/performance + system metrics). Overrides scenario-level telemetry setting when true. Telemetry data is stored as JSONL files alongside demo artifacts and shipped to Elastic with the run ID.'),
 });
@@ -285,8 +287,7 @@ export interface RunDemoResult {
   slow_mo?: number;
   test_file?: string;
   context?: string;
-  remote?: boolean;
-  execution_target?: 'local' | 'remote' | 'steel';
+  execution_target?: 'local' | 'fly' | 'steel';
   execution_target_reason?: string;
   fly_machine_id?: string;
   steel_session_id?: string;
@@ -347,19 +348,16 @@ export interface CheckDemoResultResult {
   screenshot_hint?: string;
   failure_frames?: Array<{ file_path: string; timestamp_seconds: number }>;
   analysis_guidance?: string;
-  remote?: boolean;
   fly_machine_id?: string;
   fly_region?: string;
-  /** Warning about remote execution failure and fallback to local execution */
-  remote_routing_warning?: string;
   /** Errors from artifact retrieval — explains WHY artifacts may be missing */
   artifact_errors?: string[];
-  execution_target?: 'local' | 'remote' | 'steel';
+  execution_target?: 'local' | 'fly' | 'steel';
   /** Steel.dev session ID for stealth demo runs */
   steel_session_id?: string;
-  /** Steel cloud browser recording path (user-facing view) for dual-instance scenarios */
+  /** Steel cloud browser recording path (for Steel-only stealth scenarios) */
   steel_recording_path?: string;
-  /** Fly.io recording path (test orchestration view) for dual-instance scenarios */
+  /** Fly.io recording path */
   fly_recording_path?: string;
   run_id?: string;
   telemetry_dir?: string;
@@ -402,26 +400,21 @@ export interface DemoRunState {
   bypass_request_id?: string;      // Links interrupted demo to its bypass request for auto-resolution
   // Runtime-only — NOT persisted (NodeJS.Timeout is not serializable)
   screenshot_interval?: ReturnType<typeof setInterval>;
-  // Remote execution fields (set when run is on Fly.io)
-  remote?: boolean;
+  // Fly.io execution fields (set when run is on Fly.io)
   fly_machine_id?: string;
   fly_app_name?: string;
-  /** Set when auto-routing attempted remote execution but fell back to local. Surfaces in check_demo_result. */
-  remote_routing_warning?: string;
   /** Set when artifacts have been proactively pulled while the machine was alive */
   artifacts_pulled?: boolean;
   /** Local directory where pulled artifacts are stored (proactive pull path) */
   artifacts_dest_dir?: string;
   // Steel.dev execution fields (set when run is on Steel cloud browser)
   steel_session_id?: string;
-  /** Whether this is a dual-instance run (Fly.io + Steel) */
-  dual_instance?: boolean;
-  /** Fly.io side recording path for dual-instance scenarios */
+  /** Fly.io recording path */
   fly_recording_path?: string;
-  /** Steel side recording path for dual-instance scenarios */
+  /** Steel side recording path (Steel-only stealth scenarios) */
   steel_recording_path?: string;
   /** Execution target resolved by routing */
-  execution_target?: 'local' | 'remote' | 'steel';
+  execution_target?: 'local' | 'fly' | 'steel';
   /** Runtime-only — prevents double DB writes to demo_results */
   result_persisted?: boolean;
   /** Runtime-only — epoch ms of last check_demo_result poll. Used for stale demo warnings. */
@@ -548,8 +541,10 @@ export const RunDemoBatchArgsSchema = z.object({
     .describe('Override the base URL (default: http://localhost:3000).'),
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording.'),
-  remote: z.coerce.boolean().optional().default(true)
-    .describe('Run batch on remote Fly.io machines (default: true). Prefer remote execution — it avoids local resource contention and runs scenarios in parallel across multiple Fly machines.'),
+  local: z.coerce.boolean().optional().default(false)
+    .describe('Force local execution for the batch (default: false). CTO-gated for spawned agents. Structural local overrides (chrome-bridge, remote_eligible=false) apply per-scenario regardless. Conflicts with stealth=true.'),
+  stealth: z.coerce.boolean().optional().default(false)
+    .describe('Force Steel.dev stealth execution for the batch (default: false). Fail-closed if Steel is not configured. Conflicts with local=true.'),
   scenario_timeout: z.coerce.number().int().min(60000).max(3600000).optional().default(600000)
     .describe('Per-scenario timeout in milliseconds (default: 10min = 600000). If a scenario exceeds this, its machine is killed and it is marked failed with timeout classification.'),
   batch_timeout: z.coerce.number().int().min(120000).max(7200000).optional().default(1800000)

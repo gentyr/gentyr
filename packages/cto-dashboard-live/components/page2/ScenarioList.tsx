@@ -44,10 +44,12 @@ function ScenarioRow({ scenario, isSelected, width, isActive }: { scenario: Demo
   if (scenario.headed) meta.push('headed');
   if (!scenario.remoteEligible) meta.push('local-only');
   if (scenario.recordingPath) meta.push('\u25B6 video');
-  // Show last result with pass/fail icon and local/remote badge
+  // Show last result with pass/fail icon and local/fly/steel badge
   if (scenario.lastResult) {
     const icon = scenario.lastResult.status === 'passed' ? '\u2713' : '\u2717';
-    const mode = scenario.lastResult.executionMode === 'remote' ? 'R' : 'L';
+    const mode = scenario.lastResult.executionMode === 'fly' ? 'F'
+      : scenario.lastResult.executionMode === 'steel' ? 'S'
+      : 'L';
     meta.push(`${icon}${mode} ${agoLabel(scenario.lastResult.completedAt)}`);
   } else {
     meta.push(agoLabel(scenario.lastRecordedAt));

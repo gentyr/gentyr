@@ -40,7 +40,6 @@ interface ScenarioRow {
   headed: number;
   remote_eligible: number;
   stealth_required: number;
-  dual_instance: number;
   created_at: string;
   created_timestamp: string;
   updated_at: string;
@@ -62,7 +61,6 @@ interface ScenarioResult {
   headed: boolean;
   remote_eligible: boolean;
   stealth_required: boolean;
-  dual_instance: boolean;
   created_at: string;
   updated_at: string;
   persona_name?: string;
@@ -190,7 +188,6 @@ function scenarioToResult(row: ScenarioRow & { persona_name?: string }): Scenari
     headed: row.headed === 1,
     remote_eligible: row.remote_eligible === 1,
     stealth_required: row.stealth_required === 1,
-    dual_instance: row.dual_instance === 1,
     created_at: row.created_at,
     updated_at: row.updated_at,
     last_recorded_at: row.last_recorded_at ?? null,
@@ -211,7 +208,6 @@ function createScenario(db: Database.Database, args: {
   headed?: boolean;
   remote_eligible?: boolean;
   stealth_required?: boolean;
-  dual_instance?: boolean;
   env_vars?: Record<string, string>;
 }, projectDir?: string): ScenarioResult | ErrorResult {
   // Validate persona exists and includes 'gui' or 'adk' in consumption_modes
@@ -253,8 +249,8 @@ function createScenario(db: Database.Database, args: {
 
   try {
     db.prepare(`
-      INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, stealth_required, dual_instance, created_at, created_timestamp, updated_at, env_vars)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO demo_scenarios (id, persona_id, title, description, category, playwright_project, test_file, sort_order, enabled, headed, remote_eligible, stealth_required, created_at, created_timestamp, updated_at, env_vars)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, args.persona_id, args.title, args.description,
       args.category ?? null, args.playwright_project, args.test_file,
@@ -262,7 +258,6 @@ function createScenario(db: Database.Database, args: {
       args.headed ? 1 : 0,
       args.remote_eligible === false ? 0 : 1,
       args.stealth_required ? 1 : 0,
-      args.dual_instance ? 1 : 0,
       created_at, created_timestamp, created_at,
       args.env_vars ? JSON.stringify(args.env_vars) : null,
     );
@@ -296,7 +291,6 @@ function updateScenario(db: Database.Database, args: {
   headed?: boolean;
   remote_eligible?: boolean;
   stealth_required?: boolean;
-  dual_instance?: boolean;
   env_vars?: Record<string, string> | null;
 }, projectDir?: string): ScenarioResult | ErrorResult {
   const existing = db.prepare('SELECT id FROM demo_scenarios WHERE id = ?').get(args.id);
@@ -331,7 +325,6 @@ function updateScenario(db: Database.Database, args: {
   if (args.headed !== undefined) { updates.push('headed = ?'); values.push(args.headed ? 1 : 0); }
   if (args.remote_eligible !== undefined) { updates.push('remote_eligible = ?'); values.push(args.remote_eligible ? 1 : 0); }
   if (args.stealth_required !== undefined) { updates.push('stealth_required = ?'); values.push(args.stealth_required ? 1 : 0); }
-  if (args.dual_instance !== undefined) { updates.push('dual_instance = ?'); values.push(args.dual_instance ? 1 : 0); }
   if (args.env_vars !== undefined) {
     if (args.env_vars === null) {
       updates.push('env_vars = ?'); values.push(null);
@@ -1444,11 +1437,9 @@ describe('Demo Scenario CRUD', () => {
         expect(typeof result.headed).toBe('boolean');
         expect(typeof result.remote_eligible).toBe('boolean');
         expect(typeof result.stealth_required).toBe('boolean');
-        expect(typeof result.dual_instance).toBe('boolean');
         expect(result.headed).toBe(false);
         expect(result.remote_eligible).toBe(true);
         expect(result.stealth_required).toBe(false);
-        expect(result.dual_instance).toBe(false);
       }
     });
 
@@ -1487,15 +1478,15 @@ describe('Demo Scenario CRUD', () => {
   });
 
   // ============================================================================
-  // Steel fields: stealth_required and dual_instance
+  // Steel field: stealth_required
   // ============================================================================
 
-  describe('stealth_required and dual_instance fields', () => {
-    it('should default stealth_required to false and dual_instance to false', () => {
+  describe('stealth_required field', () => {
+    it('should default stealth_required to false', () => {
       const result = createScenario(db, {
         persona_id: guiPersona.id,
-        title: 'Default Steel Fields',
-        description: 'Verifies Steel field defaults',
+        title: 'Default Steel Field',
+        description: 'Verifies stealth_required default',
         playwright_project: 'vendor-owner',
         test_file: 'e2e/demo/default-steel.demo.ts',
       });
@@ -1503,7 +1494,6 @@ describe('Demo Scenario CRUD', () => {
       expect(isErrorResult(result)).toBe(false);
       if (!isErrorResult(result)) {
         expect(result.stealth_required).toBe(false);
-        expect(result.dual_instance).toBe(false);
       }
     });
 
@@ -1520,91 +1510,67 @@ describe('Demo Scenario CRUD', () => {
       expect(isErrorResult(result)).toBe(false);
       if (!isErrorResult(result)) {
         expect(result.stealth_required).toBe(true);
-        expect(result.dual_instance).toBe(false);
       }
     });
 
-    it('should create a scenario with dual_instance=true', () => {
-      const result = createScenario(db, {
-        persona_id: guiPersona.id,
-        title: 'Dual Instance Flow',
-        description: 'Fly.io + Steel in parallel',
-        playwright_project: 'vendor-owner',
-        test_file: 'e2e/demo/dual-instance.demo.ts',
-        dual_instance: true,
-      });
-
-      expect(isErrorResult(result)).toBe(false);
-      if (!isErrorResult(result)) {
-        expect(result.stealth_required).toBe(false);
-        expect(result.dual_instance).toBe(true);
-      }
-    });
-
-    it('should update stealth_required and dual_instance independently', () => {
+    it('should update stealth_required independently', () => {
       const created = createScenario(db, {
         persona_id: guiPersona.id,
         title: 'Steel Update Test',
-        description: 'Verifies Steel field updates',
+        description: 'Verifies stealth_required updates',
         playwright_project: 'vendor-owner',
         test_file: 'e2e/demo/steel-update.demo.ts',
       });
       expect(isErrorResult(created)).toBe(false);
       if (isErrorResult(created)) return;
       expect((created as ScenarioResult).stealth_required).toBe(false);
-      expect((created as ScenarioResult).dual_instance).toBe(false);
 
       const updated = updateScenario(db, {
         id: created.id,
         stealth_required: true,
-        dual_instance: true,
       });
 
       expect(isErrorResult(updated)).toBe(false);
       if (!isErrorResult(updated)) {
         expect(updated.stealth_required).toBe(true);
-        expect(updated.dual_instance).toBe(true);
         // Other fields must be preserved
         expect(updated.title).toBe('Steel Update Test');
         expect(updated.enabled).toBe(true);
       }
     });
 
-    it('should preserve stealth_required and dual_instance when updating other fields', () => {
+    it('should preserve stealth_required when updating other fields', () => {
       const created = createScenario(db, {
         persona_id: guiPersona.id,
-        title: 'Preserve Steel Flags',
-        description: 'Verifies Steel flags are not reset on unrelated updates',
+        title: 'Preserve Steel Flag',
+        description: 'Verifies stealth_required is not reset on unrelated updates',
         playwright_project: 'vendor-owner',
         test_file: 'e2e/demo/preserve-steel.demo.ts',
         stealth_required: true,
-        dual_instance: true,
       });
       expect(isErrorResult(created)).toBe(false);
       if (isErrorResult(created)) return;
 
       const updated = updateScenario(db, {
         id: created.id,
-        title: 'Preserve Steel Flags — Updated',
+        title: 'Preserve Steel Flag — Updated',
       });
 
       expect(isErrorResult(updated)).toBe(false);
       if (!isErrorResult(updated)) {
-        expect(updated.title).toBe('Preserve Steel Flags — Updated');
+        expect(updated.title).toBe('Preserve Steel Flag — Updated');
         expect(updated.stealth_required).toBe(true);
-        expect(updated.dual_instance).toBe(true);
       }
     });
 
-    it('should clear stealth_required and dual_instance back to false', () => {
+    it('should clear stealth_required back to false', () => {
       const created = createScenario(db, {
         persona_id: guiPersona.id,
         title: 'Steel Clear Test',
-        description: 'Verifies clearing Steel flags back to defaults',
+        description: 'Verifies clearing stealth_required back to default',
         playwright_project: 'vendor-owner',
         test_file: 'e2e/demo/steel-clear.demo.ts',
         stealth_required: true,
-        dual_instance: true,
       });
       expect(isErrorResult(created)).toBe(false);
       if (isErrorResult(created)) return;
@@ -1612,13 +1578,11 @@ describe('Demo Scenario CRUD', () => {
       const cleared = updateScenario(db, {
         id: created.id,
         stealth_required: false,
-        dual_instance: false,
       });
 
       expect(isErrorResult(cleared)).toBe(false);
       if (!isErrorResult(cleared)) {
         expect(cleared.stealth_required).toBe(false);
-        expect(cleared.dual_instance).toBe(false);
       }
     });
   });

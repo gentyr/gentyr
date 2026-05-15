@@ -72,11 +72,11 @@ Call `mcp__playwright__run_demo({
   scenario_id: "<scenario.id>",
   slow_mo: 200,
   recorded: true,
-  remote: false,
+  local: true,
   success_pause_ms: 5000
 })`.
 
-Runs locally with video recording so the CTO can watch the demo live.
+`local: true` forces local execution so the CTO can watch the demo live on their display with ScreenCaptureKit recording. This requires CTO authorization (the CTO is the one invoking this slash command, so authorization is implicit).
 
 ### Step 7: Report
 

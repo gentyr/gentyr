@@ -1,11 +1,16 @@
 /**
- * Execution Target Resolver for Remote Playwright
+ * Execution Target Resolver for Demos
  *
  * Determines whether a demo should run locally, on a remote Fly.io machine,
- * or on a Steel.dev cloud browser (for stealth-required scenarios).
- * Implements a four-tier priority system: Steel stealth routing, forced-local
- * physical requirements, forced-remote explicit requests, and intelligent
- * auto-routing.
+ * or on a Steel.dev cloud browser.
+ *
+ * The model is a 3-rule decision tree, in priority order:
+ *   1. Structural local: `usesChromeBridge` or `remoteEligible === false` → local
+ *      (no error — these scenarios are physically incapable of running remotely)
+ *   2. Explicit conflict: `local === true && stealth === true` → error
+ *   3. Explicit local: `local === true` → local (CTO-gated for spawned agents — handled by hook)
+ *   4. Stealth (explicit or DB-derived `stealthRequired`): Steel.dev (fail-closed)
+ *   5. Default: Fly.io (fail-closed)
  *
  * This module is pure — no side effects, no imports of GENTYR hooks or MCP
  * infrastructure. All I/O is isolated to the async utility functions at the
@@ -20,37 +25,38 @@
  * All inputs required to make an execution target routing decision.
  */
 export interface ExecutionTargetInput {
-  /** Whether the demo is explicitly set to headless mode */
-  headless: boolean;
-  /** Whether Fly.io is configured in services.json */
-  flyConfigured: boolean;
-  /** Whether Fly.io API is reachable (health check passed) */
-  flyHealthy: boolean;
-  /** Whether the display lock is currently held by another agent */
-  displayLockContended: boolean;
-  /** Whether the scenario has headed=true in the DB (requires window recording) */
-  scenarioHeaded: boolean;
-  /** Whether the scenario uses chrome-bridge fixtures */
+  /** Caller explicitly requested local execution. */
+  local?: boolean;
+  /** Caller explicitly requested stealth (Steel.dev) execution. */
+  stealth?: boolean;
+  /** Whether the scenario uses chrome-bridge fixtures (structural local override). */
   usesChromeBridge: boolean;
-  /** Whether the scenario has remote_eligible=true in the DB (explicit eligibility flag). Undefined = use heuristics. */
+  /**
+   * Whether the scenario has remote_eligible=true in the DB.
+   * `false` is an authoritative structural local override (e.g., chrome-bridge, local-only).
+   * `true` or `undefined` defers to the rest of the routing tree.
+   */
   remoteEligible?: boolean;
-  /** Explicit remote override from the agent (true=force remote, false=force local, undefined=auto) */
-  explicitRemote?: boolean;
-  /** Number of currently running Fly machines */
-  activeMachineCount?: number;
-  /** Max concurrent machines allowed */
-  maxConcurrentMachines?: number;
-  /** Whether the scenario has stealth_required=true in the DB (needs Steel.dev cloud browser) */
+  /**
+   * DB-derived stealth requirement (`demo_scenarios.stealth_required`).
+   * When `true`, treated identically to `stealth: true` at routing time.
+   */
   stealthRequired?: boolean;
-  /** Whether the scenario has dual_instance=true in the DB (Fly.io + Steel in parallel) */
-  dualInstance?: boolean;
-  /** Whether Steel.dev is configured in services.json */
+  /** Whether Fly.io is configured in services.json (apiToken + appName resolved). */
+  flyConfigured: boolean;
+  /** Whether Fly.io API is reachable (health check passed). */
+  flyHealthy: boolean;
+  /** Number of currently running Fly machines. */
+  activeMachineCount?: number;
+  /** Max concurrent Fly.io machines allowed. */
+  maxConcurrentMachines?: number;
+  /** Whether Steel.dev is configured in services.json (apiKey resolved + enabled). */
   steelConfigured?: boolean;
-  /** Whether Steel.dev API is reachable (health check passed) */
+  /** Whether Steel.dev API is reachable (health check passed). */
   steelHealthy?: boolean;
-  /** Number of currently active Steel sessions */
+  /** Number of currently active Steel sessions. */
   activeSteelSessionCount?: number;
-  /** Max concurrent Steel sessions allowed */
+  /** Max concurrent Steel sessions allowed. */
   maxConcurrentSteelSessions?: number;
 }
 
@@ -58,18 +64,14 @@ export interface ExecutionTargetInput {
  * The resolved execution target with a human-readable routing reason.
  */
 export interface ExecutionTarget {
-  /** Where to execute: local machine, remote Fly.io, or Steel.dev cloud browser */
-  target: 'local' | 'remote' | 'steel';
-  /** Human-readable reason for the routing decision */
+  /** Where to execute: local machine, Fly.io, or Steel.dev cloud browser. */
+  target: 'local' | 'fly' | 'steel';
+  /** Human-readable reason for the routing decision. */
   reason: string;
   /**
-   * Whether this was an auto-downgrade from headed to headless+remote.
-   * Only set to true on the specific contention-bypass path.
-   */
-  autoDowngraded?: boolean;
-  /**
    * When true, the routing decision is an error — the caller must abort, not execute.
-   * Used for fail-closed scenarios (e.g., stealth_required but Steel not configured).
+   * Used for fail-closed scenarios (e.g., stealth required but Steel not configured;
+   * default Fly.io routing when Fly is not configured; `local && stealth` conflict).
    */
   error?: boolean;
 }
@@ -79,47 +81,41 @@ export interface ExecutionTarget {
 // ============================================================================
 
 /**
- * Determine whether a demo should run locally, on a remote Fly.io machine,
- * or on a Steel.dev cloud browser.
+ * Determine whether a demo should run locally, on Fly.io, or on Steel.dev.
  *
- * Four-tier priority system:
+ * Decision tree (in evaluation order):
  *
- * Tier 0 (Steel stealth): Scenarios requiring anti-bot stealth
- *   - stealth_required=true + Steel configured + healthy → steel
- *   - stealth_required=true + Steel not configured/healthy → error (fail-closed)
- *   - dual_instance=true implies stealth; routes to Steel (Fly.io + Steel orchestrated)
+ *   1. Structural local (no error):
+ *      - `remoteEligible === false` OR `usesChromeBridge` → `local`
+ *      - These scenarios are physically incapable of running remotely
+ *        (chrome-bridge sockets, extension fixtures, local-only DB flag).
  *
- * Tier 1 (forced local): Scenarios that physically require local resources
- *   - Headed demos (need display for window recording)
- *   - Chrome-bridge scenarios (need real Chrome + extension socket)
- *   - Scenario has headed=true flag in DB
- *   - Agent explicitly passed remote=false
+ *   2. Explicit conflict:
+ *      - `local === true && stealth === true` → error
  *
- * Tier 2 (forced remote): Agent explicitly requested remote execution
- *   - Agent passed remote=true
- *   - Only valid if the demo is headless-eligible (no chrome-bridge, no headed requirement)
- *   - If forced remote but demo requires local resources, returns local with warning in reason
+ *   3. Explicit local:
+ *      - `local === true` → `local`
+ *      - CTO-gated for spawned agents at the hook layer (`demo-local-guard.js`);
+ *        not enforced here.
  *
- * Tier 3 (auto-routing): Intelligent routing based on current state
- *   - If Fly.io is configured AND healthy AND demo is headless → remote
- *   - If display lock is contended AND demo is headless-eligible → remote (contention bypass)
- *   - If Fly.io is at machine capacity → local (with reason noting capacity)
- *   - Fallback → local
+ *   4. Stealth (explicit or DB-derived):
+ *      - `stealth === true` OR `stealthRequired === true` → `steel`
+ *      - Fail-closed: must be configured, healthy, and under capacity.
+ *
+ *   5. Default:
+ *      - `fly` — fail-closed: must be configured, healthy, and under capacity.
  */
 export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTarget {
   const {
-    headless,
-    flyConfigured,
-    flyHealthy,
-    displayLockContended,
-    scenarioHeaded: _scenarioHeaded, // Deprecated — ignored for routing; kept for interface backward compat
+    local = false,
+    stealth = false,
     usesChromeBridge,
     remoteEligible,
-    explicitRemote,
-    activeMachineCount = 0,
-    maxConcurrentMachines = 3,
     stealthRequired = false,
-    dualInstance = false,
+    flyConfigured,
+    flyHealthy,
+    activeMachineCount = 0,
+    maxConcurrentMachines = 10,
     steelConfigured = false,
     steelHealthy = false,
     activeSteelSessionCount = 0,
@@ -127,175 +123,114 @@ export function resolveExecutionTarget(input: ExecutionTargetInput): ExecutionTa
   } = input;
 
   // --------------------------------------------------------------------------
-  // Tier 0: Steel stealth routing (highest priority)
+  // Rule 1: Structural local (no error)
   // --------------------------------------------------------------------------
-  // Stealth scenarios MUST run on Steel — fail-closed if Steel is unavailable.
-  // This prevents silent fallback to Fly.io where bot detection would block them.
+  // These scenarios are physically incapable of running remotely. The DB
+  // override (`remoteEligible=false`) takes precedence over heuristic detection.
 
-  if (stealthRequired || dualInstance) {
+  if (remoteEligible === false) {
+    return {
+      target: 'local',
+      reason: 'Scenario not remote-eligible (remote_eligible=false in DB)',
+    };
+  }
+
+  if (usesChromeBridge) {
+    return {
+      target: 'local',
+      reason: 'Scenario uses chrome-bridge (requires local Chrome with extension socket)',
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Rule 2: Explicit conflict
+  // --------------------------------------------------------------------------
+
+  if (local && stealth) {
+    return {
+      target: 'local',
+      reason: 'Conflicting flags: cannot request both local=true and stealth=true',
+      error: true,
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Rule 3: Explicit local
+  // --------------------------------------------------------------------------
+
+  if (local) {
+    return {
+      target: 'local',
+      reason: 'Explicitly requested local execution (local: true)',
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Rule 4: Stealth (explicit or DB-derived) — fail-closed
+  // --------------------------------------------------------------------------
+
+  const wantStealth = stealth || stealthRequired;
+  if (wantStealth) {
+    const stealthSource = stealth
+      ? 'stealth: true'
+      : 'stealth_required=true in DB';
     if (!steelConfigured) {
       return {
         target: 'steel',
-        reason: 'Scenario requires Steel.dev cloud browser (stealth_required) but Steel is not configured in services.json',
+        reason: `Stealth requested (${stealthSource}) but Steel.dev is not configured in services.json`,
         error: true,
       };
     }
     if (!steelHealthy) {
       return {
         target: 'steel',
-        reason: 'Scenario requires Steel.dev cloud browser but Steel API is unreachable',
+        reason: `Stealth requested (${stealthSource}) but Steel.dev API is unreachable`,
         error: true,
       };
     }
     if (activeSteelSessionCount >= maxConcurrentSteelSessions) {
       return {
         target: 'steel',
-        reason: `Scenario requires Steel.dev but at session capacity (${activeSteelSessionCount}/${maxConcurrentSteelSessions})`,
+        reason: `Stealth requested (${stealthSource}) but Steel.dev at session capacity (${activeSteelSessionCount}/${maxConcurrentSteelSessions})`,
         error: true,
-      };
-    }
-    // Dual-instance also requires Fly.io for the Playwright/bridge side
-    if (dualInstance) {
-      if (!flyConfigured) {
-        return {
-          target: 'steel',
-          reason: 'Dual-instance scenario requires both Steel.dev and Fly.io, but Fly.io is not configured',
-          error: true,
-        };
-      }
-      if (!flyHealthy) {
-        return {
-          target: 'steel',
-          reason: 'Dual-instance scenario requires both Steel.dev and Fly.io, but Fly.io API is unreachable',
-          error: true,
-        };
-      }
-      return {
-        target: 'steel',
-        reason: 'Dual-instance scenario routed to Steel.dev + Fly.io (stealth browser + Playwright orchestration)',
       };
     }
     return {
       target: 'steel',
-      reason: 'Stealth-required scenario routed to Steel.dev cloud browser',
+      reason: `Routed to Steel.dev cloud browser (${stealthSource})`,
     };
   }
 
   // --------------------------------------------------------------------------
-  // Tier 1: Forced local (physical requirements)
-  // --------------------------------------------------------------------------
-
-  // explicit remote=false always wins regardless of other flags
-  if (explicitRemote === false) {
-    return { target: 'local', reason: 'Explicitly requested local execution (remote: false)' };
-  }
-
-  // Scenario explicitly marked as not remote-eligible in the DB — authoritative
-  // override that takes precedence over all heuristic checks.
-  if (remoteEligible === false) {
-    if (explicitRemote === true) {
-      return {
-        target: 'local',
-        reason: 'Scenario has remote_eligible=false — cannot run remotely (DB override)',
-      };
-    }
-    return { target: 'local', reason: 'Scenario not remote-eligible (remote_eligible=false in DB)' };
-  }
-
-  // Chrome-bridge scenarios require a local Chrome process with an active
-  // extension socket — there is no equivalent on a remote machine.
-  if (usesChromeBridge) {
-    if (explicitRemote === true) {
-      return {
-        target: 'local',
-        reason: 'Chrome-bridge scenarios require local Chrome with extension socket — cannot run remotely',
-      };
-    }
-    return { target: 'local', reason: 'Scenario uses chrome-bridge (requires local Chrome)' };
-  }
-
-  // NOTE: scenarioHeaded is ignored for routing decisions — all demos run
-  // headed with video recording (Xvfb + ffmpeg on Fly.io, ScreenCaptureKit locally).
-  // The headed DB flag remains in the interface for backward compatibility but
-  // does not affect execution target selection.
-
-  // headless=false at the call site implies local display access — UNLESS
-  // the caller explicitly requested remote. Remote machines handle headed mode
-  // via Xvfb + ffmpeg (no physical display needed).
-  if (!headless) {
-    if (explicitRemote === true) {
-      return {
-        target: 'remote',
-        reason: 'Headed mode explicitly requested on remote — Xvfb + ffmpeg will handle display and recording',
-      };
-    }
-    return { target: 'local', reason: 'Running in headed mode (requires local display)' };
-  }
-
-  // --------------------------------------------------------------------------
-  // Beyond this point the demo is headless-eligible.
-  // --------------------------------------------------------------------------
-
-  // --------------------------------------------------------------------------
-  // Tier 2: Forced remote (explicit agent request)
-  // --------------------------------------------------------------------------
-
-  if (explicitRemote === true) {
-    if (!flyConfigured) {
-      return {
-        target: 'remote',
-        reason: 'Remote execution requested but Fly.io is not configured in services.json',
-        error: true,
-      };
-    }
-    if (!flyHealthy) {
-      return {
-        target: 'remote',
-        reason: 'Remote execution requested but Fly.io API is unreachable',
-        error: true,
-      };
-    }
-    if (activeMachineCount >= maxConcurrentMachines) {
-      return {
-        target: 'remote',
-        reason: `Remote execution requested but at machine capacity (${activeMachineCount}/${maxConcurrentMachines})`,
-        error: true,
-      };
-    }
-    return { target: 'remote', reason: 'Explicitly requested remote execution (remote: true)' };
-  }
-
-  // --------------------------------------------------------------------------
-  // Tier 3: Auto-routing
+  // Rule 5: Default — Fly.io (fail-closed)
   // --------------------------------------------------------------------------
 
   if (!flyConfigured) {
-    return { target: 'local', reason: 'Fly.io not configured — running locally' };
+    return {
+      target: 'fly',
+      reason: 'Default routing requires Fly.io but it is not configured in services.json',
+      error: true,
+    };
   }
-
   if (!flyHealthy) {
-    return { target: 'local', reason: 'Fly.io API unreachable — falling back to local' };
+    return {
+      target: 'fly',
+      reason: 'Default routing requires Fly.io but Fly.io API is unreachable',
+      error: true,
+    };
   }
-
   if (activeMachineCount >= maxConcurrentMachines) {
     return {
-      target: 'local',
-      reason: `Fly.io at machine capacity (${activeMachineCount}/${maxConcurrentMachines}) — running locally`,
+      target: 'fly',
+      reason: `Default routing requires Fly.io but at machine capacity (${activeMachineCount}/${maxConcurrentMachines})`,
+      error: true,
     };
   }
 
-  // Contention bypass: display lock held by another agent — route this headless
-  // demo to Fly.io so it does not queue behind the headed session.
-  if (displayLockContended) {
-    return {
-      target: 'remote',
-      reason: 'Display lock contended — routing headless demo to Fly.io to bypass queue',
-      autoDowngraded: true,
-    };
-  }
-
-  // Default auto-route: Fly.io is configured, healthy, and has capacity.
-  return { target: 'remote', reason: 'Auto-routed to Fly.io (configured, healthy, headless-eligible)' };
+  return {
+    target: 'fly',
+    reason: 'Routed to Fly.io (default — configured, healthy, capacity available)',
+  };
 }
 
 // ============================================================================
@@ -334,7 +269,7 @@ export function detectChromeBridgeUsage(testFile: string): boolean {
  * Issues a GET request to the machines list endpoint for `appName` and
  * returns `true` if the API responds with a 2xx status within `timeoutMs`.
  * Returns `false` on any network error, timeout, or non-2xx response so
- * that callers treat an unreachable API as a routing fallback to local,
+ * that callers treat an unreachable API as a routing error (fail-closed),
  * not an unhandled exception.
  */
 export async function checkFlyHealth(
