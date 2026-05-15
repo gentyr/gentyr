@@ -1765,7 +1765,7 @@ Key modules consumed by hooks:
 | test-writer | sonnet | Write/update tests | Must run in worktree, does NOT commit |
 | project-manager | sonnet | Git operations | ONLY agent that commits, pushes, creates PRs, self-merges |
 | investigator | opus | Research/diagnose | Read-only, no worktree needed |
-| user-alignment | sonnet | Verify user intent | Read-only auditor, no file edits |
+| user-alignment | sonnet | Verify user intent, propose specs | Auditor; proposes spec changes via deferred actions (CTO-gated), no source code edits |
 | deputy-cto | opus | Triage/escalation | Review promotion PRs, manage task queue; can operate as global alignment monitor |
 | persistent-monitor | opus | Long-running orchestrator | Never edits files, spawns sub-agents via create_task |
 | plan-manager | opus | Plan execution | Spawns persistent tasks for plan steps |
