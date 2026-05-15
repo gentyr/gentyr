@@ -893,6 +893,68 @@ export function reapSyncPass(db) {
         } catch (_) { /* non-fatal */ }
       }
 
+      // JSONL staleness check: session alive but no JSONL writes for N minutes.
+      // Catches sessions blocked on Agent() sub-agent calls, hung MCP tool calls, etc.
+      // Skip gate/audit lanes (short-lived) and persistent (has heartbeat detection).
+      const JSONL_STALE_MS = getCooldown('jsonl_stale_kill_minutes', 15) * 60 * 1000;
+      if (elapsed > JSONL_STALE_MS && item.agent_id && sessionDir &&
+          !['gate', 'audit', 'persistent'].includes(item.lane || '')) {
+        try {
+          const sessionFile = findSessionFileByAgentId(sessionDir, item.agent_id);
+          if (sessionFile) {
+            const stat = fs.statSync(sessionFile);
+            const staleMs = now - stat.mtimeMs;
+            if (staleMs > JSONL_STALE_MS) {
+              killProcessGroup(item.pid);
+              db.prepare("UPDATE queue_items SET status = 'completed', error = 'jsonl_stale_kill', completed_at = datetime('now') WHERE id = ?")
+                .run(item.id);
+
+              let metadata = {};
+              try { metadata = item.metadata ? JSON.parse(item.metadata) : {}; } catch { /* ignore */ }
+
+              result.reaped.push({
+                queueId: item.id,
+                agentId: item.agent_id,
+                pid: item.pid,
+                metadata,
+                revivalCandidate: true,
+                reapReason: 'jsonl_stale',
+              });
+
+              auditEvent('session_reaped_dead', {
+                queue_id: item.id,
+                agent_id: item.agent_id,
+                pid: item.pid,
+                reason: 'jsonl_stale_kill',
+                stale_ms: staleMs,
+              });
+
+              retireProgressFile(path.join(projectDir, '.claude', 'state', 'agent-progress', `${item.agent_id}.json`));
+              if (item.agent_id) {
+                try { releaseAllResources(item.agent_id); removeFromAllQueues(item.agent_id); } catch (_) { /* non-fatal */ }
+              }
+
+              // Reset linked TODO task to pending so it can be re-spawned
+              if (metadata.taskId) {
+                try {
+                  const todoDbPath = path.join(projectDir, '.claude', 'todo.db');
+                  if (Database && fs.existsSync(todoDbPath)) {
+                    const todoDb = new Database(todoDbPath);
+                    todoDb.pragma('busy_timeout = 3000');
+                    todoDb.prepare(
+                      "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
+                    ).run(metadata.taskId);
+                    todoDb.close();
+                  }
+                } catch (_) { /* non-fatal */ }
+              }
+
+              continue;
+            }
+          }
+        } catch (_) { /* non-fatal — fall through to normal elapsed check */ }
+      }
+
       // Existing hard-kill threshold check (30 min)
       if (elapsed > hardKillMs) {
         result.stuckAlive.push({

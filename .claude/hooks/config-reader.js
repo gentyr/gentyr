@@ -82,6 +82,7 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'revival_compact_max_minutes',
   'revival_compact_timeout_ms',
   'session_reaper',
+  'jsonl_stale_kill_minutes',
   'screenshot_cleanup',
   'auto_rollback_check',
   'fly_image_freshness',
@@ -207,6 +208,8 @@ const DEFAULTS = {
   persistent_heartbeat_stale_minutes: 5, // 5 minutes
   plan_orphan_detection: 10,             // 10 minutes
   session_hard_kill_minutes: 60,         // 60 minutes
+  session_reaper: 30,                    // 30 minutes (async pass cooldown)
+  jsonl_stale_kill_minutes: 15,          // kill sessions with stale JSONL (stuck on Agent(), hung tool)
   screenshot_cleanup: 1440,              // daily (24h)
   promotion_retry_check: 5,             // 5 minutes
   report_auto_resolve: 2,              // 2 minutes
