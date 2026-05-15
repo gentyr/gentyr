@@ -1,1 +1,0 @@
-../../agents/icon-finder.md

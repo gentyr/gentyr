@@ -1,1 +1,0 @@
-../../agents/persistent-monitor.md
