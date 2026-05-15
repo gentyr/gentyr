@@ -88,6 +88,13 @@ export interface CreateSessionOptions {
    * for the next run.
    */
   persistProfile?: boolean;
+  /**
+   * Caller-provided sessionContext object passed directly to Steel at session
+   * create. Use to inject cookies/localStorage captured elsewhere (e.g.
+   * Playwright `storageState`) without going through the Profiles API.
+   * Transient — Steel does NOT persist this between sessions.
+   */
+  sessionContext?: Record<string, unknown>;
 }
 
 // ============================================================================
@@ -176,6 +183,10 @@ export async function createSteelSession(
   if (options.persistProfile) {
     // Save this session's state as a Profile on release
     body.persistProfile = true;
+  }
+  if (options.sessionContext) {
+    // Inject caller-supplied cookies/localStorage at session create time.
+    body.sessionContext = options.sessionContext;
   }
 
   const response = await steelFetch(config.apiKey, '/v1/sessions', {

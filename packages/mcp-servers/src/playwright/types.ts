@@ -287,7 +287,9 @@ export const RunDemoArgsSchema = z.object({
   steel_profile_id: z.string().min(1).max(200).optional()
     .describe('Steel.dev Profile ID to load at session start. Restores cookies, localStorage, fingerprint, and stored credentials from a previously persisted profile — useful for skipping repeated logins on stealth runs. Only applies on stealth runs.'),
   steel_persist_profile: z.coerce.boolean().optional().default(false)
-    .describe('When true, persist this stealth session\'s state as a Steel Profile on release. The returned check_demo_result will include steel_profile_id so you can wire it back in for the next run. Only applies on stealth runs.'),
+    .describe('When true, persist this stealth session\'s state as a Steel Profile on release. The returned check_demo_result will include steel_profile_id so you can wire it back in for the next run. Only applies on stealth runs. When scenario_id is set, the assigned profile_id is also auto-saved to the scenario row (steel_profile_id column) so subsequent runs of the same scenario load it automatically.'),
+  steel_session_context: z.record(z.string(), z.unknown()).optional()
+    .describe('Steel.dev sessionContext object passed directly to Steel at session create time. Use to inject cookies/localStorage captured elsewhere (e.g. via Playwright storageState) without going through Steel Profiles. Distinct from steel_profile_id — sessionContext is caller-provided and transient; Profiles are server-stored. Only applies on stealth runs.'),
   telemetry: z.coerce.boolean().optional().default(false)
     .describe('Enable maximum telemetry capture (browser console/network/errors/performance + system metrics). Overrides scenario-level telemetry setting when true. Telemetry data is stored as JSONL files alongside demo artifacts and shipped to Elastic with the run ID.'),
 }).refine(

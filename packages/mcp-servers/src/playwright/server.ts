@@ -1426,6 +1426,28 @@ async function finalizeSteelSession(entry: DemoRunState): Promise<void> {
     }
   }
 
+  // When the run was tagged steel_persist_profile=true and a profile_id is
+  // present on the entry (set by the Steel session creation response), write
+  // it back to the scenario row. This makes the profile sticky across
+  // subsequent runs of the same scenario without the caller having to track
+  // the ID themselves.
+  if (entry.scenario_id && entry.steel_persist_profile && entry.steel_profile_id) {
+    try {
+      const dbPath = getUserFeedbackDbPath();
+      if (fs.existsSync(dbPath)) {
+        const db = new Database(dbPath);
+        try {
+          db.prepare('UPDATE demo_scenarios SET steel_profile_id = ? WHERE id = ?')
+            .run(entry.steel_profile_id, entry.scenario_id);
+        } finally {
+          db.close();
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`[steel-runner] Failed to persist scenario profile_id: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
   entry.steel_finalized = true;
   try { persistDemoRuns(); } catch { /* non-fatal */ }
 }
@@ -2977,13 +2999,28 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         if (fs.existsSync(feedbackDbPath)) {
           const scenarioDb = new Database(feedbackDbPath, { readonly: true });
           try {
-            const scenarioRow = scenarioDb.prepare('SELECT remote_eligible, stealth_required, compute_size FROM demo_scenarios WHERE id = ?')
-              .get(args.scenario_id) as { remote_eligible: number | null; stealth_required: number | null; compute_size: string | null } | undefined;
+            // steel_profile_id is migrated on DB open in user-feedback; select
+            // it defensively in case the running DB connection predates the
+            // migration.
+            let scenarioRow: { remote_eligible: number | null; stealth_required: number | null; compute_size: string | null; steel_profile_id?: string | null } | undefined;
+            try {
+              scenarioRow = scenarioDb.prepare('SELECT remote_eligible, stealth_required, compute_size, steel_profile_id FROM demo_scenarios WHERE id = ?')
+                .get(args.scenario_id) as typeof scenarioRow;
+            } catch {
+              scenarioRow = scenarioDb.prepare('SELECT remote_eligible, stealth_required, compute_size FROM demo_scenarios WHERE id = ?')
+                .get(args.scenario_id) as typeof scenarioRow;
+            }
             if (scenarioRow?.remote_eligible === 0) remoteEligible = false;
             else if (scenarioRow?.remote_eligible === 1) remoteEligible = true;
             if (scenarioRow?.stealth_required === 1) stealthRequired = true;
             if (scenarioRow?.compute_size === 'large') scenarioComputeSize = 'large';
             else if (scenarioRow?.compute_size === 'standard') scenarioComputeSize = 'standard';
+            // Auto-load the scenario's persisted Steel profile when the caller
+            // didn't explicitly pass one. This makes "log in once, reuse
+            // forever" work without the caller tracking the profile ID.
+            if (!args.steel_profile_id && typeof scenarioRow?.steel_profile_id === 'string' && scenarioRow.steel_profile_id.length > 0) {
+              args.steel_profile_id = scenarioRow.steel_profile_id;
+            }
           } catch { /* column may not exist */ }
           scenarioDb.close();
         }
@@ -3112,6 +3149,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
             region: args.steel_region,
             profileId: args.steel_profile_id,
             persistProfile: args.steel_persist_profile === true,
+            sessionContext: args.steel_session_context,
           });
 
           // Steel (stealth) path: Playwright runs locally and connects to the
