@@ -32,7 +32,7 @@ RUN if [ -n "$GIT_TOKEN" ]; then \
       git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password='$GIT_TOKEN'"; }; f'; \
     fi && \
     git clone --depth=1 --branch "$GIT_REF" "$GIT_REMOTE" . && \
-    git config --global --unset credential.helper || true
+    (git config --global --unset credential.helper || true)
 
 # Install dependencies (frozen lockfile, includes postinstall scripts)
 ENV PNPM_STORE_DIR=/tmp/pnpm-store

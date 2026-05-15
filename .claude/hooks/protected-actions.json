@@ -3,7 +3,6 @@
   "allowedUnprotectedServers": [
     "agent-tracker",
     "todo-db",
-    "specs-browser",
     "session-events",
     "review-queue",
     "agent-reports",
@@ -205,6 +204,19 @@
       "phrase": "APPROVE DISABLE",
       "tools": ["disable_scenarios"],
       "description": "Disabling demo scenarios requires CTO approval — prevents agents from bypassing promotion gates by silently disabling failing demos"
+    },
+    "specs-browser": {
+      "protection": "approval-only",
+      "phrase": "APPROVE SPEC CHANGE",
+      "tools": [
+        "create_spec",
+        "edit_spec",
+        "delete_spec",
+        "create_suite",
+        "edit_suite",
+        "delete_suite"
+      ],
+      "description": "Specification write operations require CTO approval. Read tools (list_specs, get_spec, get_specs_for_file, list_suites, get_suite) remain unrestricted."
     }
   },
   "files": {
