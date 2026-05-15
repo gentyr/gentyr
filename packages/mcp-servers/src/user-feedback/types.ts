@@ -381,9 +381,7 @@ export const CreateScenarioArgsSchema = z.object({
   remote_eligible: z.coerce.boolean().optional().default(true)
     .describe('Whether this scenario can run on remote Fly.io machines. Set false for scenarios requiring local Chrome, extension sockets, or headed display access. Defaults to true.'),
   stealth_required: z.coerce.boolean().optional().default(false)
-    .describe('Whether this scenario requires a stealth cloud browser (Steel.dev). Stealth scenarios bypass bot detection via residential proxies and undetectable Chromium. Fail-closed: errors if Steel not configured.'),
-  dual_instance: z.coerce.boolean().optional().default(false)
-    .describe('Whether this scenario requires dual-instance mode (Fly.io + Steel in parallel). Fly.io runs Playwright; Steel provides the stealth browser connected via bridge.'),
+    .describe('Whether this scenario requires a stealth cloud browser (Steel.dev). Stealth scenarios bypass bot detection via residential proxies and undetectable Chromium. Auto-enables stealth routing at run_demo time. Fail-closed: errors if Steel not configured.'),
   telemetry: z.coerce.boolean().optional().default(false)
     .describe('Enable maximum telemetry capture for this scenario.'),
   compute_size: z.enum(['standard', 'large']).optional()
@@ -409,9 +407,7 @@ export const UpdateScenarioArgsSchema = z.object({
   remote_eligible: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
     .describe('Whether this scenario can run on remote Fly.io machines.'),
   stealth_required: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
-    .describe('Whether this scenario requires a stealth cloud browser (Steel.dev).'),
-  dual_instance: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
-    .describe('Whether this scenario requires dual-instance mode (Fly.io + Steel).'),
+    .describe('Whether this scenario requires a stealth cloud browser (Steel.dev). Auto-enables stealth routing at run_demo time.'),
   telemetry: z.preprocess((val) => val === 'true' || val === true, z.boolean()).optional()
     .describe('Enable/disable maximum telemetry capture for this scenario.'),
   compute_size: z.enum(['standard', 'large']).nullable().optional()
@@ -454,7 +450,6 @@ export interface ScenarioRecord {
   headed: number; // SQLite boolean (0/1)
   remote_eligible: number; // SQLite boolean (0/1)
   stealth_required: number; // SQLite boolean (0/1)
-  dual_instance: number; // SQLite boolean (0/1)
   telemetry: number; // SQLite boolean (0/1)
   compute_size: string | null; // 'standard' | 'large' | null (null = standard)
   created_at: string;
@@ -478,7 +473,6 @@ export interface ScenarioResult {
   headed: boolean;
   remote_eligible: boolean;
   stealth_required: boolean;
-  dual_instance: boolean;
   telemetry: boolean;
   compute_size: 'standard' | 'large' | null;
   created_at: string;

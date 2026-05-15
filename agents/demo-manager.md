@@ -67,28 +67,29 @@ Headless demos do NOT need the display lock. Only acquire when you need:
 | `mcp__playwright__renew_display_lock` | Extend TTL every 5 minutes during long sessions |
 | `mcp__playwright__get_display_queue_status` | Check current lock holder and queue position |
 
-### Remote Execution (Fly.io) — PREFERRED DEFAULT
+### Remote Execution (Fly.io) — DEFAULT ROUTING
 
-**ALWAYS prefer remote+recorded execution** (`recorded: true, remote: true` — both are defaults on `run_demo`). Remote execution runs on Fly.io with Xvfb+ffmpeg video recording, avoids display lock contention entirely, and produces identical recordings to local ScreenCaptureKit. Only use `remote: false` when:
-- The CTO explicitly asks to watch the demo live in a local browser window
-- The scenario requires chrome-bridge or local extension interaction (`remote_eligible=false`)
+**ALWAYS rely on the default routing** — pass `recorded: true` (the default) and NO execution flag. `run_demo` and `run_demo_batch` route to Fly.io by default. Fly.io runs with Xvfb+ffmpeg video recording, avoids display lock contention entirely, and produces identical recordings to local ScreenCaptureKit. Spawned agents must NEVER pass `local: true` — it is CTO-gated via `demo-local-guard.js` and will be blocked.
+
+**Structural local routing is automatic, NOT a flag**: scenarios with `remote_eligible=false` in the DB (chrome-bridge scenarios, headed-only scenarios) route to local execution server-side. You do not pass any flag for this — the routing layer handles it.
 
 **`remote_eligible=false` scenarios are EXCLUDED from the production promotion pipeline** (`verify_demo_completeness` skips them). Do NOT run these scenarios unless explicitly directed by the CTO — they require local Chrome/display access that automated agents cannot provide. If you encounter a `remote_eligible=false` scenario in a batch, skip it.
 
 Specific patterns:
-- **All validation and repair runs**: Use `run_demo` with defaults (remote+recorded). No display lock needed.
-- **Multi-scenario validation (2+ scenarios)**: ALWAYS use `run_demo_batch` instead of sequential `run_demo` calls. `run_demo_batch({ scenario_ids: [...], remote: true, recorded: true })` runs scenarios CONCURRENTLY across multiple Fly.io machines (up to 3 at a time). Sequential single `run_demo` calls are an anti-pattern.
-- **Contention bypass**: Remote execution eliminates display lock contention entirely — no waiting in the display queue.
-- **Never debug locally**: Do NOT use `remote: false` "to debug" or "to see what happens". Remote execution produces identical output with better diagnostics. The only valid reasons for local are chrome-bridge and CTO live-viewing.
+- **All validation and repair runs**: Use `run_demo` with defaults (no execution flag, `recorded: true`). No display lock needed.
+- **Multi-scenario validation (2+ scenarios)**: ALWAYS use `run_demo_batch` instead of sequential `run_demo` calls. `run_demo_batch({ scenario_ids: [...], recorded: true })` runs scenarios CONCURRENTLY across multiple Fly.io machines (up to 3 at a time). Sequential single `run_demo` calls are an anti-pattern.
+- **Contention bypass**: Default Fly.io routing eliminates display lock contention entirely — no waiting in the display queue.
+- **Never request local execution**: Do NOT pass `local: true` "to debug" or "to see what happens". Default Fly.io execution produces identical output with better diagnostics, and `local: true` is CTO-gated for spawned agents.
 
-The `remote` parameter on `run_demo` controls routing explicitly:
+The execution flags on `run_demo`:
 
-| Value | Behavior |
+| Flag | Behavior |
 |-------|----------|
-| `remote: true` (default) | Runs on Fly.io with video recording — PREFERRED for all automated work |
-| `remote: false` | Force local execution — only when CTO requests live viewing or chrome-bridge is needed |
+| (none — default) | Routes to Fly.io with video recording — PREFERRED for all automated work |
+| `local: true` | Force local execution — CTO-gated; will be blocked for spawned agents by `demo-local-guard.js`. Only the CTO's interactive session (or CTO-approved deferred action) can pass this. |
+| `stealth: true` | Routes to Steel.dev stealth cloud browser. Use only when the scenario has `stealth_required: true` in the DB (auto-applied) or the CTO explicitly requests stealth. Fail-closed if Steel is not configured. |
 
-When Fly.io is not configured, all demos execute locally automatically. `get_fly_status` returns `configured: false` in that case.
+When Fly.io is not configured, default routing fails — there is no silent local fallback. Configure Fly.io via `/setup-fly` first. `get_fly_status` returns `configured: false` if not set up.
 
 ### Chrome Bridge Resource
 
@@ -218,7 +219,7 @@ console.warn('[demo-progress] OTP extracted, filling verify form...');
 
 ### 4. Validation
 
-Always run `run_prerequisites` first, then `preflight_check` before any demo execution. Use `run_demo` with defaults (`recorded: true, remote: true`) for all validation and repair runs — remote execution avoids display lock contention and produces identical recordings.
+Always run `run_prerequisites` first, then `preflight_check` before any demo execution. Use `run_demo` with defaults (`recorded: true`, no execution flag — Fly.io is the default target) for all validation and repair runs — default routing avoids display lock contention and produces identical recordings.
 
 ### 5. Repair
 

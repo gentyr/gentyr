@@ -19,8 +19,8 @@ export function buildPersistentMonitorDemoInstructions() {
 
 This persistent task involves demo scenarios. You MUST follow these rules:
 
-### 1. Run Demos Remote + Recorded (MANDATORY for Spawned Agents)
-Always instruct child sessions to use \`mcp__playwright__run_demo\` with the defaults (\`recorded: true, remote: true\`). Remote execution runs on Fly.io with Xvfb+ffmpeg video recording, avoids display lock contention, and produces identical recordings. Only use \`remote: false\` when the CTO explicitly requests to watch live, or when chrome-bridge/extension interaction is required. Never pass \`recorded: false\` unless the CTO specifically asks for headless-only validation.
+### 1. Run Demos on Fly.io + Recorded (MANDATORY for Spawned Agents)
+Always instruct child sessions to use \`mcp__playwright__run_demo\` with the defaults (no routing flags — Fly.io is the default; \`recorded: true\` is the default). Remote execution runs on Fly.io with Xvfb+ffmpeg video recording, avoids display lock contention, and produces identical recordings. NEVER pass \`local: true\` — it is CTO-gated and will be blocked for spawned agents. Local-only scenarios (chrome-bridge, \`remote_eligible=false\`) are automatically routed locally by the server without any flag. Never pass \`recorded: false\` unless the CTO specifically asks for headless-only validation.
 
 **For multi-scenario validation (2+ scenarios), ALWAYS use \`run_demo_batch\` instead of sequential \`run_demo\` calls:**
 
@@ -28,12 +28,11 @@ Always instruct child sessions to use \`mcp__playwright__run_demo\` with the def
 run_demo_batch({
   project: "demo",
   scenario_ids: ["id1", "id2", ...],
-  remote: true,
   recorded: true
 })
 \`\`\`
 
-\`run_demo_batch\` with \`remote: true\` runs scenarios CONCURRENTLY across multiple Fly.io machines (up to 3 at a time). This is dramatically faster than sequential single \`run_demo\` calls. Sequential local runs are an anti-pattern — never do this unless a specific scenario requires chrome-bridge or has \`remote_eligible=false\`.
+\`run_demo_batch\` defaults to Fly.io and runs scenarios CONCURRENTLY across multiple Fly.io machines (up to 3 at a time). This is dramatically faster than sequential single \`run_demo\` calls. Sequential runs are an anti-pattern — never do this. Scenarios that require chrome-bridge or have \`remote_eligible=false\` are auto-routed locally by the server without any flag.
 
 ### 2. Screenshot-First Diagnosis (MANDATORY -- Before ANY Code Investigation)
 

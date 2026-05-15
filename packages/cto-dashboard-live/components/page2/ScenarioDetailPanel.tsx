@@ -58,7 +58,9 @@ function statusIcon(item: DemoResultHistoryItem): { icon: string; color: string 
 
 function HistoryRow({ item, width }: { item: DemoResultHistoryItem; width: number }): React.ReactElement {
   const { icon, color } = statusIcon(item);
-  const mode = item.executionMode === 'remote' ? 'R' : 'L';
+  const mode = item.executionMode === 'fly' ? 'F'
+    : item.executionMode === 'steel' ? 'S'
+    : 'L';
   const duration = formatDuration(item.durationMs);
   const ago = agoLabel(item.completedAt);
 

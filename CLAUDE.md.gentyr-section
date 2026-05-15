@@ -278,22 +278,21 @@ When Fly.io is configured (`fly` section in `services.json`), headless demos aut
 
 **Setup**: `/setup-fly` slash command guides through Fly.io account creation, credential registration via 1Password, and app provisioning.
 
-**Auto-routing**: `run_demo` automatically routes headless demos to Fly.io when configured:
-- `headless: true` + Fly.io configured → remote (auto)
-- Display lock contended + headless-eligible → remote (contention bypass)
-- `remote: true` → forced remote
-- `remote: false` → forced local
-- Chrome-bridge or extension demos → always local (headed demos run on Fly.io via Xvfb + ffmpeg)
+**Routing rules**: `run_demo` uses a simple 3-rule decision tree:
+- `remote_eligible=false` or chrome-bridge detected → local (structural; no flag needed)
+- `local: true` → local (CTO-gated for spawned agents); conflicts with `stealth: true`
+- `stealth: true` or `stealth_required=true` (DB) → Steel.dev (fail-closed)
+- default (no flags) → Fly.io (fail-closed)
 
-**Same interface**: Progress reporting, `check_demo_result`, `stop_demo`, and artifact retrieval work identically for remote runs. The `execution_target` field in the response indicates where it ran. Remote runs return a synthetic negative PID.
+**Same interface**: Progress reporting, `check_demo_result`, `stop_demo`, and artifact retrieval work identically across local, Fly.io, and Steel runs. The `execution_target` field in the response is one of `'local'` | `'fly'` | `'steel'`. Fly.io and Steel runs return synthetic negative PIDs.
 
 **Not available for**: chrome-bridge scenarios (require real Chrome with extension socket), extension demos (require loaded extension). Headed demos are fully supported on Fly.io via Xvfb + ffmpeg recording.
 
-**Batch parallelization**: `run_demo_batch` with `headless: true` (default) can run multiple scenarios simultaneously across Fly.io machines, limited by `fly.maxConcurrentMachines` (default 3).
+**Batch parallelization**: `run_demo_batch` runs multiple scenarios simultaneously across Fly.io machines (or Steel.dev sessions for stealth batches), limited by `fly.maxConcurrentMachines` (default 10) or `steel.maxConcurrentSessions`.
 
-**Cost control**: Machines auto-stop on completion, have a 30-minute hard kill safety net, and `maxConcurrentMachines` caps concurrent usage. `get_fly_status` tool shows current machine count and health. `get_fly_status` also returns `imageDeployed` — if `false`, no Docker image has been deployed to the Fly app and remote execution will fail. When `remote: true` is explicit, the error surfaces directly. When auto-routed, `check_demo_result` includes `remote_routing_warning` explaining the fallback to local. Fix: call `deploy_fly_image()` to build and push the image (runs in background, poll `get_fly_status()` to confirm), or re-run `/setup-fly`.
+**Cost control**: Machines auto-stop on completion, have a 30-minute hard kill safety net, and `maxConcurrentMachines` caps concurrent usage. `get_fly_status` tool shows current machine count and health. `get_fly_status` also returns `imageDeployed` — if `false`, no Docker image has been deployed to the Fly app. When Fly.io is the routed target and execution fails (e.g., image not deployed), `run_demo` returns an error rather than silently falling back to local. Fix: call `deploy_fly_image()` to build and push the image.
 
-**Image deployment requirement**: After `/setup-fly`, the Fly.io provisioning script must run to build and push the Docker image to `registry.fly.io/<appName>:latest`. Without this, `spawnRemoteMachine` fails and demos fall back to local execution. The `run_demo` response includes `remote_routing_warning` when this fallback occurs, and `check_demo_result` surfaces it in the result.
+**Image deployment requirement**: After `/setup-fly`, the Fly.io provisioning script must run to build and push the Docker image to `registry.fly.io/<appName>:latest`. Without this, `spawnRemoteMachine` fails and `run_demo` returns a fail-closed error (the routing is fail-closed at the Fly.io tier).
 
 **Image freshness**: The Fly.io Docker image contains `remote-runner.sh`, system dependencies, and Playwright. Target project code is cloned fresh from git on each run, but if GENTYR's `infra/fly-playwright/Dockerfile` or `remote-runner.sh` changes (e.g., after `npx gentyr sync` or framework updates), the image must be rebuilt with `deploy_fly_image({ force: true })`. `get_fly_status()` returns `imageStale: true` when the deployed image is outdated. Session briefing shows image age and staleness warnings at login. Do NOT ignore `imageStale` warnings — stale images cause systematic demo failures.
 
@@ -319,14 +318,15 @@ Prerequisites with `run_as_background: true` are started before the test and hea
 Everything else — including headed demos, dev servers, code-server, and custom background services — runs on remote machines.
 
 **Remote-First Execution Rule (MANDATORY for spawned agents)**:
-Spawned agents MUST use remote execution for all demo runs unless the scenario requires chrome-bridge or has `remote_eligible=false`. Sequential local `run_demo` calls are an anti-pattern. For 2+ scenarios, use `run_demo_batch({ scenario_ids: [...], remote: true, recorded: true })` — this runs scenarios CONCURRENTLY across multiple Fly.io machines. Do NOT run demos locally "to debug" — remote produces identical output. The only valid reasons for `remote: false` are: (1) CTO explicitly requests live viewing, (2) chrome-bridge/extension interaction required.
+Spawned agents MUST use Fly.io (the default routing) or Steel.dev (`stealth: true`) for all demo runs. Passing `local: true` requires CTO approval via the deferred-action chain. Sequential `run_demo` calls for multiple scenarios are an anti-pattern. For 2+ scenarios, use `run_demo_batch({ scenario_ids: [...] })` — this runs scenarios CONCURRENTLY across multiple Fly.io machines. Do NOT pass `local: true` "to debug" — Fly.io produces identical output and structural local scenarios (`remote_eligible=false`, chrome-bridge) are skipped automatically without bypass.
 
 **Agent decision tree**:
-- 2+ scenarios to validate? → `run_demo_batch({ remote: true, recorded: true })` → concurrent Fly.io
-- Single validation/repair run? → `run_demo` with defaults (remote: true, recorded: true)
-- Need real Chrome/extension? → local only (`remote: false`)
-- CTO watching live? → local headed (`remote: false`, slash command sets this)
-- Never: sequential local `run_demo` calls for multiple scenarios
+- 2+ scenarios to validate? → `run_demo_batch({ recorded: true })` → concurrent Fly.io (default)
+- Single validation/repair run? → `run_demo` with defaults → Fly.io
+- Scenario needs anti-bot stealth? → `run_demo({ stealth: true })` → Steel.dev
+- Scenario uses chrome-bridge or `remote_eligible=false`? → routed to local automatically (no flag needed)
+- CTO watching live? → only the CTO interactive session may pass `local: true`
+- Never: sequential `run_demo` calls for multiple scenarios when a batch will do
 
 **Agent troubleshooting tree**:
 - Demo failed with `oom_detected: true`? → `update_demo_scenario({ id, compute_size: "large" })`

@@ -729,19 +729,19 @@ export function launchTest(testFile: TestFileItem): RunningProcess {
 export function checkProcess(proc: RunningProcess): RunningProcess {
   if (proc.status !== 'running') return proc;
 
-  // Remote demos: check output file for completion markers
-  if (proc.executionMode === 'remote') {
+  // Fly.io demos: check output file for completion markers
+  if (proc.executionMode === 'fly') {
     try {
       const output = fs.readFileSync(proc.outputFile, 'utf8');
       if (output.includes('[remote] DONE: passed')) {
         const result = { ...proc, status: 'passed' as const, exitCode: 0 };
-        recordDemoResult(proc.scenarioId, 'passed', 'remote', proc.startedAt, proc.flyMachineId ?? null, proc.branch);
+        recordDemoResult(proc.scenarioId, 'passed', 'fly', proc.startedAt, proc.flyMachineId ?? null, proc.branch);
         return result;
       }
       if (output.includes('[remote] DONE: failed') || output.includes('[remote] ERROR:')) {
         const result = { ...proc, status: 'failed' as const, exitCode: 1 };
         const reason = detectFailureReason(proc.outputFile, 1);
-        recordDemoResult(proc.scenarioId, 'failed', 'remote', proc.startedAt, proc.flyMachineId ?? null, proc.branch, reason);
+        recordDemoResult(proc.scenarioId, 'failed', 'fly', proc.startedAt, proc.flyMachineId ?? null, proc.branch, reason);
         return result;
       }
     } catch { /* */ }
@@ -825,6 +825,110 @@ export function recordDemoStop(proc: RunningProcess): void {
 // ============================================================================
 
 /**
+ * Detect-and-rebuild migration for the demo_results.execution_mode CHECK constraint.
+ *
+ * Older schemas declared `CONSTRAINT valid_mode CHECK (execution_mode IN ('local', 'remote'))`.
+ * Since SQLite has no `ALTER TABLE DROP CONSTRAINT`, we must rebuild the table to
+ * remove the constraint. Without this, INSERTs with execution_mode='fly' or 'steel'
+ * fail with SQLITE_CONSTRAINT_CHECK on any DB created before the routing refactor.
+ *
+ * Idempotent: detects the legacy clause in sqlite_master.sql and skips if absent.
+ * Runs inside a transaction so partial failure cannot corrupt the table.
+ */
+function rebuildDemoResultsIfLegacyCheck(db: InstanceType<typeof Database>): void {
+  let sql: string | null = null;
+  try {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='demo_results'")
+      .get() as { sql?: string } | undefined;
+    sql = row?.sql ?? null;
+  } catch {
+    return; // Table doesn't exist yet — nothing to rebuild
+  }
+  if (!sql) return;
+  // Detect the legacy CHECK clause. Match both spaced and unspaced variants.
+  const hasLegacyCheck = /CHECK\s*\(\s*execution_mode\s+IN\s*\(\s*'local'\s*,\s*'remote'\s*\)\s*\)/i.test(sql);
+  if (!hasLegacyCheck) return;
+
+  // Discover all columns in the existing table to make the migration robust
+  // against incremental ALTER TABLE ADD COLUMN history.
+  const cols = db.prepare("PRAGMA table_info('demo_results')").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>;
+  if (cols.length === 0) return;
+
+  // Build CREATE TABLE for the new table preserving every column, NOT NULL, default,
+  // and PK marker — but WITHOUT the valid_mode CHECK. Other constraints (valid_status,
+  // FK) are preserved by extracting their text from the original SQL.
+  const colDefs = cols
+    .map((c) => {
+      const parts: string[] = [`"${c.name}" ${c.type || 'TEXT'}`];
+      if (c.pk) parts.push('PRIMARY KEY');
+      if (c.notnull) parts.push('NOT NULL');
+      if (c.dflt_value !== null) parts.push(`DEFAULT ${c.dflt_value}`);
+      return parts.join(' ');
+    })
+    .join(', ');
+
+  // Preserve the valid_status CHECK and the demo_scenarios FK from the original SQL
+  const extraConstraints: string[] = [];
+  const validStatusMatch = sql.match(/CONSTRAINT\s+valid_status\s+CHECK\s*\([^)]+\)/i);
+  if (validStatusMatch) extraConstraints.push(validStatusMatch[0]);
+  const fkMatch = sql.match(/FOREIGN\s+KEY\s*\(\s*scenario_id\s*\)\s+REFERENCES\s+demo_scenarios\s*\(\s*id\s*\)(?:\s+ON\s+DELETE\s+\w+)?/i);
+  if (fkMatch) extraConstraints.push(fkMatch[0]);
+
+  const createNew =
+    `CREATE TABLE demo_results_new (${colDefs}` +
+    (extraConstraints.length > 0 ? ', ' + extraConstraints.join(', ') : '') +
+    ')';
+
+  // Build SELECT list with inline mapping of legacy 'remote' → 'fly' on execution_mode
+  const selectList = cols
+    .map((c) =>
+      c.name === 'execution_mode'
+        ? "CASE WHEN execution_mode = 'remote' THEN 'fly' ELSE execution_mode END AS execution_mode"
+        : `"${c.name}"`,
+    )
+    .join(', ');
+  const colList = cols.map((c) => `"${c.name}"`).join(', ');
+
+  // Discover existing indexes so we can recreate them on the new table.
+  const indexRows = db
+    .prepare(
+      "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='demo_results' AND sql IS NOT NULL",
+    )
+    .all() as Array<{ name: string; sql: string }>;
+
+  db.exec('BEGIN');
+  try {
+    db.exec(createNew);
+    db.exec(`INSERT INTO demo_results_new (${colList}) SELECT ${selectList} FROM demo_results`);
+    db.exec('DROP TABLE demo_results');
+    db.exec('ALTER TABLE demo_results_new RENAME TO demo_results');
+    for (const idx of indexRows) {
+      // sqlite_master.sql for an index is the original CREATE INDEX statement.
+      // Make recreation idempotent in case of any race.
+      const idempotent = idx.sql.replace(/^CREATE\s+(UNIQUE\s+)?INDEX\s+/i, (m) => `${m}IF NOT EXISTS `);
+      try {
+        db.exec(idempotent);
+      } catch {
+        // If the index existed on the new table somehow, ignore — the data is what matters.
+      }
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* */ }
+    // Surface the failure — silent swallowing here would mask the original bug
+    // (INSERTs failing on legacy CHECK). The caller's outer try/catch will log.
+    throw err;
+  }
+}
+
+/**
  * Record a demo run result to user-feedback.db demo_results table.
  * Short-lived writable connection — opens, writes, closes immediately.
  */
@@ -843,15 +947,15 @@ function recordDemoResult(
   let db: InstanceType<typeof Database> | null = null;
   try {
     db = new Database(dbPath);
-    // Ensure table exists (auto-migration for dashboard-only usage)
+    // Ensure table exists (auto-migration for dashboard-only usage). New tables
+    // are created without the legacy valid_mode CHECK so 'fly' and 'steel' work.
     try { db.prepare('SELECT id FROM demo_results LIMIT 0').run(); } catch {
       db.exec(`CREATE TABLE IF NOT EXISTS demo_results (
-        id TEXT PRIMARY KEY, scenario_id TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'local',
+        id TEXT PRIMARY KEY, scenario_id TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'fly',
         status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT NOT NULL,
         duration_ms INTEGER NOT NULL, fly_machine_id TEXT, output_file TEXT,
         branch TEXT, failure_reason TEXT, recording_path TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        CONSTRAINT valid_mode CHECK (execution_mode IN ('local', 'remote')),
         CONSTRAINT valid_status CHECK (status IN ('passed', 'failed')),
         FOREIGN KEY (scenario_id) REFERENCES demo_scenarios(id) ON DELETE CASCADE
       );
@@ -868,6 +972,13 @@ function recordDemoResult(
     try { db.prepare('SELECT recording_path FROM demo_results LIMIT 0').run(); } catch {
       db.exec('ALTER TABLE demo_results ADD COLUMN recording_path TEXT');
     }
+    // Rebuild the table without the legacy `execution_mode IN ('local','remote')`
+    // CHECK constraint (idempotent). Must run before any INSERT to prevent
+    // SQLITE_CONSTRAINT_CHECK errors on 'fly' / 'steel' values.
+    rebuildDemoResultsIfLegacyCheck(db);
+    // Belt-and-suspenders: normalize any lingering 'remote' execution_mode rows to 'fly'.
+    // After the rebuild this is a no-op (the rebuild does the same mapping inline).
+    try { db.exec("UPDATE demo_results SET execution_mode = 'fly' WHERE execution_mode = 'remote'"); } catch { /* */ }
     const now = new Date();
     const durationMs = now.getTime() - new Date(startedAt).getTime();
     // Look up recording path for passed results
@@ -881,7 +992,13 @@ function recordDemoResult(
     db.prepare(
       'INSERT INTO demo_results (id, scenario_id, execution_mode, status, started_at, completed_at, duration_ms, fly_machine_id, branch, failure_reason, recording_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(crypto.randomUUID(), scenarioId, executionMode, status, startedAt, now.toISOString(), durationMs, flyMachineId, branch ?? null, failureReason ?? null, recordingPath);
-  } catch { /* non-fatal */ }
+  } catch (err) {
+    // Non-fatal for the demo run itself, but surface to stderr so the failure
+    // is observable. Silent swallowing previously masked SQLITE_CONSTRAINT_CHECK
+    // errors caused by the legacy 'local','remote' CHECK constraint.
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[process-runner] recordDemoResult failed for scenario ${scenarioId}: ${msg}\n`);
+  }
   finally { try { db?.close(); } catch { /* */ } }
 }
 
@@ -998,7 +1115,7 @@ export async function launchRemoteDemo(scenario: DemoScenarioItem, branch?: stri
     return {
       pid: 0, label: scenario.title, type: 'demo', status: 'failed',
       startedAt: new Date().toISOString(), outputFile, exitCode: 1,
-      executionMode: 'remote', scenarioId: scenario.id,
+      executionMode: 'fly', scenarioId: scenario.id,
     };
   }
 
@@ -1014,7 +1131,7 @@ export async function launchRemoteDemo(scenario: DemoScenarioItem, branch?: stri
     return {
       pid: 0, label: scenario.title, type: 'demo', status: 'failed',
       startedAt: new Date().toISOString(), outputFile, exitCode: 1,
-      executionMode: 'remote', scenarioId: scenario.id,
+      executionMode: 'fly', scenarioId: scenario.id,
     };
   }
 
@@ -1034,7 +1151,7 @@ export async function launchRemoteDemo(scenario: DemoScenarioItem, branch?: stri
     return {
       pid: 0, label: scenario.title, type: 'demo', status: 'failed',
       startedAt: new Date().toISOString(), outputFile, exitCode: 1,
-      executionMode: 'remote', scenarioId: scenario.id,
+      executionMode: 'fly', scenarioId: scenario.id,
     };
   }
 
@@ -1093,7 +1210,7 @@ export async function launchRemoteDemo(scenario: DemoScenarioItem, branch?: stri
     return {
       pid: 0, label: scenario.title, type: 'demo', status: 'failed',
       startedAt: new Date().toISOString(), outputFile, exitCode: 1,
-      executionMode: 'remote', scenarioId: scenario.id,
+      executionMode: 'fly', scenarioId: scenario.id,
     };
   }
 
@@ -1110,7 +1227,7 @@ export async function launchRemoteDemo(scenario: DemoScenarioItem, branch?: stri
     startedAt: new Date().toISOString(),
     outputFile,
     exitCode: null,
-    executionMode: 'remote',
+    executionMode: 'fly',
     flyMachineId: machineId,
     scenarioId: scenario.id,
     branch: branch ?? null,

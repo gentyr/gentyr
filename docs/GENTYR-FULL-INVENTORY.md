@@ -2745,7 +2745,7 @@ All 3 layers must pass. No other session — not even another deputy-cto sub-age
 - Lists stale PIDs with duration; nudges to poll or stop
 
 ### 61.3 remote-demo-hint.js
-- After local headless demo: hints to use Fly.io (remote: true)
+- After local headless demo: hints to drop the `local: true` flag so default Fly.io routing applies
 - After display lock contention: suggests remote execution
 
 ### 61.4 demo-remote-enforcement.js

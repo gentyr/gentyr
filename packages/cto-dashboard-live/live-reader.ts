@@ -637,7 +637,12 @@ export function readDemoScenarios(): DemoScenarioItem[] {
       if (hasEnvVars && r.env_vars) {
         try { envVars = JSON.parse(r.env_vars) as Record<string, string>; } catch { /* invalid JSON — treat as null */ }
       }
-      const resultMode = r.result_mode === 'remote' ? 'remote' : 'local';
+      // Legacy 'remote' rows are mapped to 'fly' for backward compatibility.
+      const rawMode = r.result_mode;
+      const resultMode: 'local' | 'fly' | 'steel' =
+        rawMode === 'steel' ? 'steel'
+        : rawMode === 'local' ? 'local'
+        : 'fly';
       const resultStatus = r.result_status === 'passed' ? 'passed' : r.result_status === 'failed' ? 'failed' : null;
       const lastResult: DemoResultSummary | null = resultStatus && r.result_completed ? {
         status: resultStatus,
@@ -706,7 +711,11 @@ export function readScenarioHistory(scenarioId: string, branch?: string | null, 
     return rows.map(r => ({
       id: r.id,
       status: r.status === 'passed' ? 'passed' as const : 'failed' as const,
-      executionMode: r.execution_mode === 'remote' ? 'remote' as const : 'local' as const,
+      executionMode: (
+        r.execution_mode === 'steel' ? 'steel'
+        : r.execution_mode === 'local' ? 'local'
+        : 'fly'
+      ) as 'local' | 'fly' | 'steel',
       branch: r.branch ?? null,
       failureReason: (r.failure_reason as DemoFailureReason) ?? null,
       durationMs: r.duration_ms,
