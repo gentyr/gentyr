@@ -177,6 +177,8 @@ function readTail(filePath, numBytes) {
  */
 function findSessionFileByAgentId(sessionDir, agentId) {
   const marker = `[AGENT:${agentId}]`;
+  const MAX_AGE_MS = 48 * 60 * 60 * 1000; // 48 hours
+  const now = Date.now();
   let files;
   try {
     files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl'));
@@ -189,6 +191,10 @@ function findSessionFileByAgentId(sessionDir, agentId) {
     const filePath = path.join(sessionDir, file);
     let fd;
     try {
+      // Skip files older than 48h — stat is much cheaper than open+read+search
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs > MAX_AGE_MS) continue;
+
       fd = fs.openSync(filePath, 'r');
       const buf = Buffer.alloc(65536); // 64KB — marker is always in the first message
       const bytesRead = fs.readSync(fd, buf, 0, 65536, 0);
