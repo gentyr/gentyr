@@ -1,1 +1,0 @@
-../../agents/repo-hygiene-expert.md

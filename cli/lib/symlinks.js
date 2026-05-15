@@ -78,6 +78,28 @@ export function createDirectorySymlinks(projectDir, frameworkRel) {
 export function createAgentSymlinks(projectDir, frameworkRel, agents, opts = {}) {
   const agentsDir = path.join(projectDir, '.claude', 'agents');
 
+  // The gentyr source repo itself has no `.claude/agents/` — framework agent
+  // definitions live in `agents/` and are installed into target projects only.
+  // Detect self-install by resolving the framework path relative to projectDir.
+  const resolvedFramework = path.resolve(projectDir, frameworkRel);
+  const isGentyrRepo = path.resolve(projectDir) === resolvedFramework;
+  if (isGentyrRepo) {
+    // Remove any stale `.claude/agents/` directory or symlink that might exist
+    // from a prior install (e.g., when migrating an existing gentyr checkout).
+    try {
+      const stat = fs.lstatSync(agentsDir);
+      if (stat.isSymbolicLink()) {
+        fs.unlinkSync(agentsDir);
+        console.log('  Removed legacy .claude/agents/ symlink (gentyr repo)');
+      } else if (stat.isDirectory()) {
+        fs.rmSync(agentsDir, { recursive: true, force: true });
+        console.log('  Removed legacy .claude/agents/ directory (gentyr repo)');
+      }
+    } catch {}
+    console.log('  Skipped: .claude/agents/ (gentyr repo has no sub-agents)');
+    return;
+  }
+
   // Handle legacy directory symlink
   try {
     const stat = fs.lstatSync(agentsDir);

@@ -99,22 +99,27 @@ cd /path/to/project && claude mcp list
 ### Rules (NON-NEGOTIABLE)
 
 1. **ALL changes on feature branches in worktrees.** Never commit to `main` directly.
-   Use `isolation: "worktree"` for all code-modifying sub-agents.
+   The CTO works in a provisioned worktree at `.claude/worktrees/<branch>/` for every
+   change.
 
 2. **PRs target `main` directly.** No `preview` or `staging` branches in this repo.
 
-3. **Self-merge after CI passes.** After `gh pr create`, the project-manager waits
-   for CI (`gh pr checks --watch --fail-on-fail`), then runs
+3. **Self-merge after CI passes.** After `gh pr create`, the CTO waits for CI
+   (`gh pr checks --watch --fail-on-fail`), then runs
    `gh pr merge --squash --delete-branch` in the same session. No waiting for review.
-   **CI Fix Loop**: If CI fails, the project-manager autonomously iterates — fixes the
-   failure, pushes, and re-checks — up to 5 times. Only escalates with "I'm stuck" after
-   exhausting all attempts. Agents MUST NOT ask the CTO to approve a PR with failing CI.
+   **CI Fix Loop**: If CI fails, fix the failure, push, and re-check — up to 5 times.
+   Never merge a PR with failing CI.
 
 4. **Clean up immediately.** After merge: delete local branch, remove worktree.
    Feature branches must not exist for more than a few hours.
 
-5. **Sub-agents are different from target projects.** The agents in `.claude/agents/`
-   are gentyr-specific. Target projects get different agents from the `agents/` directory.
+5. **The gentyr repo has no sub-agent definitions.** Framework agent definitions live in
+   `agents/` and are installed into target projects' `.claude/agents/` via the CLI's
+   symlink pipeline. Gentyr development itself is CTO-interactive — CLAUDE.md is the
+   only behavioral guidance surface in this repo, and the Task tool is unavailable here
+   because no `.claude/agents/` directory exists for it to load definitions from. All
+   git operations (commit, push, PR, merge, cleanup) are performed by the CTO directly,
+   not by a project-manager sub-agent.
 
 ## Merge Chain and Agent Git Workflow (Target Projects Only)
 
@@ -261,7 +266,7 @@ Task(subagent_type: "code-writer", ...)
 
 **Read-only agents are exempt**: Agents that only read code (e.g., `Explore`, `Plan`, `investigator`) don't need worktree isolation since they never run git write operations.
 
-**Agent separation**: The gentyr repo uses repo-specific agents from `.claude/agents/` (e.g., project-manager merges to `main`). Target projects use shared agents from the `agents/` directory (e.g., project-manager merges to `preview`). Shared agents are symlinked into `.claude/agents/` in the gentyr repo for local use.
+**Agent separation**: The gentyr repo itself has no `.claude/agents/` directory and therefore no sub-agents — gentyr development is CTO-interactive, guided entirely by CLAUDE.md. The `agents/` directory is the source of truth for framework agent definitions and is installed into target projects' `.claude/agents/` via the CLI's symlink pipeline (`createAgentSymlinks` in `cli/lib/symlinks.js`). Target projects use these agents (e.g., project-manager merges to `preview`); the gentyr source repo's git workflow (feature -> main with immediate self-merge) is handled by the CTO directly without sub-agent delegation.
 
 **Commit ownership**: Only the project-manager agent and interactive (CTO) sessions commit. Code-reviewer, code-writer, and test-writer agents do NOT commit — they write/review code and leave git operations to the project-manager. The `uncommitted-change-monitor.js` hook warns after 5 uncommitted file edits; interactive sessions should treat these warnings as mandatory and commit immediately.
 
@@ -1595,7 +1600,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
 | 1. Hooks | 91 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
-| 2. Agent Definitions | 23 shared + 2 repo-specific | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow |
+| 2. Agent Definitions | 26 shared (target projects only) | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow. The gentyr repo itself has no `.claude/agents/` — these definitions live in the framework's `agents/` directory and are symlinked into target projects on install. |
 | 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
 | 4. Slash Commands | 46 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
@@ -1760,7 +1765,9 @@ Key modules consumed by hooks:
 - `ai-compatibility-check.js` — LLM-powered (Haiku) dependency upgrade compatibility validator. Fetches npm registry metadata and changelogs, analyzes project usage patterns, and classifies upgrades as compatible/risky with specific breaking-change identification. Returns `{ compatible, risks, recommendation }`.
 - `ai-pr-decomposition.js` — LLM-powered (Haiku) large-PR decomposer. When a PR exceeds 3000 lines, suggests how to split commits into independently-promotable groups by feature/concern. Returns `{ groups }` with each group's commits, rationale, and suggested branch name.
 
-### Agent Definitions (24 shared)
+### Agent Definitions (26 shared, target projects only)
+
+These agent definitions live in the framework's `agents/` directory and are installed into target projects at `.claude/agents/` via the CLI's symlink pipeline. The gentyr source repo itself has no `.claude/agents/` directory.
 
 | Agent | Model | Purpose | Key Constraints |
 |-------|-------|---------|----------------|

@@ -354,20 +354,24 @@ export default async function init(args) {
   createDirectorySymlinks(projectDir, frameworkRel);
   createAgentSymlinks(projectDir, frameworkRel, agents, { preserveProjectAgents: true });
 
-  // Handle conditional product-manager agent
-  const autoMode = path.join(projectDir, '.claude', 'autonomous-mode.json');
-  let pmEnabled = false;
-  try {
-    pmEnabled = JSON.parse(fs.readFileSync(autoMode, 'utf8')).productManagerEnabled === true;
-  } catch {}
-  const pmPath = path.join(projectDir, '.claude', 'agents', 'product-manager.md');
-  if (pmEnabled) {
-    const pmTarget = `../../${frameworkRel}/.claude/agents/product-manager.md`;
-    try { fs.symlinkSync(pmTarget, pmPath); } catch {}
-    console.log('  Symlink: product-manager.md (enabled)');
-  } else {
-    try { fs.unlinkSync(pmPath); } catch {}
-    console.log('  Skipped: product-manager.md (not enabled)');
+  // Handle conditional product-manager agent. Skip entirely when running
+  // against the gentyr source repo itself — gentyr has no `.claude/agents/`.
+  const isGentyrRepo = path.resolve(projectDir) === path.resolve(projectDir, frameworkRel);
+  if (!isGentyrRepo) {
+    const autoMode = path.join(projectDir, '.claude', 'autonomous-mode.json');
+    let pmEnabled = false;
+    try {
+      pmEnabled = JSON.parse(fs.readFileSync(autoMode, 'utf8')).productManagerEnabled === true;
+    } catch {}
+    const pmPath = path.join(projectDir, '.claude', 'agents', 'product-manager.md');
+    if (pmEnabled) {
+      const pmTarget = `../../${frameworkRel}/agents/product-manager.md`;
+      try { fs.symlinkSync(pmTarget, pmPath); } catch {}
+      console.log('  Symlink: product-manager.md (enabled)');
+    } else {
+      try { fs.unlinkSync(pmPath); } catch {}
+      console.log('  Skipped: product-manager.md (not enabled)');
+    }
   }
 
   // 2. Settings + TESTING.md
