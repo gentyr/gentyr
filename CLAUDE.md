@@ -1180,6 +1180,8 @@ Browser-level telemetry is injected via `--import .claude/hooks/lib/playwright-t
 
 **CTO Dashboard STEALTH launch**: Page 2 of the live dashboard exposes a STEALTH mode alongside LOCAL/FLY. Selecting STEALTH and pressing Enter on a scenario calls `launchStealthDemo()` in `packages/cto-dashboard-live/utils/process-runner.ts`, which resolves the Steel API key from `services.json` secrets.local, creates a Steel session via the REST API, spawns Playwright locally with `STEEL_CDP_URL` injected, and releases the Steel session on child exit. Scenarios flagged `remote_eligible=false` are blocked from STEALTH the same way they are from FLY.
 
+**Ad-hoc runs without `scenario_id`**: `RunDemoArgsSchema.scenario_id` is optional. Pass `test_file` alone to run a demo file without a registered user-feedback scenario — useful for scripts, throwaway stealth experiments against public URLs, or any case where the user-feedback MCP isn't reachable. The Zod schema requires `scenario_id` OR `test_file` (schema-level `.refine()`). Without a scenario_id: scenario-scoped prerequisites, env_vars, telemetry flags, and demo_results persistence are skipped; recordings still land under `.claude/recordings/demos/<run_id>/`; the routing/Steel/Fly machinery and `run_demo` return shape are unchanged. `scenario_id` remains required for `verify_demo_completeness` (the production promotion gate uses registered scenarios only).
+
 > Full details: [Playwright MCP Server](docs/CLAUDE-REFERENCE.md#playwright-mcp-server)
 
 ## Playwright Helpers Package

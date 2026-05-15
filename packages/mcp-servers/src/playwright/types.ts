@@ -253,8 +253,17 @@ export const RunDemoArgsSchema = z.object({
     .describe('Deprecated — all demos run headed with video recording. This parameter is ignored.'),
   trace: z.coerce.boolean().optional().default(false)
     .describe('Enable Playwright trace recording (--trace on). Default: false.'),
-  scenario_id: z.string()
-    .describe('Demo scenario ID from user-feedback DB. Required — used for video recording persistence, prerequisite resolution, and env_vars lookup.'),
+  scenario_id: z.string().optional()
+    .describe(
+      'Demo scenario ID from user-feedback DB. Optional — when present, enables ' +
+      'scenario-scoped prerequisites, env_vars, telemetry config, demo_results ' +
+      'persistence, and recording attachment. Omit for ad-hoc/script stealth runs ' +
+      'targeting public URLs (e.g. claude.ai, deployed staging) — recordings ' +
+      'still land under .claude/recordings/demos/<run_id>/ and the run still ' +
+      'routes through the routing/Steel/Fly machinery. At least one of ' +
+      'scenario_id or test_file must be provided. scenario_id remains required ' +
+      'for production promotion gating (verify_demo_completeness).'
+    ),
   skip_recording: z.coerce.boolean().optional()
     .describe('Low-level override. Prefer using "recorded" instead. When set, takes precedence over "recorded" for the recording flag.'),
   success_pause_ms: z.coerce.number().int().min(0).max(30000).optional().default(0)
@@ -281,7 +290,13 @@ export const RunDemoArgsSchema = z.object({
     .describe('When true, persist this stealth session\'s state as a Steel Profile on release. The returned check_demo_result will include steel_profile_id so you can wire it back in for the next run. Only applies on stealth runs.'),
   telemetry: z.coerce.boolean().optional().default(false)
     .describe('Enable maximum telemetry capture (browser console/network/errors/performance + system metrics). Overrides scenario-level telemetry setting when true. Telemetry data is stored as JSONL files alongside demo artifacts and shipped to Elastic with the run ID.'),
-});
+}).refine(
+  (args) => Boolean(args.scenario_id) || Boolean(args.test_file),
+  {
+    message: 'At least one of scenario_id or test_file must be provided',
+    path: ['scenario_id'],
+  },
+);
 
 export type RunDemoArgs = z.infer<typeof RunDemoArgsSchema>;
 

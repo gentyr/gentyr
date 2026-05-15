@@ -540,6 +540,36 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       }
     });
 
+    it('should accept ad-hoc runs without scenario_id when test_file is provided', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        test_file: 'e2e/demo/claude-web-auth.demo.ts',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.scenario_id).toBeUndefined();
+        expect(result.data.test_file).toBe('e2e/demo/claude-web-auth.demo.ts');
+      }
+    });
+
+    it('should reject when neither scenario_id nor test_file is provided', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo' });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const messages = result.error.issues.map(i => i.message).join(' | ');
+        expect(messages).toContain('At least one of scenario_id or test_file must be provided');
+      }
+    });
+
+    it('should accept runs with both scenario_id and test_file', () => {
+      const result = RunDemoArgsSchema.safeParse({
+        project: 'demo',
+        scenario_id: 'scenario-abc',
+        test_file: 'e2e/demo/onboarding.demo.ts',
+      });
+      expect(result.success).toBe(true);
+    });
+
     it('should reject empty project name (G003)', () => {
       const result = RunDemoArgsSchema.safeParse({ project: '' });
       expect(result.success).toBe(false);
