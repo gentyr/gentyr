@@ -25,7 +25,7 @@ import { TestFileList, selectableCount } from './page2/TestFileList.js';
 import { OutputPanel } from './page2/OutputPanel.js';
 import { useProcessOutput } from '../hooks/useProcessOutput.js';
 import { readScenarioDetail } from '../live-reader.js';
-import { launchDemo, launchRemoteDemo, launchTest, checkProcess, killProcess, killRemoteProcess, releaseDemo, recordDemoStop } from '../utils/process-runner.js';
+import { launchDemo, launchRemoteDemo, launchStealthDemo, launchTest, checkProcess, killProcess, killRemoteProcess, releaseDemo, recordDemoStop } from '../utils/process-runner.js';
 import type { Page2Data, RunningProcess, DemoEnvironment, DemoExecutionMode, ScenarioDetailData } from '../types.js';
 
 interface DemosTestsViewProps {
@@ -124,21 +124,20 @@ export function DemosTestsView({ data, bodyHeight, bodyWidth, isActive }: DemosT
       if (activePanel === 'demos') {
         const scenario = data.scenarios.find(s => s.id === selectedScenarioId);
         if (!scenario) return;
-        if (executionMode === 'steel') {
-          setStatusMessage('STEALTH launches from the dashboard are not yet supported. Use run_demo({ stealth: true }) via MCP.');
-          if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
-          statusTimerRef.current = setTimeout(() => setStatusMessage(null), 6000);
-          return;
-        }
-        if (executionMode === 'fly' && !scenario.remoteEligible) {
-          setStatusMessage(`Cannot run "${scenario.title}" on Fly.io \u2014 scenario is local-only`);
+        if ((executionMode === 'fly' || executionMode === 'steel') && !scenario.remoteEligible) {
+          setStatusMessage(`Cannot run "${scenario.title}" remotely \u2014 scenario is local-only`);
           if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
           statusTimerRef.current = setTimeout(() => setStatusMessage(null), 5000);
           return;
         }
-        const proc = executionMode === 'fly'
-          ? await launchRemoteDemo(scenario, selectedEnv.branch)
-          : await launchDemo(scenario, selectedEnv.baseUrl, selectedEnv.branch);
+        let proc;
+        if (executionMode === 'fly') {
+          proc = await launchRemoteDemo(scenario, selectedEnv.branch);
+        } else if (executionMode === 'steel') {
+          proc = await launchStealthDemo(scenario, selectedEnv.baseUrl, selectedEnv.branch);
+        } else {
+          proc = await launchDemo(scenario, selectedEnv.baseUrl, selectedEnv.branch);
+        }
         setRunningProcess(proc);
         setStatusMessage(null);
       } else {

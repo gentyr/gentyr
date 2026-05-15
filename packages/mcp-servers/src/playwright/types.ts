@@ -273,6 +273,12 @@ export const RunDemoArgsSchema = z.object({
     .describe('Force local execution (default: false). CTO-gated for spawned agents via demo-local-guard. Structural local overrides (chrome-bridge, remote_eligible=false) apply automatically and do not require this flag. Conflicts with stealth=true.'),
   stealth: z.coerce.boolean().optional().default(false)
     .describe('Force Steel.dev stealth cloud browser execution (default: false). Fail-closed if Steel is not configured, unhealthy, or at session capacity. Implied automatically when the scenario has stealth_required=true in the DB. Conflicts with local=true.'),
+  steel_region: z.string().min(1).max(50).optional()
+    .describe('Steel.dev region pin (e.g. "iad", "lax"). Only applies on stealth runs. When omitted, Steel picks a region automatically.'),
+  steel_profile_id: z.string().min(1).max(200).optional()
+    .describe('Steel.dev Profile ID to load at session start. Restores cookies, localStorage, fingerprint, and stored credentials from a previously persisted profile — useful for skipping repeated logins on stealth runs. Only applies on stealth runs.'),
+  steel_persist_profile: z.coerce.boolean().optional().default(false)
+    .describe('When true, persist this stealth session\'s state as a Steel Profile on release. The returned check_demo_result will include steel_profile_id so you can wire it back in for the next run. Only applies on stealth runs.'),
   telemetry: z.coerce.boolean().optional().default(false)
     .describe('Enable maximum telemetry capture (browser console/network/errors/performance + system metrics). Overrides scenario-level telemetry setting when true. Telemetry data is stored as JSONL files alongside demo artifacts and shipped to Elastic with the run ID.'),
 });
@@ -291,6 +297,8 @@ export interface RunDemoResult {
   execution_target_reason?: string;
   fly_machine_id?: string;
   steel_session_id?: string;
+  steel_session_viewer_url?: string;
+  steel_profile_id?: string;
   run_id?: string;
 }
 
@@ -355,6 +363,10 @@ export interface CheckDemoResultResult {
   execution_target?: 'local' | 'fly' | 'steel';
   /** Steel.dev session ID for stealth demo runs */
   steel_session_id?: string;
+  /** Steel session viewer URL — point a browser at this to watch the live session */
+  steel_session_viewer_url?: string;
+  /** Steel Profile ID — set when steel_persist_profile was true and Steel returned an ID, or when a profile was loaded via steel_profile_id */
+  steel_profile_id?: string;
   /** Steel cloud browser recording path (for Steel-only stealth scenarios) */
   steel_recording_path?: string;
   /** Fly.io recording path */
@@ -409,6 +421,14 @@ export interface DemoRunState {
   artifacts_dest_dir?: string;
   // Steel.dev execution fields (set when run is on Steel cloud browser)
   steel_session_id?: string;
+  /** Steel session viewer URL (for human inspection during/after the run) */
+  steel_session_viewer_url?: string;
+  /** Steel Profile ID this session loaded (when steel_profile_id was passed) */
+  steel_profile_id?: string;
+  /** When true, persist the Steel session state as a Profile on release */
+  steel_persist_profile?: boolean;
+  /** Set after the Steel session has been released and recording download attempted (prevents repeat work on polling) */
+  steel_finalized?: boolean;
   /** Fly.io recording path */
   fly_recording_path?: string;
   /** Steel side recording path (Steel-only stealth scenarios) */

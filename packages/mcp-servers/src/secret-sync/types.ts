@@ -336,6 +336,8 @@ export const ServicesConfigSchema = z.object({
       .describe('Residential proxy configuration for Steel sessions'),
     maxConcurrentSessions: z.number().int().min(1).max(10).default(2)
       .describe('Max concurrent Steel browser sessions'),
+    region: z.string().min(1).max(50).optional()
+      .describe('Default Steel region (e.g. "iad", "lax"). Steel auto-picks when omitted. Per-run override via run_demo({ steel_region: ... }).'),
   }).optional().describe('Steel.dev cloud browser configuration for stealth-required scenarios. Provides anti-bot stealth (residential proxies, undetectable Chromium). Scenarios with stealth_required=true route here.'),
   elastic: z.object({
     apiKey: z.string().regex(/^op:\/\//, 'Must be an op:// reference')

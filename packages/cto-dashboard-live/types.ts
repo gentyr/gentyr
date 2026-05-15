@@ -244,6 +244,10 @@ export interface RunningProcess {
   exitCode: number | null;
   executionMode?: DemoExecutionMode;
   flyMachineId?: string | null;
+  /** Steel.dev session ID — set when launched via launchStealthDemo */
+  steelSessionId?: string | null;
+  /** Steel session viewer URL — surfaced in dashboard for live inspection */
+  steelSessionViewerUrl?: string | null;
   scenarioId?: string;
   branch?: string | null;
 }
