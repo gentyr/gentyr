@@ -481,7 +481,10 @@ export function reapSyncPass(db) {
         }
       }
 
-      const revivalCandidate = !!(metadata.taskId && item.spawn_type === 'fresh');
+      // Any session with a taskId can be revived — both fresh and resumed sessions.
+      // Previously only fresh spawns were revival candidates, meaning a resumed session
+      // that died a second time would get a fresh spawn instead of another --resume.
+      const revivalCandidate = !!(metadata.taskId);
 
       auditEvent('session_reaped_dead', {
         queue_id: item.id,
@@ -900,9 +903,11 @@ export function reapSyncPass(db) {
       }
 
       // JSONL staleness check: session alive but no JSONL writes for N minutes.
-      // Catches sessions blocked on Agent() sub-agent calls, hung MCP tool calls, etc.
+      // Catches sessions blocked on hung Agent() calls, hung MCP tools, etc.
       // Skip gate/audit lanes (short-lived) and persistent (has heartbeat detection).
-      const JSONL_STALE_MS = getCooldown('jsonl_stale_kill_minutes', 15) * 60 * 1000;
+      // Sub-agent exemption: if the parent is blocked on Agent() but the sub-agent's
+      // JSONL is still being written to, the session is legitimately working — skip kill.
+      const JSONL_STALE_MS = getCooldown('jsonl_stale_kill_minutes', 5) * 60 * 1000;
       if (elapsed > JSONL_STALE_MS && item.agent_id && sessionDir &&
           !['gate', 'audit', 'persistent'].includes(item.lane || '')) {
         try {
@@ -911,6 +916,27 @@ export function reapSyncPass(db) {
             const stat = fs.statSync(sessionFile);
             const staleMs = now - stat.mtimeMs;
             if (staleMs > JSONL_STALE_MS) {
+              // Check for active sub-agents before killing.
+              // Sub-agent JSONLs live at {sessionDir}/{sessionId}/subagents/*.jsonl
+              // If any sub-agent JSONL was written recently, the parent is legitimately
+              // waiting on Agent() — not stuck.
+              const sessionId = item.resume_session_id;
+              if (sessionId) {
+                const subagentDir = path.join(sessionDir, sessionId, 'subagents');
+                try {
+                  if (fs.existsSync(subagentDir)) {
+                    const subFiles = fs.readdirSync(subagentDir).filter(f => f.endsWith('.jsonl'));
+                    const hasActiveSubagent = subFiles.some(f => {
+                      try {
+                        const subStat = fs.statSync(path.join(subagentDir, f));
+                        return (now - subStat.mtimeMs) < JSONL_STALE_MS;
+                      } catch { return false; }
+                    });
+                    if (hasActiveSubagent) continue; // Parent waiting on active sub-agent — skip
+                  }
+                } catch { /* non-fatal — proceed with kill if subagent check fails */ }
+              }
+
               killProcessGroup(item.pid);
               db.prepare("UPDATE queue_items SET status = 'completed', error = 'jsonl_stale_kill', completed_at = datetime('now') WHERE id = ?")
                 .run(item.id);

@@ -209,7 +209,7 @@ const DEFAULTS = {
   plan_orphan_detection: 10,             // 10 minutes
   session_hard_kill_minutes: 60,         // 60 minutes
   session_reaper: 30,                    // 30 minutes (async pass cooldown)
-  jsonl_stale_kill_minutes: 15,          // kill sessions with stale JSONL (stuck on Agent(), hung tool)
+  jsonl_stale_kill_minutes: 5,            // kill sessions with stale JSONL (sub-agent exempt: active sub-agents extend grace)
   screenshot_cleanup: 1440,              // daily (24h)
   promotion_retry_check: 5,             // 5 minutes
   report_auto_resolve: 2,              // 2 minutes
