@@ -25,7 +25,7 @@ import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
 import { debugLog } from './lib/debug-log.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
-import { resolveCategory, buildPromptFromCategory } from './lib/task-category.js';
+import { resolveCategory, buildPromptFromCategory, enrichTaskWithAuditFailure } from './lib/task-category.js';
 import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 // Try to import better-sqlite3 for DB access
@@ -437,6 +437,9 @@ async function spawnTaskAgent(task) {
   } catch (err) {
     log(`Worktree creation failed, falling back to PROJECT_DIR: ${err.message}`);
   }
+
+  // Enrich task with prior audit failure context (if any)
+  enrichTaskWithAuditFailure(task, TODO_DB_PATH);
 
   const agentLabel = mapping.category?.name || mapping.agent;
 

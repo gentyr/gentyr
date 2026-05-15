@@ -207,7 +207,7 @@ process.stdin.on('end', async () => {
     );
     enqueueSession({
       ...spec,
-      title: `Universal audit: ${resolvedTitle}`,
+      title: `Auditing: "${resolvedTitle}"`,
       source: 'universal-audit-spawner',
     });
 

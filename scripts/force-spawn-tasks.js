@@ -33,15 +33,17 @@ try {
 }
 
 // Task category module
-let resolveCategory, buildPromptFromCategory;
+let resolveCategory, buildPromptFromCategory, enrichTaskWithAuditFailure;
 try {
   const mod = await import(path.resolve(__dirname, '..', '.claude', 'hooks', 'lib', 'task-category.js'));
   resolveCategory = mod.resolveCategory;
   buildPromptFromCategory = mod.buildPromptFromCategory;
+  enrichTaskWithAuditFailure = mod.enrichTaskWithAuditFailure;
 } catch {
   // Non-fatal: tasks without category mapping will be skipped
   resolveCategory = null;
   buildPromptFromCategory = null;
+  enrichTaskWithAuditFailure = null;
 }
 
 // Local mode check
@@ -714,6 +716,11 @@ async function main() {
         // Non-fatal: fall back to project dir
         process.stderr.write(`[force-spawn] Worktree creation failed for task ${task.id}, using project dir: ${err.message}\n`);
       }
+    }
+
+    // Enrich task with prior audit failure context (if any)
+    if (enrichTaskWithAuditFailure) {
+      enrichTaskWithAuditFailure(task, todoDbPath);
     }
 
     const agentLabel = mapping.category?.name || mapping.agent;

@@ -37,7 +37,7 @@ import { debugLog, cleanupDebugLog } from './lib/debug-log.js';
 import { buildSpawnEnv } from './lib/spawn-env.js';
 import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
-import { resolveCategory, buildPromptFromCategory } from './lib/task-category.js';
+import { resolveCategory, buildPromptFromCategory, enrichTaskWithAuditFailure } from './lib/task-category.js';
 import { runReportAutoResolve, runReportDedup } from './lib/report-auto-resolver.js';
 import { isStagingLocked } from './lib/staging-lock.js';
 import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
@@ -2017,6 +2017,9 @@ function spawnTaskAgent(task) {
   }
 
   const agentMcpConfig = path.join(worktreePath, '.mcp.json');
+
+  // Enrich task with prior audit failure context (if any)
+  enrichTaskWithAuditFailure(task, TODO_DB_PATH);
 
   ensureCredentials();
   const result = enqueueSession({

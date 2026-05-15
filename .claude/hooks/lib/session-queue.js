@@ -1447,7 +1447,7 @@ export function drainQueue() {
         }
         enqueueSession({
           ...spec,
-          title: `${auditLabel} (revival): ${revival.taskTitle}`,
+          title: `Auditing: "${revival.taskTitle}" [${auditLabel}, revival]`,
           source: 'session-reaper-audit-revival',
         });
 
@@ -1498,7 +1498,7 @@ export function drainQueue() {
               { taskId: task.id, taskType: 'todo', taskTitle: task.title || '', criteria: task.gate_success_criteria || '', method: task.gate_verification_method || '' },
               PROJECT_DIR,
             );
-            enqueueSession({ ...spec, title: `Universal audit (orphan recovery): ${task.title || task.id}`, source: 'drain-audit-orphan-recovery' });
+            enqueueSession({ ...spec, title: `Auditing: "${task.title || task.id}" [universal, orphan-recovery]`, source: 'drain-audit-orphan-recovery' });
             auditOrphanCount++;
             log(`Step 1b.7: Spawned orphan auditor for todo task ${task.id}`);
             try { auditEvent('audit_orphan_recovered', { task_id: task.id, task_type: 'todo' }); } catch (_) { /* non-fatal */ }
@@ -1526,7 +1526,7 @@ export function drainQueue() {
               { taskId: pt.id, taskType: 'persistent', taskTitle: pt.title || '', criteria: pt.gate_success_criteria || '', method: pt.gate_verification_method || '' },
               PROJECT_DIR,
             );
-            enqueueSession({ ...spec, title: `Universal audit (orphan recovery): ${pt.title || pt.id}`, source: 'drain-audit-orphan-recovery' });
+            enqueueSession({ ...spec, title: `Auditing: "${pt.title || pt.id}" [universal, orphan-recovery]`, source: 'drain-audit-orphan-recovery' });
             auditOrphanCount++;
             log(`Step 1b.7: Spawned orphan auditor for persistent task ${pt.id}`);
             try { auditEvent('audit_orphan_recovered', { task_id: pt.id, task_type: 'persistent' }); } catch (_) { /* non-fatal */ }
@@ -1553,7 +1553,7 @@ export function drainQueue() {
               { taskId: pt.id, taskType: 'plan', taskTitle: pt.title || '', criteria: pt.verification_strategy || '', method: pt.verification_strategy || '' },
               PROJECT_DIR,
             );
-            enqueueSession({ ...spec, title: `Plan audit (orphan recovery): ${pt.title || pt.id}`, source: 'drain-audit-orphan-recovery' });
+            enqueueSession({ ...spec, title: `Auditing: "${pt.title || pt.id}" [plan, orphan-recovery]`, source: 'drain-audit-orphan-recovery' });
             auditOrphanCount++;
             log(`Step 1b.7: Spawned orphan auditor for plan task ${pt.id}`);
             try { auditEvent('audit_orphan_recovered', { task_id: pt.id, task_type: 'plan' }); } catch (_) { /* non-fatal */ }

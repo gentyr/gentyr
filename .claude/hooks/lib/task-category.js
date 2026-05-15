@@ -78,6 +78,39 @@ export function getAllCategories(dbPath) {
 }
 
 /**
+ * Enrich a task object with the most recent audit failure reason (if any).
+ * Sets task.prior_audit_failure_reason so buildPromptFromCategory can inject it.
+ * Non-fatal — fails silently if DB is unavailable.
+ *
+ * @param {object} task - Task object (mutated in place)
+ * @param {string} todoDbPath - Absolute path to todo.db
+ * @returns {object} The same task object (for chaining)
+ */
+export function enrichTaskWithAuditFailure(task, todoDbPath) {
+  if (!task?.id) return task;
+  let db;
+  try {
+    db = new Database(todoDbPath, { readonly: true });
+    const audit = db.prepare(
+      `SELECT failure_reason, evidence FROM task_audits
+       WHERE task_id = ? AND verdict = 'fail'
+       ORDER BY attempt_number DESC LIMIT 1`
+    ).get(task.id);
+    if (audit?.failure_reason) {
+      task.prior_audit_failure_reason = audit.failure_reason;
+      if (audit.evidence) {
+        task.prior_audit_failure_reason += `\nEvidence: ${audit.evidence}`;
+      }
+    }
+  } catch {
+    // Non-fatal — task spawns without audit context
+  } finally {
+    try { if (db) db.close(); } catch { /* non-fatal */ }
+  }
+  return task;
+}
+
+/**
  * Get the pipeline stages from a category (replacement for PIPELINE_TEMPLATES).
  *
  * @param {object} category - Parsed category object from resolveCategory()
