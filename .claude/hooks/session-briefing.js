@@ -408,11 +408,11 @@ function getPendingBypassRequests() {
     let requests;
     try {
       requests = db.prepare(
-        "SELECT id, task_type, task_id, task_title, category, summary, created_at, deputy_escalated FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
+        "SELECT id, task_type, task_id, task_title, category, summary, created_at, deputy_escalated FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
       ).all();
     } catch (_) {
       requests = db.prepare(
-        "SELECT id, task_type, task_id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' ORDER BY created_at ASC"
+        "SELECT id, task_type, task_id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
       ).all();
     }
     db.close();

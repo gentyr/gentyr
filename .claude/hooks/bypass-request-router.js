@@ -152,6 +152,13 @@ async function main() {
     process.exit(0);
   }
 
+  // Timed auto-resume pauses resolve autonomously — no CTO or monitor routing needed
+  if (responseData.auto_resume_at) {
+    log(`Bypass request ${responseData.bypass_request_id}: timed pause (auto_resume_at: ${responseData.auto_resume_at}) — skipping monitor signal`);
+    console.log(JSON.stringify({}));
+    process.exit(0);
+  }
+
   // Check if global monitor is active
   const monitor = findActiveGlobalMonitor();
   if (!monitor) {
