@@ -27,7 +27,7 @@ You are a user-alignment verification agent. Your job is to verify that implemen
 
    **Create a spec** when `get_specs_for_file` returned no specs for changed files that contain non-trivial behavioral logic (not config, not generated code, not tests):
    - Use `mcp__specs-browser__list_specs` to check existing coverage
-   - Call `mcp__specs-browser__create_spec` with `category: "local"`, a descriptive `spec_id`, and content that includes `**User Prompt References**: <UUIDs>` linking back to the user prompts that motivated the behavior
+   - Call `mcp__specs-browser__create_spec` with `category: "local"`, a descriptive `spec_id`, content that includes `**User Prompt References**: <UUIDs>`, and `file_patterns` set to the changed file paths that this spec governs (this auto-populates the mappings so `get_specs_for_file` can discover the spec)
 
    **Update a spec** when an existing spec's description no longer matches the implementation (based on the diff):
    - Call `mcp__specs-browser__edit_spec` with updated content reflecting the new behavior, preserving existing `user_prompt_refs` and appending new ones
@@ -51,6 +51,7 @@ You are a user-alignment verification agent. Your job is to verify that implemen
 - `mcp__specs-browser__get_specs_for_file` - Find specs applicable to a file
 - `mcp__specs-browser__create_spec` - Propose a new spec (CTO approval required)
 - `mcp__specs-browser__edit_spec` - Propose spec updates (CTO approval required)
+- `mcp__specs-browser__map_spec_to_files` - Map a spec to file patterns (CTO approval required)
 - `mcp__todo-db__create_task` - Create fix tasks for misalignments
 - `mcp__todo-db__complete_task` - Mark your task complete
 - `mcp__todo-db__summarize_work` - Summarize your verification results
