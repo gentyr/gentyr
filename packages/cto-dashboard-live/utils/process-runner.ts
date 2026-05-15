@@ -692,6 +692,262 @@ export async function releaseDemo(): Promise<void> {
   await releaseCtoDashboardDemo();
 }
 
+// ============================================================================
+// Steel.dev (STEALTH) Demo Launch
+// ============================================================================
+
+interface SteelConfigDashboard {
+  apiKey: string;
+  orgId?: string;
+  defaultTimeout?: number;
+  region?: string;
+  proxyEnabled?: boolean;
+  proxyCountry?: string;
+}
+
+/**
+ * Load and resolve the Steel config from services.json. Returns `null` when
+ * Steel is not configured or the API key cannot be resolved from 1Password.
+ *
+ * Mirrors `loadFlyConfig` but for the `steel` services.json section.
+ */
+function loadSteelConfig(): SteelConfigDashboard | null {
+  const config = loadServicesConfig();
+  if (!config) return null;
+  const steel = config.steel as Record<string, unknown> | undefined;
+  if (!steel || steel.enabled === false || typeof steel.apiKey !== 'string') return null;
+
+  let apiKey: string;
+  const ref = steel.apiKey;
+  if (ref.startsWith('op://')) {
+    const creds = (() => {
+      try { return resolveServicesSecrets(); } catch { return {} as Record<string, string>; }
+    })();
+    if (creds['STEEL_API_KEY']) {
+      apiKey = creds['STEEL_API_KEY'];
+    } else {
+      const opToken = getOpToken();
+      if (!opToken) return null;
+      try {
+        apiKey = execFileSync('op', ['read', ref], {
+          encoding: 'utf-8', timeout: 15000,
+          env: { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: opToken },
+        }).trim();
+      } catch { return null; }
+    }
+  } else {
+    apiKey = ref;
+  }
+
+  const proxyConfig = steel.proxyConfig as { enabled?: boolean; country?: string } | undefined;
+  return {
+    apiKey,
+    orgId: typeof steel.orgId === 'string' ? steel.orgId : undefined,
+    defaultTimeout: typeof steel.defaultTimeout === 'number' ? steel.defaultTimeout : 120000,
+    region: typeof steel.region === 'string' ? steel.region : undefined,
+    proxyEnabled: proxyConfig?.enabled === true,
+    proxyCountry: proxyConfig?.country,
+  };
+}
+
+/**
+ * Create a Steel.dev cloud browser session via the REST API. Returns the
+ * session ID and CDP WebSocket URL. The Playwright child spawned afterward
+ * connects to this CDP URL via `STEEL_CDP_URL` env var.
+ *
+ * Throws on any non-2xx response so the caller can fail-closed cleanly.
+ */
+async function createDashboardSteelSession(config: SteelConfigDashboard): Promise<{
+  sessionId: string;
+  cdpUrl: string;
+  sessionViewerUrl?: string;
+}> {
+  const body: Record<string, unknown> = {
+    timeout: config.defaultTimeout ?? 120000,
+  };
+  if (config.proxyEnabled) body.useProxy = true;
+  if (config.region) body.region = config.region;
+  body.solveCaptcha = true;
+
+  const respText = await new Promise<{ status: number; text: string }>((resolve, reject) => {
+    const url = new URL('https://api.steel.dev/v1/sessions');
+    const payload = JSON.stringify(body);
+    const req = https.request({
+      hostname: url.hostname, path: url.pathname, method: 'POST',
+      headers: {
+        'steel-api-key': config.apiKey,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: 30000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, text: data }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Steel API timeout')); });
+    req.write(payload);
+    req.end();
+  });
+
+  if (respText.status < 200 || respText.status >= 300) {
+    throw new Error(`Steel session creation failed (${respText.status}): ${respText.text.slice(0, 200)}`);
+  }
+
+  const data = JSON.parse(respText.text) as Record<string, unknown>;
+  const sessionId = data.id as string | undefined;
+  if (!sessionId) throw new Error('Steel session creation returned no session ID');
+
+  return {
+    sessionId,
+    cdpUrl: `wss://connect.steel.dev?apiKey=${encodeURIComponent(config.apiKey)}&sessionId=${encodeURIComponent(sessionId)}`,
+    sessionViewerUrl: typeof data.sessionViewerUrl === 'string' ? data.sessionViewerUrl : undefined,
+  };
+}
+
+/** Release a Steel session — best-effort, non-fatal. */
+async function releaseDashboardSteelSession(apiKey: string, sessionId: string): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const url = new URL(`https://api.steel.dev/v1/sessions/${sessionId}/release`);
+    const req = https.request({
+      hostname: url.hostname, path: url.pathname, method: 'POST',
+      headers: { 'steel-api-key': apiKey, 'Content-Length': '0' },
+      timeout: 10000,
+    }, (res) => { res.resume(); res.on('end', () => resolve()); });
+    req.on('error', () => resolve());
+    req.on('timeout', () => { req.destroy(); resolve(); });
+    req.end();
+  });
+}
+
+/**
+ * Launch a scenario via the Steel.dev cloud browser. Playwright runs locally
+ * but drives the Steel browser over CDP. No dev server is started — Steel
+ * sessions can only reach public URLs, so the test must target a deployed
+ * environment (staging/prod) or another public host (claude.ai, etc.).
+ *
+ * The test code MUST honor the Steel contract — call
+ * `chromium.connectOverCDP(process.env.STEEL_CDP_URL!)` or import the
+ * `steelAwareTest` fixture from `@gentyr/playwright-helpers/steel`. A
+ * standard `test()` without the fixture will launch a local Chrome and
+ * ignore Steel.
+ *
+ * @param environmentBaseUrl - When set, `PLAYWRIGHT_BASE_URL` is forwarded to
+ *   the test so `page.goto('/foo')` resolves to the target environment.
+ *   When omitted the test is expected to navigate to absolute URLs.
+ */
+export async function launchStealthDemo(
+  scenario: DemoScenarioItem,
+  environmentBaseUrl?: string | null,
+  branch?: string | null,
+): Promise<RunningProcess> {
+  await preemptForCtoDashboardDemo(scenario.title);
+
+  const outputFile = makeOutputFile('demo-stealth', scenario.id);
+  const fd = fs.openSync(outputFile, 'a');
+
+  logPreflight(fd, 'Loading Steel.dev configuration...');
+  const steelConfig = loadSteelConfig();
+  if (!steelConfig) {
+    logPreflight(fd, 'ABORT: Steel.dev not configured or API key resolution failed');
+    logPreflight(fd, 'Hint: configure services.json `steel` section and ensure STEEL_API_KEY is in secrets.local');
+    try { fs.closeSync(fd); } catch { /* */ }
+    return {
+      pid: 0, label: scenario.title, type: 'demo', status: 'failed',
+      startedAt: new Date().toISOString(), outputFile, exitCode: 1,
+      executionMode: 'steel', scenarioId: scenario.id, branch: branch ?? null,
+    };
+  }
+
+  // Resolve secrets so the test process can use them (e.g. credentials for
+  // logging into the target site). Failures are non-fatal here — some
+  // stealth scenarios test logged-out flows.
+  let resolvedSecrets: Record<string, string> = {};
+  try {
+    resolvedSecrets = resolveServicesSecrets();
+    logPreflight(fd, `Credentials resolved (${Object.keys(resolvedSecrets).length} keys)`);
+  } catch (err) {
+    logPreflight(fd, `WARN: Secret resolution failed: ${err instanceof Error ? err.message : String(err)} — continuing without resolved creds`);
+  }
+
+  // Create Steel session
+  logPreflight(fd, `Creating Steel session (region: ${steelConfig.region ?? 'auto'}, proxy: ${steelConfig.proxyEnabled ? steelConfig.proxyCountry ?? 'on' : 'off'})...`);
+  let session: { sessionId: string; cdpUrl: string; sessionViewerUrl?: string };
+  try {
+    session = await createDashboardSteelSession(steelConfig);
+    logPreflight(fd, `Steel session ${session.sessionId} created`);
+    if (session.sessionViewerUrl) logPreflight(fd, `Viewer: ${session.sessionViewerUrl}`);
+  } catch (err) {
+    logPreflight(fd, `ABORT: ${err instanceof Error ? err.message : String(err)}`);
+    try { fs.closeSync(fd); } catch { /* */ }
+    return {
+      pid: 0, label: scenario.title, type: 'demo', status: 'failed',
+      startedAt: new Date().toISOString(), outputFile, exitCode: 1,
+      executionMode: 'steel', scenarioId: scenario.id, branch: branch ?? null,
+    };
+  }
+
+  // Build env. PLAYWRIGHT_BASE_URL is forwarded only when set — Steel cannot
+  // reach localhost, so a local dev server URL would be useless.
+  logPreflight(fd, `Launching Playwright (local) connected to Steel (${session.sessionId})`);
+  if (environmentBaseUrl) logPreflight(fd, `PLAYWRIGHT_BASE_URL=${environmentBaseUrl}`);
+  logPreflight(fd, '---');
+
+  const scenarioEnv: Record<string, string> = scenario.envVars ? resolveOpEnvVars(scenario.envVars) : {};
+  const stealthEnv = buildDemoEnv({
+    extra: {
+      DEMO_HEADED: '1',
+      DEMO_SLOW_MO: '800',
+      STEEL_CDP_URL: session.cdpUrl,
+      STEEL_SESSION_ID: session.sessionId,
+      ...(session.sessionViewerUrl ? { STEEL_SESSION_VIEWER_URL: session.sessionViewerUrl } : {}),
+      ...(environmentBaseUrl ? { PLAYWRIGHT_BASE_URL: environmentBaseUrl } : {}),
+      ...resolvedSecrets,
+      ...scenarioEnv,
+    },
+  });
+  // Strip infra creds — Steel runs don't need (or want) them in the test env
+  for (const key of INFRA_CRED_KEYS) delete stealthEnv[key];
+
+  const cmdArgs = ['playwright', 'test', scenario.testFile, '--project', scenario.playwrightProject, '--headed', '--reporter', 'list'];
+  const child = spawn('npx', cmdArgs, {
+    detached: true,
+    stdio: ['ignore', fd, fd],
+    cwd: PROJECT_DIR,
+    env: stealthEnv,
+  });
+  child.unref();
+
+  try { fs.closeSync(fd); } catch { /* */ }
+
+  // Release the Steel session when the local Playwright child exits. Steel
+  // sessions auto-expire after their timeout, but releasing eagerly frees
+  // the concurrency slot for the next stealth run.
+  const apiKey = steelConfig.apiKey;
+  const sessionId = session.sessionId;
+  const releaseOnExit = (): void => {
+    void releaseDashboardSteelSession(apiKey, sessionId).catch(() => { /* non-fatal */ });
+  };
+  child.once('exit', releaseOnExit);
+  child.once('error', releaseOnExit);
+
+  return {
+    pid: child.pid!,
+    label: scenario.title,
+    type: 'demo',
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    outputFile,
+    exitCode: null,
+    executionMode: 'steel',
+    steelSessionId: session.sessionId,
+    steelSessionViewerUrl: session.sessionViewerUrl ?? null,
+    scenarioId: scenario.id,
+    branch: branch ?? null,
+  };
+}
+
 export function launchTest(testFile: TestFileItem): RunningProcess {
   const outputFile = makeOutputFile('test', testFile.fileName.replace(/\.ts$/, ''));
   const fd = fs.openSync(outputFile, 'a');
@@ -748,7 +1004,8 @@ export function checkProcess(proc: RunningProcess): RunningProcess {
     return proc;
   }
 
-  // Local: check PID liveness
+  // Local OR Steel: both run Playwright as a local process. PID liveness
+  // determines completion; the recorded execution mode comes from the proc.
   if (isProcessAlive(proc.pid)) return proc;
 
   // Process is dead — determine result from output
@@ -762,7 +1019,8 @@ export function checkProcess(proc: RunningProcess): RunningProcess {
   const status = exitCode === 0 ? 'passed' : 'failed';
   if (proc.type === 'demo' && proc.scenarioId) {
     const reason = status === 'failed' ? detectFailureReason(proc.outputFile, exitCode) : null;
-    recordDemoResult(proc.scenarioId, status, 'local', proc.startedAt, null, proc.branch, reason);
+    const mode: DemoExecutionMode = proc.executionMode ?? 'local';
+    recordDemoResult(proc.scenarioId, status, mode, proc.startedAt, null, proc.branch, reason);
   }
 
   return { ...proc, status, exitCode };

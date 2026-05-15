@@ -51,3 +51,11 @@ export {
   getInterruptPromise,
   enableDemoInterrupt,
 } from './interrupt.js';
+
+// Steel.dev browser connection helpers — also exposed under
+// `@gentyr/playwright-helpers/steel` for tests that want just the fixture.
+export {
+  getSteelCdpUrl,
+  connectToSteelOrLaunch,
+  steelAwareTest,
+} from './steel-browser.js';

@@ -6,6 +6,7 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
+    "./steel": "./dist/steel-browser.js",
     "./livecodes": "./src/livecodes-standalone/index.html"
   },
   "scripts": {

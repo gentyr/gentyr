@@ -36,6 +36,8 @@ export interface SteelConfig {
     enabled: boolean;
     country?: string;
   };
+  /** Default region (e.g. 'iad', 'lax'). Steel picks one automatically when omitted. */
+  region?: string;
 }
 
 export interface SteelSessionHandle {
@@ -49,6 +51,8 @@ export interface SteelSessionHandle {
   status: string;
   /** When the session was created */
   createdAt: string;
+  /** Profile ID associated with this session (set when persistProfile was used or profileId was loaded) */
+  profileId?: string;
 }
 
 export interface SteelSessionInfo {
@@ -70,6 +74,20 @@ export interface CreateSessionOptions {
   extensions?: string[];
   /** Custom user agent */
   userAgent?: string;
+  /** Steel region (overrides config.region for this session) */
+  region?: string;
+  /**
+   * Load a previously saved profile (cookies/localStorage/extensions/fingerprint).
+   * When set, the session starts in the state the profile was last saved at.
+   */
+  profileId?: string;
+  /**
+   * Persist this session's state as a Steel Profile on release. The returned
+   * SteelSessionHandle will include the assigned `profileId` once Steel
+   * confirms the persistence, so callers can wire it back into a scenario
+   * for the next run.
+   */
+  persistProfile?: boolean;
 }
 
 // ============================================================================
@@ -147,6 +165,18 @@ export async function createSteelSession(
   } else if (config.extensionId) {
     body.extensions = [config.extensionId];
   }
+  const region = options.region ?? config.region;
+  if (region) {
+    body.region = region;
+  }
+  if (options.profileId) {
+    // Load a previously saved Profile
+    body.profileId = options.profileId;
+  }
+  if (options.persistProfile) {
+    // Save this session's state as a Profile on release
+    body.persistProfile = true;
+  }
 
   const response = await steelFetch(config.apiKey, '/v1/sessions', {
     method: 'POST',
@@ -171,6 +201,7 @@ export async function createSteelSession(
     sessionViewerUrl: data.sessionViewerUrl as string | undefined,
     status: (data.status as string) || 'active',
     createdAt: (data.createdAt as string) || new Date().toISOString(),
+    profileId: (data.profileId as string | undefined) ?? options.profileId,
   };
 }
 
@@ -327,6 +358,110 @@ export async function uploadSteelExtension(
   }
 
   return { extensionId };
+}
+
+// ============================================================================
+// Recording Download
+// ============================================================================
+
+/**
+ * Download the MP4 recording for a finished Steel session.
+ *
+ * Steel records every session natively (WebRTC → MP4). The recording is
+ * available after the session enters a terminal state. This function:
+ *
+ *   1. Polls `GET /v1/sessions/{id}` until the session reaches a terminal
+ *      status or the deadline elapses.
+ *   2. Probes a small set of plausible recording endpoints and follows
+ *      `Location` redirects for any 3xx response (Steel often hands out a
+ *      pre-signed CDN URL rather than streaming the bytes directly).
+ *   3. Streams the response body to `outputPath`.
+ *
+ * Returns the absolute path on success, or `null` if the recording is not
+ * yet available, the endpoint is missing, or the response is empty. All
+ * errors are non-fatal — callers degrade gracefully to "no recording".
+ *
+ * The exact endpoint shape varies by Steel version, so this implementation
+ * is permissive: it tries `/v1/sessions/{id}/recording.mp4`,
+ * `/v1/sessions/{id}/recording`, and `/v1/sessions/{id}/replay` in order.
+ * The first one to return a 2xx response with a non-empty body wins.
+ */
+export async function downloadSteelRecording(
+  config: SteelConfig,
+  sessionId: string,
+  outputPath: string,
+  opts: { waitForTerminalMs?: number } = {},
+): Promise<string | null> {
+  const fs = await import('fs');
+  const fsp = await import('fs/promises');
+  const path = await import('path');
+  const { Readable } = await import('stream');
+  const { pipeline } = await import('stream/promises');
+
+  // Step 1 — wait for the session to reach a terminal state. Steel doesn't
+  // produce a playable MP4 while the session is still live.
+  const deadline = Date.now() + (opts.waitForTerminalMs ?? 30000);
+  const TERMINAL_STATUSES = new Set(['released', 'completed', 'expired', 'failed', 'stopped']);
+  while (Date.now() < deadline) {
+    const status = await getSteelSession(config, sessionId);
+    if (TERMINAL_STATUSES.has(status.status) || !status.alive) break;
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+
+  // Step 2 — try plausible recording endpoints in order.
+  const candidatePaths = [
+    `/v1/sessions/${sessionId}/recording.mp4`,
+    `/v1/sessions/${sessionId}/recording`,
+    `/v1/sessions/${sessionId}/replay`,
+  ];
+
+  for (const candidatePath of candidatePaths) {
+    let response: Response;
+    try {
+      response = await steelFetch(config.apiKey, candidatePath, {
+        method: 'GET',
+        redirect: 'follow',
+      }, 60000);
+    } catch (err) {
+      console.error(`[steel-runner] Recording fetch ${candidatePath} failed:`, err instanceof Error ? err.message : err);
+      continue;
+    }
+
+    if (!response.ok) {
+      // 404 → endpoint shape differs; try next candidate. Other errors → log and try next.
+      if (response.status !== 404) {
+        const text = await response.text().catch(() => '');
+        console.error(`[steel-runner] Recording fetch ${candidatePath} returned ${response.status}: ${text.slice(0, 200)}`);
+      }
+      continue;
+    }
+
+    if (!response.body) {
+      continue;
+    }
+
+    // Step 3 — stream to disk
+    try {
+      await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+      const writeStream = fs.createWriteStream(outputPath);
+      // Node 18+ exposes ReadableStream on Response; cast through unknown.
+      await pipeline(Readable.fromWeb(response.body as unknown as Parameters<typeof Readable.fromWeb>[0]), writeStream);
+      const stat = await fsp.stat(outputPath).catch(() => null);
+      if (!stat || stat.size === 0) {
+        // Empty file — Steel returned 200 but no bytes. Clean up and try next candidate.
+        try { await fsp.unlink(outputPath); } catch { /* */ }
+        continue;
+      }
+      return outputPath;
+    } catch (err) {
+      console.error(`[steel-runner] Failed to write recording to ${outputPath}:`, err instanceof Error ? err.message : err);
+      try { await fsp.unlink(outputPath); } catch { /* */ }
+      // Don't keep trying — disk error is unlikely to be transient.
+      return null;
+    }
+  }
+
+  return null;
 }
 
 // Note: checkSteelHealth() lives in execution-target.ts (alongside checkFlyHealth)

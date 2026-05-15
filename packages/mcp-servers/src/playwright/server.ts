@@ -202,6 +202,8 @@ interface SteelServicesConfig {
   extensionId?: string;
   proxyConfig?: { enabled: boolean; country?: string };
   maxConcurrentSessions?: number;
+  /** Default Steel region (e.g. 'iad', 'lax'). Per-run override via run_demo({ steel_region: ... }). */
+  region?: string;
 }
 
 function getSteelConfigFromServices(): SteelServicesConfig | null {
@@ -231,6 +233,7 @@ function getSteelConfigFromServices(): SteelServicesConfig | null {
         ? steel['proxyConfig'] as { enabled: boolean; country?: string }
         : undefined,
       maxConcurrentSessions: typeof steel['maxConcurrentSessions'] === 'number' ? steel['maxConcurrentSessions'] : undefined,
+      region: typeof steel['region'] === 'string' ? steel['region'] : undefined,
     };
   } catch {
     return null;
@@ -1361,6 +1364,70 @@ function persistScenarioRecording(scenarioId: string, videoPath: string): void {
   } catch {
     // Non-fatal — recording persistence is best-effort
   }
+}
+
+/**
+ * Finalize a Steel-backed demo run: release the cloud browser session and
+ * download the MP4 recording (Steel records server-side).
+ *
+ * Idempotent — gated by `entry.steel_finalized`. Safe to call multiple times
+ * during polling; only the first invocation does work. All failures are
+ * non-fatal — Steel sessions auto-expire and recording may simply be
+ * unavailable for some plans/scenarios.
+ *
+ * Sets `entry.steel_recording_path` when the download succeeds, and persists
+ * the recording as the scenario's last-known-good when the demo passed.
+ */
+async function finalizeSteelSession(entry: DemoRunState): Promise<void> {
+  if (entry.steel_finalized || !entry.steel_session_id) return;
+
+  const steelSection = getSteelConfigFromServices();
+  if (!steelSection) {
+    entry.steel_finalized = true;
+    return;
+  }
+  const { resolved } = resolveOpReferencesStrict({ STEEL_API_KEY: steelSection.apiKey });
+  const apiKey = resolved['STEEL_API_KEY'];
+  if (!apiKey) {
+    entry.steel_finalized = true;
+    return;
+  }
+  const steelConfig = { apiKey, orgId: steelSection.orgId };
+
+  // Release the session — Steel won't generate the recording artifact until
+  // the session is out of `live` status.
+  try {
+    const { releaseSteelSession } = await import('./steel-runner.js');
+    await releaseSteelSession(steelConfig, entry.steel_session_id);
+  } catch { /* non-fatal — Steel sessions auto-expire */ }
+
+  // Try to download the MP4 recording. Only attempt if we have a scenario_id
+  // and run_id to anchor the output path.
+  if (entry.scenario_id && entry.run_id) {
+    try {
+      const { downloadSteelRecording } = await import('./steel-runner.js');
+      const outputPath = path.join(
+        PROJECT_DIR,
+        '.claude',
+        'recordings',
+        'demos',
+        entry.scenario_id,
+        `steel-${entry.run_id}.mp4`,
+      );
+      const downloaded = await downloadSteelRecording(steelConfig, entry.steel_session_id, outputPath);
+      if (downloaded) {
+        entry.steel_recording_path = downloaded;
+        if (entry.status === 'passed') {
+          try { persistScenarioRecording(entry.scenario_id, downloaded); } catch { /* non-fatal */ }
+        }
+      }
+    } catch (err) {
+      process.stderr.write(`[steel-runner] Recording download skipped: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
+  entry.steel_finalized = true;
+  try { persistDemoRuns(); } catch { /* non-fatal */ }
 }
 
 /**
@@ -2623,14 +2690,13 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     args.skip_recording = false; // always record
   }
 
-  // When the caller has not explicitly requested local AND Fly.io is configured,
-  // we expect to route to Fly.io. Skip local setup in that case — the remote
-  // machine handles its own clone, install, prerequisites, dev server, and tests.
-  // Stealth routing (Steel) still runs Playwright locally, so it needs local setup.
-  const skipLocalSetup = !args.local && !args.stealth && (() => {
-    const flyConfig = getFlyConfigFromServices();
-    return flyConfig !== null && flyConfig.enabled !== false && !!flyConfig.appName && !!flyConfig.apiToken;
-  })();
+  // Local setup (prerequisites + dev server) is only needed when the test
+  // process actually exercises a local dev server. That's true exclusively for
+  // `local: true` runs. Fly.io demos run the dev server on the remote machine;
+  // Steel.dev runs Playwright on the host but the browser is in Steel's cloud,
+  // so any localhost the test reaches would be unreachable from the Steel
+  // browser anyway — no local dev server is useful.
+  const skipLocalSetup = !args.local;
 
   const webPort = process.env.PLAYWRIGHT_WEB_PORT || '3000';
   const devServerUrl = base_url || `http://localhost:${webPort}`;
@@ -2874,6 +2940,7 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   // in all environments — all errors fall through to local execution.
   let executionTargetResult: { target: 'local' | 'fly' | 'steel'; reason: string } | null = null;
   let steelOnlySessionId: string | undefined; // Set when stealth Steel session created (for cleanup in local Playwright path)
+  let steelOnlySessionHandle: import('./steel-runner.js').SteelSessionHandle | undefined; // Full handle for viewer URL + profile bookkeeping
   let scenarioComputeSize: 'standard' | 'large' | undefined;
   let computeSizeUsed: 'standard' | 'large' = 'standard';
   remoteRoutingBlock: {
@@ -3035,12 +3102,16 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
               enabled: steelSection!.proxyConfig.enabled,
               country: steelSection!.proxyConfig.country,
             } : undefined,
+            region: steelSection!.region,
           };
 
           const session = await createSteelSession(steelConfig, {
             useProxy: steelConfig.proxyConfig?.enabled,
             solveCaptcha: true,
             timeout: args.timeout ?? steelConfig.defaultTimeout,
+            region: args.steel_region,
+            profileId: args.steel_profile_id,
+            persistProfile: args.steel_persist_profile === true,
           });
 
           // Steel (stealth) path: Playwright runs locally and connects to the
@@ -3049,9 +3120,14 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
           if (!args.extra_env) args.extra_env = {};
           args.extra_env.STEEL_CDP_URL = session.cdpUrl;
           args.extra_env.STEEL_SESSION_ID = session.sessionId;
+          if (session.sessionViewerUrl) {
+            args.extra_env.STEEL_SESSION_VIEWER_URL = session.sessionViewerUrl;
+          }
 
-          // Store the Steel session ID so cleanup paths can release it
+          // Store the Steel session ID so cleanup paths can release it.
+          // Persist viewer URL + profile state in DemoRunState below.
           steelOnlySessionId = session.sessionId;
+          steelOnlySessionHandle = session;
           // Fall through to local execution path
           executionTargetResult = { target: 'steel', reason: target.reason };
           break remoteRoutingBlock;
@@ -3499,7 +3575,11 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
   let windowRecorder: { pid: number; process: ReturnType<typeof spawn> } | null = null;
   let windowRecordingPath: string | null = null;
   let screenshotCapture: { interval: ReturnType<typeof setInterval>; dir: string; startTime: number } | null = null;
-  const shouldRecord = !args.headless && !args.skip_recording;
+  // Skip the local ScreenCaptureKit/window recorder on Steel runs — the browser
+  // lives in Steel's cloud, so there is no local Chrome window to capture.
+  // Steel sessions are recorded server-side; their MP4 is downloaded post-run.
+  const targetingSteel = executionTargetResult?.target === 'steel';
+  const shouldRecord = !args.headless && !args.skip_recording && !targetingSteel;
 
   // Start system metrics poller sidecar when telemetry is enabled
   let metricsPollerHandle: { stop: () => void } | null = null;
@@ -3580,8 +3660,10 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     // for the recording path; for non-recording headed paths Chrome is already up at this point).
     const chromeWindowId = !args.headless ? await getChromeWindowId() : null;
 
-    // Start periodic screenshot capture for headed demos (macOS only)
-    if (!args.headless && args.scenario_id) {
+    // Start periodic screenshot capture for headed demos (macOS only).
+    // Skip on Steel runs — browser is remote, screenshots would be of the host
+    // display (or empty), not the Steel session.
+    if (!args.headless && args.scenario_id && !targetingSteel) {
       screenshotCapture = startScreenshotCapture(args.scenario_id, chromeWindowId);
     }
 
@@ -3686,6 +3768,15 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     if (steelOnlySessionId) {
       demoState.steel_session_id = steelOnlySessionId;
       demoState.execution_target = 'steel';
+      if (steelOnlySessionHandle?.sessionViewerUrl) {
+        demoState.steel_session_viewer_url = steelOnlySessionHandle.sessionViewerUrl;
+      }
+      if (steelOnlySessionHandle?.profileId) {
+        demoState.steel_profile_id = steelOnlySessionHandle.profileId;
+      }
+      if (args.steel_persist_profile === true) {
+        demoState.steel_persist_profile = true;
+      }
     }
     demoRuns.set(demoPid, demoState);
 
@@ -4153,6 +4244,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       ...(recordingPermissionError ? { recording_permission_error: recordingPermissionError } : {}),
       execution_target: executionTargetResult?.target ?? 'local',
       execution_target_reason: executionTargetResult?.reason ?? 'Local execution (no remote routing attempted)',
+      ...(steelOnlySessionId ? { steel_session_id: steelOnlySessionId } : {}),
+      ...(steelOnlySessionHandle?.sessionViewerUrl ? { steel_session_viewer_url: steelOnlySessionHandle.sessionViewerUrl } : {}),
+      ...(steelOnlySessionHandle?.profileId ? { steel_profile_id: steelOnlySessionHandle.profileId } : {}),
       run_id: runId,
     };
   } catch (err) {
@@ -4975,6 +5069,12 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         entry.result_persisted = true;
       }
 
+      // Steel-backed stealth runs: release the Steel session and try to fetch
+      // the cloud recording. Idempotent — only runs once per terminal demo.
+      if (entry.steel_session_id && !entry.steel_finalized) {
+        await finalizeSteelSession(entry);
+      }
+
       persistDemoRuns();
 
       const durationSec = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
@@ -5213,6 +5313,13 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     failure_frames: failureFramesFinal,
     analysis_guidance: analysisGuidanceFinal,
     ...(entry.image_staleness_warning ? { image_staleness_warning: entry.image_staleness_warning } : {}),
+    ...(entry.steel_session_id ? {
+      execution_target: 'steel' as const,
+      steel_session_id: entry.steel_session_id,
+      steel_session_viewer_url: entry.steel_session_viewer_url,
+      steel_profile_id: entry.steel_profile_id,
+      steel_recording_path: entry.steel_recording_path,
+    } : {}),
     run_id: entry.run_id,
     telemetry_dir: entry.telemetry_dir,
     telemetry_summary: entry.telemetry_dir ? readTelemetrySummaryInline(entry.telemetry_dir) : undefined,
@@ -5461,6 +5568,13 @@ async function stopDemo(args: StopDemoArgs): Promise<StopDemoResult> {
       failureReason: entry.failure_summary,
     });
     entry.result_persisted = true;
+  }
+
+  // Release any Steel session attached to this run. Stop is an operator action
+  // so we don't try to download the recording (it likely isn't ready yet); the
+  // primary goal is to free the Steel session resource immediately.
+  if (entry.steel_session_id && !entry.steel_finalized) {
+    try { await finalizeSteelSession(entry); } catch { /* non-fatal */ }
   }
 
   persistDemoRuns();
