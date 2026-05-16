@@ -248,7 +248,7 @@ process.stdin.on('end', async () => {
             const dir = path.dirname(configPath);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
-            db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, completed_at = datetime('now') WHERE id = ?").run(
+            db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, executed_at = datetime('now') WHERE id = ?").run(
               JSON.stringify({ success: true, lockdown_enabled: !!actionArgs.enabled, ctoWorktreePath: config.ctoWorktreePath || null }), action.id
             );
             log(`Lockdown ${actionArgs.enabled ? 'enabled' : 'disabled'} via inline execution`);
@@ -257,7 +257,7 @@ process.stdin.on('end', async () => {
             if (!fs.existsSync(localStateDir)) fs.mkdirSync(localStateDir, { recursive: true });
             const localState = { enabled: !!actionArgs.enabled, enabledAt: new Date().toISOString(), enabledBy: 'inline-executor' };
             fs.writeFileSync(path.join(localStateDir, 'local-mode.json'), JSON.stringify(localState, null, 2));
-            db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, completed_at = datetime('now') WHERE id = ?").run(
+            db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, executed_at = datetime('now') WHERE id = ?").run(
               JSON.stringify({ success: true, local_mode_enabled: !!actionArgs.enabled }), action.id
             );
             log(`Local mode ${actionArgs.enabled ? 'enabled' : 'disabled'} via inline execution`);
