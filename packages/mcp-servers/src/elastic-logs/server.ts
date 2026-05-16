@@ -323,19 +323,48 @@ async function verifyLoggingConfig(): Promise<VerifyLoggingConfigResult | ErrorR
     recommendations.push('Add ELASTIC_API_KEY + ELASTIC_CLOUD_ID to secrets.vercel for frontend SSR logging');
   }
 
-  // Check cluster connectivity
+  // Check cluster connectivity.
+  //
+  // We deliberately do NOT call `cluster.health()` here:
+  //   * On Elastic Cloud Serverless the `_cluster/health` endpoint does not
+  //     exist and the call returns a 404.
+  //   * On Elastic Cloud Standard, read/data API keys typically lack
+  //     `monitor` cluster privileges, so the call returns 403 even when
+  //     `query_logs` works.
+  //
+  // Both produce a false `cluster_reachable: false` even though the same
+  // credentials can search just fine. Probe with `ping()` first (lightest
+  // available call), then fall back to a `size: 0` match-all search against
+  // the configured index pattern — this matches exactly the permissions
+  // `query_logs` uses, so it is the most accurate "can we observe logs"
+  // signal we can produce.
   let clusterReachable = false;
-  let clusterStatus: string | undefined;
+  const clusterStatus: string | undefined = undefined;
 
   try {
     const client = getClient();
-    const health = await client.cluster.health({ timeout: '3s' });
-    clusterReachable = true;
-    clusterStatus = health.status;
-  } catch {
-    if (hasLocalApiKey && hasLocalCloudId) {
-      recommendations.push('Elastic cluster unreachable — verify credentials are correct and cluster is running');
+    try {
+      await (client as { ping: (opts?: unknown) => Promise<unknown> }).ping({ requestTimeout: 3000 });
+      clusterReachable = true;
+    } catch {
+      try {
+        await (client as { search: (opts: unknown) => Promise<unknown> }).search({
+          index: `${indexPrefix}-*`,
+          size: 0,
+          query: { match_all: {} },
+          requestTimeout: 3000,
+        });
+        clusterReachable = true;
+      } catch {
+        // both probes failed — leave clusterReachable false
+      }
     }
+  } catch {
+    // Client init failed — credentials likely missing
+  }
+
+  if (!clusterReachable && hasLocalApiKey && hasLocalCloudId) {
+    recommendations.push('Elastic cluster unreachable via ping or search probe — verify credentials are correct and cluster is running');
   }
 
   if (recommendations.length === 0) {

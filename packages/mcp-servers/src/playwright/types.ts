@@ -458,6 +458,17 @@ export interface DemoRunState {
   last_polled_at?: number;
   run_id?: string;
   telemetry_dir?: string;
+  /**
+   * Byte offsets per telemetry filename — tracks how much of each JSONL has
+   * already been shipped to Elastic. Used by incremental telemetry sync
+   * (Fly path) so each tail-and-ship pass only sends newly-appended lines.
+   * Persisted across MCP restarts.
+   */
+  telemetry_offsets?: Record<string, number>;
+  /** Epoch ms of the last incremental telemetry sync (throttle gate). */
+  last_telemetry_sync_at?: number;
+  /** Epoch ms of the last live machine log capture during a running Fly demo. */
+  last_live_log_capture_at?: number;
   /** Warning when Fly.io image is stale (Dockerfile or remote-runner.sh changed since last deploy) */
   image_staleness_warning?: string;
   /** Which compute_size was used for this run ('standard' = 4GB, 'large' = 8GB) */
@@ -739,6 +750,22 @@ export const GetFlyLogsArgsSchema = z.object({
     .describe('Filter logs to a specific machine ID. If omitted, shows recent logs from all machines.'),
 });
 export type GetFlyLogsArgs = z.infer<typeof GetFlyLogsArgsSchema>;
+
+export const TailRunningFlyDemoArgsSchema = z.object({
+  pid: z.coerce.number().int().positive().optional()
+    .describe('PID returned by run_demo. If omitted, run_id or scenario_id must be provided.'),
+  run_id: z.string().min(1).max(200).optional()
+    .describe('Demo run ID (dr-...). Used to locate the live demo state when pid is not known.'),
+  scenario_id: z.string().min(1).max(200).optional()
+    .describe('Scenario ID. Picks the most recent live run for this scenario if multiple match.'),
+  include_telemetry: z.coerce.boolean().optional().default(false)
+    .describe('When true, also pulls the in-machine telemetry directory and ships any new lines to Elastic (incremental).'),
+})
+  .refine(
+    v => v.pid !== undefined || (v.run_id !== undefined) || (v.scenario_id !== undefined),
+    'At least one of pid, run_id, or scenario_id must be provided.',
+  );
+export type TailRunningFlyDemoArgs = z.infer<typeof TailRunningFlyDemoArgsSchema>;
 
 // Steel.dev MCP tool schemas
 export const SteelHealthCheckArgsSchema = z.object({});
