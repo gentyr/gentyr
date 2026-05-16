@@ -696,6 +696,13 @@ async function recycleAutomatedSessions(projectDir) {
 export default async function sync(args) {
   const projectDir = process.cwd();
 
+  // --self-update: pull origin/main on the gentyr source and rebuild MCP servers
+  // BEFORE running sync. Replaces the 3-command CTO recovery sequence
+  // (`cd ~/git/gentyr && git pull && cd packages/mcp-servers && pnpm build && cd back && npx gentyr sync`)
+  // with a single `npx gentyr sync --self-update` invocation.
+  const argList = Array.isArray(args) ? args : [];
+  const selfUpdate = argList.includes('--self-update') || argList.includes('--pull');
+
   const model = detectInstallModel(projectDir);
   if (!model) {
     console.error(`${RED}Error: GENTYR not found in this project.${NC}`);
@@ -704,6 +711,48 @@ export default async function sync(args) {
   }
 
   let frameworkDir = resolveFrameworkDir(projectDir);
+
+  // Self-update: pull + rebuild on the gentyr source itself before syncing
+  if (selfUpdate && frameworkDir) {
+    try {
+      const gitDir = path.join(frameworkDir, '.git');
+      if (fs.existsSync(gitDir)) {
+        console.log(`\n${YELLOW}Self-update: pulling origin/main on ${frameworkDir}...${NC}`);
+        // Check tree is clean before pulling
+        const dirty = execFileSync('git', ['status', '--porcelain'], {
+          cwd: frameworkDir, encoding: 'utf8', stdio: 'pipe', timeout: 10000,
+        }).trim();
+        if (dirty) {
+          console.log(`  ${YELLOW}Skipped pull: working tree has uncommitted changes${NC}`);
+          console.log(`  ${YELLOW}Resolve and re-run: cd ${frameworkDir} && git status${NC}`);
+        } else {
+          execFileSync('git', ['pull', '--ff-only', 'origin', 'main'], {
+            cwd: frameworkDir, stdio: 'inherit', timeout: 60000,
+          });
+          console.log(`  ${GREEN}Source updated${NC}`);
+          // Rebuild MCP servers
+          const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
+          if (fs.existsSync(mcpDir)) {
+            console.log(`\n${YELLOW}Self-update: rebuilding MCP servers...${NC}`);
+            try {
+              execFileSync('pnpm', ['build'], {
+                cwd: mcpDir, stdio: 'inherit', timeout: 120000,
+              });
+              console.log(`  ${GREEN}MCP servers rebuilt${NC}`);
+            } catch (buildErr) {
+              console.log(`  ${RED}Rebuild failed: ${buildErr.message}${NC}`);
+              console.log(`  ${RED}Sync will continue with existing dist/${NC}`);
+            }
+          }
+        }
+      } else {
+        console.log(`\n${YELLOW}--self-update skipped: ${frameworkDir} is not a git repo${NC}`);
+      }
+    } catch (err) {
+      console.log(`\n${RED}--self-update failed: ${err.message}${NC}`);
+      console.log(`${RED}Sync will continue with existing source${NC}`);
+    }
+  }
 
   // Health check: repair broken node_modules/gentyr symlink
   if (model === 'npm') {
@@ -1252,8 +1301,8 @@ export default async function sync(args) {
       console.log(`${RED}  Pending files were preserved for retry${NC}`);
       if (anyEacces) {
         console.log(`${RED}  Cause: services.json is root-owned but auto-unprotect did not run.${NC}`);
-        console.log(`${RED}  Recovery: run 'sudo true && npx gentyr sync' to refresh the sudo${NC}`);
-        console.log(`${RED}  credential cache so auto-unprotect can fire.${NC}`);
+        console.log(`${RED}  Recovery: run 'sudo true && npx gentyr sync --self-update' to refresh${NC}`);
+        console.log(`${RED}  the sudo credential cache AND pull the latest gentyr source.${NC}`);
       }
       console.log(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
     }

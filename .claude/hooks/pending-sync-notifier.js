@@ -146,10 +146,11 @@ process.stdin.on('end', () => {
     const additionalContext =
       `Pending sync changes are staged but NOT yet applied to services.json / .mcp.json:\n` +
       `${pending.join('\n')}\n\n` +
-      `These changes will only land after the CTO runs 'npx gentyr sync'. If a prior sync ` +
-      `attempted to apply them and failed (look for 'FAILED to apply' in the previous sync ` +
-      `output), the cause is almost always that services.json is root-owned and auto-unprotect ` +
-      `could not refresh the sudo cache. Recovery: ask the CTO to run 'sudo true && npx gentyr sync'.\n\n` +
+      `These changes will only land after the CTO runs ONE command:\n` +
+      `  sudo true && npx gentyr sync --self-update\n\n` +
+      `Why this exact command:\n` +
+      `  - sudo true: primes the sudo cache so auto-unprotect of root-owned services.json fires non-interactively\n` +
+      `  - --self-update: pulls latest gentyr origin/main + rebuilds MCP servers before sync (catches stale-source bugs)\n\n` +
       `Do NOT re-call populate_secrets_local, populate_secrets_fly, update_services_config, ` +
       `or stage_mcp_server for these same keys — they are already staged. Re-staging will not ` +
       `force application.`;

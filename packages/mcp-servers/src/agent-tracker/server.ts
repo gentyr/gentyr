@@ -3519,7 +3519,7 @@ async function stageMcpServer(args: StageMcpServerArgs): Promise<object> {
       applied: false,
       pending: true,
       server_name: args.name,
-      message: `Server "${args.name}" staged for next \`npx gentyr sync\` (project is protected). Run sync and restart the Claude Code session for new MCP tools to appear.${collisionWarning}`,
+      message: `Server "${args.name}" staged (project is protected). Ask the CTO to run: sudo true && npx gentyr sync --self-update, then restart the Claude Code session for new MCP tools to appear.${collisionWarning}`,
     };
   } catch (stageErr: unknown) {
     return {

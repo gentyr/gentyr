@@ -1604,7 +1604,7 @@ async function registerSecretProfile(args: RegisterSecretProfileArgs): Promise<s
     result.warning = `These secretKeys are not yet defined in secrets.local: ${missingKeys.join(', ')}. They must be added before the profile can resolve them.`;
   }
   if (pending) {
-    result.message = 'Config staged — ask the CTO to run "npx gentyr sync" to apply.';
+    result.message = 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync --self-update. (sudo primes the cache for auto-unprotect of services.json; --self-update pulls latest gentyr source + rebuilds MCP servers.)';
   }
   return JSON.stringify(result, null, 2);
 }
@@ -1638,7 +1638,7 @@ async function deleteSecretProfile(args: DeleteSecretProfileArgs): Promise<strin
 
   const { applied, pending } = writeServicesConfig(config);
   const result: Record<string, unknown> = { deleted: args.name, applied, pending };
-  if (pending) result.message = 'Config staged — ask the CTO to run "npx gentyr sync" to apply.';
+  if (pending) result.message = 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync --self-update. (sudo primes the cache for auto-unprotect of services.json; --self-update pulls latest gentyr source + rebuilds MCP servers.)';
   return JSON.stringify(result);
 }
 
@@ -1713,7 +1713,7 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
         applied: false,
         pending: true,
         updatedKeys: Object.keys(args.updates),
-        message: 'Config staged — ask the CTO to run "npx gentyr sync" to apply.',
+        message: 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync --self-update. (sudo primes the cache for auto-unprotect of services.json; --self-update pulls latest gentyr source + rebuilds MCP servers.)',
       });
     }
     throw err;
@@ -1800,7 +1800,7 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
         newCount,
         updatedCount,
         stagedEntries: Object.keys(mergedPending).length,
-        message: `Entries staged in secrets-local-pending.json. Ask the CTO to run 'npx gentyr sync' to apply them. Do NOT re-add — they are already staged.`,
+        message: `Entries staged in secrets-local-pending.json. Ask the CTO to run: sudo true && npx gentyr sync --self-update. Do NOT re-call populate_secrets_local — entries are already staged; re-staging will not force application.`,
       });
     }
     throw err;
@@ -1878,7 +1878,7 @@ async function populateSecretsFly(args: PopulateSecretsFlyArgs): Promise<string>
         newCount,
         updatedCount,
         stagedEntries: Object.keys(existingPending[appName]).length,
-        message: `Entries staged in secrets-fly-pending.json. Ask the CTO to run 'npx gentyr sync' to apply them. Do NOT re-add — they are already staged.`,
+        message: `Entries staged in secrets-fly-pending.json. Ask the CTO to run: sudo true && npx gentyr sync --self-update. Do NOT re-call populate_secrets_fly — entries are already staged; re-staging will not force application.`,
       });
     }
     throw err;
