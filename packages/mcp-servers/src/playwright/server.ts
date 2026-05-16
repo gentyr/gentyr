@@ -265,17 +265,19 @@ function recoverStuckProjectDeploy(): { recovered: boolean; success: boolean; re
     const deployedAt = new Date(meta.deployedAt).getTime();
     const STUCK_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
-    if (Date.now() - deployedAt < STUCK_THRESHOLD_MS) return null; // Still within time window
-
-    // Check if deploy PID is alive
+    // Check PID liveness BEFORE the time threshold — a dead PID means the deploy
+    // is definitely finished, regardless of how recently it started.
     const deployPid = meta.deployPid;
     if (deployPid) {
       try {
-        process.kill(deployPid, 0); // PID is alive
-        return null; // Deploy still running
+        process.kill(deployPid, 0); // PID is alive — deploy still running
+        return null;
       } catch {
-        // PID is dead — need to determine outcome
+        // PID is dead — recover immediately, no time threshold needed
       }
+    } else {
+      // No PID recorded — apply time threshold before declaring stuck
+      if (Date.now() - deployedAt < STUCK_THRESHOLD_MS) return null;
     }
 
     // PID is dead or not stored — check log file for outcome

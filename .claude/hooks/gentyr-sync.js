@@ -815,6 +815,22 @@ try {
     }
   } catch (err) { debugLog('[gentyr-sync] Warning: branch protection check failed: ' + err.message); }
 
+  // Check if gentyr source checkout is behind origin/main (symlink installs only).
+  // This catches the scenario where a PR was merged to origin/main but git pull
+  // was never run on the local checkout — all dependent projects see stale code.
+  try {
+    const fwGitDir = path.join(frameworkDir, '.git');
+    if (fs.existsSync(fwGitDir)) {
+      execFileSync('git', ['fetch', 'origin', 'main', '--quiet'], { cwd: frameworkDir, stdio: 'pipe', timeout: 10000 });
+      const behind = execFileSync('git', ['rev-list', '--count', 'HEAD..origin/main'], {
+        cwd: frameworkDir, encoding: 'utf8', stdio: 'pipe', timeout: 5000,
+      }).trim();
+      if (Number(behind) > 0) {
+        warn(`GENTYR source is ${behind} commit(s) behind origin/main. Run: cd ${frameworkDir} && git pull --ff-only origin main && npx gentyr sync`);
+      }
+    }
+  } catch (_) { /* non-fatal — git may not be available or offline */ }
+
   // No sync was needed.
   silent();
 } catch (err) {
