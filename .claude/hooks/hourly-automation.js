@@ -2701,6 +2701,7 @@ export function spawnPreviewPromotion(commits) {
       promotionId,
       commitCount: commits.length,
       previewSha: currentSha,
+      worktreePath: wt.cwd,
     },
     cwd: wt.cwd,
     mcpConfig: wt.mcpConfig,

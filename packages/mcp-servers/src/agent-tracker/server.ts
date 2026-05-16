@@ -4308,20 +4308,31 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
     spawned_at: string | null;
     lane: string;
     agent_id: string | null;
+    resume_session_id: string | null;
   }
 
   let runningRows: RunningQueueRow[];
   try {
-    runningRows = db.prepare("SELECT id, title, agent_type, pid, spawned_at, lane, agent_id FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all() as RunningQueueRow[];
+    runningRows = db.prepare("SELECT id, title, agent_type, pid, spawned_at, lane, agent_id, resume_session_id FROM queue_items WHERE status = 'running' ORDER BY spawned_at ASC").all() as RunningQueueRow[];
   } finally {
     try { db.close(); } catch { /* best-effort */ }
   }
+
+  // Filter to sessions with live PIDs — dead sessions will be reaped on the next
+  // drainQueue() cycle. Without this filter, get_session_activity_summary reports
+  // ghost sessions that get_session_queue_status (which checks PID liveness) doesn't.
+  runningRows = runningRows.filter(r => {
+    if (!r.pid) return false;
+    try { process.kill(r.pid, 0); return true; } catch { return false; }
+  });
 
   const now = Date.now();
   const history = readHistory();
 
   const summary = runningRows.map(row => {
-    const elapsedMs = row.spawned_at ? now - new Date(row.spawned_at).getTime() : 0;
+    // SQLite datetime('now') stores UTC without a Z suffix — append Z to prevent
+    // JavaScript from interpreting the string as local time (Bug B: +2h on CEST)
+    const elapsedMs = row.spawned_at ? now - new Date(row.spawned_at.replace(' ', 'T') + 'Z').getTime() : 0;
     const elapsedMinutes = Math.floor(elapsedMs / 60000);
 
     // Use agent_id directly from the queue row (set by spawnQueueItem)
@@ -4337,9 +4348,19 @@ async function getSessionActivitySummary(_args: GetSessionActivitySummaryArgs): 
       // fall back to direct search when no tracker record exists
       const agentRecord = (history.agents ?? []).find((a: AgentRecord) => a.id === agentId);
       let sessionFile: string | null = null;
-      if (agentRecord) {
+      // Priority 1: Use resume_session_id from queue_items (most reliable —
+      // correctly populated by reaper backfill which uses the CWD, so it works
+      // for worktree sessions where the main project dir doesn't have the JSONL)
+      if (row.resume_session_id) {
+        sessionFile = findSessionFileByIdAcrossProject(PROJECT_DIR, row.resume_session_id);
+      }
+      // Priority 2: Use agent tracker history record (handles worktree dirs
+      // when metadata.worktreePath is set)
+      if (!sessionFile && agentRecord) {
         sessionFile = findSessionFile(agentRecord);
-      } else {
+      }
+      // Priority 3: Direct search in main project session dir
+      if (!sessionFile) {
         const sessionDir = getSessionDir(PROJECT_DIR);
         if (sessionDir) {
           sessionFile = findSessionFileByAgentId(sessionDir, agentId);
