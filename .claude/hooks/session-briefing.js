@@ -746,16 +746,31 @@ function buildInteractiveBriefing() {
       const lockdownConfig = JSON.parse(fs.readFileSync(lockdownConfigPath, 'utf-8'));
       if (lockdownConfig.interactiveLockdownDisabled) {
         const wt = lockdownConfig.ctoWorktreePath || '';
+        const wtExists = wt && fs.existsSync(wt);
         lines.push('=== LOCKDOWN OFF — CTO WORKTREE WORKFLOW ===');
-        if (wt) {
-          lines.push(`Worktree: ${wt}`);
+        if (wtExists) {
+          lines.push(`Worktree: ${wt} (exists)`);
           lines.push('');
-          lines.push('BEFORE making any changes, cd into your worktree.');
+          lines.push(`BEFORE making changes, run: cd ${wt}`);
+        } else if (wt) {
+          lines.push(`Worktree MISSING: ${wt} (recorded path no longer exists)`);
+          lines.push('');
+          lines.push(`Recreate it: git -C ${PROJECT_DIR} worktree add ${wt} preview`);
+          lines.push(`Then: cd ${wt} and make changes there.`);
         } else {
-          lines.push('No worktree provisioned — run /lockdown off to create one.');
+          lines.push('No worktree path recorded.');
+          lines.push('');
+          lines.push('Options to make code changes:');
+          lines.push('  (a) Spawn worktree-isolated sub-agents via Task tool (preferred)');
+          lines.push('  (b) Toggle lockdown to provision: /lockdown on then /lockdown off (CTO re-approves)');
         }
-        lines.push('Git mutations (stash, checkout, merge, commit, push) are BLOCKED in the main tree.');
-        lines.push('Write/Edit to main-tree files are also BLOCKED.');
+        lines.push('');
+        lines.push('STILL BLOCKED when lockdown is off:');
+        lines.push('  - Write/Edit/NotebookEdit to main-tree files (only worktree, .claude/, ~/.claude/ allowed)');
+        lines.push('  - Bash git mutations in main tree (stash, checkout, switch, merge, pull, rebase, reset, clean, add, commit, push, worktree remove)');
+        lines.push('  - --no-verify, --no-gpg-sign, core.hooksPath writes (block-no-verify guard — independent of lockdown)');
+        lines.push('  - Main-tree commits on protected branches main/staging/preview (main-tree-commit-guard — independent of lockdown)');
+        lines.push('');
         lines.push('When done: commit, push, create PR to preview, /lockdown on.');
         lines.push('');
       }

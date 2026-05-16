@@ -398,7 +398,7 @@ async function main() {
               break;
             }
             if (subcmd === 'add' || subcmd === 'commit') {
-              const reason = `BLOCKED: Cannot '${subcmd}' on '${currentBranch}' (protected branch)\n\nThe merge chain is: feature/* -> ${baseBranch} -> staging -> main.\nDirect commits to '${currentBranch}' are not allowed.\n\nTo work on code, create a feature branch:\n  git checkout -b feature/<name> ${baseBranch}\n\nIf you have uncommitted changes to save:\n  git stash && git checkout ${baseBranch} && git checkout -b feature/<name> && git stash pop`;
+              const reason = `BLOCKED: Cannot '${subcmd}' on '${currentBranch}' (protected branch)\n\nThis is the main-tree-commit-guard — INDEPENDENT of /lockdown. Toggling lockdown will NOT unblock this.\n\nThe merge chain is: feature/* -> ${baseBranch} -> staging -> main.\nDirect commits to '${currentBranch}' are not allowed.\n\nTo work on code, create a feature branch:\n  git checkout -b feature/<name> ${baseBranch}\n\nIf you have uncommitted changes to save:\n  git stash && git checkout ${baseBranch} && git checkout -b feature/<name> && git stash pop`;
               process.stdout.write(JSON.stringify({
                 permissionDecision: 'deny',
                 permissionDecisionReason: reason,
@@ -447,7 +447,7 @@ async function main() {
   for (const sub of subCommands) {
     const result = analyzeSubCommand(sub);
     if (result.blocked) {
-      const reason = `BLOCKED: Destructive Git Operation in Main Working Tree (spawned agent)\n\n${result.reason}\n\nYou are a spawned sub-agent running in the main working tree. Git write operations\nare blocked here because they can trigger lint-staged, which destroys uncommitted\nwork via 'git stash' + 'git reset --hard'.\n\nTo commit changes, you must be spawned with isolation: "worktree".\nTo review code without committing, you can still use git status, git diff, git log, etc.`;
+      const reason = `BLOCKED: Destructive Git Operation in Main Working Tree (spawned agent)\n\nThis is the main-tree-commit-guard — INDEPENDENT of /lockdown. Lockdown does not apply to spawned sessions.\n\n${result.reason}\n\nYou are a spawned sub-agent running in the main working tree. Git write operations\nare blocked here because they can trigger lint-staged, which destroys uncommitted\nwork via 'git stash' + 'git reset --hard'.\n\nTo commit changes, you must be spawned with isolation: "worktree".\nTo review code without committing, you can still use git status, git diff, git log, etc.`;
 
       process.stdout.write(JSON.stringify({
         permissionDecision: 'deny',

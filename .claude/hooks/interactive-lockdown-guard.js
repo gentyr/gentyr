@@ -261,13 +261,41 @@ async function main() {
 
   // Check lockdown disabled flag (interactive sessions only)
   if (isLockdownDisabled()) {
-    // Read CTO worktree path from config
+    // Read CTO worktree path from config and verify the directory still exists.
+    // When the recorded worktree was deleted, deny messages must NOT suggest cd-ing into it.
     let ctoWorktreePath = '';
+    let worktreeExists = false;
     try {
       const configPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       ctoWorktreePath = config.ctoWorktreePath || '';
+      worktreeExists = !!ctoWorktreePath && fs.existsSync(ctoWorktreePath);
     } catch { /* non-fatal */ }
+
+    // Build a consistent recovery block. Three states:
+    //   1. Worktree exists → "cd <path> && retry"
+    //   2. Worktree path set but directory missing → recovery: re-provision
+    //   3. No worktree path → recovery: provision via /lockdown cycle
+    const recoveryLines = (action) => {
+      if (worktreeExists) {
+        return [
+          `Recovery: cd ${ctoWorktreePath} && <re-run your ${action}>`,
+          `The worktree is a checkout of preview — your changes land on a feature branch.`,
+        ];
+      }
+      if (ctoWorktreePath) {
+        return [
+          `Recovery: the recorded CTO worktree (${ctoWorktreePath}) was deleted.`,
+          `Recreate it: git -C ${PROJECT_DIR} worktree add ${ctoWorktreePath} preview`,
+          `Then: cd ${ctoWorktreePath} && <re-run your ${action}>`,
+        ];
+      }
+      return [
+        `Recovery: no CTO worktree provisioned. Two options:`,
+        `  (a) Spawn a sub-agent with isolation: "worktree" via the Task tool (preferred for code changes)`,
+        `  (b) Toggle lockdown to provision a worktree: /lockdown on, then /lockdown off (CTO must re-approve)`,
+      ];
+    };
 
     // Block Write/Edit/NotebookEdit to main tree — all code edits must go through the worktree
     if (['Write', 'Edit', 'NotebookEdit'].includes(toolName)) {
@@ -281,15 +309,15 @@ async function main() {
       const isMemoryFile = filePath.startsWith(homeClaudeDir + path.sep);
 
       if (filePath && !isInWorktree && !isFrameworkFile && !isMemoryFile) {
-        const wtHint = ctoWorktreePath || 'Run /lockdown off to provision a worktree';
         const reason = [
-          'BLOCKED: Main-tree edits are not allowed even with lockdown off.',
+          'BLOCKED: Main-tree edits are not allowed (this restriction is INDEPENDENT of lockdown state).',
           '',
-          `Use your CTO worktree: cd ${wtHint}`,
-          'Then edit the equivalent file path inside the worktree.',
+          'Why: editing main-tree files conflicts with running agents and breaks the merge chain.',
+          'Allowed paths: .claude/worktrees/**, .claude/**, ~/.claude/**',
           '',
-          'This prevents conflicts with other running agents.',
-          'When done: commit, push, create PR to preview, then /lockdown on.',
+          ...recoveryLines('edit'),
+          '',
+          `Other guards (main-tree-commit-guard, block-no-verify) are not affected by /lockdown.`,
         ].join('\n');
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
@@ -327,18 +355,18 @@ async function main() {
 
         for (const pattern of BLOCKED_GIT_PATTERNS) {
           if (pattern.test(command)) {
-            const wtHint = ctoWorktreePath || 'Run /lockdown off to provision one';
             process.stdout.write(JSON.stringify({
               hookSpecificOutput: {
                 hookEventName: 'PreToolUse',
                 permissionDecision: 'deny',
                 permissionDecisionReason: [
-                  `BLOCKED: Git mutations are not allowed in the main tree when lockdown is off.`,
+                  `BLOCKED: Git mutations are not allowed in the main tree (INDEPENDENT of lockdown state).`,
                   '',
-                  `Use your CTO worktree: cd ${wtHint}`,
-                  'Run git commands from within the worktree, not the main tree.',
+                  `Allowed in main tree: git log, diff, status, show, branch, remote, ls-remote, fetch, worktree list/add.`,
                   '',
-                  'Read-only git commands (log, diff, status, show, branch) are allowed here.',
+                  ...recoveryLines('git command'),
+                  '',
+                  `Note: /lockdown does NOT unblock this. Disabling lockdown only widens edit permissions; main-tree git mutations remain blocked.`,
                 ].join('\n'),
               },
             }));
@@ -349,10 +377,14 @@ async function main() {
     }
 
     // Approve all other tools with workflow guidance
+    const worktreeStatus = worktreeExists
+      ? `Worktree: ${ctoWorktreePath}`
+      : ctoWorktreePath
+        ? `Worktree MISSING: ${ctoWorktreePath} (recreate: git worktree add ${ctoWorktreePath} preview)`
+        : 'No worktree provisioned — spawn worktree-isolated sub-agents OR /lockdown on then off';
     const guidance = [
-      '[LOCKDOWN OFF] Worktree workflow active.',
-      ctoWorktreePath ? `Worktree: ${ctoWorktreePath}` : 'No worktree provisioned — run /lockdown off to create one.',
-      'All code edits must happen in the worktree.',
+      '[LOCKDOWN OFF] Main-tree edits + git mutations BLOCKED. Worktree workflow active.',
+      worktreeStatus,
       'When done: commit, push, create PR to preview, then /lockdown on.',
     ].join(' | ');
     process.stdout.write(JSON.stringify({

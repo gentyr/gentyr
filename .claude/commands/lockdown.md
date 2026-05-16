@@ -105,6 +105,14 @@ Do NOT retry `set_lockdown_mode` -- the deferred action system handles execution
 
 **Spawned sessions** (`CLAUDE_SPAWNED_SESSION=true`) are always unrestricted.
 
+**Still blocked when lockdown is OFF** (lockdown-off does NOT disable these — they have separate guards):
+- `Write` / `Edit` / `NotebookEdit` to main-tree files (only `.claude/worktrees/`, `.claude/`, `~/.claude/` paths allowed)
+- Bash git mutations in the main tree (`git stash`, `checkout`, `switch`, `merge`, `pull`, `rebase`, `reset`, `clean`, `add`, `commit`, `push`, `worktree remove`)
+- `--no-verify`, `-n`, `--no-gpg-sign`, `core.hooksPath` writes (block-no-verify guard)
+- Main-tree commits on protected branches `main`/`staging`/`preview` (main-tree-commit-guard)
+
+These restrictions exist to prevent conflicts with running agents and to enforce the merge chain. They are NOT controllable via `/lockdown`. The recovery path when blocked is always: `cd` into the CTO worktree (or spawn worktree-isolated sub-agents via the `Task` tool) and re-run the command there.
+
 ## Important
 
 - This does NOT require a session restart — takes effect immediately
