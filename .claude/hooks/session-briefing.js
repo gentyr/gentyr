@@ -838,6 +838,21 @@ function buildInteractiveBriefing() {
               }
             }
           } catch { /* non-fatal */ }
+
+          // Fly app secrets — hint when the app is configured but no secrets.fly mapping exists.
+          // Without this, agents would file a CTO bypass to set Fly secrets manually instead of
+          // using populate_secrets_fly + secret_sync_secrets({ target: 'fly' }).
+          try {
+            const flyAppName = svcConfig.fly.appName;
+            if (flyAppName) {
+              const flySecrets = svcConfig.secrets?.fly?.[flyAppName];
+              const hasSecrets = flySecrets && Object.keys(flySecrets).length > 0;
+              if (!hasSecrets) {
+                lines.push(`Fly.io: no secrets.fly['${flyAppName}'] configured — to push Fly app secrets, call populate_secrets_fly then secret_sync_secrets({ target: 'fly' })`);
+              }
+            }
+          } catch { /* non-fatal */ }
+
           lines.push('');
         }
       }

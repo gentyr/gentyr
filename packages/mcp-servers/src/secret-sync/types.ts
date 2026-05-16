@@ -570,3 +570,14 @@ export const PopulateSecretsLocalArgsSchema = z.object({
     .describe('Map of env var names to op:// references. Example: { "AWS_ACCESS_KEY_ID": "op://Preview/AWS/access-key-id" }'),
 });
 export type PopulateSecretsLocalArgs = z.infer<typeof PopulateSecretsLocalArgsSchema>;
+
+export const PopulateSecretsFlyArgsSchema = z.object({
+  appName: z.string().regex(/^[a-z][a-z0-9-]*$/, 'Must be a valid Fly app name')
+    .describe('Fly app name to add secrets for (e.g., "myapp-playwright")'),
+  entries: z.record(
+    z.string().min(1),
+    z.string().regex(/^op:\/\//, 'Values must be op:// references'),
+  ).refine(obj => Object.keys(obj).length > 0, { message: 'At least one entry is required' })
+    .describe('Map of env var names to op:// references. Example: { "E2E_OPENAI_API_KEY": "op://Staging/OpenAI/credential" }'),
+});
+export type PopulateSecretsFlyArgs = z.infer<typeof PopulateSecretsFlyArgsSchema>;

@@ -3,10 +3,12 @@
  * UserPromptSubmit Hook: Pending Sync Notifier
  *
  * In interactive (CTO) sessions, warns when any pending configuration files
- * exist that require `npx gentyr sync` to apply. Checks all 4 pending file types:
+ * exist that require `npx gentyr sync` to apply. Checks all 5 pending file types:
  *   - secrets-local-pending.json (staged secrets.local entries)
  *   - services-config-pending.json (staged services.json config changes)
  *   - mcp-servers-pending.json (staged MCP server registrations)
+ *   - fly-config-pending.json (staged Fly.io config changes)
+ *   - secrets-fly-pending.json (staged secrets.fly entries)
  *   - fly-config-pending.json (staged Fly.io config)
  *
  * Only fires in interactive sessions (not spawned). 10-minute cooldown.
@@ -93,6 +95,19 @@ process.stdin.on('end', () => {
         describe: (data) => {
           const keys = Object.keys(data).filter(k => k !== 'timestamp');
           return keys.length > 0 ? `${keys.length} field(s)` : null;
+        },
+      },
+      {
+        file: 'secrets-fly-pending.json',
+        label: 'secrets.fly entries',
+        describe: (data) => {
+          const apps = Object.keys(data.entries || {});
+          if (apps.length === 0) return null;
+          const summary = apps.map(app => {
+            const count = Object.keys(data.entries[app] || {}).length;
+            return `${app} (${count} key${count === 1 ? '' : 's'})`;
+          });
+          return summary.join(', ');
         },
       },
     ];

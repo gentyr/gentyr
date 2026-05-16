@@ -818,6 +818,41 @@ export default async function sync(args) {
     }
   }
 
+  // 1.6b. Apply pending secrets.fly entries (staged by populate_secrets_fly MCP tool)
+  const pendingFlyPath = path.join(projectDir, '.claude', 'state', 'secrets-fly-pending.json');
+  if (fs.existsSync(pendingFlyPath)) {
+    console.log(`\n${YELLOW}Applying pending secrets.fly entries...${NC}`);
+    try {
+      const pending = JSON.parse(fs.readFileSync(pendingFlyPath, 'utf8'));
+      const flyEntries = pending.entries || {};
+      // Validate shape: { appName: { ENV_VAR: "op://..." } }
+      for (const [appName, appSecrets] of Object.entries(flyEntries)) {
+        if (typeof appSecrets !== 'object' || appSecrets === null) {
+          throw new Error(`Invalid entry for app '${appName}': expected object`);
+        }
+        for (const [key, val] of Object.entries(appSecrets)) {
+          if (typeof val !== 'string' || !val.startsWith('op://')) {
+            throw new Error(`Invalid entry: ${appName}.${key} is not an op:// reference`);
+          }
+        }
+      }
+      const current = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
+      if (!current.secrets) current.secrets = {};
+      if (!current.secrets.fly) current.secrets.fly = {};
+      let totalEntries = 0;
+      for (const [appName, appSecrets] of Object.entries(flyEntries)) {
+        if (!current.secrets.fly[appName]) current.secrets.fly[appName] = {};
+        Object.assign(current.secrets.fly[appName], appSecrets);
+        totalEntries += Object.keys(appSecrets).length;
+      }
+      safeWriteJson(svcConfigPath, current, { backupPath: svcBackupPath });
+      fs.unlinkSync(pendingFlyPath);
+      console.log(`  Applied ${totalEntries} secrets.fly entry/entries across ${Object.keys(flyEntries).length} app(s)`);
+    } catch (err) {
+      console.log(`  ${RED}Warning: Failed to apply pending secrets.fly: ${err.message}${NC}`);
+    }
+  }
+
   // 1.7. Apply pending MCP server additions (staged by stage_mcp_server MCP tool)
   const pendingMcpPath = path.join(projectDir, '.claude', 'state', 'mcp-servers-pending.json');
   if (fs.existsSync(pendingMcpPath)) {

@@ -68,8 +68,10 @@ import {
   GetServicesConfigArgsSchema,
   ServicesConfigSchema,
   PopulateSecretsLocalArgsSchema,
+  PopulateSecretsFlyArgsSchema,
   type UpdateServicesConfigArgs,
   type PopulateSecretsLocalArgs,
+  type PopulateSecretsFlyArgs,
 } from './types.js';
 
 const { RENDER_API_KEY, VERCEL_TOKEN, VERCEL_TEAM_ID } = process.env;
@@ -559,11 +561,16 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
       const flySecrets = config.secrets?.fly;
       const flyConfig = config.fly;
       if (!flySecrets || Object.keys(flySecrets).length === 0) {
-        errors.push({ key: 'N/A', service: 'fly', error: 'No secrets.fly mappings configured' });
+        const appNameHint = flyConfig?.appName || '<app-name>';
+        errors.push({
+          key: 'N/A',
+          service: 'fly',
+          error: `No secrets.fly mappings configured. Add via update_services_config with shape: { "secrets": { "fly": { "${appNameHint}": { "ENV_VAR_NAME": "op://vault/item/field" } } } }. Use mcp__onepassword__op_vault_map to discover op:// refs first.`,
+        });
         continue;
       }
       if (!flyConfig?.apiToken) {
-        errors.push({ key: 'N/A', service: 'fly', error: 'No fly.apiToken configured in services.json' });
+        errors.push({ key: 'N/A', service: 'fly', error: 'No fly.apiToken configured in services.json. Run /setup-fly first.' });
         continue;
       }
 
@@ -1800,6 +1807,84 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
   }
 }
 
+async function populateSecretsFly(args: PopulateSecretsFlyArgs): Promise<string> {
+  const parsed = PopulateSecretsFlyArgsSchema.parse(args);
+  const appName = parsed.appName;
+  const entries = parsed.entries as Record<string, string>;
+
+  const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
+  const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'secrets-fly-pending.json');
+
+  let current: Record<string, unknown>;
+  try {
+    const existing = safeReadJson<Record<string, unknown>>(configPath, { backupPath: SERVICES_BACKUP_PATH });
+    current = existing ?? { secrets: {} };
+  } catch (readErr) {
+    return JSON.stringify({ error: `Cannot read services.json: ${(readErr as Error).message}. Aborting update to prevent data loss.` });
+  }
+
+  // Merge into secrets.fly[appName]
+  const secrets = (current.secrets || {}) as Record<string, unknown>;
+  const existingFly = (secrets.fly || {}) as Record<string, Record<string, string>>;
+  const existingApp = (existingFly[appName] || {}) as Record<string, string>;
+  const mergedApp = { ...existingApp, ...entries };
+
+  let newCount = 0;
+  let updatedCount = 0;
+  for (const key of Object.keys(entries)) {
+    if (key in existingApp) { updatedCount++; } else { newCount++; }
+  }
+
+  const updated = {
+    ...current,
+    secrets: {
+      ...secrets,
+      fly: { ...existingFly, [appName]: mergedApp },
+    },
+  };
+
+  const result = ServicesConfigSchema.safeParse(updated);
+  if (!result.success) {
+    return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
+  }
+
+  try {
+    safeWriteJson(configPath, result.data, { backupPath: SERVICES_BACKUP_PATH });
+    return JSON.stringify({
+      applied: true,
+      pending: false,
+      appName,
+      newCount,
+      updatedCount,
+      totalAppSecrets: Object.keys(mergedApp).length,
+      message: `${newCount} new + ${updatedCount} updated entries for Fly app '${appName}'. Next: call secret_sync_secrets({ target: 'fly' }) to push them to Fly.io.`,
+    });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EACCES') {
+      // Root-owned — stage for next sync
+      let existingPending: Record<string, Record<string, string>> = {};
+      try {
+        const raw = JSON.parse(readFileSync(pendingPath, 'utf-8')) as { entries?: Record<string, Record<string, string>> };
+        existingPending = raw.entries || {};
+      } catch { /* new */ }
+      const pendingApp = existingPending[appName] || {};
+      existingPending[appName] = { ...pendingApp, ...entries };
+      mkdirSync(dirname(pendingPath), { recursive: true });
+      writeFileSync(pendingPath, JSON.stringify({ entries: existingPending, timestamp: new Date().toISOString() }, null, 2) + '\n');
+      return JSON.stringify({
+        applied: false,
+        pending: true,
+        appName,
+        newCount,
+        updatedCount,
+        stagedEntries: Object.keys(existingPending[appName]).length,
+        message: `Entries staged in secrets-fly-pending.json. Ask the CTO to run 'npx gentyr sync' to apply them. Do NOT re-add — they are already staged.`,
+      });
+    }
+    throw err;
+  }
+}
+
 // ============================================================================
 // Server Setup
 // ============================================================================
@@ -1807,7 +1892,7 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
 export const tools = [
   {
     name: 'secret_sync_secrets',
-    description: 'Sync secrets from 1Password to Render, Vercel, or local dev (op-secrets.conf). Secret values are never exposed to the agent.',
+    description: 'Sync secrets from 1Password to Render, Vercel, Fly.io, or local dev (op-secrets.conf). Secret values are never exposed to the agent. Targets: render-production, render-staging, vercel, fly, local, all. For Fly.io: requires secrets.fly[appName] map in services.json — populate via populate_secrets_fly first.',
     schema: SyncSecretsArgsSchema,
     handler: syncSecrets as (args: unknown) => unknown,
   },
@@ -1894,6 +1979,12 @@ export const tools = [
     description: 'Add or update op:// references in secrets.local (services.json). Use mcp__onepassword__op_vault_map to discover available op:// references first. If services.json is root-protected, stages entries for next "npx gentyr sync". Values must be op:// references (e.g., "op://Preview/AWS/access-key-id").',
     schema: PopulateSecretsLocalArgsSchema,
     handler: populateSecretsLocal as (args: unknown) => unknown,
+  },
+  {
+    name: 'populate_secrets_fly',
+    description: 'Add or update op:// references in secrets.fly[appName] (services.json) for pushing to a Fly.io app. Use mcp__onepassword__op_vault_map to discover available op:// references first. After populating, call secret_sync_secrets({ target: "fly" }) to push to Fly.io. If services.json is root-protected, stages entries for next "npx gentyr sync". Example: { appName: "myapp-playwright", entries: { "E2E_OPENAI_API_KEY": "op://Staging/OpenAI/credential" } }',
+    schema: PopulateSecretsFlyArgsSchema,
+    handler: populateSecretsFly as (args: unknown) => unknown,
   },
 ] satisfies AnyToolHandler[];
 
