@@ -12,10 +12,12 @@
  *   - fly-config-pending.json (staged Fly.io config)
  *
  * Only fires in interactive sessions (not spawned). 10-minute cooldown.
- * Shows in systemMessage (terminal) only — does NOT inject into model context
- * since the CTO can see the terminal warning and act on it.
+ * Emits both `systemMessage` (terminal banner for the CTO) and
+ * `additionalContext` (injected into the model's conversation) so the AI agent
+ * can detect repeated staging without applying and warn the CTO instead of
+ * silently restaging the same entries across multiple failed sync cycles.
  *
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import fs from 'node:fs';
@@ -138,10 +140,28 @@ process.stdin.on('end', () => {
 
     const message = `⚠ PENDING SYNC: ${pending.length} change(s) staged for next 'npx gentyr sync':\n${pending.join('\n')}`;
 
+    // Inject into model context too — so the AI agent can refuse to re-stage
+    // the same entries when prior sync attempts silently failed (e.g., EACCES
+    // when services.json is root-owned and auto-unprotect can't run).
+    const additionalContext =
+      `Pending sync changes are staged but NOT yet applied to services.json / .mcp.json:\n` +
+      `${pending.join('\n')}\n\n` +
+      `These changes will only land after the CTO runs 'npx gentyr sync'. If a prior sync ` +
+      `attempted to apply them and failed (look for 'FAILED to apply' in the previous sync ` +
+      `output), the cause is almost always that services.json is root-owned and auto-unprotect ` +
+      `could not refresh the sudo cache. Recovery: ask the CTO to run 'sudo true && npx gentyr sync'.\n\n` +
+      `Do NOT re-call populate_secrets_local, populate_secrets_fly, update_services_config, ` +
+      `or stage_mcp_server for these same keys — they are already staged. Re-staging will not ` +
+      `force application.`;
+
     console.log(JSON.stringify({
       continue: true,
       suppressOutput: false,
       systemMessage: message,
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext,
+      },
     }));
     process.exit(0);
   } catch {

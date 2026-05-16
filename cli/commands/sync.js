@@ -25,6 +25,13 @@ const NC = '\x1b[0m';
 
 /**
  * Check if the project is currently protected.
+ *
+ * Belt-and-suspenders: returns true when the state file says protected OR when
+ * services.json on-disk is root-owned. The on-disk check catches state-drift
+ * cases (interrupted unprotect, manual chown, restore from backup) where the
+ * state file says unprotected but the file is actually root-owned — without it,
+ * sync would skip auto-unprotect and step 1.5/1.6 would EACCES silently.
+ *
  * @param {string} projectDir
  * @returns {boolean}
  */
@@ -32,10 +39,14 @@ function isProtected(projectDir) {
   try {
     const stateFile = path.join(projectDir, '.claude', 'protection-state.json');
     const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    return state.protected === true;
-  } catch {
-    return false;
-  }
+    if (state.protected === true) return true;
+  } catch { /* fall through */ }
+  try {
+    const svcPath = path.join(projectDir, '.claude', 'config', 'services.json');
+    const st = fs.statSync(svcPath);
+    if (st.uid === 0) return true;
+  } catch { /* file missing → not protected */ }
+  return false;
 }
 
 /**
@@ -769,6 +780,10 @@ export default async function sync(args) {
     console.log(`  Created ${svcConfigPath}`);
   }
 
+  // Track pending-application outcomes for end-of-run summary.
+  // Each entry: { kind, applied: number, error?: string }
+  const pendingSummary = { applied: [], failed: [] };
+
   // 1.5. Apply pending services.json config updates (staged by update_services_config MCP tool)
   const pendingConfigPath = path.join(projectDir, '.claude', 'state', 'services-config-pending.json');
   if (fs.existsSync(pendingConfigPath)) {
@@ -787,8 +802,10 @@ export default async function sync(args) {
       safeWriteJson(svcConfigPath, merged, { backupPath: svcBackupPath, backupValidator: hasSecretsLocal });
       fs.unlinkSync(pendingConfigPath);
       console.log(`  Applied ${Object.keys(pending).length} pending config update(s)`);
+      pendingSummary.applied.push({ kind: 'services.json config', count: Object.keys(pending).length });
     } catch (err) {
       console.log(`  ${RED}Warning: Failed to apply pending config: ${err.message}${NC}`);
+      pendingSummary.failed.push({ kind: 'services.json config', error: err.message, code: err.code });
       // Preserve pending file for inspection on failure
     }
   }
@@ -811,10 +828,22 @@ export default async function sync(args) {
       if (!current.secrets.local) current.secrets.local = {};
       Object.assign(current.secrets.local, entries);
       safeWriteJson(svcConfigPath, current, { backupPath: svcBackupPath, backupValidator: hasSecretsLocal });
+      // Verify post-write: confirm all keys actually landed in services.json.
+      // This catches the case where safeWriteJson "succeeded" but the file is
+      // stale (e.g., shadow copy, FUSE oddity) — without it, we'd unlink the
+      // pending file and lose the staged entries.
+      const verify = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
+      const verifyLocal = (verify.secrets && verify.secrets.local) || {};
+      const missing = Object.keys(entries).filter(k => !(k in verifyLocal));
+      if (missing.length > 0) {
+        throw new Error(`Post-write verification failed: ${missing.length} key(s) missing from services.json (${missing.join(', ')})`);
+      }
       fs.unlinkSync(pendingSecretsPath);
       console.log(`  Applied ${Object.keys(entries).length} secrets.local entry/entries`);
+      pendingSummary.applied.push({ kind: 'secrets.local', count: Object.keys(entries).length });
     } catch (err) {
       console.log(`  ${RED}Warning: Failed to apply pending secrets.local: ${err.message}${NC}`);
+      pendingSummary.failed.push({ kind: 'secrets.local', error: err.message, code: err.code });
     }
   }
 
@@ -848,8 +877,10 @@ export default async function sync(args) {
       safeWriteJson(svcConfigPath, current, { backupPath: svcBackupPath });
       fs.unlinkSync(pendingFlyPath);
       console.log(`  Applied ${totalEntries} secrets.fly entry/entries across ${Object.keys(flyEntries).length} app(s)`);
+      pendingSummary.applied.push({ kind: 'secrets.fly', count: totalEntries });
     } catch (err) {
       console.log(`  ${RED}Warning: Failed to apply pending secrets.fly: ${err.message}${NC}`);
+      pendingSummary.failed.push({ kind: 'secrets.fly', error: err.message, code: err.code });
     }
   }
 
@@ -891,12 +922,14 @@ export default async function sync(args) {
         }
         fs.unlinkSync(pendingMcpPath);
         console.log(`  Applied ${applied} staged MCP server(s)${skipped > 0 ? `, skipped ${skipped} collision(s)` : ''}`);
+        pendingSummary.applied.push({ kind: 'MCP servers', count: applied });
       } else {
         fs.unlinkSync(pendingMcpPath);
         console.log('  No servers in pending file (cleaned up)');
       }
     } catch (err) {
       console.log(`  ${RED}Warning: Failed to apply staged MCP servers: ${err.message}${NC}`);
+      pendingSummary.failed.push({ kind: 'MCP servers', error: err.message, code: err.code });
       // Preserve pending file for inspection on failure
     }
   }
@@ -1197,6 +1230,34 @@ export default async function sync(args) {
   // 9. Write state
   const state = buildState(frameworkDir, model);
   writeState(projectDir, state);
+
+  // 9a. Pending-application summary — make EACCES failures impossible to miss.
+  // Without this block, a single inline yellow warning in 100+ lines of sync
+  // output is easy to skim past, which is how staged secrets sit unapplied
+  // across multiple sync attempts.
+  if (pendingSummary.applied.length > 0 || pendingSummary.failed.length > 0) {
+    console.log('');
+    console.log(`${YELLOW}Pending changes summary:${NC}`);
+    for (const a of pendingSummary.applied) {
+      console.log(`  ${GREEN}✓${NC} ${a.kind}: applied ${a.count}`);
+    }
+    for (const f of pendingSummary.failed) {
+      console.log(`  ${RED}✗${NC} ${f.kind}: FAILED — ${f.error}`);
+    }
+    if (pendingSummary.failed.length > 0) {
+      const anyEacces = pendingSummary.failed.some(f => f.code === 'EACCES' || /EACCES|permission denied/i.test(f.error));
+      console.log('');
+      console.log(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
+      console.log(`${RED}  ${pendingSummary.failed.length} pending change(s) FAILED to apply${NC}`);
+      console.log(`${RED}  Pending files were preserved for retry${NC}`);
+      if (anyEacces) {
+        console.log(`${RED}  Cause: services.json is root-owned but auto-unprotect did not run.${NC}`);
+        console.log(`${RED}  Recovery: run 'sudo true && npx gentyr sync' to refresh the sudo${NC}`);
+        console.log(`${RED}  credential cache so auto-unprotect can fire.${NC}`);
+      }
+      console.log(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
+    }
+  }
 
   console.log('');
   console.log(`${GREEN}Sync complete (v${state.version})${NC}`);
