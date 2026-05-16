@@ -107,6 +107,8 @@ import {
   type GetFlyMachineRamArgs,
   GetFlyLogsArgsSchema,
   type GetFlyLogsArgs,
+  TailRunningFlyDemoArgsSchema,
+  type TailRunningFlyDemoArgs,
   SteelHealthCheckArgsSchema,
   type SteelHealthCheckArgs,
   UploadSteelExtensionArgsSchema,
@@ -4517,11 +4519,77 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
         startedAt: new Date(entry.started_at).getTime(),
       };
 
-      const { isMachineAlive, pullRemoteArtifacts, stopRemoteMachine, pollRemoteProgressRaw } = await import('./fly-runner.js');
+      const { isMachineAlive, pullRemoteArtifacts, stopRemoteMachine, pollRemoteProgressRaw, captureRunningMachineLogs, execInMachine } = await import('./fly-runner.js');
       const alive = await isMachineAlive(remoteHandle, remoteMachineConfig);
 
       if (alive) {
         const durationSeconds = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+
+        // ── Live observability: periodic capture while the machine is alive ──
+        //
+        // Single-demo run_demo (unlike run_demo_batch) does not have a polling
+        // loop, so without this, a hung Fly machine produces zero observable
+        // diagnostic data until it dies. Each check_demo_result call here
+        // refreshes stdout/stderr/error.log and (if telemetry is enabled)
+        // ships any newly-appended telemetry lines to Elastic.
+        //
+        // Throttled to once per 30s to bound the Fly exec API load when the
+        // CTO is polling rapidly. Best-effort throughout — every failure path
+        // is non-fatal.
+        const LIVE_CAPTURE_INTERVAL_MS = 30_000;
+        const now = Date.now();
+        const lastCapture = entry.last_live_log_capture_at || 0;
+        if (now - lastCapture >= LIVE_CAPTURE_INTERVAL_MS) {
+          entry.last_live_log_capture_at = now;
+
+          // 1) Refresh in-container stdout/stderr/error.log + system diagnostics
+          //    into the local artifacts directory so the CTO can immediately
+          //    `cat` them or query via tail_running_fly_demo.
+          const destDir = entry.artifacts_dest_dir
+            || path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${entry.fly_machine_id}`);
+          try {
+            fs.mkdirSync(destDir, { recursive: true });
+            await captureRunningMachineLogs(remoteHandle, remoteMachineConfig, destDir).catch(() => {});
+            entry.artifacts_dest_dir = destDir;
+          } catch { /* non-fatal */ }
+
+          // 2) Incremental telemetry pull + ship (only when telemetry was
+          //    enabled and we have a local telemetry_dir to mirror into).
+          if (entry.telemetry_dir) {
+            try {
+              const { pullFlyTelemetryDelta, shipTelemetryDelta } = await import('./telemetry-capture.js');
+              if (!entry.telemetry_offsets) entry.telemetry_offsets = {};
+              const remoteTelemetryDir = '/app/.artifacts/telemetry';
+              await pullFlyTelemetryDelta({
+                exec: (cmd, timeoutMs) => execInMachine(remoteHandle, remoteMachineConfig, cmd, timeoutMs),
+                remoteDir: remoteTelemetryDir,
+                localDir: entry.telemetry_dir,
+                offsets: entry.telemetry_offsets,
+              }).catch(() => ({}));
+              // Reuse same offsets for shipping — shipTelemetryDelta tracks
+              // shipping position via a separate key prefix to avoid collision
+              // with pull offsets. We keep them in the same record but namespace.
+              const shipKey = (k: string): string => `ship:${k}`;
+              const shipOffsets: Record<string, number> = {};
+              for (const k of Object.keys(entry.telemetry_offsets)) {
+                if (k.startsWith('ship:')) shipOffsets[k.slice(5)] = entry.telemetry_offsets[k];
+              }
+              await shipTelemetryDelta({
+                runId: entry.run_id || `unknown-${entry.fly_machine_id}`,
+                scenarioId: entry.scenario_id || 'unknown',
+                telemetryDir: entry.telemetry_dir,
+                offsets: shipOffsets,
+                executionTarget: 'fly',
+                status: 'running',
+              }).catch(() => ({ shipped: 0, perFile: {} }));
+              for (const k of Object.keys(shipOffsets)) {
+                entry.telemetry_offsets[shipKey(k)] = shipOffsets[k];
+              }
+              entry.last_telemetry_sync_at = now;
+            } catch { /* non-fatal */ }
+          }
+          try { persistDemoRuns(); } catch { /* */ }
+        }
 
         // Parse structured progress from remote JSONL
         let remoteProgress: DemoProgress | null = null;
@@ -5375,7 +5443,11 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     message,
   };
 
-  // Fire-and-forget Elastic shipping when demo is complete with telemetry
+  // Fire-and-forget Elastic shipping when demo is complete with telemetry.
+  // For Fly runs we may have already streamed some lines via
+  // `shipTelemetryDelta` during the run — pass those per-file offsets
+  // (stored as `ship:<filename>` keys on telemetry_offsets) so the final
+  // ship only delivers the tail bytes and we don't get duplicate docs.
   const finalEntry = entry!; // Guaranteed non-null at this point (early returns above)
   if (finalEntry.telemetry_dir && finalEntry.run_id && finalEntry.status !== 'running') {
     const tDir = finalEntry.telemetry_dir!;
@@ -5385,6 +5457,11 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
     const tEndedAt = finalEntry.ended_at;
     const tStartedAt = finalEntry.started_at;
     const tExecTarget = finalEntry.execution_target || 'local';
+    const priorOffsets: Record<string, number> = {};
+    const offsetsSnapshot: Record<string, number> = finalEntry.telemetry_offsets ?? {};
+    for (const k of Object.keys(offsetsSnapshot)) {
+      if (k.startsWith('ship:')) priorOffsets[k.slice(5)] = offsetsSnapshot[k];
+    }
     import('./telemetry-capture.js').then(mod => {
       mod.shipTelemetryToElastic({
         runId: tRunId,
@@ -5395,6 +5472,16 @@ async function checkDemoResult(args: CheckDemoResultArgs): Promise<CheckDemoResu
           ? new Date(tEndedAt).getTime() - new Date(tStartedAt).getTime()
           : 0,
         executionTarget: tExecTarget,
+        priorOffsets,
+      }).then(() => {
+        // Persist final shipped offsets so re-runs of check_demo_result don't re-ship
+        const offsets = finalEntry.telemetry_offsets;
+        if (offsets) {
+          for (const k of Object.keys(priorOffsets)) {
+            offsets[`ship:${k}`] = priorOffsets[k];
+          }
+          try { persistDemoRuns(); } catch { /* */ }
+        }
       }).catch(() => {});
     }).catch(() => {}); // Non-fatal — module may not be built yet
   }
@@ -10480,32 +10567,52 @@ const tools: AnyToolHandler[] = [
   {
     name: 'get_fly_logs',
     description:
-      'Retrieve recent Fly.io app logs for the demo execution machines. ' +
-      'Shows machine lifecycle events, process output, crash reasons, and SIGTERM sources. ' +
-      'Essential for diagnosing why remote demo machines die unexpectedly.',
+      'Retrieve recent Fly.io app logs (lifecycle / NATS) for the demo execution machines. ' +
+      'Shows machine state transitions, OOM kills, SIGTERM sources, and process exit codes. ' +
+      'NOTE: This pulls Fly\'s NATS log stream — it does NOT include the test\'s stdout/stderr ' +
+      'from inside the container. For live test output, use tail_running_fly_demo instead.',
     schema: GetFlyLogsArgsSchema,
     handler: async (args: GetFlyLogsArgs) => {
       const flySection = getFlyConfigFromServices();
       if (!flySection || !flySection.appName) {
         return JSON.stringify({ error: 'Fly.io not configured' });
       }
+
+      // `fly logs` flag set (verified against flyctl 0.4+):
+      //   -a / --app <name>           — app name (required)
+      //   -n / --no-tail              — BOOLEAN: fetch buffered logs and exit (no value!)
+      //   --machine <id>              — filter by machine (NOT --instance — renamed)
+      //   -r / --region <code>        — region filter
+      //   -j / --json                 — JSON output
+      // There is NO `-n <count>` / `--lines` flag. The previous implementation
+      // passed `-n <count>`, which flyctl parsed as `--no-tail --no-tail <count>`,
+      // turning <count> into a positional arg and failing with
+      // `unknown command "200" for "flyctl logs"`. We pipe through tail(1)
+      // for the line cap instead.
+      const lines = Math.max(10, Math.min(args.lines ?? 100, 500));
+      const flyArgs = ['logs', '--app', flySection.appName, '--no-tail'];
+      if (args.machine_id) {
+        flyArgs.push('--machine', args.machine_id);
+      }
+
+      // Shell-escape each token (single-quote safe) and pipe through tail.
+      const shellEscape = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+      const shellLine = `fly ${flyArgs.map(shellEscape).join(' ')} 2>&1 | tail -n ${lines}`;
+
       try {
-        const cmdArgs = ['logs', '--app', flySection.appName, '--no-tail', '-n', String(args.lines)];
-        if (args.machine_id) {
-          cmdArgs.push('--instance', args.machine_id);
-        }
         const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-          execFile('fly', cmdArgs, { encoding: 'utf-8', timeout: 15000 }, (err, stdout, stderr) => {
+          execFile('sh', ['-c', shellLine], { encoding: 'utf-8', timeout: 15000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
             if (err && !stdout) reject(err);
             else resolve({ stdout: stdout || '', stderr: stderr || '' });
           });
         });
         return JSON.stringify({
           app: flySection.appName,
-          lines: args.lines,
+          lines,
           machine_id: args.machine_id || 'all',
           logs: stdout.trim(),
           ...(stderr ? { warnings: stderr.trim() } : {}),
+          note: 'For test stdout/stderr inside the container, use tail_running_fly_demo (live capture via exec).',
         });
       } catch (err) {
         return JSON.stringify({
@@ -10513,6 +10620,156 @@ const tools: AnyToolHandler[] = [
           hint: 'Ensure flyctl is installed and authenticated (fly auth login)',
         });
       }
+    },
+  },
+  {
+    name: 'tail_running_fly_demo',
+    description:
+      'Capture live diagnostic output (stdout/stderr/error.log + system stats) from a Fly.io demo machine ' +
+      'while it is still running. Use this when a remote demo appears hung or is producing no progress — ' +
+      'unlike get_fly_logs (which only shows Fly\'s lifecycle/NATS stream), this exec\'s into the live ' +
+      'container and pulls the actual Playwright process output. Optionally ships any newly-appended ' +
+      'telemetry JSONL lines to Elastic in the same call. Locates the live demo via pid, run_id, or scenario_id.',
+    schema: TailRunningFlyDemoArgsSchema,
+    handler: async (args: TailRunningFlyDemoArgs) => {
+      // Locate the live DemoRunState entry
+      loadPersistedDemoRuns();
+      let entry: DemoRunState | undefined;
+      if (args.pid !== undefined) {
+        entry = demoRuns.get(args.pid);
+      }
+      if (!entry && (args.run_id || args.scenario_id)) {
+        // Find the most-recent running Fly entry matching run_id or scenario_id
+        const candidates = [...demoRuns.values()].filter(e =>
+          e.execution_target === 'fly' &&
+          e.status === 'running' &&
+          e.fly_machine_id &&
+          (args.run_id ? e.run_id === args.run_id : true) &&
+          (args.scenario_id ? e.scenario_id === args.scenario_id : true),
+        );
+        candidates.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
+        entry = candidates[0];
+      }
+      if (!entry) {
+        return JSON.stringify({
+          error: 'No live Fly.io demo found',
+          hint: 'Demo may have already completed. Use check_demo_result with the original PID, or get_fly_logs --machine_id to see lifecycle events.',
+        });
+      }
+      if (entry.execution_target !== 'fly' || !entry.fly_machine_id) {
+        return JSON.stringify({ error: 'Matched demo is not running on Fly.io', execution_target: entry.execution_target ?? null });
+      }
+      if (entry.status !== 'running') {
+        return JSON.stringify({
+          error: `Demo is in status "${entry.status}", not running. Use check_demo_result for post-mortem artifacts.`,
+          status: entry.status,
+        });
+      }
+
+      const flyConfig = getFlyConfigFromServices();
+      if (!flyConfig) {
+        return JSON.stringify({ error: 'Fly.io not configured in services.json' });
+      }
+      const { resolved, failedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flyConfig.apiToken });
+      if (failedKeys.length > 0) {
+        return JSON.stringify({ error: 'Failed to resolve FLY_API_TOKEN', failedKeys });
+      }
+      const checkRamConfig = readFlyMachineConfig();
+      const remoteMachineConfig = {
+        apiToken: resolved['FLY_API_TOKEN'],
+        appName: flyConfig.appName,
+        region: flyConfig.region || 'iad',
+        machineSize: flyConfig.machineSize || 'shared-cpu-2x',
+        machineRam: checkRamConfig.machineRamHeadless,
+        maxConcurrentMachines: flyConfig.maxConcurrentMachines || 10,
+        projectImageEnabled: flyConfig.projectImageEnabled,
+      };
+      const remoteHandle = {
+        machineId: entry.fly_machine_id,
+        appName: entry.fly_app_name || flyConfig.appName,
+        region: flyConfig.region || 'iad',
+        startedAt: new Date(entry.started_at).getTime(),
+      };
+
+      const { isMachineAlive, captureRunningMachineLogs, execInMachine } = await import('./fly-runner.js');
+      const alive = await isMachineAlive(remoteHandle, remoteMachineConfig);
+      if (!alive) {
+        return JSON.stringify({
+          status: 'machine_not_alive',
+          fly_machine_id: entry.fly_machine_id,
+          run_id: entry.run_id,
+          hint: 'Machine has stopped. Call check_demo_result to pull final artifacts and ship remaining telemetry.',
+        });
+      }
+
+      const destDir = entry.artifacts_dest_dir
+        || path.join(PROJECT_DIR, '.claude', 'state', `demo-remote-${entry.fly_machine_id}`);
+      try { fs.mkdirSync(destDir, { recursive: true }); } catch { /* */ }
+
+      // 1) Capture in-container stdout/stderr/error.log + system diagnostics
+      const captureResult = await captureRunningMachineLogs(remoteHandle, remoteMachineConfig, destDir).catch(err => ({
+        error: err instanceof Error ? err.message : String(err),
+      }));
+      entry.artifacts_dest_dir = destDir;
+      entry.last_live_log_capture_at = Date.now();
+
+      const readTail = (filename: string, bytes: number): string | undefined => {
+        try {
+          const p = path.join(destDir, filename);
+          if (!fs.existsSync(p)) return undefined;
+          return fs.readFileSync(p, 'utf-8').slice(-bytes);
+        } catch { return undefined; }
+      };
+      const stderrTail = readTail('stderr.log', 8000);
+      const stdoutTail = readTail('stdout.log', 4000);
+      const machineLog = readTail('fly-machine.log', 4000);
+
+      // 2) Incremental telemetry pull + ship (best-effort)
+      let telemetrySummary: { pulled: Record<string, number>; shipped: number; perFile: Record<string, number> } | undefined;
+      if (args.include_telemetry && entry.telemetry_dir) {
+        try {
+          const { pullFlyTelemetryDelta, shipTelemetryDelta } = await import('./telemetry-capture.js');
+          if (!entry.telemetry_offsets) entry.telemetry_offsets = {};
+          const pulled = await pullFlyTelemetryDelta({
+            exec: (cmd, timeoutMs) => execInMachine(remoteHandle, remoteMachineConfig, cmd, timeoutMs),
+            remoteDir: '/app/.artifacts/telemetry',
+            localDir: entry.telemetry_dir,
+            offsets: entry.telemetry_offsets,
+          });
+          const shipOffsets: Record<string, number> = {};
+          for (const k of Object.keys(entry.telemetry_offsets)) {
+            if (k.startsWith('ship:')) shipOffsets[k.slice(5)] = entry.telemetry_offsets[k];
+          }
+          const shipped = await shipTelemetryDelta({
+            runId: entry.run_id || `unknown-${entry.fly_machine_id}`,
+            scenarioId: entry.scenario_id || 'unknown',
+            telemetryDir: entry.telemetry_dir,
+            offsets: shipOffsets,
+            executionTarget: 'fly',
+            status: 'running',
+          });
+          for (const k of Object.keys(shipOffsets)) entry.telemetry_offsets[`ship:${k}`] = shipOffsets[k];
+          entry.last_telemetry_sync_at = Date.now();
+          telemetrySummary = { pulled, shipped: shipped.shipped, perFile: shipped.perFile };
+        } catch { /* non-fatal */ }
+      }
+      try { persistDemoRuns(); } catch { /* */ }
+
+      const durationSeconds = Math.round((Date.now() - new Date(entry.started_at).getTime()) / 1000);
+      return JSON.stringify({
+        status: 'captured',
+        fly_machine_id: entry.fly_machine_id,
+        scenario_id: entry.scenario_id,
+        run_id: entry.run_id,
+        duration_seconds: durationSeconds,
+        capture_dir: destDir,
+        capture_succeeded: captureResult,
+        stderr_tail: stderrTail,
+        stdout_tail: stdoutTail,
+        machine_log: machineLog,
+        telemetry: telemetrySummary,
+        next_step: 'If output looks stuck, consider stop_demo to terminate, or wait for the next 30s capture cycle in check_demo_result.',
+      });
     },
   },
   // ── Steel.dev Cloud Browser Tools ──
