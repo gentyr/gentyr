@@ -111,7 +111,34 @@ Do NOT retry `set_lockdown_mode` -- the deferred action system handles execution
 - `--no-verify`, `-n`, `--no-gpg-sign`, `core.hooksPath` writes (block-no-verify guard)
 - Main-tree commits on protected branches `main`/`staging`/`preview` (main-tree-commit-guard)
 
-These restrictions exist to prevent conflicts with running agents and to enforce the merge chain. They are NOT controllable via `/lockdown`. The recovery path when blocked is always: `cd` into the CTO worktree (or spawn worktree-isolated sub-agents via the `Task` tool) and re-run the command there.
+These restrictions exist to prevent conflicts with running agents and to enforce the merge chain. They are NOT controllable via `/lockdown`. The recovery path when blocked is always: `cd` into the CTO worktree and re-run the command there.
+
+## How to Merge CTO Worktree Work (lockdown-OFF mode)
+
+When the CTO has made edits in `ctoWorktreePath` and wants to merge, run these EXACT Bash commands from the worktree. Each must be its own Bash call (CWD persists per call) OR chained with `&&` in one call:
+
+```bash
+cd <ctoWorktreePath>
+git status                # verify changes
+git add -A                # OR git add <specific files>
+git commit -m "feat: <description>"   # pre-commit hooks run lint
+git push -u origin HEAD   # creates remote branch
+gh pr create --base preview --title "..." --body "..."
+gh pr checks <num> --watch --fail-fast
+gh pr merge <num> --squash --delete-branch
+```
+
+**Do NOT use `Agent(subagent_type='project-manager')` for this.** The built-in `Agent` tool creates a NEW worktree separate from `ctoWorktreePath`, so the project-manager would not see any of the CTO's in-progress edits. The merge would target an empty branch.
+
+**Do NOT use `create_task` + `force_spawn_tasks` for this either.** Task-spawned agents work in fresh worktrees provisioned by GENTYR — same problem.
+
+The Bash sequence above is the only correct path. All git mutations are allowed when CWD is inside `.claude/worktrees/` (verified by `interactive-lockdown-guard.js`).
+
+After merge, the CTO worktree can be removed and lockdown re-enabled:
+```bash
+git -C <PROJECT_DIR> worktree remove <ctoWorktreePath>
+# Then in Claude Code: /lockdown on
+```
 
 ## Important
 

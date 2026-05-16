@@ -771,7 +771,27 @@ function buildInteractiveBriefing() {
         lines.push('  - --no-verify, --no-gpg-sign, core.hooksPath writes (block-no-verify guard — independent of lockdown)');
         lines.push('  - Main-tree commits on protected branches main/staging/preview (main-tree-commit-guard — independent of lockdown)');
         lines.push('');
-        lines.push('When done: commit, push, create PR to preview, /lockdown on.');
+        lines.push('=== HOW TO MERGE CTO WORKTREE WORK (lockdown-off mode) ===');
+        lines.push('');
+        lines.push('When edits are done, run these EXACT Bash commands. Each must be its own Bash call so the CWD persists, OR chain with && in one call.');
+        lines.push('');
+        if (wtExists) {
+          lines.push(`  cd ${wt}`);
+        } else {
+          lines.push(`  cd <ctoWorktreePath>     # see worktree section above`);
+        }
+        lines.push('  git status                # verify changes');
+        lines.push('  git add -A                # OR git add <specific files>');
+        lines.push('  git commit -m "feat: <description>"   # pre-commit hooks run lint');
+        lines.push('  git push -u origin HEAD   # creates remote branch');
+        lines.push('  gh pr create --base preview --title "..." --body "..."');
+        lines.push('  gh pr checks <num> --watch --fail-fast   # wait for CI');
+        lines.push('  gh pr merge <num> --squash --delete-branch');
+        lines.push('');
+        lines.push('DO NOT use Agent(subagent_type=\'project-manager\') for this — the Agent tool creates a NEW worktree separate from the CTO worktree, so it will not see your in-progress edits.');
+        lines.push('DO NOT use create_task + force_spawn_tasks for this — same reason. Task-spawned agents work in fresh worktrees.');
+        lines.push('');
+        lines.push('After merge: /lockdown on (re-enables standard interactive console).');
         lines.push('');
       }
     }

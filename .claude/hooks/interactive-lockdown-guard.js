@@ -382,10 +382,14 @@ async function main() {
       : ctoWorktreePath
         ? `Worktree MISSING: ${ctoWorktreePath} (recreate: git worktree add ${ctoWorktreePath} preview)`
         : 'No worktree provisioned — spawn worktree-isolated sub-agents OR /lockdown on then off';
+    const mergeSeq = worktreeExists
+      ? `To merge: cd ${ctoWorktreePath} && git add -A && git commit -m "..." && git push -u origin HEAD && gh pr create --base preview --title "..." (NOT via Agent/Task — those spawn fresh worktrees and won't see your edits)`
+      : 'To merge: cd into the worktree, then git add+commit+push+gh pr create --base preview (NOT via Agent/Task — they create fresh worktrees)';
     const guidance = [
       '[LOCKDOWN OFF] Main-tree edits + git mutations BLOCKED. Worktree workflow active.',
       worktreeStatus,
-      'When done: commit, push, create PR to preview, then /lockdown on.',
+      mergeSeq,
+      'After merge: /lockdown on.',
     ].join(' | ');
     process.stdout.write(JSON.stringify({
       decision: 'approve',
