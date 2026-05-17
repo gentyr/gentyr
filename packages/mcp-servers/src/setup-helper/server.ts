@@ -536,7 +536,18 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
     current = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
   } catch { /* file may not exist yet */ }
 
-  const merged = { ...current, ...args.updates };
+  const merged = { ...current, ...args.updates } as Record<string, unknown>;
+
+  // Strip top-level null values — JSON has no `undefined`, so a stale on-disk `services.json` can
+  // carry `"secrets": null` (or other null optional fields), which fails an `.optional()`
+  // (non-`.nullable()`) Zod field with "Expected object, received null". Mirrors the guard in
+  // secret-sync `updateServicesConfig` so agents aren't trapped in a catch-22 (the tool blocks
+  // modifying `secrets`, and the credential-file-guard hook blocks direct edits to services.json).
+  for (const key of Object.keys(merged)) {
+    if (merged[key] === null) {
+      delete merged[key];
+    }
+  }
 
   const result = ServicesConfigSchema.safeParse(merged);
   if (!result.success) {

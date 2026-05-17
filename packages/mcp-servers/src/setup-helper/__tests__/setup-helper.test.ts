@@ -781,3 +781,147 @@ describe('Setup Helper Server', () => {
     });
   });
 });
+
+// ============================================================================
+// updateServicesConfig null-guard — inline behaviour tests (setup-helper)
+//
+// The actual handler in setup-helper/server.ts cannot be imported in tests
+// because importing it triggers process.exit(0) via the MCP server's stdin
+// readline close handler. Instead, we test the null-guard logic inline.
+//
+// The guard logic (setup-helper/server.ts lines 546-550) is identical to
+// secret-sync — it mirrors the pattern:
+//   for (const key of Object.keys(merged)) {
+//     if (merged[key] === null) delete merged[key];
+//   }
+// followed by ServicesConfigSchema.safeParse(merged).
+//
+// These tests verify the fix from the setup-helper's perspective.
+// ============================================================================
+
+import { ServicesConfigSchema } from '../../secret-sync/types.js';
+
+describe('updateServicesConfig null-guard — inline behaviour tests (setup-helper)', () => {
+  /**
+   * Inline implementation of the null-guard + parse step from setup-helper/server.ts.
+   * Mirrors exactly what updateServicesConfig does after reading services.json and merging updates.
+   */
+  function applyNullGuardAndValidate(
+    diskContent: Record<string, unknown>,
+    updates: Record<string, unknown>,
+  ): { success: true; data: Record<string, unknown> } | { success: false; error: string } {
+    // Guard: reject secrets/secretProfiles updates (same as handler)
+    if ('secrets' in updates) {
+      return { success: false, error: 'Cannot modify secrets via this tool.' };
+    }
+    if ('secretProfiles' in updates) {
+      return { success: false, error: 'Cannot modify secretProfiles via this tool.' };
+    }
+
+    const merged = { ...diskContent, ...updates } as Record<string, unknown>;
+
+    // The null-guard fix (mirrors setup-helper/server.ts lines 546-550)
+    for (const key of Object.keys(merged)) {
+      if (merged[key] === null) {
+        delete merged[key];
+      }
+    }
+
+    const result = ServicesConfigSchema.safeParse(merged);
+    if (!result.success) {
+      return { success: false, error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` };
+    }
+    return { success: true, data: result.data as Record<string, unknown> };
+  }
+
+  it('should succeed when disk has secrets: null and updates touch demoDevModeEnv (the bug case)', () => {
+    const diskContent = { secrets: null };
+    const updates = { demoDevModeEnv: { FOO: 'bar' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.demoDevModeEnv).toEqual({ FOO: 'bar' });
+    }
+  });
+
+  it('should produce a config with no null secrets field after stripping', () => {
+    const diskContent = { secrets: null };
+    const updates = { demoDevModeEnv: { MY_VAR: 'value' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.secrets).not.toBeNull();
+    }
+  });
+
+  it('should preserve a valid secrets block while stripping unrelated null fields', () => {
+    const diskContent = {
+      render: null,
+      secrets: { renderProduction: { API_KEY: 'op://Vault/Api/key' } },
+    };
+    const updates = { demoDevModeEnv: { FOO: 'bar' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const secrets = result.data.secrets as Record<string, unknown>;
+      expect(secrets.renderProduction).toEqual({ API_KEY: 'op://Vault/Api/key' });
+      expect(result.data.render).toBeUndefined();
+    }
+  });
+
+  it('should reject attempts to update the secrets key directly', () => {
+    const diskContent = { secrets: {} };
+    const updates = { secrets: { renderProduction: {} } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/cannot modify secrets/i);
+    }
+  });
+
+  it('should reject attempts to update the secretProfiles key directly', () => {
+    const diskContent = { secrets: {} };
+    const updates = { secretProfiles: { myProfile: { secretKeys: ['API_KEY'] } } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/cannot modify secretProfiles/i);
+    }
+  });
+
+  it('should handle multiple null optional fields simultaneously', () => {
+    const diskContent = { render: null, vercel: null, secrets: null, fly: null };
+    const updates = { demoDevModeEnv: { BATCH_NULL: 'test' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.render).toBeUndefined();
+      expect(result.data.vercel).toBeUndefined();
+      expect(result.data.fly).toBeUndefined();
+    }
+  });
+
+  it('should work with entirely empty disk state (services.json does not exist yet)', () => {
+    const diskContent = {};
+    const updates = { demoDevModeEnv: { NEW_VAR: 'new-value' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect((result.data.demoDevModeEnv as Record<string, unknown>)['NEW_VAR']).toBe('new-value');
+    }
+  });
+});

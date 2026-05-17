@@ -464,7 +464,7 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
   const config = loadServicesConfig();
   const synced: SyncedSecret[] = [];
   const errors: Array<{ key: string; service: string; error: string }> = [];
-  const manual = config.secrets.manual || [];
+  const manual = config.secrets?.manual || [];
 
   const targets = args.target === 'all'
     ? ['render-production', 'render-staging', 'vercel', 'fly'] as const
@@ -478,7 +478,7 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
       }
 
       const serviceId = config.render.production.serviceId;
-      const secrets = config.secrets.renderProduction || {};
+      const secrets = config.secrets?.renderProduction || {};
 
       for (const [key, ref] of Object.entries(secrets)) {
         try {
@@ -499,7 +499,7 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
       }
 
       const serviceId = config.render.staging.serviceId;
-      const secrets = config.secrets.renderStaging || {};
+      const secrets = config.secrets?.renderStaging || {};
 
       for (const [key, ref] of Object.entries(secrets)) {
         try {
@@ -520,7 +520,7 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
       }
 
       const projectId = config.vercel.projectId;
-      const secrets = config.secrets.vercel || {};
+      const secrets = config.secrets?.vercel || {};
 
       for (const [key, rawConfig] of Object.entries(secrets)) {
         const entries = normalizeVercelEntries(rawConfig);
@@ -611,7 +611,7 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
     }
 
     if (target === 'local') {
-      const secrets = config.secrets.local || {};
+      const secrets = config.secrets?.local || {};
       const confFile = safeProjectPath(config.local?.confFile || 'op-secrets.conf');
 
       if (Object.keys(secrets).length === 0) {
@@ -658,20 +658,20 @@ async function listMappings(args: ListMappingsArgs): Promise<MappingResult> {
     : [args.target];
 
   for (const target of targets) {
-    if (target === 'render-production' && config.secrets.renderProduction) {
-      for (const [key, ref] of Object.entries(config.secrets.renderProduction)) {
+    if (target === 'render-production' && config.secrets?.renderProduction) {
+      for (const [key, ref] of Object.entries(config.secrets?.renderProduction)) {
         mappings.push({ key, reference: ref, service: 'render-production' });
       }
     }
 
-    if (target === 'render-staging' && config.secrets.renderStaging) {
-      for (const [key, ref] of Object.entries(config.secrets.renderStaging)) {
+    if (target === 'render-staging' && config.secrets?.renderStaging) {
+      for (const [key, ref] of Object.entries(config.secrets?.renderStaging)) {
         mappings.push({ key, reference: ref, service: 'render-staging' });
       }
     }
 
-    if (target === 'vercel' && config.secrets.vercel) {
-      for (const [key, rawConfig] of Object.entries(config.secrets.vercel)) {
+    if (target === 'vercel' && config.secrets?.vercel) {
+      for (const [key, rawConfig] of Object.entries(config.secrets?.vercel)) {
         const entries = normalizeVercelEntries(rawConfig);
         for (const entry of entries) {
           mappings.push({ key, reference: entry.ref, service: 'vercel' });
@@ -679,8 +679,8 @@ async function listMappings(args: ListMappingsArgs): Promise<MappingResult> {
       }
     }
 
-    if (target === 'local' && config.secrets.local) {
-      for (const [key, ref] of Object.entries(config.secrets.local)) {
+    if (target === 'local' && config.secrets?.local) {
+      for (const [key, ref] of Object.entries(config.secrets?.local)) {
         mappings.push({ key, reference: ref, service: 'local' });
       }
     }
@@ -688,7 +688,7 @@ async function listMappings(args: ListMappingsArgs): Promise<MappingResult> {
 
   return {
     mappings,
-    manual: config.secrets.manual || [],
+    manual: config.secrets?.manual || [],
   };
 }
 
@@ -704,7 +704,7 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
   for (const target of targets) {
     if (target === 'render-production' && config.render?.production?.serviceId) {
       const serviceId = config.render.production.serviceId;
-      const secrets = config.secrets.renderProduction || {};
+      const secrets = config.secrets?.renderProduction || {};
 
       try {
         const existingKeys = await renderListEnvVars(serviceId);
@@ -732,7 +732,7 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
 
     if (target === 'render-staging' && config.render?.staging?.serviceId) {
       const serviceId = config.render.staging.serviceId;
-      const secrets = config.secrets.renderStaging || {};
+      const secrets = config.secrets?.renderStaging || {};
 
       try {
         const existingKeys = await renderListEnvVars(serviceId);
@@ -760,7 +760,7 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
 
     if (target === 'vercel' && config.vercel?.projectId) {
       const projectId = config.vercel.projectId;
-      const secrets = config.secrets.vercel || {};
+      const secrets = config.secrets?.vercel || {};
 
       try {
         const existingKeys = await vercelListEnvVars(projectId);
@@ -787,7 +787,7 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
     }
 
     if (target === 'local') {
-      const secrets = config.secrets.local || {};
+      const secrets = config.secrets?.local || {};
       const confFile = safeProjectPath(config.local?.confFile || 'op-secrets.conf');
 
       try {
@@ -1536,8 +1536,24 @@ function writeServicesConfig(config: ServicesConfig): { applied: boolean; pendin
   const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
   const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'services-config-pending.json');
 
+  // Strip top-level null values — JSON has no `undefined`, so legacy/manual edits may set optional
+  // keys to `null`, which fails an `.optional()` (non-`.nullable()`) Zod field with "Expected object,
+  // received null". Treat top-level `null` as "key not present" before validation.
+  const cleaned = { ...config } as Record<string, unknown>;
+  for (const key of Object.keys(cleaned)) {
+    if (cleaned[key] === null) {
+      delete cleaned[key];
+    }
+  }
+
+  // Backfill empty `secrets` if absent. Schema makes it optional but every secret tool
+  // expects the key to exist. Without this, registerSecretProfile / deleteSecretProfile
+  // can persist configs lacking `secrets`, leading to states where populate_secrets_local
+  // and related tools error out until manually repaired.
+  if (!cleaned.secrets) cleaned.secrets = {};
+
   // Validate against schema
-  const result = ServicesConfigSchema.safeParse(config);
+  const result = ServicesConfigSchema.safeParse(cleaned);
   if (!result.success) {
     throw new Error(`Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}`);
   }
@@ -1604,7 +1620,7 @@ async function registerSecretProfile(args: RegisterSecretProfileArgs): Promise<s
     result.warning = `These secretKeys are not yet defined in secrets.local: ${missingKeys.join(', ')}. They must be added before the profile can resolve them.`;
   }
   if (pending) {
-    result.message = 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync --self-update. (sudo primes the cache for auto-unprotect of services.json; --self-update pulls latest gentyr source + rebuilds MCP servers.)';
+    result.message = 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync. (sudo primes the cache for auto-unprotect of services.json.)';
   }
   return JSON.stringify(result, null, 2);
 }
@@ -1638,7 +1654,7 @@ async function deleteSecretProfile(args: DeleteSecretProfileArgs): Promise<strin
 
   const { applied, pending } = writeServicesConfig(config);
   const result: Record<string, unknown> = { deleted: args.name, applied, pending };
-  if (pending) result.message = 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync --self-update. (sudo primes the cache for auto-unprotect of services.json; --self-update pulls latest gentyr source + rebuilds MCP servers.)';
+  if (pending) result.message = 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync. (sudo primes the cache for auto-unprotect of services.json.)';
   return JSON.stringify(result);
 }
 
@@ -1685,7 +1701,25 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
   }
 
   // Merge updates (top-level only — nested objects like devServices are replaced wholesale)
-  const merged = { ...current, ...args.updates };
+  const merged = { ...current, ...args.updates } as Record<string, unknown>;
+
+  // Strip top-level null values — JSON has no `undefined`, so a stale on-disk `services.json` can
+  // carry `"secrets": null` (or other null optional fields), which fails an `.optional()`
+  // (non-`.nullable()`) Zod field with "Expected object, received null". This used to trap agents
+  // in a catch-22: they couldn't pass `secrets` through this tool, and they couldn't edit
+  // services.json directly to remove the `null`.
+  for (const key of Object.keys(merged)) {
+    if (merged[key] === null) {
+      delete merged[key];
+    }
+  }
+
+  // Defense: preserve secrets and secretProfiles from current. The schema makes both
+  // optional, so a shallow merge that doesn't carry them forward would silently drop them.
+  // updateServicesConfig already rejects 'secrets'/'secretProfiles' in args.updates above,
+  // so current's values are authoritative when merged lacks them.
+  if (!('secrets' in merged) && current.secrets) merged.secrets = current.secrets;
+  if (!('secretProfiles' in merged) && current.secretProfiles) merged.secretProfiles = current.secretProfiles;
 
   // Validate against schema
   const result = ServicesConfigSchema.safeParse(merged);
@@ -1713,7 +1747,7 @@ async function updateServicesConfig(args: UpdateServicesConfigArgs): Promise<str
         applied: false,
         pending: true,
         updatedKeys: Object.keys(args.updates),
-        message: 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync --self-update. (sudo primes the cache for auto-unprotect of services.json; --self-update pulls latest gentyr source + rebuilds MCP servers.)',
+        message: 'Config staged. Ask the CTO to run: sudo true && npx gentyr sync. (sudo primes the cache for auto-unprotect of services.json.)',
       });
     }
     throw err;
@@ -1800,7 +1834,7 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
         newCount,
         updatedCount,
         stagedEntries: Object.keys(mergedPending).length,
-        message: `Entries staged in secrets-local-pending.json. Ask the CTO to run: sudo true && npx gentyr sync --self-update. Do NOT re-call populate_secrets_local — entries are already staged; re-staging will not force application.`,
+        message: `Entries staged in secrets-local-pending.json. Ask the CTO to run: sudo true && npx gentyr sync. Do NOT re-call populate_secrets_local — entries are already staged; re-staging will not force application.`,
       });
     }
     throw err;
@@ -1878,7 +1912,7 @@ async function populateSecretsFly(args: PopulateSecretsFlyArgs): Promise<string>
         newCount,
         updatedCount,
         stagedEntries: Object.keys(existingPending[appName]).length,
-        message: `Entries staged in secrets-fly-pending.json. Ask the CTO to run: sudo true && npx gentyr sync --self-update. Do NOT re-call populate_secrets_fly — entries are already staged; re-staging will not force application.`,
+        message: `Entries staged in secrets-fly-pending.json. Ask the CTO to run: sudo true && npx gentyr sync. Do NOT re-call populate_secrets_fly — entries are already staged; re-staging will not force application.`,
       });
     }
     throw err;

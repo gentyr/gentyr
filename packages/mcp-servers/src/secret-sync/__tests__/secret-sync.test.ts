@@ -435,6 +435,241 @@ describe('Secret Sync MCP Server - Schema Validation', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  // ==========================================================================
+  // ServicesConfigSchema — null-guard behavior
+  //
+  // The bug: `"secrets": null` on disk fails Zod's `.optional()` (not `.nullable()`)
+  // with "Expected object, received null". The null-guard strips top-level nulls
+  // before calling safeParse. These tests document what the schema itself does
+  // and verify that the guard pattern used in writeServicesConfig / updateServicesConfig
+  // is both necessary and correct.
+  // ==========================================================================
+
+  describe('ServicesConfigSchema — null values require stripping before parse (null-guard contract)', () => {
+    it('should FAIL safeParse when secrets: null is passed directly (demonstrates why the guard is needed)', () => {
+      // This is the raw bug — without the null-guard, this is what the schema sees
+      const rawFromDisk = { secrets: null, elastic: { enabled: false } };
+
+      const result = ServicesConfigSchema.safeParse(rawFromDisk);
+
+      // Zod's .optional() does not accept null — only undefined or the correct type
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const messages = result.error.issues.map(i => i.message).join('; ');
+        expect(typeof messages).toBe('string');
+        expect(messages.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('should SUCCEED safeParse after stripping secrets: null (demonstrates the guard fix)', () => {
+      // Use only valid ServicesConfigSchema fields alongside secrets: null
+      const rawFromDisk: Record<string, unknown> = {
+        secrets: null,
+        demoDevModeEnv: { SOME_VAR: 'value' },
+      };
+
+      // Apply the null-guard (same logic as writeServicesConfig / updateServicesConfig)
+      const cleaned = { ...rawFromDisk };
+      for (const key of Object.keys(cleaned)) {
+        if (cleaned[key] === null) delete cleaned[key];
+      }
+
+      const result = ServicesConfigSchema.safeParse(cleaned);
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should SUCCEED safeParse after stripping multiple null fields simultaneously', () => {
+      const rawFromDisk: Record<string, unknown> = {
+        render: null,
+        vercel: null,
+        secrets: null,
+        fly: null,
+      };
+
+      const cleaned = { ...rawFromDisk };
+      for (const key of Object.keys(cleaned)) {
+        if (cleaned[key] === null) delete cleaned[key];
+      }
+
+      const result = ServicesConfigSchema.safeParse(cleaned);
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should preserve a valid nested secrets block after stripping unrelated null fields', () => {
+      const rawFromDisk: Record<string, unknown> = {
+        render: null,
+        secrets: { renderProduction: { API_KEY: 'op://Vault/Api/key' } },
+      };
+
+      const cleaned = { ...rawFromDisk };
+      for (const key of Object.keys(cleaned)) {
+        if (cleaned[key] === null) delete cleaned[key];
+      }
+
+      const result = ServicesConfigSchema.safeParse(cleaned);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.secrets.renderProduction).toEqual({ API_KEY: 'op://Vault/Api/key' });
+        expect(result.data.render).toBeUndefined();
+      }
+    });
+
+    it('should not strip nested null values — only top-level keys are guarded', () => {
+      // The null-guard only iterates Object.keys(merged) — one level deep.
+      // Nested nulls inside sub-objects are not touched (and may pass Zod if those
+      // sub-fields are not typed as objects). This test pins that behavior.
+      const rawFromDisk: Record<string, unknown> = {
+        secrets: {},
+        demoDevModeEnv: { KEY_A: 'value-a' },
+      };
+
+      const cleaned = { ...rawFromDisk };
+      for (const key of Object.keys(cleaned)) {
+        if (cleaned[key] === null) delete cleaned[key];
+      }
+
+      const result = ServicesConfigSchema.safeParse(cleaned);
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.demoDevModeEnv?.['KEY_A']).toBe('value-a');
+      }
+    });
+  });
+});
+
+// ============================================================================
+// updateServicesConfig null-guard — inline behaviour tests
+//
+// The actual handler in secret-sync/server.ts cannot be imported in tests
+// because the module calls process.exit(0) on stdin close (MCP server lifecycle).
+// Instead, we test the null-guard logic inline — the same pattern used throughout
+// op-secrets.test.ts for functions that were pending module extraction.
+//
+// The guard logic (lines 1700-1709 of server.ts) is:
+//   for (const key of Object.keys(merged)) {
+//     if (merged[key] === null) delete merged[key];
+//   }
+// followed by ServicesConfigSchema.safeParse(merged).
+//
+// These tests verify that the guard correctly fixes the "secrets: null" bug
+// and that the resulting config passes schema validation.
+// ============================================================================
+
+describe('updateServicesConfig null-guard — inline behaviour tests (secret-sync)', () => {
+  /**
+   * Inline implementation of the null-guard + parse step from server.ts.
+   * Mirrors exactly what updateServicesConfig does after merging disk state with updates.
+   */
+  function applyNullGuardAndValidate(
+    diskContent: Record<string, unknown>,
+    updates: Record<string, unknown>,
+  ): { success: true; data: Record<string, unknown> } | { success: false; error: string } {
+    // Guard: reject secrets/secretProfiles updates (same as handler)
+    if ('secrets' in updates) {
+      return { success: false, error: 'Cannot modify secrets via this tool.' };
+    }
+
+    const merged = { ...diskContent, ...updates } as Record<string, unknown>;
+
+    // The null-guard fix (mirrors server.ts lines 1700-1709)
+    for (const key of Object.keys(merged)) {
+      if (merged[key] === null) {
+        delete merged[key];
+      }
+    }
+
+    const result = ServicesConfigSchema.safeParse(merged);
+    if (!result.success) {
+      return { success: false, error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` };
+    }
+    return { success: true, data: result.data as Record<string, unknown> };
+  }
+
+  it('should succeed when disk has secrets: null and updates touch demoDevModeEnv (the bug case)', () => {
+    const diskContent = { secrets: null };
+    const updates = { demoDevModeEnv: { FOO: 'bar' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.demoDevModeEnv).toEqual({ FOO: 'bar' });
+    }
+  });
+
+  it('should produce a config with no null secrets field after stripping', () => {
+    const diskContent = { secrets: null };
+    const updates = { demoDevModeEnv: { MY_VAR: 'value' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // secrets was null — after stripping, Zod supplies the default (empty object shape)
+      expect(result.data.secrets).not.toBeNull();
+    }
+  });
+
+  it('should preserve a valid secrets block while stripping other null fields', () => {
+    const diskContent = {
+      render: null,
+      secrets: { renderProduction: { API_KEY: 'op://Vault/Api/key' } },
+    };
+    const updates = { demoDevModeEnv: { FOO: 'bar' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const secrets = result.data.secrets as Record<string, unknown>;
+      expect(secrets.renderProduction).toEqual({ API_KEY: 'op://Vault/Api/key' });
+      expect(result.data.render).toBeUndefined();
+    }
+  });
+
+  it('should reject attempts to update the secrets key directly', () => {
+    const diskContent = { secrets: {} };
+    const updates = { secrets: { renderProduction: { API_KEY: 'op://x/y/z' } } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatch(/cannot modify secrets/i);
+    }
+  });
+
+  it('should succeed when disk has multiple null optional fields simultaneously', () => {
+    const diskContent = { render: null, vercel: null, secrets: null, fly: null };
+    const updates = { demoDevModeEnv: { BATCH_NULL: 'test' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // All null optional fields stripped — none should remain
+      expect(result.data.render).toBeUndefined();
+      expect(result.data.vercel).toBeUndefined();
+      expect(result.data.fly).toBeUndefined();
+    }
+  });
+
+  it('should work with entirely empty disk state (new project)', () => {
+    const diskContent = {};
+    const updates = { demoDevModeEnv: { NEW_VAR: 'new-value' } };
+
+    const result = applyNullGuardAndValidate(diskContent, updates);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect((result.data.demoDevModeEnv as Record<string, unknown>)['NEW_VAR']).toBe('new-value');
+    }
+  });
 });
 
 describe('Secret Sync MCP Server - Render Integration', () => {

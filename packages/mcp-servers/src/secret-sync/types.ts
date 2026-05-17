@@ -411,7 +411,7 @@ export const ServicesConfigSchema = z.object({
       key: z.string(),
       notes: z.string(),
     })).optional(),
-  }),
+  }).optional(),
 });
 
 export type ServicesConfig = z.infer<typeof ServicesConfigSchema>;
