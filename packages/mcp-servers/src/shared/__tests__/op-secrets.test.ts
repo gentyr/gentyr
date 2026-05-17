@@ -591,7 +591,11 @@ import {
   deriveFileCacheKey,
   encryptCacheValue,
   decryptCacheValue,
+  loadServicesConfig,
 } from '../op-secrets.js';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 // Grab the mocked execFileSync that the module uses internally
 const mockedExecFileSync = childProcess.execFileSync as ReturnType<typeof vi.fn>;
@@ -1443,5 +1447,122 @@ describe('getOpCacheStats — cache observability', () => {
     expect(stats.fileCacheExists).toBe(false);
     expect(stats.fileCacheEntries).toBe(0);
     expect(stats.memorySize).toBe(0);
+  });
+});
+
+// ============================================================================
+// loadServicesConfig (real module) — null-guard fix
+//
+// The bug: when services.json contains `"secrets": null`, Zod's `.optional()`
+// fails with "Expected object, received null" because optional != nullable.
+// The fix strips top-level null values before calling ServicesConfigSchema.safeParse.
+// These tests exercise the real exported function using actual temp directories.
+// ============================================================================
+
+describe('loadServicesConfig (real module) — null-guard for top-level null values', () => {
+  let testProjectDir: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    testProjectDir = mkdtempSync(join(tmpdir(), 'load-services-config-null-test-'));
+    mkdirSync(join(testProjectDir, '.claude', 'config'), { recursive: true });
+  });
+
+  afterEach(() => {
+    try { rmSync(testProjectDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  it('should succeed when services.json has secrets: null on disk (the bug case)', () => {
+    // This exact scenario triggered "Expected object, received null" before the fix.
+    // Use only valid ServicesConfigSchema fields alongside secrets: null.
+    const onDiskContent = JSON.stringify({
+      secrets: null,
+      demoDevModeEnv: { SOME_VAR: 'value' },
+    });
+    writeFileSync(
+      join(testProjectDir, '.claude', 'config', 'services.json'),
+      onDiskContent,
+    );
+
+    // Must NOT throw — the null-guard should strip `secrets: null` before Zod validation.
+    const result = loadServicesConfig(testProjectDir);
+
+    expect(result).not.toBeNull();
+    expect(result).not.toBeUndefined();
+  });
+
+  it('should not include secrets: null in the returned config (null stripped before parse)', () => {
+    // fly requires apiToken + appName to be valid per schema
+    writeFileSync(
+      join(testProjectDir, '.claude', 'config', 'services.json'),
+      JSON.stringify({
+        secrets: null,
+        demoDevModeEnv: { KEY: 'val' },
+      }),
+    );
+
+    const result = loadServicesConfig(testProjectDir);
+
+    // `secrets` was null on disk — after stripping, Zod fills it in as its default value.
+    // The result must not carry a null secrets field.
+    expect((result as Record<string, unknown>).secrets).not.toBeNull();
+  });
+
+  it('should preserve a valid secrets block when present (non-null, regression guard)', () => {
+    writeFileSync(
+      join(testProjectDir, '.claude', 'config', 'services.json'),
+      JSON.stringify({
+        secrets: {
+          renderProduction: { API_KEY: 'op://Vault/Api/key' },
+        },
+      }),
+    );
+
+    const result = loadServicesConfig(testProjectDir);
+
+    expect(result.secrets.renderProduction).toEqual({ API_KEY: 'op://Vault/Api/key' });
+  });
+
+  it('should handle multiple null fields on disk — all stripped before Zod validation', () => {
+    // render: null, vercel: null, and secrets: null all present simultaneously.
+    // These are all valid optional fields whose null values must be stripped.
+    writeFileSync(
+      join(testProjectDir, '.claude', 'config', 'services.json'),
+      JSON.stringify({ render: null, vercel: null, secrets: null }),
+    );
+
+    // If any of the null fields reach safeParse without being stripped, Zod throws
+    // "Expected object, received null" — this must not throw.
+    const result = loadServicesConfig(testProjectDir);
+
+    expect(result).not.toBeNull();
+    expect((result as Record<string, unknown>).render).not.toBe(null);
+    expect((result as Record<string, unknown>).vercel).not.toBe(null);
+  });
+
+  it('should throw when services.json is missing (not swallow errors)', () => {
+    // No file written — must still throw loudly (fail-closed per G001).
+    expect(() => loadServicesConfig(testProjectDir)).toThrow(/Failed to load services\.json/);
+  });
+
+  it('should throw when services.json contains invalid JSON', () => {
+    writeFileSync(
+      join(testProjectDir, '.claude', 'config', 'services.json'),
+      '{ not: valid json }',
+    );
+
+    expect(() => loadServicesConfig(testProjectDir)).toThrow(/Failed to load services\.json/);
+  });
+
+  it('should succeed with a minimal valid config (no optional fields)', () => {
+    writeFileSync(
+      join(testProjectDir, '.claude', 'config', 'services.json'),
+      JSON.stringify({ secrets: {} }),
+    );
+
+    const result = loadServicesConfig(testProjectDir);
+
+    expect(result).not.toBeNull();
+    expect(result.secrets).toEqual({});
   });
 });

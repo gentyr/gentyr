@@ -555,6 +555,16 @@ export function loadServicesConfig(projectDir: string): ServicesConfig {
   try {
     const configData = readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(configData) as unknown;
+    // Strip top-level null values so optional Zod fields don't fail with "Expected object, received null".
+    // JSON has no `undefined`, so manual edits or old migrations can leave keys set to `null`; for an
+    // `.optional()` (not `.nullable()`) field this would otherwise fail safeParse.
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const key of Object.keys(parsed as Record<string, unknown>)) {
+        if ((parsed as Record<string, unknown>)[key] === null) {
+          delete (parsed as Record<string, unknown>)[key];
+        }
+      }
+    }
     const result = ServicesConfigSchema.safeParse(parsed);
 
     if (!result.success) {
@@ -602,7 +612,7 @@ export function resolveLocalSecrets(config: ServicesConfig): {
   const resolvedEnv: Record<string, string> = {};
   const failedKeys: string[] = [];
   const failureDetails: Record<string, string> = {};
-  const localSecrets = config.secrets.local || {};
+  const localSecrets = config.secrets?.local || {};
   const entries = Object.entries(localSecrets);
 
   if (entries.length === 0) {
