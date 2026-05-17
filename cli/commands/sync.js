@@ -696,13 +696,6 @@ async function recycleAutomatedSessions(projectDir) {
 export default async function sync(args) {
   const projectDir = process.cwd();
 
-  // --self-update: pull origin/main on the gentyr source and rebuild MCP servers
-  // BEFORE running sync. Replaces the 3-command CTO recovery sequence
-  // (`cd ~/git/gentyr && git pull && cd packages/mcp-servers && pnpm build && cd back && npx gentyr sync`)
-  // with a single `npx gentyr sync --self-update` invocation.
-  const argList = Array.isArray(args) ? args : [];
-  const selfUpdate = argList.includes('--self-update') || argList.includes('--pull');
-
   const model = detectInstallModel(projectDir);
   if (!model) {
     console.error(`${RED}Error: GENTYR not found in this project.${NC}`);
@@ -711,48 +704,6 @@ export default async function sync(args) {
   }
 
   let frameworkDir = resolveFrameworkDir(projectDir);
-
-  // Self-update: pull + rebuild on the gentyr source itself before syncing
-  if (selfUpdate && frameworkDir) {
-    try {
-      const gitDir = path.join(frameworkDir, '.git');
-      if (fs.existsSync(gitDir)) {
-        console.log(`\n${YELLOW}Self-update: pulling origin/main on ${frameworkDir}...${NC}`);
-        // Check tree is clean before pulling
-        const dirty = execFileSync('git', ['status', '--porcelain'], {
-          cwd: frameworkDir, encoding: 'utf8', stdio: 'pipe', timeout: 10000,
-        }).trim();
-        if (dirty) {
-          console.log(`  ${YELLOW}Skipped pull: working tree has uncommitted changes${NC}`);
-          console.log(`  ${YELLOW}Resolve and re-run: cd ${frameworkDir} && git status${NC}`);
-        } else {
-          execFileSync('git', ['pull', '--ff-only', 'origin', 'main'], {
-            cwd: frameworkDir, stdio: 'inherit', timeout: 60000,
-          });
-          console.log(`  ${GREEN}Source updated${NC}`);
-          // Rebuild MCP servers
-          const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
-          if (fs.existsSync(mcpDir)) {
-            console.log(`\n${YELLOW}Self-update: rebuilding MCP servers...${NC}`);
-            try {
-              execFileSync('pnpm', ['build'], {
-                cwd: mcpDir, stdio: 'inherit', timeout: 120000,
-              });
-              console.log(`  ${GREEN}MCP servers rebuilt${NC}`);
-            } catch (buildErr) {
-              console.log(`  ${RED}Rebuild failed: ${buildErr.message}${NC}`);
-              console.log(`  ${RED}Sync will continue with existing dist/${NC}`);
-            }
-          }
-        }
-      } else {
-        console.log(`\n${YELLOW}--self-update skipped: ${frameworkDir} is not a git repo${NC}`);
-      }
-    } catch (err) {
-      console.log(`\n${RED}--self-update failed: ${err.message}${NC}`);
-      console.log(`${RED}Sync will continue with existing source${NC}`);
-    }
-  }
 
   // Health check: repair broken node_modules/gentyr symlink
   if (model === 'npm') {
@@ -792,10 +743,47 @@ export default async function sync(args) {
   const frameworkRel = resolveFrameworkRelative(projectDir);
   const agents = getFrameworkAgents(frameworkDir);
 
-  // Auto-unprotect if needed so sync can write to root-owned files
+  // Auto-unprotect if needed so sync can write to root-owned files.
+  // Wrap in try/catch and verify the file is actually writable afterward. If unprotect
+  // throws (sudo prompt timeout, terminal stdin contention, partial chown failure) or
+  // leaves services.json root-owned, abort sync with a loud message instead of silently
+  // letting steps 1.5/1.6 EACCES and lose staged entries.
   const wasProtected = isProtected(projectDir);
   if (wasProtected) {
-    runUnprotect(projectDir);
+    try {
+      runUnprotect(projectDir);
+    } catch (err) {
+      console.error('');
+      console.error(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
+      console.error(`${RED}  AUTO-UNPROTECT FAILED — sync aborted to prevent silent data loss${NC}`);
+      console.error(`${RED}  ${err.message}${NC}`);
+      console.error(`${RED}  Pending files (if any) preserved at .claude/state/*-pending.json${NC}`);
+      console.error(`${RED}  Recovery: 'sudo true && npx gentyr sync' (primes sudo cache)${NC}`);
+      console.error(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
+      process.exit(1);
+    }
+    // Verify-after-unprotect: services.json must not be root-owned. Belt-and-suspenders
+    // catches the case where unprotect "succeeded" (exit 0) but missed a file.
+    const svcConfigPathEarly = path.join(projectDir, '.claude', 'config', 'services.json');
+    try {
+      const st = fs.statSync(svcConfigPathEarly);
+      if (st.uid === 0) {
+        console.error('');
+        console.error(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
+        console.error(`${RED}  AUTO-UNPROTECT INCOMPLETE — services.json still root-owned${NC}`);
+        console.error(`${RED}  ${svcConfigPathEarly}${NC}`);
+        console.error(`${RED}  Sync aborted before pending steps to prevent EACCES data loss.${NC}`);
+        console.error(`${RED}  Manual recovery: sudo chown $USER:$(id -gn) ${svcConfigPathEarly}${NC}`);
+        console.error(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
+        process.exit(1);
+      }
+    } catch (statErr) {
+      if (statErr.code !== 'ENOENT') {
+        console.error(`${RED}Cannot stat services.json after unprotect: ${statErr.message}${NC}`);
+        process.exit(1);
+      }
+      // ENOENT is fine — services.json will be created by step 1.4
+    }
   }
 
   // Wrap sync body in try/finally to guarantee re-protect on any failure
@@ -827,6 +815,79 @@ export default async function sync(args) {
     fs.mkdirSync(svcConfigDir, { recursive: true });
     fs.writeFileSync(svcConfigPath, JSON.stringify({ secrets: {} }, null, 2) + '\n');
     console.log(`  Created ${svcConfigPath}`);
+  } else {
+    // 1.4b. Auto-repair services.json shape. The schema makes `secrets` optional, but every
+    // secret-sync MCP tool expects the key to exist. A config missing `secrets` causes
+    // populate_secrets_local / register_secret_profile to fail and pending files to pile up
+    // unnoticed across multiple sync runs. Repair the file in place before the pending steps
+    // run so they can land cleanly.
+    try {
+      const raw = fs.readFileSync(svcConfigPath, 'utf8');
+      let parsed;
+      let parseFailed = false;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parseFailed = true;
+      }
+
+      if (parseFailed) {
+        // File is corrupt. Try the backup before giving up.
+        let restored = false;
+        if (fs.existsSync(svcBackupPath)) {
+          try {
+            const backupRaw = fs.readFileSync(svcBackupPath, 'utf8');
+            const backupParsed = JSON.parse(backupRaw);
+            if (backupParsed && typeof backupParsed === 'object') {
+              if (!backupParsed.secrets) backupParsed.secrets = {};
+              fs.writeFileSync(svcConfigPath, JSON.stringify(backupParsed, null, 2) + '\n');
+              console.log(`\n${YELLOW}Repaired corrupt services.json from backup${NC}`);
+              restored = true;
+            }
+          } catch { /* fall through */ }
+        }
+        if (!restored) {
+          // Last resort: stash the unparseable file and write a fresh scaffold.
+          const stashPath = `${svcConfigPath}.corrupt.${Date.now()}`;
+          fs.renameSync(svcConfigPath, stashPath);
+          fs.writeFileSync(svcConfigPath, JSON.stringify({ secrets: {} }, null, 2) + '\n');
+          console.log(`\n${RED}services.json was unparseable. Stashed to ${stashPath} and wrote fresh scaffold.${NC}`);
+        }
+      } else if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        // Parseable but not an object — stash and reset.
+        const stashPath = `${svcConfigPath}.invalid.${Date.now()}`;
+        fs.renameSync(svcConfigPath, stashPath);
+        fs.writeFileSync(svcConfigPath, JSON.stringify({ secrets: {} }, null, 2) + '\n');
+        console.log(`\n${RED}services.json was not an object. Stashed to ${stashPath} and wrote fresh scaffold.${NC}`);
+      } else if (!('secrets' in parsed) || parsed.secrets === null) {
+        // Most common repair case: file exists, parses fine, but the `secrets` key is
+        // missing or null. Add it without touching any other field.
+        parsed.secrets = {};
+        fs.writeFileSync(svcConfigPath, JSON.stringify(parsed, null, 2) + '\n');
+        console.log(`\n${YELLOW}Repaired services.json: added missing 'secrets' key${NC}`);
+      }
+    } catch (err) {
+      // Repair is best-effort. If EACCES, auto-unprotect should have chowned the file but
+      // didn't — attempt a one-shot sudo chown and retry. If still failing, fall through
+      // and let the pending-application steps surface the issue via the end-of-sync banner.
+      if (err.code === 'EACCES') {
+        try {
+          const user = process.env.USER || 'unknown';
+          const groupOut = execFileSync('id', ['-gn'], { encoding: 'utf8' }).trim();
+          execFileSync('sudo', ['chown', `${user}:${groupOut}`, svcConfigPath], { stdio: 'inherit' });
+          // Retry repair after taking ownership
+          const raw = fs.readFileSync(svcConfigPath, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (!('secrets' in parsed) || parsed.secrets === null)) {
+            parsed.secrets = {};
+            fs.writeFileSync(svcConfigPath, JSON.stringify(parsed, null, 2) + '\n');
+            console.log(`\n${YELLOW}Repaired services.json: added missing 'secrets' key (after sudo chown)${NC}`);
+          }
+        } catch { /* fall through — pending steps will report any remaining EACCES */ }
+      } else {
+        console.log(`\n${YELLOW}services.json repair check failed: ${err.message} (non-fatal)${NC}`);
+      }
+    }
   }
 
   // Track pending-application outcomes for end-of-run summary.
@@ -848,6 +909,10 @@ export default async function sync(args) {
       if (typeof merged !== 'object' || merged === null) {
         throw new Error('Merged config is not a valid object');
       }
+      // Backfill `secrets` if absent — schema makes it optional but every secret tool expects
+      // it to exist. Writing a config without `secrets` is how a config can end up in a state
+      // where loadServicesConfig succeeds but populate_secrets_local has no parent to merge into.
+      if (!merged.secrets) merged.secrets = current.secrets || {};
       safeWriteJson(svcConfigPath, merged, { backupPath: svcBackupPath, backupValidator: hasSecretsLocal });
       fs.unlinkSync(pendingConfigPath);
       console.log(`  Applied ${Object.keys(pending).length} pending config update(s)`);
@@ -1301,8 +1366,8 @@ export default async function sync(args) {
       console.log(`${RED}  Pending files were preserved for retry${NC}`);
       if (anyEacces) {
         console.log(`${RED}  Cause: services.json is root-owned but auto-unprotect did not run.${NC}`);
-        console.log(`${RED}  Recovery: run 'sudo true && npx gentyr sync --self-update' to refresh${NC}`);
-        console.log(`${RED}  the sudo credential cache AND pull the latest gentyr source.${NC}`);
+        console.log(`${RED}  Recovery: run 'sudo true && npx gentyr sync' to refresh the sudo${NC}`);
+        console.log(`${RED}  credential cache before sync attempts the auto-unprotect.${NC}`);
       }
       console.log(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
     }
