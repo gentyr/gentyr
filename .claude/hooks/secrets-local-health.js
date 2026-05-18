@@ -127,8 +127,17 @@ process.stdin.on('end', () => {
     const isEmpty = localKeys.length === 0;
 
     // Check 2: Are all profile keys present in secrets.local?
+    // Profiles can opt out via profile.localCheck:
+    //   "required" (default) — warn per prompt on missing keys
+    //   "optional" — track but suppress the per-prompt UserPromptSubmit warning
+    //   "skip" — ignore entirely; the profile's keys live in an external target
+    //            (Fly app secrets, GitHub Actions secrets, CI env) and are
+    //            never expected to appear in local secrets.local.
     const missingByProfile = {};
     for (const [profileName, profile] of Object.entries(profiles)) {
+      const localCheck = profile?.localCheck || 'required';
+      if (localCheck === 'skip') continue;
+      if (localCheck === 'optional') continue;
       const secretKeys = profile?.secretKeys || [];
       const missing = secretKeys.filter(k => !local[k]);
       if (missing.length > 0) {
@@ -170,9 +179,16 @@ These were added via populate_secrets_local but services.json is root-protected.
     // Build warning message
     const issues = [];
 
-    if (isEmpty && profileNames.length > 0) {
-      issues.push(`secrets.local is EMPTY but ${profileNames.length} secret profile(s) are configured (${profileNames.join(', ')}). All secret-dependent operations will fail.`);
-    } else if (isEmpty) {
+    // Only count profiles that expect local keys for the "empty + profiles configured" warning.
+    // Skip-profiles satisfy their keys externally (Fly/GitHub/CI), so an empty secrets.local
+    // is not a misconfiguration if those are the only profiles.
+    const localExpectingProfiles = Object.entries(profiles)
+      .filter(([, p]) => (p?.localCheck || 'required') !== 'skip')
+      .map(([n]) => n);
+
+    if (isEmpty && localExpectingProfiles.length > 0) {
+      issues.push(`secrets.local is EMPTY but ${localExpectingProfiles.length} secret profile(s) are configured (${localExpectingProfiles.join(', ')}). All secret-dependent operations will fail.`);
+    } else if (isEmpty && profileNames.length === 0) {
       issues.push('secrets.local is EMPTY. Secret-dependent operations (demos, secret_run_command with profiles) will fail.');
     }
 

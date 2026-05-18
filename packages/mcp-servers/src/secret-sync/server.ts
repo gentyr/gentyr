@@ -1602,11 +1602,17 @@ async function registerSecretProfile(args: RegisterSecretProfileArgs): Promise<s
     secretKeys: args.secretKeys,
     ...(args.description ? { description: args.description } : {}),
     ...(match ? { match } : {}),
+    ...(args.localCheck ? { localCheck: args.localCheck } : {}),
   };
 
-  // Check which secretKeys exist in secrets.local
+  // Check which secretKeys exist in secrets.local.
+  // Profiles with localCheck === 'skip' are satisfied by an external target
+  // (Fly/GitHub/CI secrets), not secrets.local — don't surface a misleading
+  // "missing key" warning at registration time.
   const localKeys = Object.keys(config.secrets?.local || {});
-  const missingKeys = args.secretKeys.filter(k => !localKeys.includes(k));
+  const missingKeys = args.localCheck === 'skip'
+    ? []
+    : args.secretKeys.filter(k => !localKeys.includes(k));
 
   const { applied, pending } = writeServicesConfig(config);
 
@@ -1974,7 +1980,7 @@ export const tools = [
   },
   {
     name: 'register_secret_profile',
-    description: 'Create or update a named secret profile. Profiles declare which secrets.local keys a command needs, preventing agents from forgetting required secrets. Use commandPattern/cwdPattern for auto-matching — when an agent calls secret_run_command with a matching command/cwd, the profile gate will block unless the profile is used.',
+    description: 'Create or update a named secret profile. Profiles declare which secrets.local keys a command needs, preventing agents from forgetting required secrets. Use commandPattern/cwdPattern for auto-matching — when an agent calls secret_run_command with a matching command/cwd, the profile gate will block unless the profile is used. Set localCheck: "skip" when the profile\'s keys are satisfied by an external target (Fly app secrets, GitHub Actions secrets, CI provider env) so the secrets-local-health hook does not yell about missing keys.',
     schema: RegisterSecretProfileArgsSchema,
     handler: registerSecretProfile as (args: unknown) => unknown,
   },

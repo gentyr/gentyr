@@ -127,6 +127,8 @@ export const SecretProfileSchema = z.object({
       .describe('Scenario flags that trigger this profile (e.g., ["stealth_required"]). When a demo scenario has any of these flags set to true, this profile\'s secretKeys are resolved.'),
   }).optional()
     .describe('Auto-match rules. When a secret_run_command call or run_demo scenario matches these patterns, the profile\'s secrets are resolved.'),
+  localCheck: z.enum(['required', 'optional', 'skip']).optional()
+    .describe('How the secrets-local-health hook treats missing keys for this profile. "required" (default): warn on every prompt when any key is missing from secrets.local. "optional": skip the noisy per-prompt warning but still surface during status checks. "skip": ignore this profile in local-health entirely — use when the profile\'s keys are satisfied by an external target (Fly app secrets, GitHub Actions secrets, CI provider env) and are never expected in local secrets.local.'),
 });
 
 export type SecretProfile = z.infer<typeof SecretProfileSchema>;
@@ -150,6 +152,8 @@ export const RegisterSecretProfileArgsSchema = z.object({
     .describe('Regex to auto-match against command (e.g. "vitest.*aws-login").'),
   cwdPattern: z.string().optional()
     .describe('Suffix pattern to auto-match against cwd (e.g. "*/aws-integration").'),
+  localCheck: z.enum(['required', 'optional', 'skip']).optional()
+    .describe('How secrets-local-health treats missing keys. "required" (default) warns per prompt; "optional" only on status; "skip" never — for profiles whose keys live in external targets (Fly app secrets, etc.) and are NOT expected in local secrets.local.'),
 });
 
 export type RegisterSecretProfileArgs = z.infer<typeof RegisterSecretProfileArgsSchema>;
