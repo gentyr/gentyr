@@ -433,7 +433,7 @@ async function vercelDeleteAllEnvVarsForKey(projectId: string, key: string): Pro
 
 async function flySetSecrets(
   appName: string,
-  secrets: Array<{ label: string; value: string }>,
+  secrets: Array<{ name: string; value: string }>,
   flyApiToken: string,
 ): Promise<void> {
   const response = await fetch(
@@ -444,11 +444,13 @@ async function flySetSecrets(
         'Authorization': `Bearer ${flyApiToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(secrets.map(s => ({
-        label: s.label,
-        type: 'opaque',
-        value: s.value,
-      }))),
+      body: JSON.stringify({
+        secrets: secrets.map(s => ({
+          name: s.name,
+          type: 'opaque',
+          value: s.value,
+        })),
+      }),
       signal: AbortSignal.timeout(15000),
     },
   );
@@ -584,11 +586,11 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
       }
 
       for (const [appName, appSecrets] of Object.entries(flySecrets)) {
-        const resolvedSecrets: Array<{ label: string; value: string }> = [];
+        const resolvedSecrets: Array<{ name: string; value: string }> = [];
         for (const [key, ref] of Object.entries(appSecrets)) {
           try {
             const value = opRead(ref);
-            resolvedSecrets.push({ label: key, value });
+            resolvedSecrets.push({ name: key, value });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             synced.push({ key, service: `fly:${appName}`, status: 'error', error: message });
@@ -598,12 +600,12 @@ async function syncSecrets(args: SyncSecretsArgs): Promise<SyncResult> {
           try {
             await flySetSecrets(appName, resolvedSecrets, flyToken);
             for (const s of resolvedSecrets) {
-              synced.push({ key: s.label, service: `fly:${appName}`, status: 'created' });
+              synced.push({ key: s.name, service: `fly:${appName}`, status: 'created' });
             }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             for (const s of resolvedSecrets) {
-              synced.push({ key: s.label, service: `fly:${appName}`, status: 'error', error: message });
+              synced.push({ key: s.name, service: `fly:${appName}`, status: 'error', error: message });
             }
           }
         }
