@@ -276,7 +276,7 @@ describe('Playwright MCP Server - Zod Schemas', () => {
     });
 
     it('should reject timeout outside bounds (G003)', () => {
-      const invalidTimeouts = [0, 1000, 29999, 600001, 1000000];
+      const invalidTimeouts = [0, 1000, 29999, 1800001, 3600000];
       for (const timeout of invalidTimeouts) {
         const result = RunTestsArgsSchema.safeParse({ timeout });
         expect(result.success).toBe(false);
@@ -707,11 +707,11 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should default timeout to 120000 when omitted', () => {
+    it('should default timeout to 1800000 when omitted', () => {
       const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc' });
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.timeout).toBe(120000);
+        expect(result.data.timeout).toBe(1800000);
       }
     });
 
@@ -736,8 +736,8 @@ describe('Playwright MCP Server - Zod Schemas', () => {
       expect(result.success).toBe(false);
     });
 
-    it('should reject timeout above 600000 (G003)', () => {
-      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', timeout: 600001 });
+    it('should reject timeout above 1800000 (G003)', () => {
+      const result = RunDemoArgsSchema.safeParse({ project: 'demo', scenario_id: 'scenario-abc', timeout: 1800001 });
       expect(result.success).toBe(false);
     });
 

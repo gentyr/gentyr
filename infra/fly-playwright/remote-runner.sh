@@ -212,7 +212,11 @@ else
     log "Chromium already available — skipping download"
   else
     log "Installing Playwright browsers (matching project's @playwright/test version)..."
+    # Heartbeat during browser install — can take 3-8 min on slow machines
+    (while true; do sleep 30; echo '{"type":"setup","phase":"browser_install_progress","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true; done) &
+    BROWSER_INSTALL_HEARTBEAT_PID=$!
     npx playwright install chromium 2>&1 | tee -a /app/.error.log || true
+    kill "$BROWSER_INSTALL_HEARTBEAT_PID" 2>/dev/null || true
   fi
   echo '{"type":"setup","phase":"install_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
 fi
@@ -311,7 +315,13 @@ if [[ -n "${WORKTREE_BUILD_CMD:-}" ]]; then
 
   if [[ "$RUN_BUILD" == "true" ]]; then
     log "Running build: $WORKTREE_BUILD_CMD"
+    echo '{"type":"setup","phase":"build_start","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
+    # Heartbeat during build — TypeScript compilation can take 3-10 min on cold machines
+    (while true; do sleep 30; echo '{"type":"setup","phase":"build_progress","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true; done) &
+    BUILD_HEARTBEAT_PID=$!
     eval "$WORKTREE_BUILD_CMD" 2>&1 | tee -a /app/.error.log
+    kill "$BUILD_HEARTBEAT_PID" 2>/dev/null || true
+    echo '{"type":"setup","phase":"build_done","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true
   fi
 fi
 
@@ -328,12 +338,18 @@ if [[ -n "${DEV_SERVER_CMD:-}" ]]; then
   log "Dev server PID: $DEV_SERVER_PID"
 
   HEALTH_CMD="${DEV_SERVER_HEALTH_CHECK:-curl -sf http://localhost:${DEV_SERVER_PORT:-3000}}"
-  WAIT_SECS=60
+  WAIT_SECS=${DEV_SERVER_WAIT_SECS:-600}
   ELAPSED=0
+
+  # Heartbeat during dev server startup — Next.js first compile takes 3-8 min.
+  # Without this, the MCP-side stall detector fires during the silent compile phase.
+  (while true; do sleep 30; echo '{"type":"setup","phase":"devserver_starting","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true; done) &
+  DEVSERVER_HEARTBEAT_PID=$!
 
   log "Waiting for dev server to be healthy (health check: $HEALTH_CMD) ..."
   until eval "$HEALTH_CMD" >/dev/null 2>&1; do
     if [[ $ELAPSED -ge $WAIT_SECS ]]; then
+      kill "$DEVSERVER_HEARTBEAT_PID" 2>/dev/null || true
       error "Dev server did not become healthy within ${WAIT_SECS}s"
       if [[ -f /app/.devserver.log ]]; then
         error "Dev server log tail:"
@@ -344,6 +360,7 @@ if [[ -n "${DEV_SERVER_CMD:-}" ]]; then
     sleep 2
     ELAPSED=$((ELAPSED + 2))
   done
+  kill "$DEVSERVER_HEARTBEAT_PID" 2>/dev/null || true
 
   log "Dev server is healthy after ${ELAPSED}s"
   echo '{"type":"setup","phase":"devserver_ready","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' >> /app/.progress.jsonl 2>/dev/null || true

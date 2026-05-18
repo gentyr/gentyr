@@ -8245,6 +8245,31 @@ async function runRemoteBatchSequence(
         const originalFailure = scenario.failure_summary || 'unknown';
         const wasOom = scenario.failure_classification === 'oom';
 
+        // Acquire a machine slot before spawning a retry. The original main loop
+        // tracks every spawn through the pool so concurrent batches honor the
+        // Fly.io org limit — the retry phase must do the same. Without this,
+        // retries silently exceed maxConcurrentMachines and the local pool
+        // count drifts under-reporting the true machine fleet.
+        let retrySlotId: string | undefined;
+        const retryAcquireDeadline = Math.min(Date.now() + 60_000, batchDeadline);
+        while (Date.now() < retryAcquireDeadline) {
+          const slot = machinePool.acquireSlot(state.batch_id, scenario.scenario_id, process.pid);
+          if (slot.acquired && slot.slotId) {
+            retrySlotId = slot.slotId;
+            break;
+          }
+          process.stderr.write(`[fly-pool] Retry phase: pool at capacity (${slot.activeSlots}/${slot.maxSlots}), waiting 5s for slot for scenario ${scenario.scenario_id}\n`);
+          await new Promise(r => setTimeout(r, 5000));
+          if (state.status !== 'running' || Date.now() >= batchDeadline) break;
+        }
+        if (!retrySlotId) {
+          process.stderr.write(`[fly-pool] Retry phase: could not acquire slot for ${scenario.scenario_id} within deadline — skipping retry\n`);
+          // Leave scenario in its previously-failed state. Re-increment counters
+          // because the reset below would otherwise undercount.
+          // (We intentionally skip the reset for this scenario.)
+          continue;
+        }
+
         // Reset scenario for re-run
         scenario.status = 'running';
         scenario.failure_summary = undefined as any;
@@ -8502,6 +8527,11 @@ async function runRemoteBatchSequence(
           scenario.status = 'failed';
           scenario.failure_summary = err instanceof Error ? err.message : String(err);
           scenario.failure_classification = 'unknown';
+        } finally {
+          // Always release the retry slot, even on error paths. This keeps the
+          // pool count accurate regardless of whether the spawn, polling, or
+          // result-parsing path threw.
+          machinePool.releaseSlot(retrySlotId);
         }
 
         // Track the retry
@@ -10000,6 +10030,19 @@ const tools: AnyToolHandler[] = [
         // Read fly config's projectImageEnabled setting
         const projectImageEnabled = flySection.projectImageEnabled === true;
 
+        // Local SQLite slot pool status. Calling getPoolStatus() also triggers
+        // cleanExpiredSlots() as a side effect, ensuring dead-PID and TTL-expired
+        // rows are reaped every time an agent inspects Fly.io status. This
+        // prevents the pool count from drifting away from the actual machine
+        // count after a process crash.
+        const poolStatus = machinePool.getPoolStatus();
+        const poolSlots = {
+          active: poolStatus.activeSlots,
+          max: poolStatus.maxSlots,
+          available: Math.max(0, poolStatus.maxSlots - poolStatus.activeSlots),
+          byBatch: poolStatus.byBatch,
+        };
+
         return JSON.stringify({
           configured: true,
           enabled: true,
@@ -10026,6 +10069,7 @@ const tools: AnyToolHandler[] = [
           maxConcurrentMachines: flyConfig.maxConcurrentMachines,
           activeMachines: activeMachines.length,
           machines: activeMachines,
+          poolSlots,
           tigrisConfigured,
           ...(tigrisBucket ? { tigrisBucket } : {}),
           ...(imageMessage ? { imageMessage } : {}),

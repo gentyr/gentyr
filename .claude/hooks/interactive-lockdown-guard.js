@@ -309,16 +309,72 @@ async function main() {
       const isMemoryFile = filePath.startsWith(homeClaudeDir + path.sep);
 
       if (filePath && !isInWorktree && !isFrameworkFile && !isMemoryFile) {
-        const reason = [
-          'BLOCKED: Main-tree edits are not allowed (this restriction is INDEPENDENT of lockdown state).',
-          '',
-          'Why: editing main-tree files conflicts with running agents and breaks the merge chain.',
-          'Allowed paths: .claude/worktrees/**, .claude/**, ~/.claude/**',
-          '',
-          ...recoveryLines('edit'),
-          '',
-          `Other guards (main-tree-commit-guard, block-no-verify) are not affected by /lockdown.`,
-        ].join('\n');
+        // Classify the target to produce a recovery message the agent can act on.
+        // Three cases: (a) outside project (scratch file), (b) main tree while cwd
+        // is in a worktree (the common confusion — agent used absolute main-tree path
+        // when it should have used the worktree path), (c) main tree from main-tree cwd.
+        const isInProject = filePath.startsWith(PROJECT_DIR + path.sep);
+        const cwd = process.cwd();
+        const cwdInWorktree = cwd.startsWith(worktreesDir + path.sep);
+
+        let reason;
+        if (!isInProject) {
+          // Scratch path outside the project (e.g. /tmp/pr-body.md). Not actually a
+          // "main-tree edit" — point at .claude/tmp/ as the project-local scratch location.
+          const scratchHint = path.join(PROJECT_DIR, '.claude', 'tmp', path.basename(filePath));
+          reason = [
+            'BLOCKED: Writes outside the project directory are not allowed in lockdown-off mode.',
+            '',
+            `Target:  ${filePath}`,
+            `Project: ${PROJECT_DIR}`,
+            '',
+            'Scratch files (PR bodies, temp JSON, etc.) must live inside the project so the audit',
+            'trail captures them. Write into .claude/tmp/ instead — it is whitelisted and works with',
+            'tools like `gh pr create --body-file`.',
+            '',
+            `Recovery: write to ${scratchHint}`,
+          ].join('\n');
+        } else if (cwdInWorktree) {
+          // Agent is already in a worktree, but passed a main-tree absolute path.
+          // Compute the worktree-local path so the recovery is one copy-paste away.
+          const cwdRel = path.relative(worktreesDir, cwd);
+          const worktreeName = cwdRel.split(path.sep)[0];
+          const currentWorktree = path.join(worktreesDir, worktreeName);
+          const relFromProject = path.relative(PROJECT_DIR, filePath);
+          const correctedPath = path.join(currentWorktree, relFromProject);
+          const cwdRelativePath = path.relative(cwd, correctedPath);
+          reason = [
+            'BLOCKED: Path resolves to the main tree, but your cwd is already in a worktree.',
+            '',
+            `Target:    ${filePath}`,
+            `Your cwd:  ${cwd}`,
+            '',
+            'The absolute path you used points OUTSIDE your worktree — it would edit the live',
+            "main-tree copy instead of the worktree's copy. Use the worktree path:",
+            '',
+            `  ${correctedPath}`,
+            '',
+            `(Or pass it relative to your cwd: ${cwdRelativePath})`,
+            '',
+            'Why: main-tree edits conflict with running agents and break the merge chain.',
+            'Other guards (main-tree-commit-guard, block-no-verify) are not affected by /lockdown.',
+          ].join('\n');
+        } else {
+          // cwd is not in a worktree — likely main tree itself. Direct the agent to a worktree.
+          reason = [
+            'BLOCKED: Main-tree edits are not allowed (this restriction is INDEPENDENT of lockdown state).',
+            '',
+            'Why: editing main-tree files conflicts with running agents and breaks the merge chain.',
+            'Allowed paths: .claude/worktrees/**, .claude/**, ~/.claude/**',
+            '',
+            ...recoveryLines('edit'),
+            '',
+            'Note: external worktrees (e.g. `git worktree add /tmp/foo`) are NOT recognized — worktrees',
+            'must live under .claude/worktrees/ to be allowed by this guard.',
+            '',
+            'Other guards (main-tree-commit-guard, block-no-verify) are not affected by /lockdown.',
+          ].join('\n');
+        }
         process.stdout.write(JSON.stringify({
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',

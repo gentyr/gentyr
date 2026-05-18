@@ -563,7 +563,7 @@ export function createFeedbackExplorerServer(config: FeedbackExplorerConfig): Mc
         SELECT id, title, category, priority, created_at, triage_status, triage_outcome
         FROM reports
         WHERE reporting_agent = ?
-        ORDER BY created_timestamp DESC
+        ORDER BY created_timestamp DESC, rowid ASC
         LIMIT ?
       `).all(reportingAgent, args.limit) as {
         id: string;
