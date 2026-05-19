@@ -510,7 +510,7 @@ function spawnAlertEscalation(alert) {
     agentType: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'alert-escalation',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: (agentId) => `[Automation][alert-escalation][AGENT:${agentId}] ALERT RE-ESCALATION
 
@@ -772,6 +772,19 @@ function saveState(state) {
  * @param {string} opts.label - Display label (default: key)
  * @returns {Promise<{ran: boolean, skipped?: string, result?: any}>}
  */
+// Tracks the currently executing runIfDue block name so helpers can build
+// granular source strings like 'hourly-automation:task_runner' instead of
+// the generic 'hourly-automation'. Reset to null when no block is active.
+let _currentBlock = null;
+
+/**
+ * Returns the source string for the currently executing runIfDue block,
+ * or 'hourly-automation' when called from outside a block (e.g. setup code).
+ */
+function currentSource() {
+  return _currentBlock ? `hourly-automation:${_currentBlock}` : 'hourly-automation';
+}
+
 async function runIfDue(key, opts) {
   const { state, now, intervals, stateKey, configToggle, config, fn, label = key, localModeSkip } = opts;
 
@@ -808,6 +821,7 @@ async function runIfDue(key, opts) {
   }
 
   try {
+    _currentBlock = key;
     const result = await fn();
     state[effectiveStateKey] = now;
     saveState(state);
@@ -817,6 +831,8 @@ async function runIfDue(key, opts) {
     state[effectiveStateKey] = now;
     saveState(state);
     return { ran: false, skipped: 'error' };
+  } finally {
+    _currentBlock = null;
   }
 }
 
@@ -1068,7 +1084,7 @@ After processing all reports, output a summary:
     agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'report-triage',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: (agentId) => `[Automation][report-triage][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
@@ -1201,7 +1217,7 @@ After processing all reports, output a summary:
     agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'report-triage-preview',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: (agentId) => `[Automation][report-triage-preview][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials, GENTYR_REPORT_TIER: 'preview' },
@@ -1359,7 +1375,7 @@ After processing all reports, output a summary:
     agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'report-triage-staging',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: (agentId) => `[Automation][report-triage-staging][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials, GENTYR_REPORT_TIER: 'staging' },
@@ -1452,7 +1468,7 @@ Key tools: \`page_get_snapshot\`, \`page_click\`, \`mcp__todo-db__*\`, \`mcp__sp
     agentType: AGENT_TYPES.CLAUDEMD_REFACTOR,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'claudemd-refactor',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: (agentId) => `[Automation][claudemd-refactor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
@@ -1523,7 +1539,7 @@ function spawnLintFixer(lintOutput) {
     agentType: AGENT_TYPES.LINT_FIXER,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'lint-fixer',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: (agentId) => `[Automation][lint-fixer][AGENT:${agentId}] You are an orchestrator fixing LINT ERRORS.
 
@@ -2027,7 +2043,7 @@ function spawnTaskAgent(task) {
     agentType: mapping.agentType,
     hookType: HOOK_TYPES.TASK_RUNNER,
     tagContext: `task-runner-${mapping.agent}`,
-    source: 'hourly-automation',
+    source: currentSource(),
     // CTO/human-assigned tasks use 'cto' priority to pass through focus mode gate
     priority: task.assigned_by && ['cto', 'human'].includes(task.assigned_by) ? 'cto' : 'low',
     agent: mapping.agent,
@@ -2397,7 +2413,7 @@ function rescueAbandonedWorktrees() {
       agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER,
       hookType: HOOK_TYPES.TASK_RUNNER,
       tagContext: 'rescue-project-manager',
-      source: 'hourly-automation',
+      source: currentSource(),
       priority: 'low',
       buildPrompt: (agentId) => `[Automation][rescue-project-manager][AGENT:${agentId}] You are a project-manager rescuing abandoned work in a worktree.
 
@@ -2580,7 +2596,7 @@ export function spawnHotfixPromotion(commits) {
     agentType: AGENT_TYPES.HOTFIX_PROMOTION,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'hotfix-promotion',
-    source: 'hourly-automation',
+    source: currentSource(),
     buildPrompt: (agentId) => `[Automation][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
 
 ## Mission
@@ -2672,7 +2688,7 @@ export function spawnPreviewPromotion(commits) {
     agentType: 'preview-promoter',
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'preview-promotion',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'normal',
     agent: 'preview-promoter',
     buildPrompt: (agentId) => [
@@ -2810,7 +2826,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
     agentType: AGENT_TYPES.STAGING_HEALTH_MONITOR,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'staging-health-monitor',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: (agentId) => `[Automation][staging-health-monitor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
@@ -2924,7 +2940,7 @@ Complete within 10 minutes. This is a read-only monitoring check.`;
     agentType: AGENT_TYPES.PRODUCTION_HEALTH_MONITOR,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'production-health-monitor',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: (agentId) => `[Automation][production-health-monitor][AGENT:${agentId}] ${promptBody}`,
     extraEnv: { ...resolvedCredentials },
@@ -3032,7 +3048,7 @@ Focus on finding SYSTEMIC issues across the codebase, not just isolated violatio
     agentType: AGENT_TYPES.STANDALONE_ANTIPATTERN_HUNTER,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'standalone-antipattern-hunter',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: () => promptBody,
     extraEnv: { ...resolvedCredentials },
@@ -3113,7 +3129,7 @@ Do NOT implement fixes yourself. Only report and create TODOs.
     agentType: AGENT_TYPES.STANDALONE_COMPLIANCE_CHECKER,
     hookType: HOOK_TYPES.HOURLY_AUTOMATION,
     tagContext: 'standalone-compliance-checker',
-    source: 'hourly-automation',
+    source: currentSource(),
     priority: 'low',
     buildPrompt: () => promptBody,
     extraEnv: { ...resolvedCredentials },
@@ -3374,7 +3390,7 @@ async function main() {
       agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
       hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
       tagContext: 'plan-manager',
-      source: 'hourly-automation',
+      source: currentSource(),
       priority: 'critical',
       lane: 'persistent',
       ttlMs: 0,
@@ -3478,7 +3494,7 @@ async function main() {
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
               hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
               tagContext: 'persistent-monitor',
-              source: 'hourly-automation',
+              source: currentSource(),
               priority: 'critical',
               lane: 'persistent',
               ttlMs: 0,
@@ -3839,7 +3855,7 @@ async function main() {
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
               hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
               tagContext: 'persistent-monitor',
-              source: 'hourly-automation',
+              source: currentSource(),
               priority: 'critical',
               lane: 'persistent',
               ttlMs: 0,
@@ -3932,7 +3948,7 @@ async function main() {
           agentType: 'deputy-cto-triage',
           hookType: 'hourly-automation',
           tagContext: 'paused-task-triage',
-          source: 'hourly-automation',
+          source: currentSource(),
           priority: 'normal',
           lane: 'automated',
           agent: 'deputy-cto',
@@ -4432,7 +4448,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
                 agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
                 hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
                 tagContext: 'global-monitor',
-                source: 'hourly-automation',
+                source: currentSource(),
                 priority: 'critical',
                 lane: 'persistent',
                 ttlMs: 0,
@@ -4534,7 +4550,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
           agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
           hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
           tagContext: 'global-monitor',
-          source: 'hourly-automation',
+          source: currentSource(),
           priority: 'critical',
           lane: 'persistent',
           ttlMs: 0,
@@ -4769,7 +4785,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
               agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
               hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
               tagContext: 'global-monitor',
-              source: 'hourly-automation',
+              source: currentSource(),
               priority: 'critical',
               lane: 'persistent',
               ttlMs: 0,
@@ -4960,7 +4976,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
             agentType: 'staging-reactive-reviewer',
             hookType: HOOK_TYPES.HOURLY_AUTOMATION,
             tagContext: `staging-review-${focus}`,
-            source: 'hourly-automation',
+            source: currentSource(),
             priority: 'normal',
             agent: 'staging-reviewer',
             buildPrompt: (agentId) => prompt.replace('{AGENT_ID}', agentId),
@@ -5748,7 +5764,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         agentType: 'security-auditor',
         hookType: HOOK_TYPES.HOURLY_AUTOMATION,
         tagContext: 'security-audit',
-        source: 'hourly-automation',
+        source: currentSource(),
         priority: 'low',
         agent: 'security-auditor',
         buildPrompt: (agentId) => [
@@ -6376,7 +6392,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
               agentType: AGENT_TYPES.DEPUTY_CTO_REVIEW,
               hookType: HOOK_TYPES.HOURLY_AUTOMATION,
               tagContext: 'stale-work-report',
-              source: 'hourly-automation',
+              source: currentSource(),
               priority: 'low',
               buildPrompt: (agentId) => `[Automation][stale-work-report][AGENT:${agentId}] Report this stale work finding to the deputy-CTO.
 
@@ -6696,7 +6712,7 @@ Then exit.`,
             agentType: AGENT_TYPES.DEMO_REPAIR,
             hookType: HOOK_TYPES.HOURLY_AUTOMATION,
             tagContext: 'demo-repair',
-            source: 'hourly-automation',
+            source: currentSource(),
             priority: 'low',
             buildPrompt: (agentId) => {
               // Query prerequisites for the failed scenario
@@ -6797,7 +6813,7 @@ Then exit.`,
           agentType: AGENT_TYPES.DEMO_VALIDATOR,
           hookType: HOOK_TYPES.HOURLY_AUTOMATION,
           tagContext: 'demo-validation-report',
-          source: 'hourly-automation',
+          source: currentSource(),
           priority: 'low',
           buildPrompt: (agentId) => [
             `[Automation][demo-validation-report][AGENT:${agentId}] Report the following demo validation failures to the deputy-CTO using mcp__agent-reports__report_to_deputy_cto.`,

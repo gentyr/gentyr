@@ -88,6 +88,22 @@ const AUTOMATED_SOURCES = new Set([
 ]);
 
 /**
+ * Return true if a source string is considered "automated" — i.e. eligible
+ * for auto-promotion to the no-cap `automated` lane. Matches exact entries in
+ * AUTOMATED_SOURCES OR the `hourly-automation:<block>` prefix produced by the
+ * source-granularity sweep in hourly-automation.js.
+ *
+ * @param {string} source
+ * @returns {boolean}
+ */
+export function isAutomatedSource(source) {
+  if (!source) return false;
+  if (AUTOMATED_SOURCES.has(source)) return true;
+  if (source.startsWith('hourly-automation:')) return true;
+  return false;
+}
+
+/**
  * Parse a SQLite datetime string as UTC.
  * SQLite's datetime('now') produces "YYYY-MM-DD HH:MM:SS" (UTC, no Z suffix).
  * JavaScript's new Date() parses this as local time without timezone indicator.
@@ -646,7 +662,7 @@ export function enqueueSession(spec) {
   // Auto-promote to automated lane for known automation sources.
   // Only promotes when lane is 'standard' (or unset) — respects explicit lane assignments
   // (persistent, gate, audit, etc.). The automated lane has no concurrency limit.
-  if ((!spec.lane || spec.lane === 'standard') && AUTOMATED_SOURCES.has(spec.source)) {
+  if ((!spec.lane || spec.lane === 'standard') && isAutomatedSource(spec.source)) {
     spec = { ...spec, lane: 'automated' };
   }
 
