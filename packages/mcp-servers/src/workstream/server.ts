@@ -25,6 +25,7 @@ import {
   AddDependencyArgsSchema,
   RemoveDependencyArgsSchema,
   ListDependenciesArgsSchema,
+  ListDependenciesForEntityArgsSchema,
   GetQueueContextArgsSchema,
   ReorderItemArgsSchema,
   RecordAssessmentArgsSchema,
@@ -34,6 +35,7 @@ import {
   type AddDependencyArgs,
   type RemoveDependencyArgs,
   type ListDependenciesArgs,
+  type ListDependenciesForEntityArgs,
   type GetQueueContextArgs,
   type ReorderItemArgs,
   type RecordAssessmentArgs,
@@ -47,6 +49,7 @@ import {
   type AddDependencyResult,
   type RemoveDependencyResult,
   type ListDependenciesResult,
+  type ListDependenciesForEntityResult,
   type GetQueueContextResult,
   type ReorderItemResult,
   type RecordAssessmentResult,
@@ -56,6 +59,7 @@ import {
   type RegisterSupersessionExistsResult,
   type ListSupersessionsResult,
   type TaskSupersessionRecord,
+  type EntityType,
 } from './types.js';
 
 // ============================================================================
@@ -66,6 +70,8 @@ const PROJECT_DIR = path.resolve(process.env['CLAUDE_PROJECT_DIR'] || process.cw
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'workstream.db');
 const SESSION_QUEUE_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
+const PERSISTENT_TASKS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 
 // ============================================================================
 // Database Schema
@@ -76,17 +82,20 @@ CREATE TABLE IF NOT EXISTS queue_dependencies (
   id TEXT PRIMARY KEY,
   blocked_queue_id TEXT,
   blocked_task_id TEXT NOT NULL,
+  blocked_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocked_entity_type IN ('todo','persistent','plan_task')),
   blocker_queue_id TEXT,
   blocker_task_id TEXT NOT NULL,
+  blocker_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocker_entity_type IN ('todo','persistent','plan_task')),
   status TEXT NOT NULL DEFAULT 'active',
   created_by TEXT NOT NULL,
   reasoning TEXT NOT NULL,
+  pause_action TEXT,
   created_at TEXT NOT NULL,
   satisfied_at TEXT,
-  UNIQUE(blocked_task_id, blocker_task_id)
+  UNIQUE(blocked_entity_type, blocked_task_id, blocker_entity_type, blocker_task_id)
 );
-CREATE INDEX IF NOT EXISTS idx_dep_blocked ON queue_dependencies(blocked_task_id, status);
-CREATE INDEX IF NOT EXISTS idx_dep_blocker ON queue_dependencies(blocker_task_id, status);
+CREATE INDEX IF NOT EXISTS idx_dep_blocked_entity ON queue_dependencies(blocked_entity_type, blocked_task_id, status);
+CREATE INDEX IF NOT EXISTS idx_dep_blocker_entity ON queue_dependencies(blocker_entity_type, blocker_task_id, status);
 
 CREATE TABLE IF NOT EXISTS workstream_changes (
   id TEXT PRIMARY KEY,
@@ -120,6 +129,89 @@ CREATE INDEX IF NOT EXISTS idx_super_superseding ON task_supersessions(supersedi
 
 let _db: Database.Database | null = null;
 
+/**
+ * Idempotent migration to extend queue_dependencies with cross-entity columns.
+ * Adds blocked_entity_type, blocker_entity_type, pause_action columns when missing,
+ * and broadens the UNIQUE constraint to include both entity types. The broaden
+ * step uses a shadow-table swap because SQLite cannot ALTER a UNIQUE constraint.
+ */
+function migrateCrossEntityDeps(db: Database.Database): void {
+  // Step 1: add missing columns (idempotent — PRAGMA table_info())
+  const cols = db.prepare('PRAGMA table_info(queue_dependencies)').all() as Array<{ name: string }>;
+  const colNames = new Set(cols.map((c) => c.name));
+
+  if (!colNames.has('blocked_entity_type')) {
+    db.exec(
+      `ALTER TABLE queue_dependencies ADD COLUMN blocked_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocked_entity_type IN ('todo','persistent','plan_task'))`
+    );
+  }
+  if (!colNames.has('blocker_entity_type')) {
+    db.exec(
+      `ALTER TABLE queue_dependencies ADD COLUMN blocker_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocker_entity_type IN ('todo','persistent','plan_task'))`
+    );
+  }
+  if (!colNames.has('pause_action')) {
+    db.exec(`ALTER TABLE queue_dependencies ADD COLUMN pause_action TEXT`);
+  }
+
+  // Step 2: broaden UNIQUE constraint via shadow-table swap (only if old constraint still present)
+  const tableDef = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='queue_dependencies'")
+    .get() as { sql: string } | undefined;
+
+  if (tableDef) {
+    const hasNewUnique = /UNIQUE\s*\(\s*blocked_entity_type\s*,\s*blocked_task_id\s*,\s*blocker_entity_type\s*,\s*blocker_task_id\s*\)/i.test(
+      tableDef.sql
+    );
+    const hasOldUnique = /UNIQUE\s*\(\s*blocked_task_id\s*,\s*blocker_task_id\s*\)/i.test(
+      tableDef.sql
+    );
+
+    if (hasOldUnique && !hasNewUnique) {
+      const swap = db.transaction(() => {
+        db.exec(`
+          CREATE TABLE queue_dependencies_new (
+            id TEXT PRIMARY KEY,
+            blocked_queue_id TEXT,
+            blocked_task_id TEXT NOT NULL,
+            blocked_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocked_entity_type IN ('todo','persistent','plan_task')),
+            blocker_queue_id TEXT,
+            blocker_task_id TEXT NOT NULL,
+            blocker_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocker_entity_type IN ('todo','persistent','plan_task')),
+            status TEXT NOT NULL DEFAULT 'active',
+            created_by TEXT NOT NULL,
+            reasoning TEXT NOT NULL,
+            pause_action TEXT,
+            created_at TEXT NOT NULL,
+            satisfied_at TEXT,
+            UNIQUE(blocked_entity_type, blocked_task_id, blocker_entity_type, blocker_task_id)
+          )
+        `);
+        db.exec(`
+          INSERT INTO queue_dependencies_new
+            (id, blocked_queue_id, blocked_task_id, blocked_entity_type, blocker_queue_id, blocker_task_id, blocker_entity_type, status, created_by, reasoning, pause_action, created_at, satisfied_at)
+          SELECT
+            id, blocked_queue_id, blocked_task_id, blocked_entity_type, blocker_queue_id, blocker_task_id, blocker_entity_type, status, created_by, reasoning, pause_action, created_at, satisfied_at
+          FROM queue_dependencies
+        `);
+        db.exec('DROP TABLE queue_dependencies');
+        db.exec('ALTER TABLE queue_dependencies_new RENAME TO queue_dependencies');
+      });
+      swap();
+    }
+  }
+
+  // Step 3: composite indexes (idempotent). Drop legacy narrow indexes first if present.
+  db.exec('DROP INDEX IF EXISTS idx_dep_blocked');
+  db.exec('DROP INDEX IF EXISTS idx_dep_blocker');
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_dep_blocked_entity ON queue_dependencies(blocked_entity_type, blocked_task_id, status)'
+  );
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_dep_blocker_entity ON queue_dependencies(blocker_entity_type, blocker_task_id, status)'
+  );
+}
+
 function ensureDb(): Database.Database {
   if (_db) return _db;
 
@@ -133,6 +225,7 @@ function ensureDb(): Database.Database {
   _db.pragma('foreign_keys = ON');
   _db.pragma('busy_timeout = 5000');
   _db.exec(SCHEMA);
+  migrateCrossEntityDeps(_db);
   return _db;
 }
 
@@ -152,32 +245,284 @@ function newChangeId(): string {
   return `wsc-${crypto.randomBytes(4).toString('hex')}`;
 }
 
+// ============================================================================
+// Entity Validation & Pause-If-Running Helpers
+// ============================================================================
+
+interface EntityRef {
+  entity_type: EntityType;
+  entity_id: string;
+}
+
+function entityKey(ref: EntityRef): string {
+  return `${ref.entity_type}:${ref.entity_id}`;
+}
+
 /**
- * Cycle detection via DFS.
+ * Validate that an entity exists in its source DB and return its current status.
+ * Returns { exists: true, status } on success, { exists: false } when missing,
+ * { exists: false, reason } when the source DB is unavailable.
+ */
+function getEntityStatus(ref: EntityRef): { exists: boolean; status?: string; reason?: string } {
+  try {
+    if (ref.entity_type === 'todo') {
+      if (!fs.existsSync(TODO_DB_PATH)) return { exists: false, reason: 'todo.db not found' };
+      let db: Database.Database | null = null;
+      try {
+        db = openReadonlyDb(TODO_DB_PATH);
+        const row = db.prepare('SELECT status FROM tasks WHERE id = ?').get(ref.entity_id) as
+          | { status: string }
+          | undefined;
+        if (!row) return { exists: false };
+        return { exists: true, status: row.status };
+      } finally {
+        db?.close();
+      }
+    } else if (ref.entity_type === 'persistent') {
+      if (!fs.existsSync(PERSISTENT_TASKS_DB_PATH))
+        return { exists: false, reason: 'persistent-tasks.db not found' };
+      let db: Database.Database | null = null;
+      try {
+        db = openReadonlyDb(PERSISTENT_TASKS_DB_PATH);
+        const row = db
+          .prepare('SELECT status FROM persistent_tasks WHERE id = ?')
+          .get(ref.entity_id) as { status: string } | undefined;
+        if (!row) return { exists: false };
+        return { exists: true, status: row.status };
+      } finally {
+        db?.close();
+      }
+    } else if (ref.entity_type === 'plan_task') {
+      if (!fs.existsSync(PLANS_DB_PATH)) return { exists: false, reason: 'plans.db not found' };
+      let db: Database.Database | null = null;
+      try {
+        db = openReadonlyDb(PLANS_DB_PATH);
+        const row = db.prepare('SELECT status FROM plan_tasks WHERE id = ?').get(ref.entity_id) as
+          | { status: string }
+          | undefined;
+        if (!row) return { exists: false };
+        return { exists: true, status: row.status };
+      } finally {
+        db?.close();
+      }
+    }
+    return { exists: false, reason: `unknown entity_type ${ref.entity_type}` };
+  } catch (err) {
+    return { exists: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Returns true if a status counts as a "satisfying terminal state" for a dep —
+ * blocker entity in this state means the dep can be inserted as 'satisfied'
+ * and no pause action is needed on the blocked entity.
+ */
+function isSatisfyingTerminalStatus(entity_type: EntityType, status: string): boolean {
+  if (entity_type === 'todo') return status === 'completed';
+  if (entity_type === 'persistent') return status === 'completed';
+  if (entity_type === 'plan_task') return status === 'completed' || status === 'skipped';
+  return false;
+}
+
+/**
+ * If a blocked entity is currently "running" (todo in_progress, persistent active,
+ * plan_task in_progress/ready), pause it so the dep takes effect immediately.
+ *
+ * Returns the pause action recorded on the dep row, or null if no action was needed.
+ *
+ * Implementation details:
+ *  - todo: kill the running session via session-queue.db (look up by metadata.taskId),
+ *    mark queue item cancelled, reset todo task to 'pending'. Records 'killed_session'.
+ *  - persistent: write status='paused' to persistent-tasks.db with metadata
+ *    {pause_reason: 'cross_dep', do_not_auto_resume: true}. Records 'paused_persistent'.
+ *  - plan_task: set status='paused' on plan_tasks row. Records 'paused_plan_task'.
+ *
+ * NOTE: the session-queue.js gate and the persistent_stale_pause_resume guard
+ * are extended in followup PRs to recognize these pause actions. This function
+ * does the minimum DB-level state change here. Cross-DB writes happen
+ * in-process (matching existing cross-DB write patterns in this codebase).
+ */
+function pauseBlockedEntityIfRunning(ref: EntityRef): string | null {
+  const status = getEntityStatus(ref);
+  if (!status.exists || !status.status) return null;
+
+  if (ref.entity_type === 'todo') {
+    if (status.status !== 'in_progress') return null;
+
+    // Look up linked session by metadata.taskId in session-queue.db (read-only first).
+    let pid: number | null = null;
+    let queueId: string | null = null;
+    if (fs.existsSync(SESSION_QUEUE_DB_PATH)) {
+      let queueDb: Database.Database | null = null;
+      try {
+        queueDb = openReadonlyDb(SESSION_QUEUE_DB_PATH);
+        const rows = queueDb
+          .prepare(
+            "SELECT id, pid, metadata FROM queue_items WHERE status IN ('running', 'spawning', 'suspended')"
+          )
+          .all() as Array<{ id: string; pid: number | null; metadata: string | null }>;
+        for (const row of rows) {
+          const taskId = extractTaskIdFromMetadata(row.metadata);
+          if (taskId === ref.entity_id) {
+            pid = row.pid;
+            queueId = row.id;
+            break;
+          }
+        }
+      } finally {
+        queueDb?.close();
+      }
+    }
+
+    // SIGTERM the running session (best-effort; not fatal if already dead).
+    if (pid && pid > 0) {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        // Already dead or not permitted — proceed.
+      }
+    }
+
+    // Mark queue item cancelled with dep_pause reason (writable DB).
+    if (queueId && fs.existsSync(SESSION_QUEUE_DB_PATH)) {
+      let queueWriteDb: Database.Database | null = null;
+      try {
+        queueWriteDb = new Database(SESSION_QUEUE_DB_PATH);
+        queueWriteDb.pragma('journal_mode = WAL');
+        queueWriteDb.pragma('busy_timeout = 5000');
+        queueWriteDb
+          .prepare(
+            "UPDATE queue_items SET status = 'cancelled', error = 'dep_pause', completed_at = ? WHERE id = ? AND status IN ('running', 'spawning', 'suspended')"
+          )
+          .run(now(), queueId);
+      } catch {
+        // Non-fatal — pause was best-effort.
+      } finally {
+        queueWriteDb?.close();
+      }
+    }
+
+    // Reset todo task to pending so it re-spawns when dep is satisfied.
+    if (fs.existsSync(TODO_DB_PATH)) {
+      let todoWriteDb: Database.Database | null = null;
+      try {
+        todoWriteDb = new Database(TODO_DB_PATH);
+        todoWriteDb.pragma('journal_mode = WAL');
+        todoWriteDb.pragma('busy_timeout = 5000');
+        todoWriteDb
+          .prepare(
+            "UPDATE tasks SET status = 'pending' WHERE id = ? AND status = 'in_progress'"
+          )
+          .run(ref.entity_id);
+      } catch {
+        // Non-fatal.
+      } finally {
+        todoWriteDb?.close();
+      }
+    }
+
+    return 'killed_session';
+  }
+
+  if (ref.entity_type === 'persistent') {
+    if (status.status !== 'active') return null;
+    if (!fs.existsSync(PERSISTENT_TASKS_DB_PATH)) return null;
+
+    let ptDb: Database.Database | null = null;
+    try {
+      ptDb = new Database(PERSISTENT_TASKS_DB_PATH);
+      ptDb.pragma('journal_mode = WAL');
+      ptDb.pragma('busy_timeout = 5000');
+
+      // Read existing metadata, merge in pause_reason + do_not_auto_resume.
+      const row = ptDb
+        .prepare('SELECT metadata FROM persistent_tasks WHERE id = ?')
+        .get(ref.entity_id) as { metadata: string | null } | undefined;
+      let metaObj: Record<string, unknown> = {};
+      if (row?.metadata) {
+        try {
+          metaObj = JSON.parse(row.metadata) as Record<string, unknown>;
+        } catch {
+          metaObj = {};
+        }
+      }
+      metaObj['pause_reason'] = 'cross_dep';
+      metaObj['do_not_auto_resume'] = true;
+
+      ptDb
+        .prepare(
+          "UPDATE persistent_tasks SET status = 'paused', metadata = ? WHERE id = ? AND status = 'active'"
+        )
+        .run(JSON.stringify(metaObj), ref.entity_id);
+    } catch {
+      // Non-fatal.
+    } finally {
+      ptDb?.close();
+    }
+
+    return 'paused_persistent';
+  }
+
+  if (ref.entity_type === 'plan_task') {
+    if (status.status !== 'in_progress' && status.status !== 'ready') return null;
+    if (!fs.existsSync(PLANS_DB_PATH)) return null;
+
+    let plansDb: Database.Database | null = null;
+    try {
+      plansDb = new Database(PLANS_DB_PATH);
+      plansDb.pragma('journal_mode = WAL');
+      plansDb.pragma('busy_timeout = 5000');
+      plansDb
+        .prepare(
+          "UPDATE plan_tasks SET status = 'paused' WHERE id = ? AND status IN ('in_progress', 'ready')"
+        )
+        .run(ref.entity_id);
+    } catch {
+      // Non-fatal.
+    } finally {
+      plansDb?.close();
+    }
+
+    return 'paused_plan_task';
+  }
+
+  return null;
+}
+
+/**
+ * Cycle detection via DFS over (entity_type, entity_id) compound node identity.
  * Returns true if adding (blocker -> blocked) would create a cycle.
  *
- * Starting from `blockedId`, we follow existing blocker edges. If we reach
- * `blockerId` during traversal, adding the new edge would close a cycle.
+ * Starting from `blocked`, we follow existing blocker edges. If we reach
+ * `blocker` during traversal, adding the new edge would close a cycle.
  */
-function wouldCreateCycle(db: Database.Database, blockerId: string, blockedId: string): boolean {
+function wouldCreateCycle(db: Database.Database, blocker: EntityRef, blocked: EntityRef): boolean {
   const visited = new Set<string>();
-  const stack = [blockedId];
+  const stack: EntityRef[] = [blocked];
+  const blockerKey = entityKey(blocker);
 
   while (stack.length > 0) {
     const current = stack.pop()!;
-    if (current === blockerId) return true;
-    if (visited.has(current)) continue;
-    visited.add(current);
+    const currentKey = entityKey(current);
+    if (currentKey === blockerKey) return true;
+    if (visited.has(currentKey)) continue;
+    visited.add(currentKey);
 
-    // Follow edges where `current` is the blocked task — i.e., what does current depend on?
+    // Follow edges where `current` is the blocked entity — what does current depend on?
     const edges = db
       .prepare(
-        "SELECT blocker_task_id FROM queue_dependencies WHERE blocked_task_id = ? AND status = 'active'"
+        "SELECT blocker_task_id, blocker_entity_type FROM queue_dependencies WHERE blocked_entity_type = ? AND blocked_task_id = ? AND status = 'active'"
       )
-      .all(current) as Array<{ blocker_task_id: string }>;
+      .all(current.entity_type, current.entity_id) as Array<{
+      blocker_task_id: string;
+      blocker_entity_type: string;
+    }>;
 
     for (const edge of edges) {
-      stack.push(edge.blocker_task_id);
+      stack.push({
+        entity_type: edge.blocker_entity_type as EntityType,
+        entity_id: edge.blocker_task_id,
+      });
     }
   }
   return false;
@@ -187,9 +532,11 @@ function wouldCreateCycle(db: Database.Database, blockerId: string, blockedId: s
  * Check if all active blockers for taskId have been completed (in todo.db).
  */
 function areDependenciesMet(db: Database.Database, taskId: string, projectDir: string): boolean {
+  // Legacy gate: only considers todo→todo deps for now. Cross-entity gates ship
+  // in follow-up PRs (session-queue.js, activate_persistent_task, plan-orchestrator).
   const blockers = db
     .prepare(
-      "SELECT blocker_task_id FROM queue_dependencies WHERE blocked_task_id = ? AND status = 'active'"
+      "SELECT blocker_task_id FROM queue_dependencies WHERE blocked_entity_type = 'todo' AND blocked_task_id = ? AND blocker_entity_type = 'todo' AND status = 'active'"
     )
     .all(taskId) as Array<{ blocker_task_id: string }>;
 
@@ -223,8 +570,13 @@ function areDependenciesMet(db: Database.Database, taskId: string, projectDir: s
  * task has been completed in todo.db. Returns count of newly satisfied deps.
  */
 function satisfyCompletedDeps(db: Database.Database, projectDir: string): number {
+  // Legacy auto-satisfier: only considers deps where the blocker is a todo task.
+  // Cross-entity satisfiers (persistent / plan_task completion) ship via the
+  // shared `.claude/hooks/lib/cross-dep-satisfier.js` in follow-up PRs.
   const activeDeps = db
-    .prepare("SELECT id, blocker_task_id FROM queue_dependencies WHERE status = 'active'")
+    .prepare(
+      "SELECT id, blocker_task_id FROM queue_dependencies WHERE status = 'active' AND blocker_entity_type = 'todo'"
+    )
     .all() as Array<{ id: string; blocker_task_id: string }>;
 
   if (activeDeps.length === 0) return 0;
@@ -356,66 +708,90 @@ function extractTaskIdFromMetadata(metadata: string | null): string | null {
 // Tool: add_dependency
 // ============================================================================
 
+/**
+ * Normalize the AddDependency union into entity-aware EntityRefs. Legacy
+ * {blocked_task_id, blocker_task_id, reasoning} is treated as todo→todo.
+ */
+function normalizeAddDependencyArgs(args: AddDependencyArgs): {
+  blocker: EntityRef;
+  blocked: EntityRef;
+  reasoning: string;
+} {
+  if ('blocker' in args && 'blocked' in args) {
+    return {
+      blocker: { entity_type: args.blocker.entity_type, entity_id: args.blocker.entity_id },
+      blocked: { entity_type: args.blocked.entity_type, entity_id: args.blocked.entity_id },
+      reasoning: args.reasoning,
+    };
+  }
+  // Legacy todo→todo
+  return {
+    blocker: { entity_type: 'todo', entity_id: args.blocker_task_id },
+    blocked: { entity_type: 'todo', entity_id: args.blocked_task_id },
+    reasoning: args.reasoning,
+  };
+}
+
 async function handleAddDependency(
   args: AddDependencyArgs
 ): Promise<AddDependencyResult | ErrorResult> {
-  const { blocked_task_id, blocker_task_id, reasoning } = args;
+  const { blocker, blocked, reasoning } = normalizeAddDependencyArgs(args);
 
-  if (blocked_task_id === blocker_task_id) {
-    return { error: 'blocked_task_id and blocker_task_id must be different' };
+  if (entityKey(blocker) === entityKey(blocked)) {
+    return { error: 'blocker and blocked must reference different entities' };
   }
 
   const db = ensureDb();
 
-  // First, auto-satisfy any already-completed blockers
-  satisfyCompletedDeps(db, PROJECT_DIR);
-
-  // Check if blocker is already completed — no need for a dependency
-  let todoDb: Database.Database | null = null;
-  try {
-    todoDb = openReadonlyDb(TODO_DB_PATH);
-    const blockerTask = todoDb
-      .prepare('SELECT status FROM tasks WHERE id = ?')
-      .get(blocker_task_id) as { status: string } | undefined;
-
-    if (blockerTask?.status === 'completed') {
-      return {
-        dependency_id: '',
-        blocked_task_id,
-        blocker_task_id,
-        status: 'skipped',
-        message: `Blocker task ${blocker_task_id} is already completed. No dependency needed.`,
-      };
-    }
-  } finally {
-    todoDb?.close();
-  }
-
-  // Cycle detection
-  if (wouldCreateCycle(db, blocker_task_id, blocked_task_id)) {
+  // 1. Validate both entities exist in their source DBs.
+  const blockerStatus = getEntityStatus(blocker);
+  if (!blockerStatus.exists) {
     return {
-      error: `Adding this dependency would create a cycle: ${blocked_task_id} -> ${blocker_task_id} already has a reverse path`,
+      error: `Blocker ${entityKey(blocker)} not found${blockerStatus.reason ? ` (${blockerStatus.reason})` : ''}`,
+    };
+  }
+  const blockedStatus = getEntityStatus(blocked);
+  if (!blockedStatus.exists) {
+    return {
+      error: `Blocked entity ${entityKey(blocked)} not found${blockedStatus.reason ? ` (${blockedStatus.reason})` : ''}`,
     };
   }
 
-  // Check for existing active dependency
+  // 2. Auto-satisfy already-completed legacy todo deps (preserves existing behavior).
+  satisfyCompletedDeps(db, PROJECT_DIR);
+
+  // 3. Cycle detection (entity-aware).
+  if (wouldCreateCycle(db, blocker, blocked)) {
+    return {
+      error: `Adding this dependency would create a cycle: ${entityKey(blocked)} -> ${entityKey(blocker)} already has a reverse path`,
+    };
+  }
+
+  // 4. Dedup — any existing active dep between this exact pair.
   const existing = db
     .prepare(
-      "SELECT id FROM queue_dependencies WHERE blocked_task_id = ? AND blocker_task_id = ? AND status = 'active'"
+      "SELECT id FROM queue_dependencies WHERE blocked_entity_type = ? AND blocked_task_id = ? AND blocker_entity_type = ? AND blocker_task_id = ? AND status = 'active'"
     )
-    .get(blocked_task_id, blocker_task_id) as { id: string } | undefined;
+    .get(blocked.entity_type, blocked.entity_id, blocker.entity_type, blocker.entity_id) as
+    | { id: string }
+    | undefined;
 
   if (existing) {
     return {
       dependency_id: existing.id,
-      blocked_task_id,
-      blocker_task_id,
+      blocked_task_id: blocked.entity_id,
+      blocked_entity_type: blocked.entity_type,
+      blocker_task_id: blocker.entity_id,
+      blocker_entity_type: blocker.entity_type,
       status: 'already_exists',
-      message: `Active dependency ${existing.id} already exists between these tasks`,
+      pause_action: null,
+      message: `Active dependency ${existing.id} already exists between these entities`,
     };
   }
 
-  // Look up queue IDs from session-queue.db by matching metadata.taskId
+  // 5. Look up queue IDs from session-queue.db by matching metadata.taskId
+  //    (only meaningful for todo entities; persistent/plan_task entities don't
+  //    map 1:1 to queue items the same way, but we still record what we find).
   let blockedQueueId: string | null = null;
   let blockerQueueId: string | null = null;
 
@@ -431,8 +807,8 @@ async function handleAddDependency(
 
       for (const row of queueRows) {
         const taskId = extractTaskIdFromMetadata(row.metadata);
-        if (taskId === blocked_task_id) blockedQueueId = row.id;
-        if (taskId === blocker_task_id) blockerQueueId = row.id;
+        if (taskId === blocked.entity_id && blocked.entity_type === 'todo') blockedQueueId = row.id;
+        if (taskId === blocker.entity_id && blocker.entity_type === 'todo') blockerQueueId = row.id;
       }
     } finally {
       queueDb?.close();
@@ -442,9 +818,35 @@ async function handleAddDependency(
   const depId = newDepId();
   const ts = now();
 
+  // 6. Already-completed short-circuit — insert as 'satisfied' immediately,
+  //    skip pause action on the blocked entity.
+  let depStatus: 'active' | 'satisfied' = 'active';
+  let pauseAction: string | null = null;
+
+  if (blockerStatus.status && isSatisfyingTerminalStatus(blocker.entity_type, blockerStatus.status)) {
+    depStatus = 'satisfied';
+  } else {
+    // 7. Pause-if-running on the blocked entity.
+    pauseAction = pauseBlockedEntityIfRunning(blocked);
+  }
+
   db.prepare(
-    'INSERT INTO queue_dependencies (id, blocked_queue_id, blocked_task_id, blocker_queue_id, blocker_task_id, status, created_by, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(depId, blockedQueueId, blocked_task_id, blockerQueueId, blocker_task_id, 'active', 'workstream-manager', reasoning, ts);
+    'INSERT INTO queue_dependencies (id, blocked_queue_id, blocked_task_id, blocked_entity_type, blocker_queue_id, blocker_task_id, blocker_entity_type, status, created_by, reasoning, pause_action, created_at, satisfied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    depId,
+    blockedQueueId,
+    blocked.entity_id,
+    blocked.entity_type,
+    blockerQueueId,
+    blocker.entity_id,
+    blocker.entity_type,
+    depStatus,
+    'workstream-manager',
+    reasoning,
+    pauseAction,
+    ts,
+    depStatus === 'satisfied' ? ts : null
+  );
 
   db.prepare(
     'INSERT INTO workstream_changes (id, change_type, queue_id, task_id, details, reasoning, agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -452,19 +854,35 @@ async function handleAddDependency(
     newChangeId(),
     'dependency_added',
     blockedQueueId,
-    blocked_task_id,
-    JSON.stringify({ dependency_id: depId, blocker_task_id, blocked_task_id }),
+    blocked.entity_id,
+    JSON.stringify({
+      dependency_id: depId,
+      blocker: { entity_type: blocker.entity_type, entity_id: blocker.entity_id },
+      blocked: { entity_type: blocked.entity_type, entity_id: blocked.entity_id },
+      dep_status: depStatus,
+      pause_action: pauseAction,
+    }),
     reasoning,
     null,
     ts
   );
 
+  const message =
+    depStatus === 'satisfied'
+      ? `Dependency ${depId} inserted as already-satisfied (blocker ${entityKey(blocker)} is in a terminal state). No pause action taken.`
+      : pauseAction
+        ? `Dependency ${depId} created. Blocked entity ${entityKey(blocked)} was running and was paused (${pauseAction}). It will resume when ${entityKey(blocker)} completes.`
+        : `Dependency ${depId} created. ${entityKey(blocked)} is now blocked until ${entityKey(blocker)} completes.`;
+
   return {
     dependency_id: depId,
-    blocked_task_id,
-    blocker_task_id,
-    status: 'created',
-    message: `Dependency ${depId} created. Task ${blocked_task_id} is now blocked until ${blocker_task_id} completes.`,
+    blocked_task_id: blocked.entity_id,
+    blocked_entity_type: blocked.entity_type,
+    blocker_task_id: blocker.entity_id,
+    blocker_entity_type: blocker.entity_type,
+    status: depStatus === 'satisfied' ? 'satisfied' : 'created',
+    pause_action: pauseAction,
+    message,
   };
 }
 
@@ -565,11 +983,16 @@ async function handleListDependencies(
   const dependencies: DependencyListItem[] = rows.map((row) => ({
     id: row.id,
     blocked_task_id: row.blocked_task_id,
-    blocked_task_title: titleMap.get(row.blocked_task_id) ?? null,
+    blocked_entity_type: row.blocked_entity_type,
+    blocked_task_title:
+      row.blocked_entity_type === 'todo' ? (titleMap.get(row.blocked_task_id) ?? null) : null,
     blocker_task_id: row.blocker_task_id,
-    blocker_task_title: titleMap.get(row.blocker_task_id) ?? null,
+    blocker_entity_type: row.blocker_entity_type,
+    blocker_task_title:
+      row.blocker_entity_type === 'todo' ? (titleMap.get(row.blocker_task_id) ?? null) : null,
     status: row.status,
     reasoning: row.reasoning,
+    pause_action: row.pause_action,
     created_at: row.created_at,
     satisfied_at: row.satisfied_at,
   }));
@@ -665,11 +1088,16 @@ async function handleGetQueueContext(
   const depItems: DependencyListItem[] = activeDeps.map((dep) => ({
     id: dep.id,
     blocked_task_id: dep.blocked_task_id,
-    blocked_task_title: titleMap.get(dep.blocked_task_id) ?? null,
+    blocked_entity_type: dep.blocked_entity_type,
+    blocked_task_title:
+      dep.blocked_entity_type === 'todo' ? (titleMap.get(dep.blocked_task_id) ?? null) : null,
     blocker_task_id: dep.blocker_task_id,
-    blocker_task_title: titleMap.get(dep.blocker_task_id) ?? null,
+    blocker_entity_type: dep.blocker_entity_type,
+    blocker_task_title:
+      dep.blocker_entity_type === 'todo' ? (titleMap.get(dep.blocker_task_id) ?? null) : null,
     status: dep.status,
     reasoning: dep.reasoning,
+    pause_action: dep.pause_action,
     created_at: dep.created_at,
     satisfied_at: dep.satisfied_at,
   }));
@@ -979,6 +1407,90 @@ async function handleListSupersessions(
 }
 
 // ============================================================================
+// Tool: list_dependencies_for_entity
+// ============================================================================
+
+async function handleListDependenciesForEntity(
+  args: ListDependenciesForEntityArgs
+): Promise<ListDependenciesForEntityResult | ErrorResult> {
+  const { entity_type, entity_id, direction, status } = args;
+  const db = ensureDb();
+
+  // Auto-satisfy completed legacy deps before reporting.
+  satisfyCompletedDeps(db, PROJECT_DIR);
+
+  const statusFilter = status === 'all' ? null : status;
+
+  function fetchRows(matchSide: 'blocked' | 'blocker'): QueueDependencyRecord[] {
+    const sideTypeCol = matchSide === 'blocked' ? 'blocked_entity_type' : 'blocker_entity_type';
+    const sideIdCol = matchSide === 'blocked' ? 'blocked_task_id' : 'blocker_task_id';
+    if (statusFilter) {
+      return db
+        .prepare(
+          `SELECT * FROM queue_dependencies WHERE ${sideTypeCol} = ? AND ${sideIdCol} = ? AND status = ? ORDER BY created_at DESC`
+        )
+        .all(entity_type, entity_id, statusFilter) as QueueDependencyRecord[];
+    }
+    return db
+      .prepare(
+        `SELECT * FROM queue_dependencies WHERE ${sideTypeCol} = ? AND ${sideIdCol} = ? ORDER BY created_at DESC`
+      )
+      .all(entity_type, entity_id) as QueueDependencyRecord[];
+  }
+
+  // `blocking` = this entity is the BLOCKER of others (i.e., others wait on this).
+  // `blocked_by` = this entity is the BLOCKED side (i.e., this waits on others).
+  let blockingRows: QueueDependencyRecord[] = [];
+  let blockedByRows: QueueDependencyRecord[] = [];
+
+  if (direction === 'blocking' || direction === 'both') {
+    blockingRows = fetchRows('blocker');
+  }
+  if (direction === 'blocked_by' || direction === 'both') {
+    blockedByRows = fetchRows('blocked');
+  }
+
+  // Collect todo IDs for title resolution.
+  const todoIds = new Set<string>();
+  for (const row of [...blockingRows, ...blockedByRows]) {
+    if (row.blocked_entity_type === 'todo') todoIds.add(row.blocked_task_id);
+    if (row.blocker_entity_type === 'todo') todoIds.add(row.blocker_task_id);
+  }
+  const titleMap = getTaskTitles(Array.from(todoIds));
+
+  function mapRow(row: QueueDependencyRecord): DependencyListItem {
+    return {
+      id: row.id,
+      blocked_task_id: row.blocked_task_id,
+      blocked_entity_type: row.blocked_entity_type,
+      blocked_task_title:
+        row.blocked_entity_type === 'todo' ? (titleMap.get(row.blocked_task_id) ?? null) : null,
+      blocker_task_id: row.blocker_task_id,
+      blocker_entity_type: row.blocker_entity_type,
+      blocker_task_title:
+        row.blocker_entity_type === 'todo' ? (titleMap.get(row.blocker_task_id) ?? null) : null,
+      status: row.status,
+      reasoning: row.reasoning,
+      pause_action: row.pause_action,
+      created_at: row.created_at,
+      satisfied_at: row.satisfied_at,
+    };
+  }
+
+  const blocking = blockingRows.map(mapRow);
+  const blocked_by = blockedByRows.map(mapRow);
+
+  return {
+    entity_type,
+    entity_id,
+    direction,
+    blocking,
+    blocked_by,
+    total: blocking.length + blocked_by.length,
+  };
+}
+
+// ============================================================================
 // Tool Registration
 // ============================================================================
 
@@ -986,7 +1498,7 @@ const tools: AnyToolHandler[] = [
   {
     name: 'add_dependency',
     description:
-      'Block a task until another task completes. Prevents the blocked task from being spawned until the blocker finishes. Performs cycle detection and skips if blocker is already completed.',
+      "Block one entity until another completes. Supports cross-entity edges across todo / persistent / plan_task entities. New shape: { blocker: { entity_type, entity_id }, blocked: { entity_type, entity_id }, reasoning }. Legacy shape { blocked_task_id, blocker_task_id, reasoning } is still accepted (treated as todo→todo). Performs entity-aware cycle detection, validates both entities exist, inserts as 'satisfied' when the blocker is already in a terminal state, and pauses the blocked entity if it is currently running (todo: kill session + reset to pending; persistent: status='paused' with do_not_auto_resume; plan_task: status='paused').",
     schema: AddDependencyArgsSchema,
     handler: handleAddDependency,
   },
@@ -1000,9 +1512,16 @@ const tools: AnyToolHandler[] = [
   {
     name: 'list_dependencies',
     description:
-      'List queue dependencies. Optionally filter by task_id (shows deps where task is blocked or blocker) and by status (active/satisfied/removed/all). Auto-satisfies dependencies whose blocker task is already completed.',
+      'List queue dependencies. Optionally filter by task_id (shows deps where task is blocked or blocker) and by status (active/satisfied/removed/all). Auto-satisfies legacy todo→todo dependencies whose blocker task is already completed. Returns blocked_entity_type, blocker_entity_type, and pause_action on each row.',
     schema: ListDependenciesArgsSchema,
     handler: handleListDependencies,
+  },
+  {
+    name: 'list_dependencies_for_entity',
+    description:
+      "List dependencies that involve a specific entity (todo / persistent / plan_task). 'direction' selects 'blocking' (this entity blocks others), 'blocked_by' (this entity is blocked by others), or 'both' (default). Used by plan-managers and persistent-monitors to surface why a child is not spawning.",
+    schema: ListDependenciesForEntityArgsSchema,
+    handler: handleListDependenciesForEntity,
   },
   {
     name: 'get_queue_context',
