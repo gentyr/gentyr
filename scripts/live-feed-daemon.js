@@ -394,7 +394,7 @@ function generateEntry(prompt, feedDb) {
       '--model', LLM_MODEL,
     ], {
       cwd: PROJECT_DIR,
-      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
+      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true', CLAUDE_USAGE_TAG: 'live-feed-daemon' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

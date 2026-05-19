@@ -221,7 +221,7 @@ async function resolveByPR(db, pr, pendingReports, log) {
 
   const prompt = `## Pending Reports\n\n${reportList}\n\n## Merged PR #${pr.number}\n\nTitle: ${pr.title}\nBranch: ${pr.headRefName}\nMerged: ${pr.mergedAt}\n\n### Diff (truncated)\n\n${diff}`;
 
-  const result = await callLLMStructured(prompt, RESOLVE_SYSTEM_PROMPT, RESOLVE_SCHEMA);
+  const result = await callLLMStructured(prompt, RESOLVE_SYSTEM_PROMPT, RESOLVE_SCHEMA, { tag: 'report-auto-resolve' });
   if (!result) {
     log(`Report auto-resolve: LLM call failed for PR #${pr.number}`);
     return { resolved: 0, deduped: 0 };
@@ -320,7 +320,7 @@ async function dedupOnly(db, pendingReports, log) {
 
   const prompt = `## Pending Reports\n\n${reportList}\n\nIdentify any duplicate groups among these reports.`;
 
-  const result = await callLLMStructured(prompt, DEDUP_SYSTEM_PROMPT, DEDUP_ONLY_SCHEMA);
+  const result = await callLLMStructured(prompt, DEDUP_SYSTEM_PROMPT, DEDUP_ONLY_SCHEMA, { tag: 'report-dedup' });
   if (!result) {
     log('Report dedup: LLM call failed');
     return { deduped: 0 };

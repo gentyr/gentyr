@@ -278,7 +278,7 @@ Confirm or refute the static analysis findings. Are there any additional backwar
         prompt,
         'You are a database migration safety reviewer. Be conservative — flag anything that could break on rollback.',
         schema,
-        { timeout: 30000 }
+        { timeout: 30000, tag: 'migration-safety:verification' }
       );
     }
   } catch {
@@ -429,7 +429,7 @@ Classify every SQL operation in this file.`;
           prompt,
           ANALYZE_SYSTEM_PROMPT,
           ANALYZE_MIGRATIONS_SCHEMA,
-          { timeout: 30000 }
+          { timeout: 30000, tag: 'migration-safety:analyze' }
         );
 
         if (llmResult && Array.isArray(llmResult.operations)) {
