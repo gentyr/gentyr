@@ -1035,3 +1035,32 @@ export interface SessionSummaryResult {
   hook_info?: HookInfo;
   first_user_message?: string; // Preview of what started the session
 }
+
+// ============================================================================
+// Token Usage Schemas (PR 4)
+// ============================================================================
+
+export const QueryTokenUsageArgsSchema = z.object({
+  range: z.enum(['1h', '24h', '7d', '30d', 'all']).optional().default('24h')
+    .describe('Time range to query'),
+  group_by: z.enum(['source', 'lane', 'agent_type', 'model', 'category', 'day', 'persistent_task', 'plan'])
+    .optional().default('source')
+    .describe('Dimension to group results by'),
+  filter_source: z.string().optional().describe('Substring match on source (e.g. "hourly-automation")'),
+  filter_model: z.string().optional().describe('Exact model id filter'),
+  filter_lane: z.string().optional().describe('Lane filter (persistent / standard / automated / gate / audit / subagent / interactive / subprocess)'),
+  filter_persistent_task_id: z.number().optional().describe('Persistent task id filter'),
+  filter_plan_id: z.string().optional().describe('Plan id filter'),
+  limit: z.number().min(1).max(200).optional().default(50)
+    .describe('Maximum result rows'),
+});
+export type QueryTokenUsageArgs = z.infer<typeof QueryTokenUsageArgsSchema>;
+
+export const TopTokenSessionsArgsSchema = z.object({
+  range: z.enum(['1h', '24h', '7d', '30d', 'all']).optional().default('24h'),
+  limit: z.number().min(1).max(100).optional().default(20),
+});
+export type TopTokenSessionsArgs = z.infer<typeof TopTokenSessionsArgsSchema>;
+
+export const TokenAttributionHealthArgsSchema = z.object({});
+export type TokenAttributionHealthArgs = z.infer<typeof TokenAttributionHealthArgsSchema>;

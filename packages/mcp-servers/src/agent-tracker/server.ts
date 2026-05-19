@@ -183,7 +183,18 @@ import {
   type SessionListItem,
   type SearchMatch,
   type SearchResultItem,
+  QueryTokenUsageArgsSchema,
+  TopTokenSessionsArgsSchema,
+  TokenAttributionHealthArgsSchema,
+  type QueryTokenUsageArgs,
+  type TopTokenSessionsArgs,
+  type TokenAttributionHealthArgs,
 } from './types.js';
+import {
+  queryTokenUsage,
+  topTokenSessions,
+  attributionHealth,
+} from './token-usage-query.js';
 
 // ============================================================================
 // Configuration
@@ -6894,6 +6905,46 @@ This is safe and automatic. Your work will not be lost.`,
   };
 }
 
+// ============================================================================
+// Token Usage Handlers (PR 4)
+// ============================================================================
+
+async function queryTokenUsageTool(args: QueryTokenUsageArgs): Promise<object | ErrorResult> {
+  try {
+    const filter = {
+      source: args.filter_source,
+      model: args.filter_model,
+      lane: args.filter_lane,
+      persistent_task_id: args.filter_persistent_task_id,
+      plan_id: args.filter_plan_id,
+    };
+    return queryTokenUsage({
+      range: args.range,
+      groupBy: args.group_by,
+      filter,
+      limit: args.limit,
+    });
+  } catch (err) {
+    return { error: `query_token_usage failed: ${(err as Error).message}` };
+  }
+}
+
+async function topTokenSessionsTool(args: TopTokenSessionsArgs): Promise<object | ErrorResult> {
+  try {
+    return topTokenSessions(args.range, args.limit);
+  } catch (err) {
+    return { error: `top_token_sessions failed: ${(err as Error).message}` };
+  }
+}
+
+async function tokenAttributionHealthTool(_args: TokenAttributionHealthArgs): Promise<object | ErrorResult> {
+  try {
+    return attributionHealth();
+  } catch (err) {
+    return { error: `token_attribution_health failed: ${(err as Error).message}` };
+  }
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'list_spawned_agents',
@@ -7374,6 +7425,25 @@ const tools: AnyToolHandler[] = [
     description: 'RESTRICTED TO GLOBAL DEPUTY-CTO MONITOR ONLY. Explicitly mark a pending bypass request as requiring CTO attention. Sets deputy_escalated=true and escalation_reason on the request, so it shows prominently in the CTO session briefing. Use this when the request is outside the deputy\'s authority or judgment.',
     schema: DeputyEscalateToCtoArgsSchema,
     handler: deputyEscalateToCto,
+  },
+  // Token usage tools (PR 4)
+  {
+    name: 'query_token_usage',
+    description: 'Aggregate Claude token usage from .claude/state/token-usage.db over a time range. Groups by source / lane / agent_type / model / category / day / persistent_task / plan. Includes cost in USD when pricing is known. Returns totals + per-group rows sorted by token count.',
+    schema: QueryTokenUsageArgsSchema,
+    handler: queryTokenUsageTool,
+  },
+  {
+    name: 'top_token_sessions',
+    description: 'Top N sessions by total token consumption within a time range. Returns session_id, source, agent_type, total_tokens, cost_usd, duration_minutes. Use to identify cost outliers and runaway sessions.',
+    schema: TopTokenSessionsArgsSchema,
+    handler: topTokenSessionsTool,
+  },
+  {
+    name: 'token_attribution_health',
+    description: 'Health snapshot of token-usage attribution: counts of resolved/pending/unknown session attributions, oldest pending age in minutes, count of untagged subprocess calls. Use to diagnose collector / attribution gaps.',
+    schema: TokenAttributionHealthArgsSchema,
+    handler: tokenAttributionHealthTool,
   },
   // Self-compaction
   {
