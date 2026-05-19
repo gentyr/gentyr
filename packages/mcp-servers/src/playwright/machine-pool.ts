@@ -27,6 +27,7 @@ function getPoolDbPath(): string {
 }
 
 let _db: ReturnType<typeof Database> | null = null;
+let _cleanupIntervalStarted = false;
 
 function getDb(): ReturnType<typeof Database> {
   if (_db) return _db;
@@ -62,6 +63,23 @@ function getDb(): ReturnType<typeof Database> {
       value TEXT
     );
   `);
+
+  // Start a periodic background sweep that cleans expired/dead-PID slots.
+  // Without this, stale rows from crashed acquire holders persist until the
+  // next acquire call — which may never come if the pool is sitting idle —
+  // causing pool counts in get_fly_status and the batch result `pool_status`
+  // field to drift away from the true Fly.io machine state.
+  if (!_cleanupIntervalStarted) {
+    _cleanupIntervalStarted = true;
+    const cleanupInterval = setInterval(() => {
+      try {
+        cleanExpiredSlots();
+      } catch {
+        // Best-effort — cleanup must never crash the MCP server
+      }
+    }, 5 * 60 * 1000);
+    cleanupInterval.unref();
+  }
 
   return _db;
 }

@@ -27,6 +27,11 @@ ARG GIT_TOKEN
 
 WORKDIR /app/project
 
+# Clear any pre-existing content before cloning.
+# Depot caches WORKDIR layers; if the base image or a prior project build left
+# files here, git clone fails with "destination path . already exists".
+RUN find . -maxdepth 1 -not -name '.' -exec rm -rf {} + 2>/dev/null || true
+
 # Clone the project (depth=1 for speed)
 RUN if [ -n "$GIT_TOKEN" ]; then \
       git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password='$GIT_TOKEN'"; }; f'; \

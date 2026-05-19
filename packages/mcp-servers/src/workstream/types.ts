@@ -14,6 +14,9 @@ import { z } from 'zod';
 export const DEP_STATUS = ['active', 'satisfied', 'removed', 'all'] as const;
 export type DepStatus = (typeof DEP_STATUS)[number];
 
+export const ENTITY_TYPES = ['todo', 'persistent', 'plan_task'] as const;
+export type EntityType = (typeof ENTITY_TYPES)[number];
+
 export const PRIORITY_LEVELS = ['critical', 'urgent', 'normal', 'low'] as const;
 export type PriorityLevel = (typeof PRIORITY_LEVELS)[number];
 
@@ -30,7 +33,20 @@ export type ChangeType = (typeof CHANGE_TYPES)[number];
 // Tool Schemas
 // ============================================================================
 
-export const AddDependencyArgsSchema = z.object({
+/**
+ * EntityRef — describes one side of a cross-entity dependency edge.
+ * `entity_type` is one of 'todo' | 'persistent' | 'plan_task'.
+ */
+const EntityRefSchema = z.object({
+  entity_type: z.enum(ENTITY_TYPES).describe('Entity kind: todo | persistent | plan_task'),
+  entity_id: z.string().min(1).describe('Entity ID (todo task id, persistent task id, or plan task id)'),
+});
+
+/**
+ * Legacy shape (todo→todo only): {blocker_task_id, blocked_task_id, reasoning}.
+ * Both ids are treated as entity_type='todo'.
+ */
+const AddDependencyLegacyArgsSchema = z.object({
   blocked_task_id: z.string().min(1).describe('Task ID (from todo.db) that must wait'),
   blocker_task_id: z.string().min(1).describe('Task ID (from todo.db) that must complete first'),
   reasoning: z
@@ -38,6 +54,31 @@ export const AddDependencyArgsSchema = z.object({
     .min(10)
     .describe('Explanation for this dependency (mandatory, min 10 chars)'),
 });
+
+/**
+ * New entity-aware shape: {blocker, blocked, reasoning} where each side is an
+ * EntityRef. Supports cross-entity dependencies (e.g., persistent blocked by todo).
+ */
+const AddDependencyEntityArgsSchema = z.object({
+  blocker: EntityRefSchema.describe('Entity that must complete first'),
+  blocked: EntityRefSchema.describe('Entity that must wait'),
+  reasoning: z
+    .string()
+    .min(10)
+    .describe('Explanation for this dependency (mandatory, min 10 chars)'),
+});
+
+/**
+ * Union — accept either the legacy todo→todo shape or the new entity-aware shape.
+ * Server normalizes the legacy shape into EntityRef form (entity_type='todo').
+ */
+export const AddDependencyArgsSchema = z.union([
+  AddDependencyEntityArgsSchema,
+  AddDependencyLegacyArgsSchema,
+]);
+
+export type AddDependencyEntityArgs = z.infer<typeof AddDependencyEntityArgsSchema>;
+export type AddDependencyLegacyArgs = z.infer<typeof AddDependencyLegacyArgsSchema>;
 
 export const RemoveDependencyArgsSchema = z.object({
   dependency_id: z.string().min(1).describe('Dependency ID to remove (dep-xxxx)'),
@@ -57,6 +98,22 @@ export const ListDependenciesArgsSchema = z.object({
     .optional()
     .default('active')
     .describe("Filter by status: 'active', 'satisfied', 'removed', or 'all'"),
+});
+
+export const ListDependenciesForEntityArgsSchema = z.object({
+  entity_type: z.enum(ENTITY_TYPES).describe('Entity kind: todo | persistent | plan_task'),
+  entity_id: z.string().min(1).describe('Entity ID to query'),
+  direction: z
+    .enum(['blocking', 'blocked_by', 'both'])
+    .default('both')
+    .describe(
+      "'blocking' = this entity blocks other entities; 'blocked_by' = this entity is blocked by others; 'both' (default)"
+    ),
+  status: z
+    .enum(['active', 'satisfied', 'removed', 'all'])
+    .optional()
+    .default('active')
+    .describe("Filter by status: 'active' (default), 'satisfied', 'removed', or 'all'"),
 });
 
 export const GetQueueContextArgsSchema = z.object({});
@@ -108,6 +165,7 @@ export const ListSupersessionsArgsSchema = z.object({
 export type AddDependencyArgs = z.infer<typeof AddDependencyArgsSchema>;
 export type RemoveDependencyArgs = z.infer<typeof RemoveDependencyArgsSchema>;
 export type ListDependenciesArgs = z.infer<typeof ListDependenciesArgsSchema>;
+export type ListDependenciesForEntityArgs = z.infer<typeof ListDependenciesForEntityArgsSchema>;
 export type GetQueueContextArgs = z.infer<typeof GetQueueContextArgsSchema>;
 export type ReorderItemArgs = z.infer<typeof ReorderItemArgsSchema>;
 export type RecordAssessmentArgs = z.infer<typeof RecordAssessmentArgsSchema>;
@@ -123,11 +181,14 @@ export interface QueueDependencyRecord {
   id: string;
   blocked_queue_id: string | null;
   blocked_task_id: string;
+  blocked_entity_type: string;
   blocker_queue_id: string | null;
   blocker_task_id: string;
+  blocker_entity_type: string;
   status: string;
   created_by: string;
   reasoning: string;
+  pause_action: string | null;
   created_at: string;
   satisfied_at: string | null;
 }
@@ -154,8 +215,11 @@ export interface ErrorResult {
 export interface AddDependencyResult {
   dependency_id: string;
   blocked_task_id: string;
+  blocked_entity_type: string;
   blocker_task_id: string;
+  blocker_entity_type: string;
   status: string;
+  pause_action: string | null;
   message: string;
 }
 
@@ -168,17 +232,29 @@ export interface RemoveDependencyResult {
 export interface DependencyListItem {
   id: string;
   blocked_task_id: string;
+  blocked_entity_type: string;
   blocked_task_title: string | null;
   blocker_task_id: string;
+  blocker_entity_type: string;
   blocker_task_title: string | null;
   status: string;
   reasoning: string;
+  pause_action: string | null;
   created_at: string;
   satisfied_at: string | null;
 }
 
 export interface ListDependenciesResult {
   dependencies: DependencyListItem[];
+  total: number;
+}
+
+export interface ListDependenciesForEntityResult {
+  entity_type: string;
+  entity_id: string;
+  direction: string;
+  blocking: DependencyListItem[]; // entities blocked by this entity
+  blocked_by: DependencyListItem[]; // entities that block this entity
   total: number;
 }
 
