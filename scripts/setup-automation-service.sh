@@ -494,6 +494,7 @@ SESSION_ACTIVITY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-session-activity-broa
 LIVE_FEED_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-live-feed-daemon.plist"
 SYNTHETIC_MONITOR_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-synthetic-monitor.plist"
 QUOTA_RECOVERY_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-quota-recovery-daemon.plist"
+TOKEN_USAGE_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-token-usage-collector.plist"
 LAUNCHD_UID=$(id -u)
 LAUNCHD_DOMAIN="gui/$LAUNCHD_UID"
 
@@ -944,6 +945,59 @@ EOF
     log_warn "Synthetic monitor script not found — skipping."
   fi
 
+  # --- Token Usage Collector Daemon (KeepAlive, 60s scan of JSONL files) ---
+  if [ -n "$FRAMEWORK_DIR" ] && [ -f "$FRAMEWORK_DIR/scripts/token-usage-collector.js" ]; then
+    cat > "$TOKEN_USAGE_PLIST_FILE" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.gentyr-token-usage-collector</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$NODE_PATH</string>
+        <string>$FRAMEWORK_DIR/scripts/token-usage-collector.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>$PROJECT_DIR</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CLAUDE_PROJECT_DIR</key>
+        <string>$PROJECT_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>GENTYR_LAUNCHD_SERVICE</key>
+        <string>true</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>$PROJECT_DIR/.claude/token-usage-collector.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>$PROJECT_DIR/.claude/token-usage-collector.log</string>
+</dict>
+</plist>
+EOF
+
+    if launchd_load "$TOKEN_USAGE_PLIST_FILE" "com.local.gentyr-token-usage-collector"; then
+      log_info "Token usage collector daemon loaded (KeepAlive, RunAtLoad)."
+    else
+      log_warn "Token usage collector daemon FAILED to load — check: launchctl list | grep gentyr-token-usage-collector"
+    fi
+  else
+    log_warn "Token usage collector script not found — skipping."
+  fi
+
   # --- Automation Service (10-min interval) ---
   # Create plist file
   cat > "$PLIST_FILE" << EOF
@@ -1047,6 +1101,11 @@ remove_macos() {
   launchd_unload "$QUOTA_RECOVERY_PLIST_FILE" "com.local.gentyr-quota-recovery-daemon"
   rm -f "$QUOTA_RECOVERY_PLIST_FILE"
   log_info "Quota recovery daemon service removed."
+
+  # Unload and remove token usage collector daemon
+  launchd_unload "$TOKEN_USAGE_PLIST_FILE" "com.local.gentyr-token-usage-collector"
+  rm -f "$TOKEN_USAGE_PLIST_FILE"
+  log_info "Token usage collector daemon service removed."
 
   # Unload and remove automation agent
   launchd_unload "$PLIST_FILE" "com.local.${SERVICE_NAME}"
