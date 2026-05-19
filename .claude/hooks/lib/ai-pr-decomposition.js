@@ -194,6 +194,7 @@ export async function suggestDecomposition(baseBranch, headBranch, projectDir = 
   // 4. Call LLM for grouping
   const result = await callLLMStructured(prompt, SYSTEM_PROMPT, DECOMPOSITION_SCHEMA, {
     timeout: 45000,
+    tag: 'ai-pr-decomposition',
   });
 
   if (!result || !Array.isArray(result.groups)) return null;

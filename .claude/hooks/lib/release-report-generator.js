@@ -128,7 +128,7 @@ function generateChangelog(prs) {
       encoding: 'utf8',
       timeout: 30000,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
+      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true', CLAUDE_USAGE_TAG: 'release-report-generator' },
     }).trim();
 
     if (result && result.length > 10) {

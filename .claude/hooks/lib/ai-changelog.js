@@ -89,7 +89,7 @@ export async function generateChangelogs(commits, projectDir, extraContext = '')
       `Generate two changelogs from these commits:\n\n${commits.join('\n')}${extraContext}`,
       `You generate changelogs. Developer changelog: technical, bullet points, mention specific files/APIs changed. User changelog: plain language, focus on what users will notice (new features, bug fixes, performance improvements). Keep each under 10 bullet points. Use markdown bullet lists.`,
       schema,
-      { timeout: 30000 }
+      { timeout: 30000, tag: 'ai-changelog' }
     );
 
     if (result) return result;

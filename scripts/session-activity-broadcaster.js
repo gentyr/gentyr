@@ -355,7 +355,7 @@ async function pollCycle() {
 
   // Concurrent LLM calls for per-session summaries
   const summaryResults = await Promise.allSettled(
-    sessionPrompts.map(({ prompt }) => callLLM(prompt, SESSION_SYSTEM_PROMPT))
+    sessionPrompts.map(({ prompt }) => callLLM(prompt, SESSION_SYSTEM_PROMPT, { tag: 'session-activity-broadcaster:per-session' }))
   );
 
   // Store successful summaries
@@ -392,7 +392,7 @@ async function pollCycle() {
   const superPrompt = 'Active sessions:\n\n' +
     storedSummaries.map(s => `- [${s.title || 'Untitled'}]: ${s.summary}`).join('\n\n');
 
-  const superResult = await callLLM(superPrompt, SUPER_SYSTEM_PROMPT);
+  const superResult = await callLLM(superPrompt, SUPER_SYSTEM_PROMPT, { tag: 'session-activity-broadcaster:super-summary' });
   let superSummaryText = '';
   if (superResult?.text) {
     superSummaryText = superResult.text;
@@ -592,7 +592,7 @@ async function selectiveDetailDelivery(sessions, storedSummaries, alreadyDeliver
 
   const prompt = `Running agent sessions:\n${sessionList}\n\nSession activity summaries:\n${summaryList}\n\nDecide which sessions should receive detailed summaries of OTHER sessions based on work relevance. Skip sessions that already received subscription-based deliveries: ${[...alreadyDelivered].join(', ') || 'none'}.`;
 
-  const result = await callLLMStructured(prompt, RELEVANCE_SYSTEM_PROMPT, RELEVANCE_SCHEMA);
+  const result = await callLLMStructured(prompt, RELEVANCE_SYSTEM_PROMPT, RELEVANCE_SCHEMA, { tag: 'session-activity-broadcaster:relevance' });
   if (!result?.deliveries?.length) {
     log('Selective delivery: no cross-session relevance detected');
     return;

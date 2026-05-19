@@ -15,10 +15,18 @@
  */
 
 import childProcess from 'child_process';
+import {
+  startSubprocessCall,
+  finishSubprocessCall,
+  getCurrentParentSessionId,
+} from './subprocess-call-tracker.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const DEFAULT_MODEL = 'haiku';
 const DEFAULT_TIMEOUT = 60000;
+
+// Warn once per untagged caller per process so we notice instrumentation gaps
+const _untaggedWarned = new Set();
 
 // Track all in-flight child PIDs so daemon callers can kill them on shutdown
 export const activeChildPids = new Set();
@@ -47,21 +55,53 @@ export function _setTestHandler(handler) {
 }
 
 /**
- * Internal: spawn `claude -p` with child PID tracking.
+ * Resolve the caller tag for this invocation. Warns once per process if
+ * a caller forgot to pass `opts.tag`.
+ */
+function resolveCallerTag(opts, callsite) {
+  const tag = opts && typeof opts.tag === 'string' && opts.tag.trim()
+    ? opts.tag.trim()
+    : 'untagged';
+  if (tag === 'untagged' && !_untaggedWarned.has(callsite)) {
+    _untaggedWarned.add(callsite);
+    try {
+      process.stderr.write(
+        `[llm-client] ${callsite} invoked without opts.tag — token usage will attribute to 'subprocess:untagged'\n`
+      );
+    } catch { /* non-fatal */ }
+  }
+  return tag;
+}
+
+/**
+ * Internal: spawn `claude -p` with child PID tracking and subprocess_calls
+ * recording for token-usage attribution.
+ *
  * @returns {Promise<string>} stdout
  */
-function execClaude(args, opts = {}) {
+function execClaude(args, opts = {}, callerTag = 'untagged') {
   const timeout = opts.timeout || DEFAULT_TIMEOUT;
+  const model = opts.model || DEFAULT_MODEL;
+  const parentSessionId = getCurrentParentSessionId();
+  const rowId = startSubprocessCall({ caller: callerTag, model, parentSessionId });
 
   return new Promise((resolve, reject) => {
+    const env = {
+      ...process.env,
+      CLAUDE_SPAWNED_SESSION: 'true',
+      CLAUDE_USAGE_TAG: callerTag,
+    };
+    if (parentSessionId) env.CLAUDE_USAGE_PARENT = parentSessionId;
+
     const child = childProcess.execFile('claude', args, {
       cwd: PROJECT_DIR,
       encoding: 'utf8',
       timeout,
       killSignal: 'SIGKILL',
-      env: { ...process.env, CLAUDE_SPAWNED_SESSION: 'true' },
+      env,
     }, (err, stdout) => {
       activeChildPids.delete(child.pid);
+      finishSubprocessCall(rowId, { pid: child.pid || null, exitCode: err ? (err.code || 1) : 0 });
       if (err) return reject(err);
       resolve(stdout);
     });
@@ -83,12 +123,13 @@ function execClaude(args, opts = {}) {
 export async function callLLM(prompt, systemPrompt, opts = {}) {
   if (_testHandler) return _testHandler(prompt, systemPrompt, null, opts);
 
+  const tag = resolveCallerTag(opts, 'callLLM');
   const model = opts.model || DEFAULT_MODEL;
   const args = ['-p', prompt, '--model', model, '--output-format', 'json'];
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
 
   try {
-    const stdout = await execClaude(args, opts);
+    const stdout = await execClaude(args, opts, tag);
     const data = JSON.parse(stdout);
     return {
       text: data.result || '',
@@ -114,12 +155,13 @@ export async function callLLM(prompt, systemPrompt, opts = {}) {
 export async function callLLMStructured(prompt, systemPrompt, jsonSchema, opts = {}) {
   if (_testHandler) return _testHandler(prompt, systemPrompt, jsonSchema, opts);
 
+  const tag = resolveCallerTag(opts, 'callLLMStructured');
   const model = opts.model || DEFAULT_MODEL;
   const args = ['-p', prompt, '--model', model, '--output-format', 'json', '--json-schema', jsonSchema];
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
 
   try {
-    const stdout = await execClaude(args, opts);
+    const stdout = await execClaude(args, opts, tag);
     const data = JSON.parse(stdout);
     if (typeof data.result === 'string') {
       return JSON.parse(data.result);

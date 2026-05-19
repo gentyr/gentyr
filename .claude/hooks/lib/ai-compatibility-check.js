@@ -178,6 +178,7 @@ export async function checkDependencyCompatibility(packageName, fromVersion, toV
   // 4. Call LLM for analysis
   const result = await callLLMStructured(prompt, SYSTEM_PROMPT, COMPATIBILITY_SCHEMA, {
     timeout: 45000,
+    tag: 'ai-compatibility-check',
   });
 
   if (!result) return null;

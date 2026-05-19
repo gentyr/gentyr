@@ -324,7 +324,12 @@ export function compactSessionIfNeeded(sessionId, projectDir, options = {}) {
       cwd: projectDir,
       timeout: timeoutMs,
       stdio: 'pipe',
-      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: projectDir,
+        CLAUDE_USAGE_TAG: 'compact-session',
+        CLAUDE_USAGE_PARENT: sessionId,
+      },
     });
 
     const compactedAt = new Date().toISOString();
