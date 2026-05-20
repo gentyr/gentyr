@@ -57,6 +57,11 @@ export interface UsageQueryResult {
 }
 
 const GROUP_BY_COL: Record<string, string> = {
+  // PR B/C: stable kind-of-work dimensions (survive revival)
+  work_category: "COALESCE(sa.work_category, 'other')",
+  spawn_origin: "COALESCE(sa.spawn_origin, 'unknown')",
+  revived_by: "COALESCE(sa.revived_by, 'not-a-revival')",
+  // Legacy dimensions
   source: 'sa.source',
   lane: "COALESCE(sa.lane, 'unknown')",
   agent_type: "COALESCE(sa.agent_type, 'unknown')",
@@ -69,6 +74,11 @@ const GROUP_BY_COL: Record<string, string> = {
 
 export interface QueryFilter {
   source?: string;
+  work_category?: string;
+  spawn_origin?: string;
+  revived_by?: string;
+  only_revivals?: boolean;
+  only_originals?: boolean;
   model?: string;
   lane?: string;
   persistent_task_id?: number;
@@ -111,6 +121,11 @@ export function queryTokenUsage({
     const params: (string | number)[] = [startMs];
 
     if (filter.source) { whereClauses.push("sa.source LIKE ?"); params.push(`%${filter.source}%`); }
+    if (filter.work_category) { whereClauses.push('sa.work_category = ?'); params.push(filter.work_category); }
+    if (filter.spawn_origin) { whereClauses.push('sa.spawn_origin = ?'); params.push(filter.spawn_origin); }
+    if (filter.revived_by) { whereClauses.push('sa.revived_by = ?'); params.push(filter.revived_by); }
+    if (filter.only_revivals) { whereClauses.push('sa.is_revival = 1'); }
+    if (filter.only_originals) { whereClauses.push('sa.is_revival = 0'); }
     if (filter.model) { whereClauses.push('ue.model = ?'); params.push(filter.model); }
     if (filter.lane) { whereClauses.push('sa.lane = ?'); params.push(filter.lane); }
     if (filter.persistent_task_id) { whereClauses.push('sa.persistent_task_id = ?'); params.push(filter.persistent_task_id); }
@@ -359,6 +374,147 @@ export function attributionHealth(): AttributionHealth {
       untagged_subprocess_count: untagged,
       db_path: DB_PATH,
       db_exists: true,
+    };
+  } finally {
+    try { db?.close(); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * PR C — Revival cost summary. Returns the total token spend attributable
+ * to revived sessions vs original spawns within a time range, plus a
+ * by-`revived_by` breakdown showing which revival mechanisms cost the most.
+ *
+ * This is the answer to "how much are we spending on resurrection?"
+ */
+/**
+ * One-line description for each work_category bucket — mirrors
+ * WORK_CATEGORY_DESCRIPTIONS in `.claude/hooks/lib/work-category.js`. Kept
+ * duplicated here because the agent-tracker TS server doesn't enable
+ * `allowJs` and the descriptions are stable display-only text.
+ */
+export const WORK_CATEGORY_DESCRIPTIONS: Record<string, string> = Object.freeze({
+  'plan-manager':           'Plan orchestrators (one persistent monitor per active plan)',
+  'persistent-monitor':     'Long-running orchestrators for persistent tasks',
+  'global-monitor':         'Always-on deputy-CTO alignment monitor',
+  'universal-auditor':      'Independent task-completion verifier (audit lane)',
+  'plan-auditor':           'Plan-task verification auditor (audit lane)',
+  'authorization-auditor':  'CTO-authorization decision verifier (audit lane)',
+  'task-runner':            'Standard work agents (code-writer, test-writer, etc.)',
+  'demo-manager':           'Demo lifecycle, repair, and validation',
+  'preview-promoter':       'Preview→staging promotion pipeline',
+  'hotfix-promotion':       'Emergency hotfix promotion (staging→main)',
+  'pr-reviewer':            'AI PR review on submission (gate lane)',
+  'staging-reviewer':       'Reactive review of new staging commits',
+  'security-auditor':       'OWASP code security review (weekly)',
+  'feedback-agent':         'Persona-based product testing',
+  'gate-agent':             'Haiku task-gate review (gate lane)',
+  'antipattern-hunter':     'G001–G019 antipattern detection',
+  'compliance-checker':     'Spec compliance checks',
+  'deputy-cto':             'Report triage and delegation',
+  'health-monitor':         'Production/staging health monitors',
+  'lint-fixer':             'Automated lint repair',
+  'claudemd-refactor':      'CLAUDE.md refactor agent',
+  'federation-mapper':      'Federation schema mapper',
+  'test-fixer':             'Test failure repair (Jest/Vitest/Playwright)',
+  'todo-maintenance':       'TODO item processing',
+  'compaction-subagent':    '/compact sub-process (Claude Code auto-compaction)',
+  'agent-tool-subagent':    'Task tool sub-agents (user-alignment, investigator, code-writer, code-reviewer, test-writer, ...)',
+  'interactive-cto':        'CTO interactive sessions',
+  'subprocess-llm':         'Hook/daemon LLM subprocesses (broadcaster, live-feed, ...)',
+  'other':                  'Unclassified sessions',
+});
+
+export interface RevivalCostSummary {
+  range: { start_ms: number; end_ms: number; range_key: RangeKey };
+  totals: {
+    revival_tokens: number;
+    revival_cost_usd: number;
+    revival_sessions: number;
+    original_tokens: number;
+    original_cost_usd: number;
+    original_sessions: number;
+    revival_pct_of_total: number;
+  };
+  by_revived_by: Array<{
+    revived_by: string;
+    sessions: number;
+    tokens: number;
+    cost_usd: number;
+    pct_of_revival_total: number;
+  }>;
+}
+
+export function revivalCostSummary({ range, limit = 50 }: { range: RangeKey; limit?: number }): RevivalCostSummary {
+  const startMs = rangeStartMs(range);
+  const endMs = Date.now();
+  const empty: RevivalCostSummary = {
+    range: { start_ms: startMs, end_ms: endMs, range_key: range },
+    totals: {
+      revival_tokens: 0, revival_cost_usd: 0, revival_sessions: 0,
+      original_tokens: 0, original_cost_usd: 0, original_sessions: 0,
+      revival_pct_of_total: 0,
+    },
+    by_revived_by: [],
+  };
+  if (!fs.existsSync(DB_PATH)) return empty;
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = openReadonlyDb(DB_PATH);
+
+    const totals = db.prepare(
+      `SELECT
+        COALESCE(sa.is_revival, 0) AS is_revival,
+        COUNT(DISTINCT ue.session_id) AS sessions,
+        COALESCE(SUM(ue.input_tokens + ue.output_tokens + ue.cache_creation_tokens + ue.cache_read_tokens), 0) AS tokens,
+        COALESCE(SUM(ue.cost_micro_usd), 0) AS cost_micro
+       FROM usage_events ue
+       LEFT JOIN session_attribution sa ON sa.session_id = ue.session_id
+       WHERE ue.ts >= ?
+       GROUP BY is_revival`
+    ).all(startMs) as Array<{ is_revival: number; sessions: number; tokens: number; cost_micro: number }>;
+
+    let revival = { sessions: 0, tokens: 0, cost_micro: 0 };
+    let original = { sessions: 0, tokens: 0, cost_micro: 0 };
+    for (const r of totals) {
+      if (r.is_revival === 1) revival = { sessions: r.sessions, tokens: r.tokens, cost_micro: r.cost_micro };
+      else original = { sessions: r.sessions, tokens: r.tokens, cost_micro: r.cost_micro };
+    }
+    const total = revival.tokens + original.tokens;
+
+    const byMechanism = db.prepare(
+      `SELECT
+        COALESCE(sa.revived_by, 'unknown') AS revived_by,
+        COUNT(DISTINCT ue.session_id) AS sessions,
+        COALESCE(SUM(ue.input_tokens + ue.output_tokens + ue.cache_creation_tokens + ue.cache_read_tokens), 0) AS tokens,
+        COALESCE(SUM(ue.cost_micro_usd), 0) AS cost_micro
+       FROM usage_events ue
+       LEFT JOIN session_attribution sa ON sa.session_id = ue.session_id
+       WHERE ue.ts >= ? AND sa.is_revival = 1
+       GROUP BY revived_by
+       ORDER BY tokens DESC
+       LIMIT ?`
+    ).all(startMs, limit) as Array<{ revived_by: string; sessions: number; tokens: number; cost_micro: number }>;
+
+    return {
+      range: { start_ms: startMs, end_ms: endMs, range_key: range },
+      totals: {
+        revival_tokens: revival.tokens,
+        revival_cost_usd: revival.cost_micro / 1_000_000,
+        revival_sessions: revival.sessions,
+        original_tokens: original.tokens,
+        original_cost_usd: original.cost_micro / 1_000_000,
+        original_sessions: original.sessions,
+        revival_pct_of_total: total > 0 ? revival.tokens / total : 0,
+      },
+      by_revived_by: byMechanism.map(r => ({
+        revived_by: r.revived_by,
+        sessions: r.sessions,
+        tokens: r.tokens,
+        cost_usd: r.cost_micro / 1_000_000,
+        pct_of_revival_total: revival.tokens > 0 ? r.tokens / revival.tokens : 0,
+      })),
     };
   } finally {
     try { db?.close(); } catch { /* ignore */ }

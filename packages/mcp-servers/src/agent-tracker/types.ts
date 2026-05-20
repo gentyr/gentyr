@@ -1043,16 +1043,30 @@ export interface SessionSummaryResult {
 export const QueryTokenUsageArgsSchema = z.object({
   range: z.enum(['1h', '24h', '7d', '30d', 'all']).optional().default('24h')
     .describe('Time range to query'),
-  group_by: z.enum(['source', 'lane', 'agent_type', 'model', 'category', 'day', 'persistent_task', 'plan'])
-    .optional().default('source')
-    .describe('Dimension to group results by'),
+  // Default switched from `source` (legacy spawner code path) to
+  // `work_category` (stable kind-of-work that survives revival). See
+  // lib/work-category.js for the full category set and descriptions.
+  group_by: z.enum([
+    'work_category', 'agent_type', 'spawn_origin', 'revived_by',
+    'source', 'lane', 'model', 'category', 'day',
+    'persistent_task', 'plan',
+  ])
+    .optional().default('work_category')
+    .describe('Dimension to group results by. Default `work_category` (PR B/C) is the kind of work — survives revival. `spawn_origin` chases through revivals to the original spawner. `revived_by` shows resurrection cost only. `source` is the legacy spawner code path (kept for backward-compat).'),
   filter_source: z.string().optional().describe('Substring match on source (e.g. "hourly-automation")'),
+  filter_work_category: z.string().optional().describe('Exact match on work_category (e.g. "plan-manager")'),
+  filter_spawn_origin: z.string().optional().describe('Exact match on spawn_origin (e.g. "plan-activation-spawner")'),
+  filter_revived_by: z.string().optional().describe('Exact match on revived_by (e.g. "session-queue-reaper")'),
+  only_revivals: z.boolean().optional().describe('Restrict to revival rows only (is_revival=1)'),
+  only_originals: z.boolean().optional().describe('Restrict to original-spawn rows only (is_revival=0)'),
   filter_model: z.string().optional().describe('Exact model id filter'),
   filter_lane: z.string().optional().describe('Lane filter (persistent / standard / automated / gate / audit / subagent / interactive / subprocess)'),
   filter_persistent_task_id: z.number().optional().describe('Persistent task id filter'),
   filter_plan_id: z.string().optional().describe('Plan id filter'),
   limit: z.number().min(1).max(200).optional().default(50)
     .describe('Maximum result rows'),
+  include_category_descriptions: z.boolean().optional().default(true)
+    .describe('Include WORK_CATEGORY_DESCRIPTIONS in the response (one-line explanation per category)'),
 });
 export type QueryTokenUsageArgs = z.infer<typeof QueryTokenUsageArgsSchema>;
 
@@ -1064,3 +1078,11 @@ export type TopTokenSessionsArgs = z.infer<typeof TopTokenSessionsArgsSchema>;
 
 export const TokenAttributionHealthArgsSchema = z.object({});
 export type TokenAttributionHealthArgs = z.infer<typeof TokenAttributionHealthArgsSchema>;
+
+export const RevivalCostSummaryArgsSchema = z.object({
+  range: z.enum(['1h', '24h', '7d', '30d', 'all']).optional().default('24h')
+    .describe('Time range to query'),
+  limit: z.number().min(1).max(100).optional().default(50)
+    .describe('Maximum revival-mechanism rows in by_revived_by breakdown'),
+});
+export type RevivalCostSummaryArgs = z.infer<typeof RevivalCostSummaryArgsSchema>;

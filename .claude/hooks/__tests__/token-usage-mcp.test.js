@@ -70,7 +70,12 @@ function seedDb(dir) {
       started_at INTEGER,
       ended_at INTEGER,
       attribution_status TEXT NOT NULL DEFAULT 'resolved',
-      last_attempt_at INTEGER NOT NULL DEFAULT 0
+      last_attempt_at INTEGER NOT NULL DEFAULT 0,
+      work_category TEXT,
+      spawn_origin TEXT,
+      is_revival INTEGER NOT NULL DEFAULT 0,
+      revived_by TEXT,
+      revival_count INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE subprocess_calls (
@@ -88,8 +93,10 @@ function seedDb(dir) {
 
   const now = Date.now();
   const insertAttr = db.prepare(
-    `INSERT INTO session_attribution (session_id, source, lane, agent_type, persistent_task_id, started_at, last_attempt_at, attribution_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO session_attribution
+       (session_id, source, lane, agent_type, persistent_task_id, started_at, last_attempt_at, attribution_status,
+        work_category, spawn_origin, is_revival, revived_by, revival_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertEvent = db.prepare(
     `INSERT INTO usage_events
@@ -97,21 +104,32 @@ function seedDb(dir) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
-  // Session 1: hourly-automation:task_runner, Opus, 1M input / 100K output
-  insertAttr.run('sess-1', 'hourly-automation:task_runner', 'automated', 'code-writer', null, now - 60_000, now, 'resolved');
+  // Session 1: hourly-automation:task_runner, Opus, 1M input / 100K output — original task-runner
+  insertAttr.run('sess-1', 'hourly-automation:task_runner', 'automated', 'code-writer', null, now - 60_000, now, 'resolved',
+    'task-runner', 'hourly-automation:task_runner', 0, null, 0);
   insertEvent.run('sess-1', 'm1-1', now - 50_000, 'claude-opus-4-7', 1_000_000, 100_000, 0, 0, 15_000_000 + 7_500_000);
 
   // Session 2: interactive-cto, Sonnet, 500K input
-  insertAttr.run('sess-2', 'interactive-cto', 'interactive', null, null, now - 90_000, now, 'resolved');
+  insertAttr.run('sess-2', 'interactive-cto', 'interactive', null, null, now - 90_000, now, 'resolved',
+    'interactive-cto', 'interactive-cto', 0, null, 0);
   insertEvent.run('sess-2', 'm2-1', now - 80_000, 'claude-sonnet-4-6', 500_000, 50_000, 0, 0, 1_500_000 + 750_000);
 
   // Session 3: subprocess:live-feed-daemon, Haiku, small
-  insertAttr.run('sess-3', 'subprocess:live-feed-daemon', 'subprocess', null, null, now - 30_000, now, 'resolved');
+  insertAttr.run('sess-3', 'subprocess:live-feed-daemon', 'subprocess', null, null, now - 30_000, now, 'resolved',
+    'subprocess-llm', 'subprocess:live-feed-daemon', 0, null, 0);
   insertEvent.run('sess-3', 'm3-1', now - 20_000, 'claude-haiku-4-5', 10_000, 1_000, 0, 0, 8_000 + 4_000);
 
   // Session 4: pending attribution (should still aggregate under 'unknown' label)
-  insertAttr.run('sess-4', 'unknown', null, null, null, now - 10_000, now - 1000, 'pending');
+  insertAttr.run('sess-4', 'unknown', null, null, null, now - 10_000, now - 1000, 'pending',
+    'other', 'unknown', 0, null, 0);
   insertEvent.run('sess-4', 'm4-1', now - 5_000, 'claude-haiku-4-5', 1_000, 100, 0, 0, 800 + 400);
+
+  // Session 5: revived persistent-monitor — source is session-queue-reaper but
+  // work_category is persistent-monitor (the kind of work) and spawn_origin
+  // chases back to the original persistent-task-spawner.
+  insertAttr.run('sess-5', 'session-queue-reaper', 'persistent', 'persistent-task-monitor', 42, now - 40_000, now, 'resolved',
+    'persistent-monitor', 'persistent-task-spawner', 1, 'session-queue-reaper', 2);
+  insertEvent.run('sess-5', 'm5-1', now - 30_000, 'claude-opus-4-7', 800_000, 80_000, 0, 0, 12_000_000 + 6_000_000);
 
   // Untagged subprocess call (for attribution health)
   db.prepare(
@@ -234,12 +252,102 @@ describe('token-usage-query (compiled MCP module)', () => {
 
   it('attributionHealth reports per-status counts and untagged subprocess count', () => {
     const health = mod.attributionHealth();
-    assert.strictEqual(health.total, 4);
-    assert.strictEqual(health.resolved, 3);
+    assert.strictEqual(health.total, 5);
+    assert.strictEqual(health.resolved, 4);
     assert.strictEqual(health.pending, 1);
     assert.strictEqual(health.untagged_subprocess_count, 1);
     assert.ok(health.db_exists);
     assert.ok(typeof health.pending_oldest_age_minutes === 'number');
+  });
+
+  // ==========================================================================
+  // PR C — work_category / spawn_origin / revival_by groupings + revival summary
+  // ==========================================================================
+
+  it('groups by work_category (PR C default)', () => {
+    const result = mod.queryTokenUsage({ range: '24h', groupBy: 'work_category', limit: 50 });
+    const categories = result.rows.map(r => r.group_value);
+    assert.ok(categories.includes('task-runner'), `expected task-runner in ${JSON.stringify(categories)}`);
+    assert.ok(categories.includes('persistent-monitor'), `expected persistent-monitor (revived sess-5) in ${JSON.stringify(categories)}`);
+    assert.ok(categories.includes('interactive-cto'));
+    assert.ok(categories.includes('subprocess-llm'));
+  });
+
+  it('groups by spawn_origin — revived sess-5 attributes to the original spawner, not session-queue-reaper', () => {
+    const result = mod.queryTokenUsage({ range: '24h', groupBy: 'spawn_origin', limit: 50 });
+    const origins = result.rows.map(r => r.group_value);
+    // sess-5 source is session-queue-reaper but spawn_origin is persistent-task-spawner.
+    assert.ok(origins.includes('persistent-task-spawner'), `spawn_origin should chase to original — got ${JSON.stringify(origins)}`);
+    assert.ok(!origins.includes('session-queue-reaper'), 'session-queue-reaper should NOT appear as a spawn_origin');
+  });
+
+  it('only_revivals filter restricts results to revived sessions', () => {
+    const result = mod.queryTokenUsage({
+      range: '24h', groupBy: 'work_category',
+      filter: { only_revivals: true }, limit: 50,
+    });
+    // Only sess-5 is a revival; its work_category is persistent-monitor.
+    assert.strictEqual(result.rows.length, 1);
+    assert.strictEqual(result.rows[0].group_value, 'persistent-monitor');
+  });
+
+  it('only_originals filter excludes revived sessions', () => {
+    const result = mod.queryTokenUsage({
+      range: '24h', groupBy: 'work_category',
+      filter: { only_originals: true }, limit: 50,
+    });
+    const categories = result.rows.map(r => r.group_value);
+    assert.ok(!categories.includes('persistent-monitor'), 'persistent-monitor (revived only) should not appear with only_originals');
+    assert.ok(categories.includes('task-runner'));
+  });
+
+  it('filter by work_category restricts to that category', () => {
+    const result = mod.queryTokenUsage({
+      range: '24h', groupBy: 'agent_type',
+      filter: { work_category: 'persistent-monitor' }, limit: 50,
+    });
+    assert.strictEqual(result.rows.length, 1);
+    assert.strictEqual(result.rows[0].group_value, 'persistent-task-monitor');
+  });
+
+  it('revivalCostSummary separates revived vs original spend and breaks down by revived_by', () => {
+    const summary = mod.revivalCostSummary({ range: '24h' });
+    // sess-5 is the only revival in seed (Opus, 880K tokens, ~$18 cost_micro)
+    assert.ok(summary.totals.revival_tokens > 0, 'revival_tokens > 0');
+    assert.ok(summary.totals.original_tokens > summary.totals.revival_tokens,
+      `originals (${summary.totals.original_tokens}) should exceed revivals (${summary.totals.revival_tokens})`);
+    assert.strictEqual(summary.totals.revival_sessions, 1);
+    assert.ok(summary.totals.revival_pct_of_total > 0 && summary.totals.revival_pct_of_total < 1);
+
+    // by_revived_by breakdown: session-queue-reaper accounts for the only revival
+    assert.strictEqual(summary.by_revived_by.length, 1);
+    assert.strictEqual(summary.by_revived_by[0].revived_by, 'session-queue-reaper');
+    assert.strictEqual(summary.by_revived_by[0].sessions, 1);
+    assert.ok(summary.by_revived_by[0].cost_usd > 0);
+  });
+
+  it('revivalCostSummary returns empty totals when DB missing', async () => {
+    delete process.env.CLAUDE_PROJECT_DIR;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'token-usage-rcs-empty-'));
+    process.env.CLAUDE_PROJECT_DIR = tmp;
+    try {
+      const fresh = await import(`${QUERY_MODULE}?t=${Date.now()}-rcs-empty`);
+      const result = fresh.revivalCostSummary({ range: '24h' });
+      assert.strictEqual(result.totals.revival_tokens, 0);
+      assert.strictEqual(result.by_revived_by.length, 0);
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  it('WORK_CATEGORY_DESCRIPTIONS includes every category produced by the live data', () => {
+    const result = mod.queryTokenUsage({ range: '24h', groupBy: 'work_category', limit: 50 });
+    for (const row of result.rows) {
+      assert.ok(
+        mod.WORK_CATEGORY_DESCRIPTIONS[row.group_value],
+        `missing description for category in seed data: ${row.group_value}`,
+      );
+    }
   });
 });
 

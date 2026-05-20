@@ -186,14 +186,18 @@ import {
   QueryTokenUsageArgsSchema,
   TopTokenSessionsArgsSchema,
   TokenAttributionHealthArgsSchema,
+  RevivalCostSummaryArgsSchema,
   type QueryTokenUsageArgs,
   type TopTokenSessionsArgs,
   type TokenAttributionHealthArgs,
+  type RevivalCostSummaryArgs,
 } from './types.js';
 import {
   queryTokenUsage,
   topTokenSessions,
   attributionHealth,
+  revivalCostSummary,
+  WORK_CATEGORY_DESCRIPTIONS,
 } from './token-usage-query.js';
 
 // ============================================================================
@@ -6913,19 +6917,46 @@ async function queryTokenUsageTool(args: QueryTokenUsageArgs): Promise<object | 
   try {
     const filter = {
       source: args.filter_source,
+      work_category: args.filter_work_category,
+      spawn_origin: args.filter_spawn_origin,
+      revived_by: args.filter_revived_by,
+      only_revivals: args.only_revivals,
+      only_originals: args.only_originals,
       model: args.filter_model,
       lane: args.filter_lane,
       persistent_task_id: args.filter_persistent_task_id,
       plan_id: args.filter_plan_id,
     };
-    return queryTokenUsage({
+    const result = queryTokenUsage({
       range: args.range,
       groupBy: args.group_by,
       filter,
       limit: args.limit,
     });
+    // PR C: include category descriptions in the response when the
+    // grouping dimension surfaces work categories. CTO doesn't have to
+    // remember what each label means.
+    const includeDescriptions = args.include_category_descriptions !== false;
+    if (includeDescriptions && args.group_by === 'work_category') {
+      const descriptions: Record<string, string> = {};
+      for (const row of result.rows) {
+        if (WORK_CATEGORY_DESCRIPTIONS[row.group_value]) {
+          descriptions[row.group_value] = WORK_CATEGORY_DESCRIPTIONS[row.group_value];
+        }
+      }
+      return { ...result, category_descriptions: descriptions };
+    }
+    return result;
   } catch (err) {
     return { error: `query_token_usage failed: ${(err as Error).message}` };
+  }
+}
+
+async function revivalCostSummaryTool(args: RevivalCostSummaryArgs): Promise<object | ErrorResult> {
+  try {
+    return revivalCostSummary({ range: args.range, limit: args.limit });
+  } catch (err) {
+    return { error: `revival_cost_summary failed: ${(err as Error).message}` };
   }
 }
 
@@ -7444,6 +7475,12 @@ const tools: AnyToolHandler[] = [
     description: 'Health snapshot of token-usage attribution: counts of resolved/pending/unknown session attributions, oldest pending age in minutes, count of untagged subprocess calls. Use to diagnose collector / attribution gaps.',
     schema: TokenAttributionHealthArgsSchema,
     handler: tokenAttributionHealthTool,
+  },
+  {
+    name: 'revival_cost_summary',
+    description: 'PR C: how much token spend is going to revived sessions (vs original spawns) within a time range. Returns the revival-vs-original totals (tokens, cost, session count, % of total) plus a by_revived_by breakdown showing which revival mechanisms cost the most (session-queue-reaper, revive_dead_persistent_monitor, drain-audit-orphan-recovery, etc.). Answer to "how much are we spending on resurrection?"',
+    schema: RevivalCostSummaryArgsSchema,
+    handler: revivalCostSummaryTool,
   },
   // Self-compaction
   {
