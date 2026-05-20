@@ -96,11 +96,13 @@ export function queryTokenUsage({
   groupBy,
   filter = {},
   limit,
+  rollUpCompaction = false,
 }: {
   range: RangeKey;
   groupBy: string;
   filter?: QueryFilter;
   limit: number;
+  rollUpCompaction?: boolean;
 }): UsageQueryResult {
   const startMs = rangeStartMs(range);
   const endMs = Date.now();
@@ -112,7 +114,23 @@ export function queryTokenUsage({
   };
   if (!fs.existsSync(DB_PATH)) return empty;
 
-  const groupCol = GROUP_BY_COL[groupBy] || GROUP_BY_COL.source;
+  // PR D — compaction roll-up: when grouping by work_category, replace
+  // `compaction-subagent` rows with their parent session's work_category so
+  // /compact cost is attributed to the work that triggered it (the long-
+  // running persistent-monitor / task-runner whose context window filled).
+  // Only meaningful when group_by='work_category' — silently ignored otherwise.
+  const enableRollup = rollUpCompaction === true && groupBy === 'work_category';
+  const groupCol = enableRollup
+    ? `CASE
+         WHEN COALESCE(sa.work_category, 'other') = 'compaction-subagent'
+              AND parent_sa.work_category IS NOT NULL
+         THEN parent_sa.work_category
+         ELSE COALESCE(sa.work_category, 'other')
+       END`
+    : (GROUP_BY_COL[groupBy] || GROUP_BY_COL.source);
+  const joinClause = enableRollup
+    ? `LEFT JOIN session_attribution parent_sa ON parent_sa.session_id = sa.parent_session_id`
+    : '';
   let db: InstanceType<typeof Database> | undefined;
   try {
     db = openReadonlyDb(DB_PATH);
@@ -141,6 +159,7 @@ export function queryTokenUsage({
         COALESCE(SUM(ue.cost_micro_usd), 0) AS total_cost_micro
        FROM usage_events ue
        LEFT JOIN session_attribution sa ON sa.session_id = ue.session_id
+       ${joinClause}
        ${where}`
     ).get(...params) as { messages: number; sessions: number; total_tokens: number; total_cost_micro: number };
 
@@ -157,6 +176,7 @@ export function queryTokenUsage({
         COALESCE(SUM(ue.cost_micro_usd), 0) AS cost_micro_usd
        FROM usage_events ue
        LEFT JOIN session_attribution sa ON sa.session_id = ue.session_id
+       ${joinClause}
        ${where}
        GROUP BY group_value
        ORDER BY total_tokens DESC
@@ -180,6 +200,7 @@ export function queryTokenUsage({
               SUM(ue.input_tokens + ue.output_tokens) AS toks
        FROM usage_events ue
        LEFT JOIN session_attribution sa ON sa.session_id = ue.session_id
+       ${joinClause}
        ${where}
          AND ${groupCol} = ?
        GROUP BY ue.model
