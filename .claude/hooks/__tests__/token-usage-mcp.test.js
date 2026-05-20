@@ -95,8 +95,8 @@ function seedDb(dir) {
   const insertAttr = db.prepare(
     `INSERT INTO session_attribution
        (session_id, source, lane, agent_type, persistent_task_id, started_at, last_attempt_at, attribution_status,
-        work_category, spawn_origin, is_revival, revived_by, revival_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        work_category, spawn_origin, is_revival, revived_by, revival_count, is_subagent, parent_session_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertEvent = db.prepare(
     `INSERT INTO usage_events
@@ -106,29 +106,35 @@ function seedDb(dir) {
 
   // Session 1: hourly-automation:task_runner, Opus, 1M input / 100K output — original task-runner
   insertAttr.run('sess-1', 'hourly-automation:task_runner', 'automated', 'code-writer', null, now - 60_000, now, 'resolved',
-    'task-runner', 'hourly-automation:task_runner', 0, null, 0);
+    'task-runner', 'hourly-automation:task_runner', 0, null, 0, 0, null);
   insertEvent.run('sess-1', 'm1-1', now - 50_000, 'claude-opus-4-7', 1_000_000, 100_000, 0, 0, 15_000_000 + 7_500_000);
 
   // Session 2: interactive-cto, Sonnet, 500K input
   insertAttr.run('sess-2', 'interactive-cto', 'interactive', null, null, now - 90_000, now, 'resolved',
-    'interactive-cto', 'interactive-cto', 0, null, 0);
+    'interactive-cto', 'interactive-cto', 0, null, 0, 0, null);
   insertEvent.run('sess-2', 'm2-1', now - 80_000, 'claude-sonnet-4-6', 500_000, 50_000, 0, 0, 1_500_000 + 750_000);
 
   // Session 3: subprocess:live-feed-daemon, Haiku, small
   insertAttr.run('sess-3', 'subprocess:live-feed-daemon', 'subprocess', null, null, now - 30_000, now, 'resolved',
-    'subprocess-llm', 'subprocess:live-feed-daemon', 0, null, 0);
+    'subprocess-llm', 'subprocess:live-feed-daemon', 0, null, 0, 0, null);
   insertEvent.run('sess-3', 'm3-1', now - 20_000, 'claude-haiku-4-5', 10_000, 1_000, 0, 0, 8_000 + 4_000);
 
   // Session 4: pending attribution (should still aggregate under 'unknown' label)
   insertAttr.run('sess-4', 'unknown', null, null, null, now - 10_000, now - 1000, 'pending',
-    'other', 'unknown', 0, null, 0);
+    'other', 'unknown', 0, null, 0, 0, null);
   insertEvent.run('sess-4', 'm4-1', now - 5_000, 'claude-haiku-4-5', 1_000, 100, 0, 0, 800 + 400);
 
   // Session 5: revived persistent-monitor — source is session-queue-reaper but
   // work_category is persistent-monitor (the kind of work) and spawn_origin
   // chases back to the original persistent-task-spawner.
   insertAttr.run('sess-5', 'session-queue-reaper', 'persistent', 'persistent-task-monitor', 42, now - 40_000, now, 'resolved',
-    'persistent-monitor', 'persistent-task-spawner', 1, 'session-queue-reaper', 2);
+    'persistent-monitor', 'persistent-task-spawner', 1, 'session-queue-reaper', 2, 0, null);
+
+  // Compaction subagent of sess-1 (task-runner) — PR D roll-up should
+  // attribute this cost back to task-runner instead of compaction-subagent.
+  insertAttr.run('agent-acompact-cafef00d2', 'compaction-subagent', 'subagent', 'compaction',
+    null, now - 25_000, now, 'resolved', 'compaction-subagent', 'compaction-subagent', 0, null, 0, 1, 'sess-1');
+  insertEvent.run('agent-acompact-cafef00d2', 'mcompact-1', now - 22_000, 'claude-haiku-4-5', 200_000, 5_000, 0, 0, 200_000);
   insertEvent.run('sess-5', 'm5-1', now - 30_000, 'claude-opus-4-7', 800_000, 80_000, 0, 0, 12_000_000 + 6_000_000);
 
   // Untagged subprocess call (for attribution health)
@@ -252,8 +258,8 @@ describe('token-usage-query (compiled MCP module)', () => {
 
   it('attributionHealth reports per-status counts and untagged subprocess count', () => {
     const health = mod.attributionHealth();
-    assert.strictEqual(health.total, 5);
-    assert.strictEqual(health.resolved, 4);
+    assert.strictEqual(health.total, 6);
+    assert.strictEqual(health.resolved, 5);
     assert.strictEqual(health.pending, 1);
     assert.strictEqual(health.untagged_subprocess_count, 1);
     assert.ok(health.db_exists);
@@ -348,6 +354,62 @@ describe('token-usage-query (compiled MCP module)', () => {
         `missing description for category in seed data: ${row.group_value}`,
       );
     }
+  });
+
+  // ==========================================================================
+  // PR D — compaction roll-up
+  // ==========================================================================
+
+  it('without roll_up_compaction, compaction subagents appear as their own category', () => {
+    const result = mod.queryTokenUsage({ range: '24h', groupBy: 'work_category', limit: 50 });
+    const categories = result.rows.map(r => r.group_value);
+    assert.ok(categories.includes('compaction-subagent'),
+      `expected compaction-subagent in default view, got ${JSON.stringify(categories)}`);
+    const compactionRow = result.rows.find(r => r.group_value === 'compaction-subagent');
+    assert.strictEqual(compactionRow.sessions, 1);
+    assert.strictEqual(compactionRow.total_tokens, 205_000);
+  });
+
+  it('roll_up_compaction=true attributes compaction cost to parent work_category', () => {
+    const baseline = mod.queryTokenUsage({ range: '24h', groupBy: 'work_category', limit: 50 });
+    const taskRunnerBaseline = baseline.rows.find(r => r.group_value === 'task-runner');
+    assert.ok(taskRunnerBaseline, 'task-runner row should exist in baseline');
+
+    const rolled = mod.queryTokenUsage({
+      range: '24h', groupBy: 'work_category', limit: 50, rollUpCompaction: true,
+    });
+    const categories = rolled.rows.map(r => r.group_value);
+    assert.ok(!categories.includes('compaction-subagent'),
+      `compaction-subagent should be rolled away, got ${JSON.stringify(categories)}`);
+
+    // task-runner should now include the 205K compaction tokens too.
+    const taskRunnerRolled = rolled.rows.find(r => r.group_value === 'task-runner');
+    assert.strictEqual(
+      taskRunnerRolled.total_tokens,
+      taskRunnerBaseline.total_tokens + 205_000,
+      'task-runner total should include compaction cost after roll-up',
+    );
+  });
+
+  it('roll_up_compaction is silently ignored when group_by is not work_category', () => {
+    // When grouping by source, the rollup should not apply — compaction-subagent
+    // still appears as its own source.
+    const result = mod.queryTokenUsage({
+      range: '24h', groupBy: 'source', limit: 50, rollUpCompaction: true,
+    });
+    const sources = result.rows.map(r => r.group_value);
+    assert.ok(sources.includes('compaction-subagent'),
+      'compaction-subagent should remain visible when group_by=source even with rollUpCompaction=true');
+  });
+
+  it('roll_up_compaction preserves the total token count', () => {
+    const without = mod.queryTokenUsage({ range: '24h', groupBy: 'work_category', limit: 50 });
+    const withRollup = mod.queryTokenUsage({
+      range: '24h', groupBy: 'work_category', limit: 50, rollUpCompaction: true,
+    });
+    // The grand totals should be identical — rollup only relabels rows, not the sum.
+    assert.strictEqual(withRollup.total.tokens, without.total.tokens);
+    assert.strictEqual(withRollup.total.cost_usd, without.total.cost_usd);
   });
 });
 

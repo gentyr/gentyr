@@ -9,7 +9,7 @@ The default grouping dimension is **`work_category`** — the kind of work a ses
 
 ## Arguments
 
-`/tokens [range] [by <dimension>] [filter <key>=<value>] [revivals|originals|top|health]`
+`/tokens [range] [by <dimension>] [filter <key>=<value>] [revivals|originals|rollup|top|health]`
 
 | Argument | Values | Default |
 |----------|--------|---------|
@@ -18,6 +18,7 @@ The default grouping dimension is **`work_category`** — the kind of work a ses
 | filter | `source=…` `work_category=…` `spawn_origin=…` `revived_by=…` `model=…` `lane=…` `persistent_task=N` `plan=…` | none |
 | revivals | switches to revival-cost-summary mode (revived vs original spend) | off |
 | originals | restricts results to non-revival sessions (`only_originals=true`) | off |
+| rollup | when grouped by work_category, attribute `compaction-subagent` to parent's category (`roll_up_compaction=true`) | off |
 | top    | switches to top-sessions mode (returns hottest sessions) | off |
 | health | switches to attribution health diagnostic | off |
 
@@ -29,6 +30,7 @@ Examples:
 - `/tokens 7d by revived_by` — which revival mechanisms are most expensive
 - `/tokens 24h revivals` — how much we spent on resurrection vs original work in the last 24h
 - `/tokens 24h originals` — exclude revivals to see the cost of new work only
+- `/tokens 24h rollup` — attribute /compact subprocess cost to the parent work_category (e.g. persistent-monitor's compactions roll up into persistent-monitor)
 - `/tokens 24h by lane` — group by `persistent` / `audit` / `gate` / `automated` / `standard` / `subprocess` / `subagent` / `interactive`
 - `/tokens 1h by model` — Opus vs Sonnet vs Haiku split
 - `/tokens 24h filter work_category=plan-manager` — show only plan-manager spend

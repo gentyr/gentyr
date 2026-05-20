@@ -6932,6 +6932,7 @@ async function queryTokenUsageTool(args: QueryTokenUsageArgs): Promise<object | 
       groupBy: args.group_by,
       filter,
       limit: args.limit,
+      rollUpCompaction: args.roll_up_compaction,
     });
     // PR C: include category descriptions in the response when the
     // grouping dimension surfaces work categories. CTO doesn't have to

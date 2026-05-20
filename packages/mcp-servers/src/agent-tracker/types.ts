@@ -1067,6 +1067,8 @@ export const QueryTokenUsageArgsSchema = z.object({
     .describe('Maximum result rows'),
   include_category_descriptions: z.boolean().optional().default(true)
     .describe('Include WORK_CATEGORY_DESCRIPTIONS in the response (one-line explanation per category)'),
+  roll_up_compaction: z.boolean().optional().default(false)
+    .describe("PR D: when grouping by work_category, attribute compaction-subagent (`/compact` sub-process) cost to the parent session's work_category. Surfaces the true cost of the work that triggered compaction. Silently ignored unless group_by=work_category."),
 });
 export type QueryTokenUsageArgs = z.infer<typeof QueryTokenUsageArgsSchema>;
 
