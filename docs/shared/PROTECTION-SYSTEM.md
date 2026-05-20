@@ -123,30 +123,35 @@ The `criticalHooks` array is the single source of truth for both the commit-time
 
 **File**: `.claude/hooks/protected-action-gate.js`
 
-HMAC-signed approval codes that prevent agents from authorizing their own actions on protected MCP servers.
+Blocks agents from authorizing their own actions on protected MCP servers and routes the call through the **Unified CTO Authorization System** (deferred actions + `record_cto_decision` + independent auditor).
 
 ### Protected Servers
 
 Configured in `.claude/hooks/protected-actions.json`. Each entry specifies:
 - `tools`: `"*"` (all tools) or an array of specific tool names
-- `phrase`: CTO approval phrase (e.g., `"APPROVE SYNC"`, `"APPROVE VAULT"`)
 - `protection`: `"approval-only"` or `"deputy-cto-approval"`
 - `credentialKeys`: environment variable names guarded by the credential file guard
 
-Typical protected servers include Supabase (prod/staging), Render (prod/staging), Vercel, GitHub, Resend, 1Password, secret-sync, and deputy-cto.
+Typical protected servers include Supabase (prod/staging), Render (prod/staging), Vercel, GitHub, Resend, 1Password, secret-sync, deputy-cto, and release-ledger.
 
-### HMAC Mechanism
+> The legacy `phrase` field (e.g. `"APPROVE SYNC"`) still appears on some entries for backward compatibility with the deprecated HOTFIX flow. New entries should not rely on it — the current authorization path does not use chat phrases.
 
-1. Agent calls a protected MCP tool
-2. Gate generates a **6-character alphanumeric code** (charset excludes confusable characters: `0/O`, `1/I/L`)
-3. Gate writes a pending approval with `pending_hmac` = HMAC-SHA256 over `code|server|tool|argsHash|expiry`
-4. CTO types the approval phrase + code (e.g., `APPROVE SYNC A7KX3N`)
-5. Approval hook verifies HMAC, writes `approved_hmac` adding `"approved"` to the binding
-6. Gate verifies `approved_hmac`, consumes the approval (one-time use), allows the action
+### Deferred Action Mechanism (current)
 
-**Anti-forgery**: The `argsHash` (SHA256 of tool arguments) binds the approval to the exact call, preventing bait-and-switch where an agent requests approval for a safe call then substitutes dangerous arguments.
+1. **Block.** Agent calls a protected MCP tool; the gate denies the call and persists a `deferred_actions` row in `.claude/state/bypass-requests.db` with the exact `server + tool + args + args_hash + source_hook`. The denial response carries the deferred-action ID.
+2. **Spawned agents** are instructed to file `mcp__agent-tracker__submit_bypass_request`, summarize their work, and exit — they do not retry and do not wait.
+3. **Interactive (CTO) sessions** present the deferred-action ID to the CTO and ask for approval in natural language. There is no phrase, no code, and no fixed expiry chat pattern.
+4. **Record decision.** Agent calls `mcp__agent-tracker__record_cto_decision({ decision_type, decision_id, verbatim_text, session_id, ... })`. The tool scans the CTO's session JSONL for the verbatim quote and computes an HMAC-SHA256 proof over `(decision_type, decision_id, verbatim_text, session_file_hash)` using the protection key (root-owned, unreadable by agents).
+5. **Audit.** `authorization-audit-spawner.js` (PostToolUse) enqueues an `authorization-auditor` in the `audit` lane (Sonnet, 8-min TTL, signal-excluded). The auditor uses `peek_session` to re-read the CTO's session JSONL and verifies that (a) the verbatim quote actually appears, (b) the surrounding context was not misrepresented to the CTO, and (c) the decision scope matches the deferred action. For `lockdown_toggle` / `local_mode_toggle` only, execution is inline — no separate auditor is spawned because interactive sessions have no `agent_id`/`queue_id` for `peek_session` to look up.
+6. **Execute.** On audit pass, `deferred-action-audit-executor.js` (PostToolUse on `cto_decision_audit_pass`) loads the deferred action, atomically transitions it `approved → executing`, runs the original tool call autonomously via the MCP shared daemon (Tier 1) or Bash (Tier 2 / inline state writes), and marks it `completed`. The original requesting agent does not need to be alive.
 
-**Expiry**: Codes expire after 5 minutes.
+**Anti-forgery**: The deferred action's `args_hash` (SHA-256 of tool arguments) binds the executed call to the exact arguments the CTO was shown — no bait-and-switch. The CTO decision's `hmac` binds the verbatim quote to the session file hash — agents cannot fabricate or alter approvals. The auditor reads the actual session JSONL, not agent claims.
+
+**Fail-closed**: If the auditor cannot find the session file, cannot locate the verbatim quote, or detects a scope mismatch between the presented context and the deferred action, the verdict is FAIL and the action is not executed.
+
+### Legacy 6-char HMAC mechanism (deprecated)
+
+The pre-Phase-2 system generated a 6-character alphanumeric code and required the CTO to type `APPROVE <PHRASE> <CODE>` in chat. Files retained for backward compatibility include `bypass-approval-hook.js`, `bypass-approval-token.js`, and `protected-action-approval-hook.js`. The only remaining live caller is the `/hotfix` slash command. **Do not depend on this path in new code, and do not write agent prompts that promise the CTO a 6-character code.**
 
 ### MCP Server Allowlist
 
@@ -191,11 +196,9 @@ Pre-tool-use hook that intercepts Bash commands and blocks dangerous patterns.
 
 ### Bypass Mechanism
 
-For legitimate emergencies:
-1. Agent requests bypass via `mcp__deputy-cto__request_bypass({ reason, reporting_agent, blocked_by })`
-2. CTO types `APPROVE BYPASS <CODE>` in chat
-3. HMAC-signed token written to `.claude/bypass-approval-token.json`
-4. Token verified, consumed (one-time use), expires after 5 minutes
+For legitimate emergencies the agent should call `mcp__agent-tracker__submit_bypass_request({ task_type, task_id, category, summary, details })`. The request pauses the task, appears in the CTO's session briefing under `=== CTO BYPASS REQUESTS AWAITING DECISION ===`, and is resolved by the CTO via `resolve_bypass_request({ request_id, decision, context })`. No 6-character code is generated; the CTO replies in natural language. See "CTO Bypass Request System" in `CLAUDE.md` for the full lifecycle.
+
+> The legacy `APPROVE BYPASS <CODE>` chat pattern, `request_bypass`, and `.claude/bypass-approval-token.json` are deprecated (Phase 2). They remain only for the `/hotfix` flow pending Phase 5 cleanup.
 
 ## Layer 4: Deputy-CTO Commit Review
 
@@ -299,14 +302,9 @@ Blocks file access tools (Read, Write, Edit, Bash, Grep, Glob) from touching cre
    - `.claude/bypass-approval-token.json`
    - `.claude/commit-approval-token.json`
 
-2. **CTO-approvable files** (HMAC-signed approval):
-   - `.claude/config/services.json` (phrase: `APPROVE CONFIG`)
-   - `.mcp.json` (phrase: `APPROVE MCP`)
-   - `.claude/api-key-rotation.json` (phrase: `APPROVE ROTATION`)
-   - `.claude/credential-provider.json` (phrase: `APPROVE CREDENTIAL`)
-   - `.claude/vault-mappings.json` (phrase: `APPROVE VAULT MAP`)
+2. **CTO-approvable files**: `.claude/config/services.json`, `.mcp.json`, `.claude/api-key-rotation.json`, `.claude/credential-provider.json`, `.claude/vault-mappings.json`. (Legacy entries in the gate config carry a `phrase` field like `APPROVE CONFIG` for backward compatibility; the active flow is described below.)
 
-**Approval flow**: When an agent attempts to access a CTO-approvable file, the hook creates an HMAC-signed request via `approval-utils.js`. The deputy-CTO generates a one-time code. The CTO types the phrase + code (e.g., `APPROVE CONFIG A7KX3N`). The hook validates HMAC + expiry and grants one-time access.
+**Approval flow**: When an agent attempts to access a CTO-approvable file, the gate denies the call and creates a deferred action (see "Deferred Action Mechanism" above). The CTO approves via natural-language `record_cto_decision`, an independent auditor verifies the approval against the session JSONL, and the executor performs the read/write autonomously. No 6-character code is generated; no `APPROVE <PHRASE> <CODE>` chat pattern is required.
 
 **Protected patterns**: `/\.env(\.[a-z]+)?$/i`
 
@@ -359,10 +357,10 @@ All five layers must be defeated to extract a secret value. Compromising any sin
 The commit-time approval token system for commits has been removed in v4.0 (PR-Based Review). Code review now happens at PR time via the deputy-CTO agent. The relevant attack surface is now bypassing the PR-level gate:
 
 1. **Layer 4** (Commit Review): Agent commits code; pre-commit hook runs lint + security checks. No deputy-CTO spawn at commit time.
-2. **Layer 2** (Protected Action Gate): Agent tries to call `mcp__deputy-cto__approve_commit` directly to forge a PR approval — this is a protected action requiring CTO approval code
-3. **Layer 2** (HMAC Verification): Agent tries to write a fake protected-action approval — the token requires a valid HMAC that only the protected-action-gate can produce
-4. **Layer 6** (Credential File Guard): Agent tries to read `.claude/protection-key` to compute the HMAC — the credential file guard blocks access
-5. **Layer 1** (Root Ownership): Agent tries to modify the credential file guard to remove the block — the hook file is root-owned
+2. **Layer 2** (Protected Action Gate): Agent tries to call `mcp__deputy-cto__approve_commit` directly to forge a PR approval — this is a protected action; the gate denies it and routes it through the deferred-action + `record_cto_decision` flow, so a forged self-approval is rejected.
+3. **Layer 2** (Authorization Audit): Agent tries to fabricate a `cto_decisions` row to claim the CTO approved — `record_cto_decision` verifies the verbatim quote actually appears in the CTO's session JSONL before it stores anything, and the independent auditor re-verifies via `peek_session` before execution. An agent cannot generate the HMAC because the protection key is root-owned.
+4. **Layer 6** (Credential File Guard): Agent tries to read `.claude/protection-key` to compute the HMAC — the credential file guard blocks access.
+5. **Layer 1** (Root Ownership): Agent tries to modify the credential file guard to remove the block — the hook file is root-owned.
 
 The approval chain is cryptographically bound: code → HMAC → protection key → root ownership. Breaking any link blocks the attack.
 

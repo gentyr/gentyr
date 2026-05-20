@@ -167,37 +167,29 @@ The deputy-CTO agent uses `gh pr diff`, `gh pr review --approve` or `gh pr revie
 
 ## Emergency Hotfix Pathway
 
-When production is broken and a fix has already landed on staging, the CTO can trigger immediate promotion bypassing time gates.
+When production is broken and a fix has already landed on staging, the CTO can trigger immediate promotion bypassing the standard `/promote-to-prod` 8-phase release plan.
 
 **Prerequisites:**
 - Fix must be merged to staging
 - CTO authorization required
 
 **Workflow:**
-1. Agent calls `mcp__deputy-cto__request_hotfix_promotion`
-   - Validates staging has unreleased commits
-   - Returns 6-character approval code (expires in 5 minutes)
-2. Agent presents code to CTO: `APPROVE HOTFIX <code>`
-3. CTO types approval in terminal (agents cannot trigger UserPromptSubmit hooks)
-4. Agent calls `mcp__deputy-cto__execute_hotfix_promotion` with code
-   - Validates HMAC-signed token
-   - Spawns staging→main promotion agent immediately
+1. CTO runs `/promote-to-prod-force` in an interactive session
+2. The command shows current staging drift and asks for explicit confirmation
+3. CTO types the confirmation; the agent calls `mcp__agent-tracker__record_cto_decision` with `decision_type: "force_prod_promotion"` and the CTO's verbatim approval text
+4. `authorization-audit-spawner.js` enqueues an `authorization-auditor` in the `audit` lane, which reads the CTO's session JSONL via `peek_session` and verifies the context match
+5. On audit pass, `mcp__deputy-cto__force_promote_to_prod({ decision_id })` is executed — creates (or reuses) a PR from `staging` to `main` and merges with `--admin` CI bypass
+6. The decision is marked consumed (one-time use)
 
-**What Gets Bypassed:**
-- 24-hour stability requirement
-- Midnight deployment window
+**Notes:**
+- `force_promote_to_prod` is registered in `protected-actions.json` — spawned agents are blocked by `protected-action-gate.js`. Only interactive CTO sessions can invoke the tool.
+- See [The Unified CTO Authorization System](CLAUDE-REFERENCE.md#the-unified-cto-authorization-system) in `CLAUDE.md` for the full architecture of the deferred-action + record_cto_decision + auditor chain.
 
-**What Remains Required:**
-- Code review (via spawned promotion agent)
-- Deputy-CTO approval
-- Isolated worktree (no disruption to other work)
+**When to use:** Production incidents where the full `/promote-to-prod` quality pipeline cannot complete in time. Not for routine promotion.
 
-**Safety:**
-- One-time codes (HMAC-signed, consumed on use)
-- 5-minute expiration
-- Only CTO can approve (terminal input required)
+### Legacy `/hotfix` command (deprecated)
 
-See `.claude/commands/hotfix.md` for usage details.
+A separate `/hotfix` command using the legacy `APPROVE HOTFIX <code>` HMAC pattern is preserved pending Phase 5 cleanup. It is the **only** remaining caller of the 6-character approval code system; all other protected actions have migrated to the deferred-action flow described above. New code paths must not depend on the legacy pattern. See `.claude/commands/hotfix.md`.
 
 ## Promotion Pipelines
 
@@ -364,68 +356,78 @@ Deploy (per branch target) <─────────────────�
 
 ## MCP Tools for Deployment & Monitoring
 
-| Tool | Action | Approval |
-|------|--------|----------|
-| `mcp__vercel__vercel_list_deployments` | List deployments | None |
-| `mcp__vercel__vercel_promote_deployment` | Promote deployment | `APPROVE DEPLOY` |
-| `mcp__vercel__vercel_rollback` | Rollback deployment | `APPROVE DEPLOY` |
-| `mcp__vercel__vercel_create_env_var` | Set environment variable | `APPROVE DEPLOY` |
-| `mcp__render__render_list_services` | List services | None |
-| `mcp__render__render_get_service` | Get service details | None |
-| `mcp__render__render_trigger_deploy` | Trigger deployment | `APPROVE INFRA` |
-| `mcp__render__render_update_service` | Update service config | `APPROVE INFRA` |
-| `mcp__render__render_create_env_var` | Set environment variable | `APPROVE INFRA` |
-| `mcp__supabase__supabase_sql` | Execute SQL | `APPROVE DATABASE` |
-| `mcp__github__github_merge_pull_request` | Merge PR | `APPROVE GIT` |
-| `mcp__github__github_create_pull_request` | Create PR | `APPROVE GIT` |
-| `mcp__elastic-logs__query_logs` | Query logs | None |
-| `mcp__elastic-logs__get_log_stats` | Log statistics | None |
+Read-only tools are always available. Mutating tools on deployment, database, and secret infrastructure are **protected actions** — `protected-action-gate.js` blocks them by default and routes them through the Unified CTO Authorization System.
 
-## GENTYR Approval Gates
+| Tool | Action | Protected? |
+|------|--------|------------|
+| `mcp__vercel__vercel_list_deployments` | List deployments | No (read-only) |
+| `mcp__vercel__vercel_promote_deployment` | Promote deployment | Yes |
+| `mcp__vercel__vercel_rollback` | Rollback deployment | Yes |
+| `mcp__vercel__vercel_create_env_var` | Set environment variable | Yes |
+| `mcp__render__render_list_services` | List services | No (read-only) |
+| `mcp__render__render_get_service` | Get service details | No (read-only) |
+| `mcp__render__render_trigger_deploy` | Trigger deployment | Yes |
+| `mcp__render__render_update_service` | Update service config | Yes |
+| `mcp__render__render_create_env_var` | Set environment variable | Yes |
+| `mcp__supabase__supabase_sql` | Execute SQL on production | Yes |
+| `mcp__supabase__supabase_push_migration` | Apply migration to staging/main | Yes |
+| `mcp__github__github_merge_pull_request` | Merge PR to protected branch | Yes (production only) |
+| `mcp__github__github_create_pull_request` | Create PR | No (target-dependent) |
+| `mcp__elastic-logs__query_logs` | Query logs | No (read-only) |
+| `mcp__elastic-logs__get_log_stats` | Log statistics | No (read-only) |
 
-| Phrase | Scope | When Required |
-|--------|-------|---------------|
-| `APPROVE GIT` | GitHub: merges, secrets, branch protection | Production merges, secret management |
-| `APPROVE DEPLOY` | Vercel: promotions, env vars, rollbacks | Frontend deployment changes |
-| `APPROVE INFRA` | Render: deploys, service changes, env vars | Backend infrastructure changes |
-| `APPROVE DATABASE` | Supabase: SQL, migrations, deletions | Database operations on production |
-| `APPROVE DNS` | Cloudflare: DNS record changes | DNS configuration |
-| `APPROVE VAULT` | 1Password: service account creation | Secret management infrastructure |
-| `APPROVE EMAIL` | Resend: API key management | Email service configuration |
-| `APPROVE BYPASS` | Deputy-CTO: emergency bypass | Bypassing automated protections |
-| `APPROVE HOTFIX` | Deputy-CTO: emergency promotion | Immediate staging→main promotion |
+### CTO Approval Flow (Unified CTO Authorization System)
+
+When an agent calls a protected action:
+
+1. **Block.** `protected-action-gate.js` (PreToolUse) denies the tool call and creates a `deferred_actions` row in `bypass-requests.db` storing the exact `server + tool + args`. The denial response includes the deferred-action ID.
+2. **Spawned agents.** The denial response also tells the agent to file a `submit_bypass_request` and exit. The agent does NOT retry and does NOT wait — it summarizes its work and stops. The bypass request appears in the CTO's session briefing.
+3. **Interactive (CTO) sessions.** The agent presents the deferred-action ID to the CTO and asks for verbatim approval. No phrase, no code — the CTO replies in natural language ("yes, push that migration", "go ahead", etc.).
+4. **Record decision.** The agent calls `mcp__agent-tracker__record_cto_decision` with the CTO's verbatim text, the `deferred_action_id`, and the appropriate `decision_type` (`deferred_action`, `force_prod_promotion`, `lockdown_toggle`, `local_mode_toggle`, etc.). The tool scans the session JSONL for the verbatim quote and computes an HMAC-signed proof.
+5. **Audit.** `authorization-audit-spawner.js` enqueues an `authorization-auditor` in the `audit` lane. The auditor reads the CTO's session JSONL via `peek_session` and verifies the context match. (For `lockdown_toggle` / `local_mode_toggle`, execution is inline — no separate auditor is spawned because interactive sessions have no `agent_id`/`queue_id`.)
+6. **Execute.** On audit pass, `deferred-action-audit-executor.js` runs the original tool call autonomously via the MCP shared daemon (Tier 1 servers) or Bash (Tier 2 / inline state changes). The requesting agent does not need to be alive.
+
+**Agents must never tell the CTO they will receive a 6-character code.** That pattern is only used by the legacy `/hotfix` command (see Emergency Hotfix Pathway above) and is being phased out.
+
+**Security properties:** CTO approval is recorded verbatim and hashed in `cto_decisions`. An independent auditor verifies context accuracy from the actual session JSONL — not from agent claims. The deferred action is bound by `args_hash` so approved args must match stored args (no bait-and-switch). Fail-closed: if the auditor cannot find the session file or verify the quote, the verdict is FAIL.
+
+See [The Unified CTO Authorization System](CLAUDE-REFERENCE.md#the-unified-cto-authorization-system) for the full architecture, and [Deferred Protected Actions](CLAUDE-REFERENCE.md#deferred-protected-actions) for the DB schema and lifecycle.
 
 ## Rollback Procedures
 
+All mutating rollback tools below are protected actions — they route through the deferred-action + `record_cto_decision` flow described in [CTO Approval Flow](#cto-approval-flow-unified-cto-authorization-system).
+
 ### Frontend (Vercel)
 
-```bash
-# List recent deployments
+```text
+# List recent deployments (read-only — no approval)
 mcp__vercel__vercel_list_deployments
 
-# Rollback to previous deployment (requires APPROVE DEPLOY)
+# Rollback to previous deployment (protected action)
 mcp__vercel__vercel_rollback
 ```
 
 ### Backend (Render)
 
-```bash
-# View recent deploys
+```text
+# View recent deploys (read-only)
 mcp__render__render_list_deploys
 
-# Trigger redeploy of last known good commit (requires APPROVE INFRA)
+# Trigger redeploy of last known good commit (protected action)
 mcp__render__render_trigger_deploy
 ```
 
 ### Database (Supabase)
 
-```bash
-# Check migration status (requires APPROVE DATABASE for production)
-mcp__supabase__supabase_sql
+```text
+# Check migration status (read-only)
+mcp__supabase__supabase_sql        # SELECT statements pass; DDL/DML is protected
 
-# Rollback migration (requires APPROVE DATABASE)
-# Run the down migration SQL
+# Apply or roll back a migration (protected action)
+mcp__supabase__supabase_push_migration
 ```
+
+For production database rollbacks, prefer running a forward "down" migration (additive, expand/contract pattern) via `supabase_push_migration` rather than mutating `supabase_sql` directly. See `migration-safety.js` for the static + LLM-powered safety analyzer that gates promotion-time migrations.
 
 ### Full Rollback
 

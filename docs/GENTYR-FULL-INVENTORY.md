@@ -1292,7 +1292,9 @@ persona-feedback, product-manager, run-feedback
 
 ### 16.2 CTO Bypass System
 
-**Architecture** — 6-char code generated server-side (stored in deputy-cto.db). CTO types `APPROVE BYPASS <code>`. `bypass-approval-hook.js` (416 lines) reads code, computes HMAC-SHA256 with `.claude/protection-key` (root-owned), writes signed token. Token: one-time use, 5-min expiry. Spawned sessions CANNOT use bypass (server-side guard fires first).
+**Architecture** — Agents call `submit_bypass_request` (agent-tracker) which pauses the linked task and writes a row to `bypass-requests.db`. The CTO sees pending requests in the next session briefing and calls `resolve_bypass_request({ decision, context })` with natural-language guidance — no 6-character code, no chat phrase. For protected MCP actions, the deferred-action + `record_cto_decision` + `authorization-auditor` chain (Unified CTO Authorization System) runs the blocked tool call autonomously after the auditor verifies the CTO's verbatim approval against the session JSONL. Spawned sessions CANNOT call `record_cto_decision` or `resolve_bypass_request` (server-side guard).
+
+> **Legacy (deprecated, Phase 2):** The earlier `APPROVE BYPASS <code>` chat pattern with `bypass-approval-hook.js` (416 lines), 6-character code, HMAC-signed token at `.claude/bypass-approval-token.json`, and 5-min expiry is retained only for the `/hotfix` slash command pending Phase 5 cleanup. Do not reference this pattern in new agent prompts.
 
 ### 16.3 Session Briefing (at login)
 
