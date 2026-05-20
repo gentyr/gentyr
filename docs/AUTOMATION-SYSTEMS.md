@@ -296,6 +296,8 @@ This is exposed in the session briefing for CTO visibility but does **not** bloc
 
 Defense-in-depth guards implemented across the deputy-cto and agent-reports MCP servers to prevent bypass-route exploitation.
 
+> **Note:** The references to the `APPROVE BYPASS <code>` chat pattern, the 6-character code, the `execute_bypass` tool, and `bypass-approval-token.json` below describe the **legacy** bypass system (pre-Phase-2). It is deprecated and only preserved for the `/hotfix` flow. The current path is `submit_bypass_request` + CTO `resolve_bypass_request` (no code), or `record_cto_decision` for protected actions (no code, no chat phrase). See "CTO Bypass Request System" and "The Unified CTO Authorization System" in `CLAUDE.md` for the active flow. The guards described here still execute, but their purpose is to defend the legacy path from being abused while it remains in the codebase.
+
 ### Phase 1: Tool Handler Guards
 
 Four `add_question` / `answer_question` / `clear_question` / `approve_commit` guards block agent-accessible loopholes:
