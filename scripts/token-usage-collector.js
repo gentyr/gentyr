@@ -37,6 +37,7 @@ import {
   findUsageTagInJsonl,
   isSpawnedSession,
   readSubagentMeta,
+  isCompactionSubagent,
 } from '../.claude/hooks/lib/jsonl-usage-parser.js';
 import { computeCostMicroUsd } from '../.claude/hooks/lib/token-pricing.js';
 
@@ -210,7 +211,35 @@ export function resolveAttribution({
 
   // Sub-agent JSONL — first priority: meta.json gives us agent_type
   if (isSubagent) {
+    // `/compact` subprocess (no meta.json — spawned by Claude Code itself,
+    // not the Agent tool). Distinct category so the cost is visible.
+    if (isCompactionSubagent(sessionId)) {
+      return {
+        session_id: sessionId,
+        source: 'compaction-subagent',
+        lane: 'subagent',
+        agent_type: 'compaction',
+        agent_id: null,
+        queue_id: null,
+        priority: null,
+        category: null,
+        task_id: null,
+        persistent_task_id: null,
+        plan_id: null,
+        worktree_path: null,
+        subprocess_tag: null,
+        parent_session_id: parentSessionId,
+        is_subagent: 1,
+        started_at: now,
+        ended_at: null,
+        attribution_status: 'resolved',
+        last_attempt_at: now,
+      };
+    }
     const meta = readSubagentMeta(jsonlPath);
+    // `readSubagentMeta` now normalizes camelCase `agentType` (the field
+    // Claude Code actually writes) to `agent_type`. Pre-fix, the
+    // mismatch dropped every Agent-tool subagent into `subagent:unknown`.
     const agentType = meta?.agent_type || 'unknown';
     return {
       session_id: sessionId,
@@ -412,9 +441,12 @@ const ATTR_INSERT_COLUMNS = [
   'started_at', 'ended_at', 'attribution_status', 'last_attempt_at',
 ];
 
-function upsertAttribution(db, attr) {
+function upsertAttribution(db, attr, { force = false } = {}) {
   const placeholders = ATTR_INSERT_COLUMNS.map(() => '?').join(', ');
   const values = ATTR_INSERT_COLUMNS.map(c => attr[c] ?? null);
+  const updateGuard = force
+    ? ''
+    : `WHERE session_attribution.attribution_status != 'resolved'`;
   db.prepare(
     `INSERT INTO session_attribution (${ATTR_INSERT_COLUMNS.join(', ')})
      VALUES (${placeholders})
@@ -436,8 +468,75 @@ function upsertAttribution(db, attr) {
        ended_at = excluded.ended_at,
        attribution_status = excluded.attribution_status,
        last_attempt_at = excluded.last_attempt_at
-     WHERE session_attribution.attribution_status != 'resolved'`
+     ${updateGuard}`
   ).run(...values);
+}
+
+/**
+ * Backfill subagent attribution. Re-resolves rows that landed in
+ * `subagent:unknown` due to the field-name mismatch bug (Claude Code writes
+ * `agentType`; the collector previously read `agent_type`), and re-classifies
+ * `agent-acompact-*` sessions as `compaction-subagent`. Idempotent — only
+ * writes when the resolved source differs from the stored one. Tracks
+ * progress in `meta` table so it runs once per database.
+ */
+export function backfillSubagentAttribution({
+  projectDir = PROJECT_DIR,
+  dbPath = DB_PATH,
+  marker = 'subagent_backfill_v1',
+} = {}) {
+  const db = openDb(dbPath);
+  let rewrote = 0;
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    const seen = db.prepare('SELECT value FROM meta WHERE key = ?').get(marker);
+    if (seen) return { rewrote: 0, skipped: true };
+
+    const rows = db.prepare(
+      `SELECT session_id FROM session_attribution
+       WHERE source = 'subagent:unknown' OR source LIKE 'subagent:%'
+       OR (is_subagent = 1 AND agent_type = 'unknown')`
+    ).all();
+
+    if (rows.length === 0) {
+      db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(marker, String(Date.now()));
+      return { rewrote: 0, skipped: false };
+    }
+
+    // Build a path lookup: session_id -> { path, isSubagent, parentSessionId }
+    const sessionDir = getSessionDir(projectDir);
+    const files = listSessionFiles(sessionDir);
+    const byId = new Map();
+    for (const f of files) byId.set(f.sessionId, f);
+
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        const file = byId.get(row.session_id);
+        if (!file) continue;
+        const attr = resolveAttribution({
+          sessionId: file.sessionId,
+          jsonlPath: file.path,
+          isSubagent: file.isSubagent,
+          parentSessionId: file.parentSessionId,
+          tokenDb: db,
+        });
+        // Skip no-op rewrites — e.g., a subagent file whose meta.json is
+        // genuinely missing AND is not a compaction subagent will still
+        // resolve to `subagent:unknown`.
+        const current = db.prepare(
+          'SELECT source, agent_type FROM session_attribution WHERE session_id = ?'
+        ).get(row.session_id);
+        if (current && current.source === attr.source && current.agent_type === attr.agent_type) continue;
+        upsertAttribution(db, attr, { force: true });
+        rewrote++;
+      }
+      db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(marker, String(Date.now()));
+    });
+    tx();
+  } finally {
+    try { db.close(); } catch { /* non-fatal */ }
+  }
+  return { rewrote, skipped: false };
 }
 
 // ============================================================================
@@ -660,6 +759,26 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
   log('token-usage-collector starting');
   log(`project_dir=${PROJECT_DIR} db=${DB_PATH} interval=${POLL_INTERVAL_MS}ms`);
+
+  // One-time backfill: re-resolve subagent attribution that landed in
+  // `subagent:unknown` due to the meta.json field-name bug, and reclassify
+  // `agent-acompact-*` sessions as `compaction-subagent`. Idempotent —
+  // gated by a `meta` row so it runs once per DB.
+  try {
+    const bf = backfillSubagentAttribution();
+    if (!bf.skipped) {
+      log(`subagent backfill: rewrote ${bf.rewrote} attribution rows`);
+      // Force rollup rebuild so the report reflects the new sources today.
+      try {
+        const db = openDb();
+        try { rebuildDailyRollup(db); } finally { db.close(); }
+      } catch (err) {
+        log(`warn: post-backfill rollup rebuild failed: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    log(`backfill error: ${err.stack || err.message}`);
+  }
 
   // Kick off first cycle immediately, then schedule
   try {
