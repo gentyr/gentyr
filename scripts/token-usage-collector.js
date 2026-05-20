@@ -40,6 +40,11 @@ import {
   isCompactionSubagent,
 } from '../.claude/hooks/lib/jsonl-usage-parser.js';
 import { computeCostMicroUsd } from '../.claude/hooks/lib/token-pricing.js';
+import {
+  deriveWorkCategory,
+  isRevivalSource,
+  normalizeRevivalSource,
+} from '../.claude/hooks/lib/work-category.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -168,12 +173,44 @@ CREATE TABLE IF NOT EXISTS daily_rollup (
 `;
 
 /**
+ * Idempotent ALTER TABLE ADD COLUMN. Swallows "duplicate column" errors so
+ * the migration is safe to run on every open.
+ */
+function addColumnIfMissing(db, table, columnDef) {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
+  } catch (err) {
+    if (!/duplicate column name/i.test(err.message)) throw err;
+  }
+}
+
+/**
  * Open (and initialize) the token-usage DB.
+ *
+ * Schema migrations (run on every open, all idempotent):
+ *   v1.0 — base schema (usage_events, session_attribution, ...)
+ *   v1.1 — PR B columns on session_attribution:
+ *           work_category    — stable kind-of-work (survives revival)
+ *           spawn_origin     — original spawner of this WORK (not the latest
+ *                              revival code path); see lib/work-category.js
+ *           is_revival       — 1 when source is a revival code path
+ *           revived_by       — normalized revival mechanism name
+ *           revival_count    — how many queue items share this taskId/PT/plan
  */
 export function openDb(dbPath = DB_PATH) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
   db.exec(SCHEMA);
+  // PR B columns — additive only, idempotent.
+  addColumnIfMissing(db, 'session_attribution', 'work_category TEXT');
+  addColumnIfMissing(db, 'session_attribution', 'spawn_origin TEXT');
+  addColumnIfMissing(db, 'session_attribution', 'is_revival INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'session_attribution', 'revived_by TEXT');
+  addColumnIfMissing(db, 'session_attribution', 'revival_count INTEGER NOT NULL DEFAULT 0');
+  // Indexes for the new dimensions.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_work_category ON session_attribution(work_category)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_spawn_origin ON session_attribution(spawn_origin)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_is_revival ON session_attribution(is_revival)`);
   return db;
 }
 
@@ -192,6 +229,98 @@ function openReadonly(p) {
     log(`warn: failed to open ${p}: ${err.message}`);
     return null;
   }
+}
+
+/**
+ * Chase the spawn origin of a piece of work through `queue_items`. For a
+ * given workIdentifier (persistentTaskId > taskId > planId), find the
+ * EARLIEST queue item matching it and return its source — that's the true
+ * original spawner, independent of any revival code path that re-enqueued
+ * the work later.
+ *
+ * Also returns `revival_count` (count of revival-source queue items for the
+ * same work).
+ *
+ * Returns `{ spawnOrigin, revivalCount }` — both may be null/0 if no
+ * workIdentifier is available or no rows match.
+ */
+function chaseSpawnOrigin(queueDb, { taskId, persistentTaskId, planId }) {
+  if (!queueDb) return { spawnOrigin: null, revivalCount: 0 };
+  const tryQuery = (jsonKey, value) => {
+    if (value === null || value === undefined) return null;
+    try {
+      // Earliest source — the original spawn that started this work.
+      const oldest = queueDb.prepare(
+        `SELECT source FROM queue_items
+         WHERE json_extract(metadata, '$.${jsonKey}') = ?
+         ORDER BY enqueued_at ASC
+         LIMIT 1`
+      ).get(String(value));
+      // Total queue items for this work — minus 1 for the original = revival count.
+      const total = queueDb.prepare(
+        `SELECT COUNT(*) AS n FROM queue_items
+         WHERE json_extract(metadata, '$.${jsonKey}') = ?`
+      ).get(String(value));
+      return { oldestSource: oldest?.source || null, totalItems: total?.n || 0 };
+    } catch (err) {
+      log(`warn: chaseSpawnOrigin(${jsonKey}=${value}): ${err.message}`);
+      return null;
+    }
+  };
+  // Precedence: persistentTaskId > taskId > planId. PersistentTaskId is the
+  // most specific (one persistent task = one piece of work); planId can map
+  // to many persistent tasks.
+  const sources = [
+    tryQuery('persistentTaskId', persistentTaskId),
+    tryQuery('taskId', taskId),
+    tryQuery('planId', planId),
+  ].filter(Boolean);
+  if (sources.length === 0) return { spawnOrigin: null, revivalCount: 0 };
+  // Prefer the first non-null oldestSource.
+  const best = sources.find(s => s.oldestSource) || sources[0];
+  // revival_count = totalItems - 1 (the original is not a revival).
+  const revivalCount = Math.max(0, (best.totalItems || 0) - 1);
+  return { spawnOrigin: best.oldestSource, revivalCount };
+}
+
+/**
+ * Add the PR B fields (work_category, spawn_origin, is_revival, revived_by,
+ * revival_count) to an attribution row.
+ *
+ * Falls back to the row's own `source` for `spawn_origin` when no
+ * workIdentifier is available.
+ */
+function attachWorkCategoryFields(row, { sessionId, queueDb = null, queueRowMetadata = null }) {
+  const isRev = isRevivalSource(row.source);
+  const workCategory = deriveWorkCategory({
+    agentType: row.agent_type,
+    source: row.source,
+    sessionId,
+    isSubagent: !!row.is_subagent,
+    metadata: queueRowMetadata,
+  });
+  let spawnOrigin = null;
+  let revivalCount = 0;
+  if (queueDb && queueRowMetadata) {
+    const chase = chaseSpawnOrigin(queueDb, {
+      taskId: queueRowMetadata.taskId,
+      persistentTaskId: queueRowMetadata.persistentTaskId,
+      planId: queueRowMetadata.planId,
+    });
+    spawnOrigin = chase.spawnOrigin;
+    revivalCount = chase.revivalCount;
+  }
+  // Fallback: when we can't chase through a workIdentifier, the row's own
+  // source is the spawn origin (it's the first and only known queue item).
+  if (!spawnOrigin) spawnOrigin = row.source;
+  return {
+    ...row,
+    work_category: workCategory,
+    spawn_origin: spawnOrigin,
+    is_revival: isRev ? 1 : 0,
+    revived_by: isRev ? normalizeRevivalSource(row.source) : null,
+    revival_count: revivalCount,
+  };
 }
 
 /**
@@ -214,7 +343,7 @@ export function resolveAttribution({
     // `/compact` subprocess (no meta.json — spawned by Claude Code itself,
     // not the Agent tool). Distinct category so the cost is visible.
     if (isCompactionSubagent(sessionId)) {
-      return {
+      return attachWorkCategoryFields({
         session_id: sessionId,
         source: 'compaction-subagent',
         lane: 'subagent',
@@ -234,14 +363,14 @@ export function resolveAttribution({
         ended_at: null,
         attribution_status: 'resolved',
         last_attempt_at: now,
-      };
+      }, { sessionId });
     }
     const meta = readSubagentMeta(jsonlPath);
     // `readSubagentMeta` now normalizes camelCase `agentType` (the field
     // Claude Code actually writes) to `agent_type`. Pre-fix, the
     // mismatch dropped every Agent-tool subagent into `subagent:unknown`.
     const agentType = meta?.agent_type || 'unknown';
-    return {
+    return attachWorkCategoryFields({
       session_id: sessionId,
       source: `subagent:${agentType}`,
       lane: 'subagent',
@@ -261,7 +390,7 @@ export function resolveAttribution({
       ended_at: null,
       attribution_status: 'resolved',
       last_attempt_at: now,
-    };
+    }, { sessionId });
   }
 
   // (1) Agent marker in JSONL -> queue_items.agent_id
@@ -300,7 +429,7 @@ export function resolveAttribution({
   if (queueRow) {
     let meta = {};
     try { meta = queueRow.metadata ? JSON.parse(queueRow.metadata) : {}; } catch { /* ignore */ }
-    return {
+    const row = {
       session_id: sessionId,
       source: queueRow.source,
       lane: queueRow.lane || null,
@@ -321,6 +450,14 @@ export function resolveAttribution({
       attribution_status: 'resolved',
       last_attempt_at: now,
     };
+    // Reopen queue DB read-only for the spawn-origin chase. Cheap on SQLite
+    // (local file, WAL); keeps the chase logic out of the lookup try/finally.
+    const chaseDb = openReadonly(QUEUE_DB_PATH);
+    try {
+      return attachWorkCategoryFields(row, { sessionId, queueDb: chaseDb, queueRowMetadata: meta });
+    } finally {
+      try { chaseDb?.close(); } catch { /* non-fatal */ }
+    }
   }
 
   // (3) subprocess_calls.child_session_id == session_id
@@ -333,7 +470,7 @@ export function resolveAttribution({
        LIMIT 1`
     ).get(sessionId);
     if (sub) {
-      return {
+      return attachWorkCategoryFields({
         session_id: sessionId,
         source: `subprocess:${sub.caller}`,
         lane: 'subprocess',
@@ -353,7 +490,7 @@ export function resolveAttribution({
         ended_at: null,
         attribution_status: 'resolved',
         last_attempt_at: now,
-      };
+      }, { sessionId });
     }
   } catch (err) {
     log(`warn: subprocess_calls lookup failed: ${err.message}`);
@@ -362,7 +499,7 @@ export function resolveAttribution({
   // (4) CLAUDE_USAGE_TAG in JSONL env dump
   const tagged = findUsageTagInJsonl(jsonlPath);
   if (tagged.tag) {
-    return {
+    return attachWorkCategoryFields({
       session_id: sessionId,
       source: `subprocess:${tagged.tag}`,
       lane: 'subprocess',
@@ -382,12 +519,12 @@ export function resolveAttribution({
       ended_at: null,
       attribution_status: 'resolved',
       last_attempt_at: now,
-    };
+    }, { sessionId });
   }
 
   // (5) No marker, no queue, no subprocess, NOT a spawned session -> interactive CTO
   if (!isSpawnedSession(jsonlPath)) {
-    return {
+    return attachWorkCategoryFields({
       session_id: sessionId,
       source: 'interactive-cto',
       lane: 'interactive',
@@ -407,11 +544,11 @@ export function resolveAttribution({
       ended_at: null,
       attribution_status: 'resolved',
       last_attempt_at: now,
-    };
+    }, { sessionId });
   }
 
   // (6) Pending — retry up to 1h, then freeze as 'unknown'
-  return {
+  return attachWorkCategoryFields({
     session_id: sessionId,
     source: 'unknown',
     lane: null,
@@ -431,7 +568,7 @@ export function resolveAttribution({
     ended_at: null,
     attribution_status: 'pending',
     last_attempt_at: now,
-  };
+  }, { sessionId });
 }
 
 const ATTR_INSERT_COLUMNS = [
@@ -439,6 +576,8 @@ const ATTR_INSERT_COLUMNS = [
   'priority', 'category', 'task_id', 'persistent_task_id', 'plan_id',
   'worktree_path', 'subprocess_tag', 'parent_session_id', 'is_subagent',
   'started_at', 'ended_at', 'attribution_status', 'last_attempt_at',
+  // PR B columns
+  'work_category', 'spawn_origin', 'is_revival', 'revived_by', 'revival_count',
 ];
 
 function upsertAttribution(db, attr, { force = false } = {}) {
@@ -467,7 +606,12 @@ function upsertAttribution(db, attr, { force = false } = {}) {
        is_subagent = excluded.is_subagent,
        ended_at = excluded.ended_at,
        attribution_status = excluded.attribution_status,
-       last_attempt_at = excluded.last_attempt_at
+       last_attempt_at = excluded.last_attempt_at,
+       work_category = excluded.work_category,
+       spawn_origin = excluded.spawn_origin,
+       is_revival = excluded.is_revival,
+       revived_by = excluded.revived_by,
+       revival_count = excluded.revival_count
      ${updateGuard}`
   ).run(...values);
 }
@@ -533,6 +677,81 @@ export function backfillSubagentAttribution({
       db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(marker, String(Date.now()));
     });
     tx();
+  } finally {
+    try { db.close(); } catch { /* non-fatal */ }
+  }
+  return { rewrote, skipped: false };
+}
+
+/**
+ * Backfill work-category attribution. Walks all existing
+ * `session_attribution` rows and computes `work_category`, `spawn_origin`,
+ * `is_revival`, `revived_by`, and `revival_count` from the stored source +
+ * agent_type + metadata fields — no JSONL reads required. Idempotent —
+ * gated by a `meta` row so it runs once per database.
+ */
+export function backfillWorkCategoryAttribution({
+  dbPath = DB_PATH,
+  queueDbPath = QUEUE_DB_PATH,
+  marker = 'work_category_backfill_v1',
+} = {}) {
+  const db = openDb(dbPath);
+  let rewrote = 0;
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    const seen = db.prepare('SELECT value FROM meta WHERE key = ?').get(marker);
+    if (seen) return { rewrote: 0, skipped: true };
+
+    const rows = db.prepare(
+      `SELECT session_id, source, agent_type, is_subagent, task_id, persistent_task_id, plan_id
+       FROM session_attribution`
+    ).all();
+
+    const queueDb = openReadonly(queueDbPath);
+    const update = db.prepare(
+      `UPDATE session_attribution
+       SET work_category = ?, spawn_origin = ?, is_revival = ?, revived_by = ?, revival_count = ?
+       WHERE session_id = ?`
+    );
+
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        const metadata = {
+          taskId: row.task_id,
+          persistentTaskId: row.persistent_task_id,
+          planId: row.plan_id,
+        };
+        const isRev = isRevivalSource(row.source);
+        const workCategory = deriveWorkCategory({
+          agentType: row.agent_type,
+          source: row.source,
+          sessionId: row.session_id,
+          isSubagent: !!row.is_subagent,
+          metadata,
+        });
+        let spawnOrigin = null;
+        let revivalCount = 0;
+        if (queueDb) {
+          const chase = chaseSpawnOrigin(queueDb, metadata);
+          spawnOrigin = chase.spawnOrigin;
+          revivalCount = chase.revivalCount;
+        }
+        if (!spawnOrigin) spawnOrigin = row.source;
+        update.run(
+          workCategory,
+          spawnOrigin,
+          isRev ? 1 : 0,
+          isRev ? normalizeRevivalSource(row.source) : null,
+          revivalCount,
+          row.session_id,
+        );
+        rewrote++;
+      }
+      db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(marker, String(Date.now()));
+    });
+    tx();
+
+    try { queueDb?.close(); } catch { /* non-fatal */ }
   } finally {
     try { db.close(); } catch { /* non-fatal */ }
   }
@@ -778,6 +997,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   } catch (err) {
     log(`backfill error: ${err.stack || err.message}`);
+  }
+
+  // PR B backfill: populate work_category, spawn_origin, is_revival,
+  // revived_by, revival_count for all existing session_attribution rows.
+  // Runs once per DB (gated by `work_category_backfill_v1` meta row).
+  try {
+    const bf2 = backfillWorkCategoryAttribution();
+    if (!bf2.skipped) {
+      log(`work-category backfill: populated ${bf2.rewrote} attribution rows`);
+    }
+  } catch (err) {
+    log(`work-category backfill error: ${err.stack || err.message}`);
   }
 
   // Kick off first cycle immediately, then schedule

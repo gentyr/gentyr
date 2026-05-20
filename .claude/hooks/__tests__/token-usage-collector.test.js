@@ -42,6 +42,7 @@ import {
   rebuildDailyRollup,
   runScanCycle,
   backfillSubagentAttribution,
+  backfillWorkCategoryAttribution,
 } from '../../../scripts/token-usage-collector.js';
 
 // ============================================================================
@@ -580,5 +581,142 @@ describe('scripts/token-usage-collector.js', () => {
     const r2 = backfillSubagentAttribution({ projectDir: tmpDir, dbPath });
     assert.strictEqual(r2.skipped, true);
     assert.strictEqual(r2.rewrote, 0);
+  });
+
+  // ==========================================================================
+  // PR B — work_category / spawn_origin / is_revival attribution
+  // ==========================================================================
+
+  it('openDb adds the 5 PR B columns and indexes', () => {
+    const db = openDb(dbPath);
+    const cols = db.prepare("PRAGMA table_info(session_attribution)").all().map(c => c.name);
+    db.close();
+    for (const col of ['work_category', 'spawn_origin', 'is_revival', 'revived_by', 'revival_count']) {
+      assert.ok(cols.includes(col), `missing column: ${col}`);
+    }
+  });
+
+  it('resolveAttribution stamps work_category for compaction subagents', () => {
+    const db = openDb(dbPath);
+    const jsonl = path.join(tmpDir, 'agent-acompact-feedface.jsonl');
+    fs.writeFileSync(jsonl, '{}\n');
+    const attr = resolveAttribution({
+      sessionId: 'agent-acompact-feedface',
+      jsonlPath: jsonl,
+      isSubagent: true,
+      parentSessionId: 'parent-1',
+      tokenDb: db,
+    });
+    db.close();
+    assert.strictEqual(attr.work_category, 'compaction-subagent');
+    assert.strictEqual(attr.is_revival, 0);
+    assert.strictEqual(attr.revived_by, null);
+    // spawn_origin falls back to source for sessions with no workIdentifier.
+    assert.strictEqual(attr.spawn_origin, 'compaction-subagent');
+  });
+
+  it('resolveAttribution stamps agent-tool-subagent for Agent-tool subagents', () => {
+    const db = openDb(dbPath);
+    const jsonl = path.join(tmpDir, 'agent-aabc.jsonl');
+    fs.writeFileSync(jsonl, '{}\n');
+    fs.writeFileSync(jsonl.replace('.jsonl', '.meta.json'), JSON.stringify({ agentType: 'investigator' }));
+    const attr = resolveAttribution({
+      sessionId: 'agent-aabc',
+      jsonlPath: jsonl,
+      isSubagent: true,
+      parentSessionId: 'parent-2',
+      tokenDb: db,
+    });
+    db.close();
+    assert.strictEqual(attr.work_category, 'agent-tool-subagent');
+    assert.strictEqual(attr.agent_type, 'investigator');
+    assert.strictEqual(attr.is_revival, 0);
+  });
+
+  it('backfillWorkCategoryAttribution populates all 5 PR B fields and is idempotent', () => {
+    const db = openDb(dbPath);
+    db.prepare(
+      `INSERT INTO session_attribution
+       (session_id, source, lane, agent_type, persistent_task_id, is_subagent, started_at, attribution_status, last_attempt_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('sess-1', 'session-queue-reaper', 'persistent', 'persistent-task-monitor', 'pt-42', 0, Date.now(), 'resolved', Date.now());
+    db.prepare(
+      `INSERT INTO session_attribution
+       (session_id, source, lane, agent_type, is_subagent, started_at, attribution_status, last_attempt_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('sess-2', 'persistent-task-spawner', 'persistent', 'persistent-task-monitor', 0, Date.now(), 'resolved', Date.now());
+    db.prepare(
+      `INSERT INTO session_attribution
+       (session_id, source, lane, agent_type, is_subagent, started_at, attribution_status, last_attempt_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('agent-acompact-zz01', 'compaction-subagent', 'subagent', 'compaction', 1, Date.now(), 'resolved', Date.now());
+    db.close();
+
+    const r1 = backfillWorkCategoryAttribution({ dbPath });
+    assert.strictEqual(r1.skipped, false);
+    assert.strictEqual(r1.rewrote, 3);
+
+    const db2 = openDb(dbPath);
+    const row1 = db2.prepare('SELECT * FROM session_attribution WHERE session_id = ?').get('sess-1');
+    const row2 = db2.prepare('SELECT * FROM session_attribution WHERE session_id = ?').get('sess-2');
+    const row3 = db2.prepare('SELECT * FROM session_attribution WHERE session_id = ?').get('agent-acompact-zz01');
+    db2.close();
+
+    // sess-1: revived persistent monitor — work_category survives, is_revival=1
+    assert.strictEqual(row1.work_category, 'persistent-monitor');
+    assert.strictEqual(row1.is_revival, 1);
+    assert.strictEqual(row1.revived_by, 'session-queue-reaper');
+    // sess-2: original persistent monitor
+    assert.strictEqual(row2.work_category, 'persistent-monitor');
+    assert.strictEqual(row2.is_revival, 0);
+    assert.strictEqual(row2.revived_by, null);
+    // compaction subagent
+    assert.strictEqual(row3.work_category, 'compaction-subagent');
+    assert.strictEqual(row3.is_revival, 0);
+
+    // Idempotency
+    const r2 = backfillWorkCategoryAttribution({ dbPath });
+    assert.strictEqual(r2.skipped, true);
+    assert.strictEqual(r2.rewrote, 0);
+  });
+
+  it('backfillWorkCategoryAttribution chases spawn_origin through queue_items by persistentTaskId', () => {
+    // Set up a queue DB with two queue items sharing persistentTaskId 'pt-99':
+    // an early persistent-task-spawner row, and a later session-queue-reaper revival.
+    const stateDir = path.join(tmpDir, '.claude', 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const queueDbPath = path.join(stateDir, 'session-queue.db');
+    const qdb = new Database(queueDbPath);
+    qdb.exec(`CREATE TABLE queue_items (id INTEGER PRIMARY KEY, source TEXT, lane TEXT, agent_type TEXT, agent_id TEXT, priority TEXT, metadata TEXT, worktree_path TEXT, spawned_at TEXT, enqueued_at TEXT, resume_session_id TEXT)`);
+    qdb.prepare(`INSERT INTO queue_items VALUES (1, 'persistent-task-spawner', 'persistent', 'persistent-task-monitor', 'agent-orig', 'critical', '{"persistentTaskId":"pt-99"}', null, '2026-05-01T00:00:00Z', '2026-05-01T00:00:00Z', null)`).run();
+    qdb.prepare(`INSERT INTO queue_items VALUES (2, 'session-queue-reaper', 'persistent', 'persistent-task-monitor', 'agent-rev1', 'critical', '{"persistentTaskId":"pt-99"}', null, '2026-05-02T00:00:00Z', '2026-05-02T00:00:00Z', null)`).run();
+    qdb.prepare(`INSERT INTO queue_items VALUES (3, 'hourly-automation:revive_dead_persistent_monitor', 'persistent', 'persistent-task-monitor', 'agent-rev2', 'critical', '{"persistentTaskId":"pt-99"}', null, '2026-05-03T00:00:00Z', '2026-05-03T00:00:00Z', null)`).run();
+    qdb.close();
+
+    // Set CLAUDE_PROJECT_DIR so the collector finds our queue DB.
+    const tokenDb = path.join(stateDir, 'token-usage.db');
+    const db = openDb(tokenDb);
+    db.prepare(
+      `INSERT INTO session_attribution
+       (session_id, source, lane, agent_type, persistent_task_id, is_subagent, started_at, attribution_status, last_attempt_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('s-rev2', 'hourly-automation:revive_dead_persistent_monitor', 'persistent', 'persistent-task-monitor', 'pt-99', 0, Date.now(), 'resolved', Date.now());
+    db.close();
+
+    const result = backfillWorkCategoryAttribution({ dbPath: tokenDb, queueDbPath });
+    assert.strictEqual(result.skipped, false);
+
+    const db2 = openDb(tokenDb);
+    const row = db2.prepare('SELECT * FROM session_attribution WHERE session_id = ?').get('s-rev2');
+    db2.close();
+    // The revival's source is session-queue-reaper, but the EARLIEST queue
+    // item with persistentTaskId='pt-99' is persistent-task-spawner — that's
+    // the true spawn origin.
+    assert.strictEqual(row.spawn_origin, 'persistent-task-spawner');
+    assert.strictEqual(row.is_revival, 1);
+    assert.strictEqual(row.revived_by, 'revive_dead_persistent_monitor');
+    assert.strictEqual(row.work_category, 'persistent-monitor');
+    // 3 queue items total, 1 original + 2 revivals = revival_count of 2.
+    assert.strictEqual(row.revival_count, 2);
   });
 });
