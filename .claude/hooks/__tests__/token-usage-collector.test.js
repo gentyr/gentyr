@@ -33,6 +33,7 @@ import {
   isSpawnedSession,
   listSessionFiles,
   readSubagentMeta,
+  isCompactionSubagent,
 } from '../lib/jsonl-usage-parser.js';
 
 import {
@@ -40,6 +41,7 @@ import {
   resolveAttribution,
   rebuildDailyRollup,
   runScanCycle,
+  backfillSubagentAttribution,
 } from '../../../scripts/token-usage-collector.js';
 
 // ============================================================================
@@ -262,6 +264,31 @@ describe('lib/jsonl-usage-parser.js', () => {
     assert.strictEqual(meta.agent_type, 'code-writer');
     assert.strictEqual(meta.agent_id, 'agent-x');
   });
+
+  it('readSubagentMeta normalizes camelCase agentType (Claude Code field)', () => {
+    // Claude Code actually writes camelCase — the pre-fix bug was reading snake_case.
+    fs.writeFileSync(path.join(tmpDir, 'cc.jsonl'), '{}\n');
+    fs.writeFileSync(path.join(tmpDir, 'cc.meta.json'), JSON.stringify({ agentType: 'user-alignment' }));
+    const meta = readSubagentMeta(path.join(tmpDir, 'cc.jsonl'));
+    assert.strictEqual(meta.agent_type, 'user-alignment');
+    assert.strictEqual(meta.agentType, 'user-alignment');
+  });
+
+  it('readSubagentMeta handles malformed meta.json without throwing', () => {
+    fs.writeFileSync(path.join(tmpDir, 'bad.jsonl'), '{}\n');
+    fs.writeFileSync(path.join(tmpDir, 'bad.meta.json'), '{not valid json');
+    const meta = readSubagentMeta(path.join(tmpDir, 'bad.jsonl'));
+    assert.strictEqual(meta, null);
+  });
+
+  it('isCompactionSubagent detects agent-acompact-* session ids', () => {
+    assert.strictEqual(isCompactionSubagent('agent-acompact-1d181158b5975cc5'), true);
+    assert.strictEqual(isCompactionSubagent('agent-acompact-abc'), true);
+    assert.strictEqual(isCompactionSubagent('agent-a09f0512eddaa396c'), false);
+    assert.strictEqual(isCompactionSubagent('67bf8b1e-f9c5-4dfb-8912-fa8b2f34848e'), false);
+    assert.strictEqual(isCompactionSubagent(undefined), false);
+    assert.strictEqual(isCompactionSubagent(null), false);
+  });
 });
 
 // ============================================================================
@@ -457,5 +484,101 @@ describe('scripts/token-usage-collector.js', () => {
     } finally {
       try { fs.rmSync(realSessionDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
+  });
+
+  it('resolveAttribution classifies agent-acompact-* as compaction-subagent', () => {
+    const db = openDb(dbPath);
+    const jsonl = path.join(tmpDir, 'agent-acompact-deadbeef.jsonl');
+    fs.writeFileSync(jsonl, '{}\n');
+    // No .meta.json sidecar — that's the real-world case.
+    const attr = resolveAttribution({
+      sessionId: 'agent-acompact-deadbeef',
+      jsonlPath: jsonl,
+      isSubagent: true,
+      parentSessionId: 'parent-123',
+      tokenDb: db,
+    });
+    db.close();
+    assert.strictEqual(attr.source, 'compaction-subagent');
+    assert.strictEqual(attr.agent_type, 'compaction');
+    assert.strictEqual(attr.is_subagent, 1);
+    assert.strictEqual(attr.parent_session_id, 'parent-123');
+  });
+
+  it('resolveAttribution reads camelCase agentType for non-compact subagents', () => {
+    // Regression guard for the field-name bug — meta.json from Claude Code
+    // uses camelCase; subagent rows must NOT fall into subagent:unknown.
+    const db = openDb(dbPath);
+    const jsonl = path.join(tmpDir, 'agent-aface0001.jsonl');
+    fs.writeFileSync(jsonl, '{}\n');
+    fs.writeFileSync(jsonl.replace('.jsonl', '.meta.json'), JSON.stringify({ agentType: 'investigator' }));
+    const attr = resolveAttribution({
+      sessionId: 'agent-aface0001',
+      jsonlPath: jsonl,
+      isSubagent: true,
+      parentSessionId: 'parent-1',
+      tokenDb: db,
+    });
+    db.close();
+    assert.strictEqual(attr.source, 'subagent:investigator');
+    assert.strictEqual(attr.agent_type, 'investigator');
+  });
+
+  it('backfillSubagentAttribution reattributes existing subagent:unknown rows', () => {
+    // Simulate the pre-bugfix state: a row stored as `subagent:unknown` even
+    // though the meta.json actually contains `agentType: code-writer`.
+    // Lay out a real project session dir so listSessionFiles() can find it.
+    const realProjectDir = path.join(tmpDir, 'proj');
+    fs.mkdirSync(realProjectDir, { recursive: true });
+    const sd = path.join(os.homedir(), '.claude', 'projects', encodeProjectPath(realProjectDir));
+    fs.mkdirSync(sd, { recursive: true });
+    try {
+      // Parent (non-subagent) — needed because listSessionFiles iterates
+      // top-level *.jsonl and then walks subagents/.
+      fs.writeFileSync(path.join(sd, 'parent-1.jsonl'), '{}\n');
+      const subDir = path.join(sd, 'parent-1', 'subagents');
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.writeFileSync(path.join(subDir, 'agent-aface0002.jsonl'), '{}\n');
+      fs.writeFileSync(path.join(subDir, 'agent-aface0002.meta.json'), JSON.stringify({ agentType: 'code-writer' }));
+      // Also seed a compaction subagent that pre-bugfix was stored as unknown.
+      fs.writeFileSync(path.join(subDir, 'agent-acompact-cafef00d.jsonl'), '{}\n');
+
+      // Stage the pre-bugfix attribution rows directly.
+      const db = openDb(dbPath);
+      db.prepare(
+        `INSERT INTO session_attribution (session_id, source, lane, agent_type, is_subagent, started_at, attribution_status, last_attempt_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'resolved', ?)`
+      ).run('agent-aface0002', 'subagent:unknown', 'subagent', 'unknown', 1, Date.now(), Date.now());
+      db.prepare(
+        `INSERT INTO session_attribution (session_id, source, lane, agent_type, is_subagent, started_at, attribution_status, last_attempt_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'resolved', ?)`
+      ).run('agent-acompact-cafef00d', 'subagent:unknown', 'subagent', 'unknown', 1, Date.now(), Date.now());
+      db.close();
+
+      const result = backfillSubagentAttribution({ projectDir: realProjectDir, dbPath });
+      assert.strictEqual(result.skipped, false);
+      assert.strictEqual(result.rewrote, 2);
+
+      const db2 = openDb(dbPath);
+      const r1 = db2.prepare('SELECT source, agent_type FROM session_attribution WHERE session_id = ?').get('agent-aface0002');
+      const r2 = db2.prepare('SELECT source, agent_type FROM session_attribution WHERE session_id = ?').get('agent-acompact-cafef00d');
+      db2.close();
+      assert.strictEqual(r1.source, 'subagent:code-writer');
+      assert.strictEqual(r1.agent_type, 'code-writer');
+      assert.strictEqual(r2.source, 'compaction-subagent');
+      assert.strictEqual(r2.agent_type, 'compaction');
+    } finally {
+      try { fs.rmSync(sd, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  it('backfillSubagentAttribution is idempotent (skip flag persists in meta)', () => {
+    const db = openDb(dbPath);
+    db.close();
+    const r1 = backfillSubagentAttribution({ projectDir: tmpDir, dbPath });
+    assert.strictEqual(r1.skipped, false);
+    const r2 = backfillSubagentAttribution({ projectDir: tmpDir, dbPath });
+    assert.strictEqual(r2.skipped, true);
+    assert.strictEqual(r2.rewrote, 0);
   });
 });

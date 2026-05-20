@@ -284,14 +284,38 @@ export function isSpawnedSession(filePath, scanBytes = 65536) {
 
 /**
  * Read sub-agent metadata from the sibling .meta.json file (if present).
- * Returns { agent_id, agent_type, description } or null.
+ * Returns a normalized object with both camelCase and snake_case keys
+ * (Claude Code writes `agentType`; older callers read `agent_type`), or null.
  */
 export function readSubagentMeta(subagentJsonlPath) {
   const metaPath = subagentJsonlPath.replace(/\.jsonl$/, '.meta.json');
   try {
     if (!fs.existsSync(metaPath)) return null;
-    return JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    if (!raw || typeof raw !== 'object') return null;
+    const agentType = raw.agentType ?? raw.agent_type ?? null;
+    const agentId = raw.agentId ?? raw.agent_id ?? null;
+    const description = raw.description ?? null;
+    return {
+      ...raw,
+      agent_type: agentType,
+      agentType,
+      agent_id: agentId,
+      agentId,
+      description,
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * Detect a `/compact` sub-process JSONL by its session_id prefix.
+ * Claude Code names auto-compaction subagent files like
+ * `agent-acompact-<hex>.jsonl` under `<parent>/subagents/`. These have no
+ * `.meta.json` sidecar because they are spawned by Claude Code itself, not
+ * the Agent tool.
+ */
+export function isCompactionSubagent(sessionId) {
+  return typeof sessionId === 'string' && sessionId.startsWith('agent-acompact-');
 }
