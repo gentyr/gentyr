@@ -201,6 +201,8 @@ const DEFAULTS = {
   worktree_cleanup: 5,                 // 5 minutes
   abandoned_worktree_rescue: 15,       // 15 minutes
   stale_worktree_reaper: 20,           // 20 minutes
+  interactive_session_reaper: 5,       // 5 minutes (clean up dead CTO sessions' worktrees)
+  branch_pruner: 30,                   // 30 minutes (prune merged/dead local + remote branches)
   stale_work_detector: 2880,           // 48 hours
   demo_validation: 1440,               // daily
   timed_pause_auto_resume: 1,          // 1 minute (check frequently for expired timed pauses)

@@ -281,6 +281,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/interactive-heartbeat.js",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/cto-notification-hook.js",
             "timeout": 10
           },

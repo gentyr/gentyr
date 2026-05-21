@@ -51,12 +51,23 @@ try {
 // Stdin reader (SessionStart hook contract)
 // ---------------------------------------------------------------------------
 
+// Module-level holder for the parsed SessionStart event so build*Briefing()
+// functions can access fields like session_id without changing their signatures.
+let SESSION_EVENT = null;
+
 async function readStdin() {
   return new Promise((resolve) => {
     let data = '';
     const rl = createInterface({ input: process.stdin });
     rl.on('line', (line) => { data += line; });
-    rl.on('close', () => { resolve(data); });
+    rl.on('close', () => {
+      try {
+        SESSION_EVENT = data ? JSON.parse(data) : null;
+      } catch {
+        SESSION_EVENT = null;
+      }
+      resolve(data);
+    });
     // Timeout safety — don't block session start
     setTimeout(() => { rl.close(); resolve(data); }, 200);
   });
@@ -745,8 +756,20 @@ function buildInteractiveBriefing() {
     if (fs.existsSync(lockdownConfigPath)) {
       const lockdownConfig = JSON.parse(fs.readFileSync(lockdownConfigPath, 'utf-8'));
       if (lockdownConfig.interactiveLockdownDisabled) {
-        const wt = lockdownConfig.ctoWorktreePath || '';
+        // Per-session worktree lookup. Multiple concurrent CTO sessions each have their
+        // own .claude/worktrees/cto-interactive-<sid8>/ entry. Prefer the current
+        // session's path; fall back to the legacy singular field.
+        const sessionIdRaw = SESSION_EVENT?.session_id || SESSION_EVENT?.sessionId || '';
+        let wt = '';
+        if (sessionIdRaw && lockdownConfig.ctoWorktreePaths && typeof lockdownConfig.ctoWorktreePaths === 'object') {
+          wt = lockdownConfig.ctoWorktreePaths[sessionIdRaw] || '';
+        }
+        if (!wt) wt = lockdownConfig.ctoWorktreePath || '';
         const wtExists = wt && fs.existsSync(wt);
+        // Note: interactive-heartbeat.js (UserPromptSubmit) records this session's
+        // liveness in .claude/state/interactive-sessions.json on the next prompt.
+        // Session-briefing runs at SessionStart which is sync, so we skip the write
+        // here and rely on the heartbeat (which fires within seconds of session start).
         lines.push('=== LOCKDOWN OFF — CTO WORKTREE WORKFLOW ===');
         if (wtExists) {
           lines.push(`Worktree: ${wt} (exists)`);
