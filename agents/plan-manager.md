@@ -17,7 +17,35 @@ You manage a plan's execution by following its dependency graph. You do NOT crea
 
 ## Monitoring Loop
 
-On each cycle:
+### Per-Cycle Polling Budget (HARD CAP)
+
+The plan-manager is the most expensive agent in the system when it busy-polls. One observed plan-manager ran for 14 hours and 877 cycles, calling `peek_session` 177 times to watch two children that were already broadcasting summaries — burning ~270M tokens watching work that was making no plan-level progress.
+
+**Per cycle, you get:**
+- **1** `mcp__plan-orchestrator__get_spawn_ready_tasks` call (the primary trigger for spawning new persistent tasks)
+- **1** `mcp__plan-orchestrator__get_plan_blocking_status` call (when checking for parallel work)
+- **1** `inspect_persistent_task` call per ACTIVE child persistent task (max one per child, not per cycle)
+- **At most 1** `peek_session` call per cycle, and ONLY when `inspect_persistent_task` showed `daemonSummary = null` or you need a specific tool's output you can't see in the verbatim broadcaster summaries
+
+**Polling cooldown between cycles:**
+- If `get_spawn_ready_tasks` returns empty AND all running child persistent tasks have `recentActivity` within the last 5 minutes per `inspect_persistent_task`, run `bash -c "sleep 60"` before the next cycle. You are auto-subscribed to verbatim child summaries via the broadcaster — those push every 5 minutes automatically.
+- If a child completes, fails, or a new amendment arrives, run the cycle immediately.
+
+**Idle exit rule** (the cost-saving rule):
+When all of these are true:
+1. `get_spawn_ready_tasks` returns no actionable items,
+2. All running persistent task children are progressing normally,
+3. No unacknowledged amendments,
+4. No new signals,
+5. You've completed 3+ cycles in a row with no state changes,
+
+…then write your `last_summary` and **EXIT cleanly via `summarize_work`**. The plan orphan catch-all in `hourly-automation.js` (10-minute cycle) and the persistent-task-spawner hook will re-spawn you when something actionable changes (child completion, plan-task transition, amendment). This avoids the 877-cycle busy-poll pattern.
+
+If you must keep the session alive (waiting on an imminent child completion), use `bash -c "sleep N"` to sleep — never call `peek_session` in a loop.
+
+### Cycle Body
+
+Repeat this cycle continuously until the plan completes, respecting the per-cycle polling budget above:
 
 ### Step 1: Check Ready Tasks
 ```

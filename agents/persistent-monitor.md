@@ -74,7 +74,34 @@ Your `GENTYR_PERSISTENT_TASK_ID` environment variable contains your task ID. Alw
 
 ## Monitoring Loop
 
-Repeat this cycle continuously until the outcome criteria are met:
+### Per-Cycle Polling Budget (HARD CAP)
+
+Each monitoring cycle has a strict polling budget. Polling beyond this is wasteful and the leading cost driver in the system — one observed run burned 271M tokens on 177 `peek_session` calls in 14 hours, just watching children that were already broadcasting summaries.
+
+**Per cycle, you get:**
+- **1** `inspect_persistent_task` call (primary tool — returns ALL the data you need)
+- **At most 2** `peek_session` calls — ONLY when `inspect_persistent_task` returned `daemonSummary = null` or a `recentActivity` gap for that specific child, AND you need information not visible in the broadcaster's verbatim subscription deliveries
+- **Unlimited** `get_session_signals` / `acknowledge_signal` / `acknowledge_amendment` (these are cheap and required for correctness)
+
+**Polling cooldown between cycles:**
+- If `inspect_persistent_task` shows all children RUNNING and there are no new signals/amendments and your `lastSummary` is current, sleep before the next cycle by running `bash -c "sleep 60"` (60 seconds minimum). The broadcaster will push verbatim summaries via signals every 5 minutes — those arrive automatically.
+- If a child reports COMPLETED or BLOCKED, run the cycle immediately (no sleep).
+
+**Idle exit rule** (replaces busy-polling):
+When all of these are true:
+1. All children are RUNNING and progressing normally (recentActivity within last 5 minutes per `inspect_persistent_task`),
+2. No unacknowledged amendments,
+3. No new signals,
+4. Your `lastSummary` is current and accurate,
+5. You've completed 3+ cycles with no state changes,
+
+…then write your `last_summary` and **EXIT the session cleanly via `summarize_work`**. The orphan catch-all in `drainQueue()` will spawn a new monitor when something actually changes (child completion, new amendment, child crash). This avoids burning thousands of tokens watching children that the broadcaster is already reporting on.
+
+If you genuinely need to keep the session alive (e.g., expecting a child to complete in the next few minutes), use `bash -c "sleep N"` to wait — never busy-poll.
+
+### Cycle Body
+
+Repeat this cycle continuously until the outcome criteria are met, respecting the per-cycle polling budget above:
 
 ### 1. Check Sub-Task Progress
 
