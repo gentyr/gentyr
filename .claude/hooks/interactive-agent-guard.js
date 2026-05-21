@@ -72,13 +72,48 @@ async function main() {
     return;
   }
 
-  // When lockdown is disabled, CTO has full developer access — allow all agent types
+  // When lockdown is disabled, CTO has full developer access — allow all agent types,
+  // but for code-modifying agents inject a nudge toward GENTYR orchestration systems
+  // (create_task / persistent_task / plan) which give tracking, audit, and recovery.
   try {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const configPath = join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'state', 'automation-config.json');
     const config = JSON.parse(readFileSync(configPath, 'utf8'));
     if (config.interactiveLockdownDisabled === true) {
+      // Code-modifying agents that should ideally run via the task systems
+      const CODE_MODIFYING_AGENTS = new Set([
+        'code-writer', 'test-writer', 'code-reviewer', 'demo-manager',
+      ]);
+      const subType = event?.tool_input?.subagent_type || 'general-purpose';
+
+      if (CODE_MODIFYING_AGENTS.has(subType)) {
+        const additionalContext = [
+          `[LOCKDOWN OFF] NUDGE: You're spawning '${subType}' directly via the Task tool.`,
+          '',
+          'This works, but it bypasses GENTYR orchestration:',
+          "  - Not tracked in todo.db / persistent-tasks.db / plans.db",
+          '  - No audit gate verifies completion against evidence',
+          '  - No crash recovery if the session dies',
+          '  - Invisible to /monitor, /status, and the CTO dashboard',
+          '',
+          'Prefer one of:',
+          '  /spawn-tasks <description>   — one-shot work; runs the full 6-step pipeline',
+          '  /persistent-task             — multi-session objective with a monitor',
+          '  /plan                        — multi-phase plan with phases/gates',
+          '',
+          'If you need to proceed with the direct Task call (e.g., a one-off you want to babysit), continue — this is informational only.',
+        ].join('\n');
+
+        process.stdout.write(JSON.stringify({
+          decision: 'approve',
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            additionalContext,
+          },
+        }));
+        return;
+      }
       process.stdout.write(JSON.stringify({ allow: true }));
       return;
     }

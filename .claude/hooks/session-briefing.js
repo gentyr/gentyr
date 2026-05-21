@@ -765,15 +765,35 @@ function buildInteractiveBriefing() {
           lines.push('  (b) Toggle lockdown to provision: /lockdown on then /lockdown off (CTO re-approves)');
         }
         lines.push('');
+        lines.push('=== RECOMMENDED — delegate via GENTYR orchestration systems ===');
+        lines.push('');
+        lines.push('PREFER the GENTYR systems over direct Task/Agent calls. They give you:');
+        lines.push('  - Tracked execution (todo.db / persistent-tasks.db / plans.db)');
+        lines.push('  - Audit gates (universal-auditor verifies completion against evidence)');
+        lines.push('  - Crash recovery (revival daemon, persistent monitor revival, circuit breakers)');
+        lines.push('  - Progress monitoring (/monitor, /status, CTO dashboard)');
+        lines.push('  - Automatic 6-step pipeline: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager');
+        lines.push('');
+        lines.push('Pick the right tool for the scope:');
+        lines.push('  /spawn-tasks <description>   — one-shot feature/fix; runs the full 6-step pipeline in a fresh worktree');
+        lines.push('  /persistent-task             — multi-session objective with a monitor that orchestrates sub-tasks');
+        lines.push('  /plan                        — multi-phase plan with phases/gates and a plan-manager');
+        lines.push('');
+        lines.push('Direct Task(subagent_type=\'code-writer\', ...) calls in this session ARE permitted in lockdown-off mode but are discouraged:');
+        lines.push('  - Work is not tracked in todo.db or plans.db');
+        lines.push('  - No audit gate verifies the result');
+        lines.push('  - No crash recovery if the session dies mid-flight');
+        lines.push('  - Progress is invisible to /monitor, /status, and the CTO dashboard');
+        lines.push('');
         lines.push('STILL BLOCKED when lockdown is off:');
         lines.push('  - Write/Edit/NotebookEdit to main-tree files (only worktree, .claude/, ~/.claude/ allowed)');
         lines.push('  - Bash git mutations in main tree (stash, checkout, switch, merge, pull, rebase, reset, clean, add, commit, push, worktree remove)');
         lines.push('  - --no-verify, --no-gpg-sign, core.hooksPath writes (block-no-verify guard — independent of lockdown)');
         lines.push('  - Main-tree commits on protected branches main/staging/preview (main-tree-commit-guard — independent of lockdown)');
         lines.push('');
-        lines.push('=== HOW TO MERGE CTO WORKTREE WORK (lockdown-off mode) ===');
+        lines.push('=== MANUAL FALLBACK — direct edits in the cto-interactive worktree ===');
         lines.push('');
-        lines.push('When edits are done, run these EXACT Bash commands. Each must be its own Bash call so the CWD persists, OR chain with && in one call.');
+        lines.push('If you have a small, urgent fix that does not justify a task/plan, you may edit directly in the worktree above. When done, ship it with these Bash commands (each as its own Bash call so CWD persists, or chain with &&):');
         lines.push('');
         if (wtExists) {
           lines.push(`  cd ${wt}`);
@@ -788,10 +808,9 @@ function buildInteractiveBriefing() {
         lines.push('  gh pr checks <num> --watch --fail-fast   # wait for CI');
         lines.push('  gh pr merge <num> --squash --delete-branch');
         lines.push('');
-        lines.push('DO NOT use Agent(subagent_type=\'project-manager\') for this — the Agent tool creates a NEW worktree separate from the CTO worktree, so it will not see your in-progress edits.');
-        lines.push('DO NOT use create_task + force_spawn_tasks for this — same reason. Task-spawned agents work in fresh worktrees.');
+        lines.push('Do NOT use Agent(subagent_type=\'project-manager\') to merge this work — the Agent tool creates a NEW worktree that will not see your in-progress edits. Finish manually OR use /spawn-tasks for fresh work.');
         lines.push('');
-        lines.push('After merge: /lockdown on (re-enables standard interactive console).');
+        lines.push('After merge: /lockdown on (re-enables standard interactive console and removes this worktree).');
         lines.push('');
       }
     }
