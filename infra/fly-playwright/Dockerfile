@@ -17,9 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install pnpm globally
 RUN npm install -g pnpm@10
 
-# Install bun (required for packages that use bun as a build tool, e.g. visiq-edr-discovery-agent)
-RUN curl -fsSL https://bun.sh/install | bash && \
-    ln -s /root/.bun/bin/bun /usr/local/bin/bun
+# Install bun (required for packages/visiq-edr-discovery-agent build step)
+RUN npm install -g bun@1
 
 # Pre-install Playwright Chromium in base image to avoid 6-13 min download on cold machines.
 # The project image (Dockerfile.project) also installs Chromium matching the project's
