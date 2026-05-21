@@ -263,12 +263,22 @@ async function main() {
   if (isLockdownDisabled()) {
     // Read CTO worktree path from config and verify the directory still exists.
     // When the recorded worktree was deleted, deny messages must NOT suggest cd-ing into it.
+    //
+    // Per-session lookup: prefer ctoWorktreePaths[event.session_id] over the legacy
+    // singular ctoWorktreePath. Multiple concurrent CTO sessions each have their own
+    // worktree under .claude/worktrees/cto-interactive-<sid8>/.
     let ctoWorktreePath = '';
     let worktreeExists = false;
     try {
       const configPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      ctoWorktreePath = config.ctoWorktreePath || '';
+      const ctoSessionId = event?.session_id || event?.sessionId || '';
+      if (ctoSessionId && config.ctoWorktreePaths && typeof config.ctoWorktreePaths === 'object') {
+        ctoWorktreePath = config.ctoWorktreePaths[ctoSessionId] || '';
+      }
+      if (!ctoWorktreePath) {
+        ctoWorktreePath = config.ctoWorktreePath || '';
+      }
       worktreeExists = !!ctoWorktreePath && fs.existsSync(ctoWorktreePath);
     } catch { /* non-fatal */ }
 

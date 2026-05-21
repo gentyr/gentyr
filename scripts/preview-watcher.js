@@ -267,11 +267,85 @@ async function checkAndSync() {
   const syncResults = syncWorktrees(baseBranch);
   log(`Sync results: ${syncResults.synced} synced, ${syncResults.pending} pending, ${syncResults.upToDate} up-to-date, ${syncResults.errors.length} errors`);
 
+  // Pull preview into the main tree so `pnpm demo:preview` (and other long-running
+  // dev servers that watch the main tree) hot-reload when worktree changes merge
+  // through to preview. Best-effort and safety-gated — see pullPreviewIntoMainTree.
+  pullPreviewIntoMainTree(baseBranch);
+
   // Persist state
   writeState(currentSha, baseBranch, syncResults);
 
   // Broadcast to all running agents
   await broadcast(baseBranch, currentSha, syncResults);
+}
+
+/**
+ * Fast-forward pull origin/<baseBranch> into the main tree so dev servers
+ * watching the project directory pick up newly-merged changes. Gated by:
+ *  - services.json `mainTreeAutoPull` (default true)
+ *  - main tree's current branch must equal baseBranch
+ *  - working tree must be clean
+ *  - no in-progress merge or rebase (MERGE_HEAD / REBASE_HEAD absent)
+ * Non-fatal on any error — preview-watcher's primary job is worktree sync,
+ * the main-tree pull is a bonus.
+ */
+function pullPreviewIntoMainTree(baseBranch) {
+  // Config gate: services.json `mainTreeAutoPull` (default true)
+  try {
+    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (fs.existsSync(configPath)) {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (cfg && cfg.mainTreeAutoPull === false) return;
+    }
+  } catch { /* fall through to default-on */ }
+
+  // Current branch must equal base
+  let currentBranch = '';
+  try {
+    currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+  } catch {
+    return;
+  }
+  if (currentBranch !== baseBranch) return;
+
+  // Working tree must be clean
+  try {
+    const status = execFileSync('git', ['status', '--porcelain'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+    if (status.length > 0) return; // dirty
+  } catch {
+    return;
+  }
+
+  // No in-progress merge or rebase
+  try {
+    const gitDir = execFileSync('git', ['rev-parse', '--git-dir'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 3000, stdio: 'pipe',
+    }).trim();
+    const gitDirAbs = path.isAbsolute(gitDir) ? gitDir : path.join(PROJECT_DIR, gitDir);
+    if (
+      fs.existsSync(path.join(gitDirAbs, 'MERGE_HEAD')) ||
+      fs.existsSync(path.join(gitDirAbs, 'REBASE_HEAD')) ||
+      fs.existsSync(path.join(gitDirAbs, 'rebase-merge')) ||
+      fs.existsSync(path.join(gitDirAbs, 'rebase-apply'))
+    ) {
+      return;
+    }
+  } catch { /* non-fatal */ }
+
+  try {
+    execFileSync('git', ['pull', '--ff-only', 'origin', baseBranch], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+    });
+    log(`Main tree fast-forwarded to origin/${baseBranch}`);
+  } catch (err) {
+    // Non-fatal — could be a non-FF case (very unlikely on a clean tree at the
+    // base branch) or transient git error. Worktrees were synced already.
+    log(`Main tree pull skipped: ${err.message.split('\n')[0]}`);
+  }
 }
 
 // ============================================================================

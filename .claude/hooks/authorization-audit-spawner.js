@@ -225,32 +225,70 @@ process.stdin.on('end', async () => {
           }
 
           if (action.tool === 'set_lockdown_mode') {
+            // Resolve the CTO's session_id so we can provision a per-session worktree
+            // (and on re-enable, remove only that session's worktree). Multiple
+            // concurrent interactive sessions each get their own worktree.
+            let ctoSessionId = '';
+            try {
+              const decisionRow = db.prepare('SELECT session_id FROM cto_decisions WHERE id = ?').get(id);
+              if (decisionRow && decisionRow.session_id) ctoSessionId = decisionRow.session_id;
+            } catch { /* ignore */ }
+
             const configPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
             let config = {};
             try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { /* empty */ }
+            if (!config.ctoWorktreePaths || typeof config.ctoWorktreePaths !== 'object') {
+              config.ctoWorktreePaths = {};
+            }
+
             if (actionArgs.enabled === false) {
               config.interactiveLockdownDisabled = true;
+
+              // Per-session worktree name: cto-interactive-<sid8>. Falls back to the
+              // legacy hardcoded name when no session_id is available (older callers).
+              const sidSuffix = ctoSessionId ? ctoSessionId.slice(0, 8) : '';
+              const worktreeName = sidSuffix ? `cto-interactive-${sidSuffix}` : 'cto-interactive';
 
               // Auto-provision a CTO worktree for safe editing
               let worktreeResult = null;
               try {
                 const wtMod = await import('./lib/worktree-manager.js');
-                worktreeResult = wtMod.createWorktree('cto-interactive');
+                worktreeResult = wtMod.createWorktree(worktreeName);
+                if (ctoSessionId) {
+                  config.ctoWorktreePaths[ctoSessionId] = worktreeResult.path;
+                }
+                // Maintain legacy singular field for back-compat readers (one release)
                 config.ctoWorktreePath = worktreeResult.path;
-                log(`CTO worktree provisioned at ${worktreeResult.path} (branch: ${worktreeResult.branch})`);
+                log(`CTO worktree provisioned at ${worktreeResult.path} (branch: ${worktreeResult.branch}, session: ${ctoSessionId || '<unknown>'})`);
               } catch (err) {
                 log(`Warning: Could not provision CTO worktree: ${err.message}`);
               }
+
+              // Also record liveness so rescue/reaper automation can see this session
+              if (ctoSessionId && worktreeResult) {
+                try {
+                  const livenessMod = await import('./lib/interactive-liveness.js');
+                  livenessMod.recordInteractiveLiveness(ctoSessionId, worktreeResult.path, { projectDir: PROJECT_DIR });
+                } catch (err) {
+                  log(`Warning: Could not record interactive liveness: ${err.message}`);
+                }
+              }
             } else {
-              // Re-enabling lockdown: clean up the cto-interactive worktree if one exists.
-              // Best-effort — the stale-worktree reaper is the backstop. We invoke
-              // `git worktree remove --force` from the main tree (git common dir), then
-              // `git worktree prune` to clear any stale registry entries.
-              if (config.ctoWorktreePath) {
+              // Re-enabling lockdown: clean up THIS session's worktree only.
+              // Resolves the session-specific path via ctoWorktreePaths[sessionId] then
+              // falls back to the legacy singular field. Other concurrent CTO sessions'
+              // worktrees are preserved.
+              let worktreePathToRemove = '';
+              if (ctoSessionId && config.ctoWorktreePaths && config.ctoWorktreePaths[ctoSessionId]) {
+                worktreePathToRemove = config.ctoWorktreePaths[ctoSessionId];
+              } else if (config.ctoWorktreePath) {
+                worktreePathToRemove = config.ctoWorktreePath;
+              }
+
+              if (worktreePathToRemove) {
                 try {
                   const { execFileSync } = await import('child_process');
-                  const worktreePath = config.ctoWorktreePath;
-                  execFileSync('git', ['-C', PROJECT_DIR, 'worktree', 'remove', '--force', worktreePath], {
+                  execFileSync('git', ['-C', PROJECT_DIR, 'worktree', 'remove', '--force', worktreePathToRemove], {
                     stdio: 'pipe',
                     timeout: 10000,
                   });
@@ -258,21 +296,50 @@ process.stdin.on('end', async () => {
                     stdio: 'pipe',
                     timeout: 5000,
                   });
-                  log(`CTO worktree removed at ${worktreePath}`);
+                  log(`CTO worktree removed at ${worktreePathToRemove} (session: ${ctoSessionId || '<unknown>'})`);
                 } catch (err) {
                   log(`Warning: Could not remove cto-interactive worktree: ${err.message}`);
                 }
               }
-              delete config.interactiveLockdownDisabled;
-              delete config.ctoWorktreePath;
+
+              // Remove this session's entry from the per-session map.
+              if (ctoSessionId && config.ctoWorktreePaths) {
+                delete config.ctoWorktreePaths[ctoSessionId];
+              }
+
+              // Clear legacy singular field only if it matched the path we just removed,
+              // OR if no per-session entries remain (so we don't clobber another session).
+              const remainingSessions = Object.keys(config.ctoWorktreePaths || {});
+              if (remainingSessions.length === 0) {
+                delete config.interactiveLockdownDisabled;
+                delete config.ctoWorktreePath;
+              } else if (config.ctoWorktreePath === worktreePathToRemove) {
+                // Reset legacy field to point at any remaining session's worktree so the
+                // legacy reader path is at least valid until those sessions also re-enable
+                config.ctoWorktreePath = config.ctoWorktreePaths[remainingSessions[0]];
+              }
+
+              // Clear the liveness entry for this session
+              if (ctoSessionId) {
+                try {
+                  const livenessMod = await import('./lib/interactive-liveness.js');
+                  livenessMod.removeInteractiveSession(ctoSessionId, { projectDir: PROJECT_DIR });
+                } catch { /* non-fatal */ }
+              }
             }
             const dir = path.dirname(configPath);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
             db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, executed_at = datetime('now') WHERE id = ?").run(
-              JSON.stringify({ success: true, lockdown_enabled: !!actionArgs.enabled, ctoWorktreePath: config.ctoWorktreePath || null }), action.id
+              JSON.stringify({
+                success: true,
+                lockdown_enabled: !!actionArgs.enabled,
+                ctoWorktreePath: config.ctoWorktreePath || null,
+                ctoSessionId: ctoSessionId || null,
+              }),
+              action.id,
             );
-            log(`Lockdown ${actionArgs.enabled ? 'enabled' : 'disabled'} via inline execution`);
+            log(`Lockdown ${actionArgs.enabled ? 'enabled' : 'disabled'} via inline execution (session: ${ctoSessionId || '<unknown>'})`);
           } else if (action.tool === 'set_local_mode') {
             const localStateDir = path.join(PROJECT_DIR, '.claude', 'state');
             if (!fs.existsSync(localStateDir)) fs.mkdirSync(localStateDir, { recursive: true });

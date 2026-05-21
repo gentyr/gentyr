@@ -2108,6 +2108,29 @@ function reapStaleWorktrees() {
     }
   } catch { /* non-fatal */ }
 
+  // Pre-load interactive-sessions.json to detect live CTO sessions whose worktrees
+  // must be preserved even past the 4-hour threshold while the operator is active.
+  const liveCtoWorktreePaths = new Set();
+  try {
+    const stateFile = path.join(PROJECT_DIR, '.claude', 'state', 'interactive-sessions.json');
+    if (fs.existsSync(stateFile)) {
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      const STALE_HB = 30 * 60 * 1000;
+      const tNow = Date.now();
+      for (const entry of Object.values(state)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const hb = entry.lastHeartbeat ? new Date(entry.lastHeartbeat).getTime() : 0;
+        if (!hb || (tNow - hb) > STALE_HB) {
+          try { if (entry.pid) process.kill(entry.pid, 0); else continue; }
+          catch { continue; }
+        }
+        if (entry.ctoWorktreePath) liveCtoWorktreePaths.add(entry.ctoWorktreePath);
+      }
+    }
+  } catch (err) {
+    log(`Stale reaper: could not read interactive-sessions.json (non-fatal): ${err.message}`);
+  }
+
   // Pre-load session-queue DB to check for active sessions using worktree paths
   const activeWorktreePaths = new Set();
   if (Database) {
@@ -2153,6 +2176,21 @@ function reapStaleWorktrees() {
       } catch { /* skip */ }
     }
     if (!createdAt || (now - createdAt) < STALE_THRESHOLD_MS) continue;
+
+    // Interactive-session cross-check (cto-interactive-* worktrees):
+    // Skip when the owner session is alive. After it dies, the
+    // interactive_session_reaper block (5-min cooldown) handles cleanup with a
+    // 30-minute grace period — the stale reaper only takes over for ancient
+    // orphans whose owner session is long gone.
+    if (path.basename(wt.path).startsWith('cto-interactive')) {
+      const hasLiveCtoSession = [...liveCtoWorktreePaths].some(
+        sw => wt.path === sw || wt.path.startsWith(sw + '/') || sw.startsWith(wt.path + '/')
+      );
+      if (hasLiveCtoSession) {
+        log(`Stale reaper: skipping ${wt.branch} — live interactive CTO session owns this worktree`);
+        continue;
+      }
+    }
 
     // Session-queue DB cross-check: skip worktrees with active sessions
     const hasActiveSession = [...activeWorktreePaths].some(
@@ -2320,8 +2358,50 @@ function rescueAbandonedWorktrees() {
     }
   }
 
+  // Pre-load interactive-sessions.json to detect live CTO sessions. Interactive
+  // sessions are not in the session-queue DB (it tracks spawned agents only), so
+  // without this cross-check rescue would hijack the CTO's worktree mid-edit.
+  let liveCtoWorktreePaths = new Set();
+  try {
+    // Use require to avoid making this function async
+    const livenessPath = path.join(__dirname, 'lib', 'interactive-liveness.js');
+    if (fs.existsSync(livenessPath)) {
+      // We can't `await import` inside a sync function; fall back to a synchronous
+      // read of the state file. The liveness file is small and the staleness check
+      // here is identical to the one in lib/interactive-liveness.js.
+      const stateFile = path.join(PROJECT_DIR, '.claude', 'state', 'interactive-sessions.json');
+      if (fs.existsSync(stateFile)) {
+        const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        const STALE_MS = 30 * 60 * 1000;
+        const now = Date.now();
+        for (const entry of Object.values(state)) {
+          if (!entry || typeof entry !== 'object') continue;
+          const hb = entry.lastHeartbeat ? new Date(entry.lastHeartbeat).getTime() : 0;
+          if (!hb || (now - hb) > STALE_MS) {
+            // Heartbeat stale — also check PID
+            const pid = entry.pid;
+            try { if (pid) process.kill(pid, 0); else continue; }
+            catch { continue; }
+          }
+          if (entry.ctoWorktreePath) liveCtoWorktreePaths.add(entry.ctoWorktreePath);
+        }
+      }
+    }
+  } catch (err) {
+    log(`Rescue: could not read interactive-sessions.json (non-fatal): ${err.message}`);
+  }
+
   for (const wt of worktrees) {
     if (!wt.path || !fs.existsSync(wt.path)) continue;
+
+    // Hard skip: all cto-interactive worktrees are owned by an interactive operator
+    // who may pause mid-edit. The rescue model (commit & merge orphan work) is
+    // fundamentally wrong for these — the operator should finish manually OR
+    // `/lockdown on` will dispose of the worktree cleanly.
+    if (path.basename(wt.path).startsWith('cto-interactive')) {
+      log(`Rescue: skipping ${wt.path} — cto-interactive worktree (operator-owned, never rescued)`);
+      continue;
+    }
 
     // Check for uncommitted changes
     let hasChanges = false;
@@ -2346,6 +2426,15 @@ function rescueAbandonedWorktrees() {
     );
     if (hasActiveSession) {
       log(`Rescue: skipping ${wt.path} — active session found in session-queue DB`);
+      continue;
+    }
+
+    // Interactive-session cross-check: skip worktrees claimed by a live CTO session
+    const hasLiveCtoSession = [...liveCtoWorktreePaths].some(
+      sw => wt.path === sw || wt.path.startsWith(sw + '/') || sw.startsWith(wt.path + '/')
+    );
+    if (hasLiveCtoSession) {
+      log(`Rescue: skipping ${wt.path} — live interactive CTO session found in interactive-sessions.json`);
       continue;
     }
 
@@ -6040,6 +6129,229 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         log(`Stale worktree reaper: removed ${reaped} stale worktree(s).`);
       } else {
         log('Stale worktree reaper: no stale worktrees to reap.');
+      }
+    },
+  });
+
+  // =========================================================================
+  // INTERACTIVE SESSION REAPER (5min cooldown, gate-exempt)
+  // Removes cto-interactive-* worktrees whose owner interactive session has been
+  // dead for >30 min (per interactive-sessions.json liveness). Worktrees with
+  // uncommitted changes are left for the user to handle manually — we never
+  // auto-merge in-progress CTO work.
+  // =========================================================================
+  await runIfDue('interactive_session_reaper', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastInteractiveSessionReaper',
+    gateExempt: true,
+    label: 'Interactive session reaper',
+    fn: async () => {
+      let purged = [];
+      try {
+        const livenessMod = await import('./lib/interactive-liveness.js');
+        purged = livenessMod.purgeDeadSessions({ projectDir: PROJECT_DIR });
+      } catch (err) {
+        log(`Interactive session reaper: could not import liveness module: ${err.message}`);
+        return;
+      }
+      if (purged.length === 0) {
+        log('Interactive session reaper: no dead interactive sessions to clean up.');
+        return;
+      }
+
+      // Also clean up automation-config.json: remove dead sessions' entries from
+      // ctoWorktreePaths so the per-session lookup stays accurate.
+      const configPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
+      let cfg = {};
+      try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { /* empty */ }
+      if (!cfg.ctoWorktreePaths || typeof cfg.ctoWorktreePaths !== 'object') cfg.ctoWorktreePaths = {};
+
+      let configChanged = false;
+      for (const { sessionId, entry } of purged) {
+        if (cfg.ctoWorktreePaths[sessionId]) {
+          delete cfg.ctoWorktreePaths[sessionId];
+          configChanged = true;
+        }
+        const wtPath = entry.ctoWorktreePath;
+        if (!wtPath || !fs.existsSync(wtPath)) {
+          log(`Interactive session reaper: session ${sessionId.slice(0, 8)} purged (worktree already gone)`);
+          continue;
+        }
+        // Only remove if there are no uncommitted changes — otherwise leave for
+        // the operator to handle manually. We do NOT auto-commit interactive work.
+        let dirty = false;
+        try {
+          const out = execFileSync('git', ['status', '--porcelain'], {
+            cwd: wtPath, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          }).trim();
+          dirty = out.length > 0;
+        } catch { dirty = true; /* fail-closed: leave alone */ }
+        if (dirty) {
+          log(`Interactive session reaper: session ${sessionId.slice(0, 8)} dead but worktree ${wtPath} has uncommitted changes — leaving intact`);
+          continue;
+        }
+        try {
+          execFileSync('git', ['-C', PROJECT_DIR, 'worktree', 'remove', '--force', wtPath], {
+            stdio: 'pipe', timeout: 10000,
+          });
+          execFileSync('git', ['-C', PROJECT_DIR, 'worktree', 'prune'], { stdio: 'pipe', timeout: 5000 });
+          log(`Interactive session reaper: removed orphaned cto-interactive worktree ${wtPath} (session ${sessionId.slice(0, 8)})`);
+        } catch (err) {
+          log(`Interactive session reaper: could not remove ${wtPath}: ${err.message}`);
+        }
+      }
+
+      // If we cleared the last per-session entry, also clear the legacy singular
+      // field and the interactiveLockdownDisabled flag so the briefing reflects
+      // reality. Other interactive sessions, if any, keep their flag set.
+      const remaining = Object.keys(cfg.ctoWorktreePaths || {});
+      if (remaining.length === 0 && cfg.interactiveLockdownDisabled) {
+        delete cfg.interactiveLockdownDisabled;
+        delete cfg.ctoWorktreePath;
+        configChanged = true;
+      }
+
+      if (configChanged) {
+        try {
+          const tmp = configPath + '.tmp';
+          fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
+          fs.renameSync(tmp, configPath);
+        } catch (err) {
+          log(`Interactive session reaper: could not write config: ${err.message}`);
+        }
+      }
+    },
+  });
+
+  // =========================================================================
+  // BRANCH PRUNER (30min cooldown, gate-exempt)
+  // Cleans up local branches without an associated worktree:
+  //  - If a merged PR exists for the branch: delete locally AND on origin
+  //  - If a non-merged PR exists: leave alone
+  //  - If no PR exists and branch is >24h old with no commits ahead of base:
+  //    delete locally only (never remote without PR evidence)
+  // Also runs `git remote prune origin` to clear stale remote-tracking refs.
+  // Skipped in local mode (no gh/origin available reliably).
+  // =========================================================================
+  await runIfDue('branch_pruner', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastBranchPruner',
+    gateExempt: true,
+    label: 'Branch pruner',
+    localModeSkip: isLocalModeEnabled(PROJECT_DIR),
+    fn: async () => {
+      // List all local branches with no worktree
+      let localBranches = [];
+      let worktreeBranches = new Set();
+      try {
+        const wtOut = execFileSync('git', ['-C', PROJECT_DIR, 'worktree', 'list', '--porcelain'], {
+          encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        });
+        for (const line of wtOut.split('\n')) {
+          const m = line.match(/^branch refs\/heads\/(.+)$/);
+          if (m) worktreeBranches.add(m[1]);
+        }
+        const brOut = execFileSync('git', ['-C', PROJECT_DIR, 'for-each-ref', '--format=%(refname:short)%09%(committerdate:unix)', 'refs/heads/'], {
+          encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        });
+        for (const line of brOut.split('\n')) {
+          if (!line.trim()) continue;
+          const [branch, ts] = line.split('\t');
+          if (!branch) continue;
+          if (['main', 'master', 'preview', 'staging'].includes(branch)) continue;
+          if (worktreeBranches.has(branch)) continue;
+          localBranches.push({ branch, lastCommit: ts ? Number(ts) * 1000 : 0 });
+        }
+      } catch (err) {
+        log(`Branch pruner: could not list branches: ${err.message}`);
+        return;
+      }
+
+      if (localBranches.length === 0) {
+        log('Branch pruner: no worktree-less branches.');
+      }
+
+      // Detect the base branch (preview > main fallback)
+      let baseBranch = 'main';
+      try {
+        execFileSync('git', ['-C', PROJECT_DIR, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/preview'], { stdio: 'pipe' });
+        baseBranch = 'preview';
+      } catch { /* default to main */ }
+
+      let deletedLocal = 0;
+      let deletedRemote = 0;
+      const HORIZON_MS = 24 * 60 * 60 * 1000;
+      const nowMs = Date.now();
+
+      for (const { branch, lastCommit } of localBranches) {
+        // Look up PR state via gh
+        let prState = null;
+        try {
+          const out = execFileSync('gh', ['pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,state', '--limit', '5'], {
+            cwd: PROJECT_DIR, encoding: 'utf8', timeout: 8000, stdio: 'pipe',
+          });
+          const prs = JSON.parse(out || '[]');
+          if (prs.length > 0) {
+            // Prefer the most recent state. If any is MERGED, treat as merged.
+            if (prs.some(p => p.state === 'MERGED')) prState = 'MERGED';
+            else if (prs.some(p => p.state === 'OPEN')) prState = 'OPEN';
+            else prState = prs[0].state;
+          }
+        } catch { /* gh not available or no PR; treat as no PR */ }
+
+        if (prState === 'MERGED') {
+          // Safe: PR merged. Delete locally AND on origin.
+          try {
+            execFileSync('git', ['-C', PROJECT_DIR, 'branch', '-D', branch], { stdio: 'pipe', timeout: 5000 });
+            deletedLocal += 1;
+            log(`Branch pruner: deleted local branch ${branch} (PR merged)`);
+          } catch (err) {
+            log(`Branch pruner: could not delete local ${branch}: ${err.message}`);
+          }
+          try {
+            execFileSync('git', ['-C', PROJECT_DIR, 'push', 'origin', '--delete', branch], { stdio: 'pipe', timeout: 10000 });
+            deletedRemote += 1;
+            log(`Branch pruner: deleted origin/${branch} (PR merged)`);
+          } catch (err) {
+            log(`Branch pruner: could not delete origin/${branch} (may already be gone): ${err.message}`);
+          }
+          continue;
+        }
+
+        if (prState === 'OPEN') {
+          // Active PR — leave the branch alone.
+          continue;
+        }
+
+        // No PR exists. Only delete locally if >24h old AND no commits ahead of base.
+        if (!lastCommit || (nowMs - lastCommit) < HORIZON_MS) continue;
+        try {
+          const ahead = execFileSync('git', ['-C', PROJECT_DIR, 'rev-list', '--count', `origin/${baseBranch}..${branch}`], {
+            encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          }).trim();
+          if (Number(ahead) > 0) continue; // has unique commits — keep it
+        } catch {
+          continue; // can't measure; leave alone
+        }
+
+        try {
+          execFileSync('git', ['-C', PROJECT_DIR, 'branch', '-D', branch], { stdio: 'pipe', timeout: 5000 });
+          deletedLocal += 1;
+          log(`Branch pruner: deleted local branch ${branch} (no PR, no commits ahead, >24h old)`);
+        } catch (err) {
+          log(`Branch pruner: could not delete local ${branch}: ${err.message}`);
+        }
+      }
+
+      // Prune stale remote-tracking refs
+      try {
+        execFileSync('git', ['-C', PROJECT_DIR, 'remote', 'prune', 'origin'], { stdio: 'pipe', timeout: 10000 });
+      } catch (err) {
+        log(`Branch pruner: could not prune origin (non-fatal): ${err.message}`);
+      }
+
+      if (deletedLocal > 0 || deletedRemote > 0) {
+        log(`Branch pruner: removed ${deletedLocal} local + ${deletedRemote} remote branch(es).`);
       }
     },
   });
