@@ -30,6 +30,14 @@ Or use `/spawn-tasks <description>` for interactive task creation and spawning.
 
 **Lockdown toggle:** `/lockdown on` (default) / `/lockdown off` (dev/debug only)
 
+**When lockdown is OFF**, you regain access to `Task`/`Agent` (all sub-agent types) and direct `Write`/`Edit` inside the auto-provisioned `cto-interactive` worktree. Even so, **prefer the GENTYR orchestration systems** over direct sub-agent spawning:
+
+- `/spawn-tasks <description>` — one-shot work via `create_task`; auto-runs the 6-step pipeline in a fresh worktree
+- `/persistent-task` — multi-session objective with a monitor that orchestrates sub-tasks
+- `/plan` — multi-phase plan with phases, gates, and a plan-manager
+
+Direct `Task(subagent_type='code-writer', ...)` calls in the session work but bypass tracking (todo.db / persistent-tasks.db / plans.db), audit gates, crash recovery, and progress monitoring. Reserve them for one-off scratch work you want to babysit. The session briefing's `=== LOCKDOWN OFF ===` block and the `interactive-agent-guard.js` / `lockdown-off-pipeline-nudge.js` hooks reinforce this guidance.
+
 ### Golden Rules
 
 1. **NEVER skip agents** - Each agent has a specific role

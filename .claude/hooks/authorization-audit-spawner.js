@@ -242,6 +242,27 @@ process.stdin.on('end', async () => {
                 log(`Warning: Could not provision CTO worktree: ${err.message}`);
               }
             } else {
+              // Re-enabling lockdown: clean up the cto-interactive worktree if one exists.
+              // Best-effort — the stale-worktree reaper is the backstop. We invoke
+              // `git worktree remove --force` from the main tree (git common dir), then
+              // `git worktree prune` to clear any stale registry entries.
+              if (config.ctoWorktreePath) {
+                try {
+                  const { execFileSync } = await import('child_process');
+                  const worktreePath = config.ctoWorktreePath;
+                  execFileSync('git', ['-C', PROJECT_DIR, 'worktree', 'remove', '--force', worktreePath], {
+                    stdio: 'pipe',
+                    timeout: 10000,
+                  });
+                  execFileSync('git', ['-C', PROJECT_DIR, 'worktree', 'prune'], {
+                    stdio: 'pipe',
+                    timeout: 5000,
+                  });
+                  log(`CTO worktree removed at ${worktreePath}`);
+                } catch (err) {
+                  log(`Warning: Could not remove cto-interactive worktree: ${err.message}`);
+                }
+              }
               delete config.interactiveLockdownDisabled;
               delete config.ctoWorktreePath;
             }

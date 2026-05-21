@@ -439,13 +439,15 @@ async function main() {
         ? `Worktree MISSING: ${ctoWorktreePath} (recreate: git worktree add ${ctoWorktreePath} preview)`
         : 'No worktree provisioned — spawn worktree-isolated sub-agents OR /lockdown on then off';
     const mergeSeq = worktreeExists
-      ? `To merge: cd ${ctoWorktreePath} && git add -A && git commit -m "..." && git push -u origin HEAD && gh pr create --base preview --title "..." (NOT via Agent/Task — those spawn fresh worktrees and won't see your edits)`
-      : 'To merge: cd into the worktree, then git add+commit+push+gh pr create --base preview (NOT via Agent/Task — they create fresh worktrees)';
+      ? `Manual fallback (small urgent fixes only): cd ${ctoWorktreePath} && git add -A && git commit -m "..." && git push -u origin HEAD && gh pr create --base preview --title "..."`
+      : 'Manual fallback: cd into the worktree, then git add+commit+push+gh pr create --base preview';
+    const orchestrationReminder = 'PREFER GENTYR orchestration over direct Task/Agent calls: /spawn-tasks for one-shot work, /persistent-task for multi-session objectives, /plan for multi-phase plans. Those run the 6-step pipeline (investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager) automatically with tracking, audit gates, and crash recovery. Direct Task(subagent_type=\'code-writer\', ...) calls bypass all of that.';
     const guidance = [
       '[LOCKDOWN OFF] Main-tree edits + git mutations BLOCKED. Worktree workflow active.',
+      orchestrationReminder,
       worktreeStatus,
       mergeSeq,
-      'After merge: /lockdown on.',
+      'After merge: /lockdown on (re-enables lockdown and removes this worktree).',
     ].join(' | ');
     process.stdout.write(JSON.stringify({
       decision: 'approve',
