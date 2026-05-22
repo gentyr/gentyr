@@ -672,6 +672,42 @@ function getGlobalMonitorState() {
 // Data gathering: current task details (for spawned sessions)
 // ---------------------------------------------------------------------------
 
+// Detect main-tree drift off the base branch. Reads the structured state file
+// written by preview-watcher's keepMainTreeOnBase() when auto-correction is
+// blocked (dirty tree, mid-merge), AND re-checks live state with one git call
+// so we don't show stale warnings after manual recovery.
+function getMainTreeDrift() {
+  try {
+    // Live check first — if currently on the base branch, no warning
+    let currentBranch = '';
+    try {
+      currentBranch = safeExecSync('git rev-parse --abbrev-ref HEAD', { timeout: 3000 }).trim();
+    } catch { return null; }
+    if (!currentBranch) return null;
+
+    // Detect base branch (preview > main)
+    let baseBranch = 'main';
+    try {
+      safeExecSync('git show-ref --verify --quiet refs/remotes/origin/preview', { timeout: 3000 });
+      baseBranch = 'preview';
+    } catch { /* fall back to main */ }
+
+    if (currentBranch === baseBranch) return null;
+
+    // Read drift state for additional context (dirty/midMerge), but the live
+    // branch check above is the authoritative trigger.
+    const driftFile = path.join(PROJECT_DIR, '.claude', 'state', 'main-tree-drift.json');
+    let driftMeta = null;
+    if (fs.existsSync(driftFile)) {
+      try { driftMeta = JSON.parse(fs.readFileSync(driftFile, 'utf8')); } catch { /* non-fatal */ }
+    }
+
+    return { currentBranch, baseBranch, driftMeta };
+  } catch {
+    return null;
+  }
+}
+
 function getCurrentTaskDetails() {
   if (!AGENT_ID || !Database || !fs.existsSync(TODO_DB_PATH)) {
     return null;
@@ -750,6 +786,22 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
+  // Main-tree drift warning (independent of lockdown state — affects hot reload)
+  const mainTreeDrift = getMainTreeDrift();
+  if (mainTreeDrift) {
+    lines.push(`=== MAIN TREE DRIFT — pnpm demo:preview will not hot-reload ===`);
+    lines.push(`Main tree is on '${mainTreeDrift.currentBranch}', expected '${mainTreeDrift.baseBranch}'.`);
+    if (mainTreeDrift.driftMeta?.dirty) {
+      lines.push(`Working tree is dirty — preview-watcher cannot auto-correct.`);
+    } else if (mainTreeDrift.driftMeta?.midMerge) {
+      lines.push(`Mid-merge or rebase in progress — preview-watcher cannot auto-correct.`);
+    } else {
+      lines.push(`Drift detected just now; preview-watcher will auto-correct on its next 30s poll.`);
+    }
+    lines.push(`Recovery: git -C ${PROJECT_DIR} checkout ${mainTreeDrift.baseBranch} && git -C ${PROJECT_DIR} pull --ff-only origin ${mainTreeDrift.baseBranch}`);
+    lines.push('');
+  }
+
   // Lockdown-off worktree workflow notice
   try {
     const lockdownConfigPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
@@ -770,43 +822,33 @@ function buildInteractiveBriefing() {
         // liveness in .claude/state/interactive-sessions.json on the next prompt.
         // Session-briefing runs at SessionStart which is sync, so we skip the write
         // here and rely on the heartbeat (which fires within seconds of session start).
-        lines.push('=== LOCKDOWN OFF — CTO WORKTREE WORKFLOW ===');
+        lines.push('=== LOCKDOWN OFF — CTO INTERACTIVE PIPELINE ===');
         if (wtExists) {
           lines.push(`Worktree: ${wt} (exists)`);
-          lines.push('');
-          lines.push(`BEFORE making changes, run: cd ${wt}`);
         } else if (wt) {
           lines.push(`Worktree MISSING: ${wt} (recorded path no longer exists)`);
-          lines.push('');
           lines.push(`Recreate it: git -C ${PROJECT_DIR} worktree add ${wt} preview`);
-          lines.push(`Then: cd ${wt} and make changes there.`);
         } else {
-          lines.push('No worktree path recorded.');
-          lines.push('');
-          lines.push('Options to make code changes:');
-          lines.push('  (a) Spawn worktree-isolated sub-agents via Task tool (preferred)');
-          lines.push('  (b) Toggle lockdown to provision: /lockdown on then /lockdown off (CTO re-approves)');
+          lines.push('No worktree path recorded — toggle /lockdown on then /lockdown off to provision.');
         }
         lines.push('');
-        lines.push('=== RECOMMENDED — delegate via GENTYR orchestration systems ===');
+        lines.push('=== RECOMMENDED — run the 6-step pipeline directly in this session ===');
         lines.push('');
-        lines.push('PREFER the GENTYR systems over direct Task/Agent calls. They give you:');
-        lines.push('  - Tracked execution (todo.db / persistent-tasks.db / plans.db)');
-        lines.push('  - Audit gates (universal-auditor verifies completion against evidence)');
-        lines.push('  - Crash recovery (revival daemon, persistent monitor revival, circuit breakers)');
-        lines.push('  - Progress monitoring (/monitor, /status, CTO dashboard)');
-        lines.push('  - Automatic 6-step pipeline: investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager');
+        lines.push('Drive the standard sequence interactively, watching each step land in your CTO worktree:');
         lines.push('');
-        lines.push('Pick the right tool for the scope:');
-        lines.push('  /spawn-tasks <description>   — one-shot feature/fix; runs the full 6-step pipeline in a fresh worktree');
-        lines.push('  /persistent-task             — multi-session objective with a monitor that orchestrates sub-tasks');
-        lines.push('  /plan                        — multi-phase plan with phases/gates and a plan-manager');
+        lines.push('  1. Task(subagent_type=\'investigator\',    cwd=<worktree>, prompt: <research question>)');
+        lines.push('  2. Task(subagent_type=\'code-writer\',     cwd=<worktree>, prompt: <implementation>)');
+        lines.push('  3. Task(subagent_type=\'test-writer\',     cwd=<worktree>, prompt: <test coverage>)');
+        lines.push('  4. Task(subagent_type=\'code-reviewer\',   cwd=<worktree>, prompt: <review focus>)');
+        lines.push('  5. Task(subagent_type=\'user-alignment\',  cwd=<worktree>, prompt: <intent check>)');
+        lines.push('  6. Task(subagent_type=\'project-manager\', cwd=<worktree>, prompt: <commit, push, PR, wait for CI, self-merge to preview>)');
         lines.push('');
-        lines.push('Direct Task(subagent_type=\'code-writer\', ...) calls in this session ARE permitted in lockdown-off mode but are discouraged:');
-        lines.push('  - Work is not tracked in todo.db or plans.db');
-        lines.push('  - No audit gate verifies the result');
-        lines.push('  - No crash recovery if the session dies mid-flight');
-        lines.push('  - Progress is invisible to /monitor, /status, and the CTO dashboard');
+        lines.push('Critical conventions:');
+        lines.push('  - DO NOT use isolation: "worktree" — that creates a fresh worktree per Task call and breaks state flow between steps.');
+        lines.push('  - Pass cwd=<your cto-interactive worktree path> on EVERY Task call so all six steps share the same working tree.');
+        lines.push('  - Only project-manager commits/pushes/PRs/merges. The other five must not commit.');
+        lines.push('  - After the merge to preview lands, pnpm demo:preview in the main tree hot-reloads automatically (preview-watcher pulls origin/preview into the main tree every 30s).');
+        lines.push('  - Skip steps when justified (e.g., investigator-only for research). The only invariant: if files changed, project-manager runs last.');
         lines.push('');
         lines.push('STILL BLOCKED when lockdown is off:');
         lines.push('  - Write/Edit/NotebookEdit to main-tree files (only worktree, .claude/, ~/.claude/ allowed)');
@@ -814,9 +856,9 @@ function buildInteractiveBriefing() {
         lines.push('  - --no-verify, --no-gpg-sign, core.hooksPath writes (block-no-verify guard — independent of lockdown)');
         lines.push('  - Main-tree commits on protected branches main/staging/preview (main-tree-commit-guard — independent of lockdown)');
         lines.push('');
-        lines.push('=== MANUAL FALLBACK — direct edits in the cto-interactive worktree ===');
+        lines.push('=== MANUAL FALLBACK — direct edits in the worktree ===');
         lines.push('');
-        lines.push('If you have a small, urgent fix that does not justify a task/plan, you may edit directly in the worktree above. When done, ship it with these Bash commands (each as its own Bash call so CWD persists, or chain with &&):');
+        lines.push('For trivial fixes (typo, one-line config) you can edit directly in the worktree and ship via Bash:');
         lines.push('');
         if (wtExists) {
           lines.push(`  cd ${wt}`);
@@ -831,7 +873,13 @@ function buildInteractiveBriefing() {
         lines.push('  gh pr checks <num> --watch --fail-fast   # wait for CI');
         lines.push('  gh pr merge <num> --squash --delete-branch');
         lines.push('');
-        lines.push('Do NOT use Agent(subagent_type=\'project-manager\') to merge this work — the Agent tool creates a NEW worktree that will not see your in-progress edits. Finish manually OR use /spawn-tasks for fresh work.');
+        lines.push('=== ASYNC ALTERNATIVES — for stepping away ===');
+        lines.push('');
+        lines.push('When you want to step away while work continues, use the async task systems instead:');
+        lines.push('  /spawn-tasks <description>   — one-shot work; spawns in a fresh provisioned worktree');
+        lines.push('  /persistent-task             — multi-session objective with a monitor');
+        lines.push('  /plan                        — multi-phase plan with phases/gates');
+        lines.push('These give you tracking, audit gates, and crash recovery at the cost of latency. Use them when you don\'t want to babysit.');
         lines.push('');
         lines.push('After merge: /lockdown on (re-enables standard interactive console and removes this worktree).');
         lines.push('');

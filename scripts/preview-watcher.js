@@ -247,6 +247,11 @@ async function checkAndSync() {
     return;
   }
 
+  // Keep main tree on the base branch so `pnpm demo:preview` hot-reloads.
+  // Runs every cycle regardless of whether new commits exist, so drift caused
+  // by external shells (terminal `git checkout`) is caught quickly.
+  keepMainTreeOnBase(baseBranch);
+
   // Check if base branch has new commits
   let currentSha;
   try {
@@ -345,6 +350,112 @@ function pullPreviewIntoMainTree(baseBranch) {
     // Non-fatal — could be a non-FF case (very unlikely on a clean tree at the
     // base branch) or transient git error. Worktrees were synced already.
     log(`Main tree pull skipped: ${err.message.split('\n')[0]}`);
+  }
+}
+
+/**
+ * Keep the main tree on the base branch so `pnpm demo:preview` (and other
+ * dev servers watching the main tree) hot-reload after worktree merges land
+ * on origin/preview. Drift can be caused by external shells, accidental
+ * `git checkout` outside Claude Code, or aborted operations.
+ *
+ * Behavior:
+ *  - No-op if already on base branch.
+ *  - Auto-corrects via `git checkout <base>` + `git pull --ff-only` ONLY when
+ *    the main tree is clean and not mid-merge/rebase.
+ *  - Persists structured drift state to `.claude/state/main-tree-drift.json`
+ *    when correction is unsafe; clears it on successful auto-correction.
+ *  - Gated by `services.json` `mainTreeKeepOnBase` (default true).
+ *  - Fail-open on any error — preview-watcher's primary job is worktree sync.
+ */
+function keepMainTreeOnBase(baseBranch) {
+  // Config gate: services.json `mainTreeKeepOnBase` (default true)
+  try {
+    const configPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
+    if (fs.existsSync(configPath)) {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (cfg && cfg.mainTreeKeepOnBase === false) return;
+    }
+  } catch { /* fall through to default-on */ }
+
+  const driftFile = path.join(STATE_DIR, 'main-tree-drift.json');
+
+  // Read current branch
+  let currentBranch = '';
+  try {
+    currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+  } catch {
+    return; // Can't determine branch — fail-open
+  }
+
+  // Already on base — clear any stale drift file and return
+  if (currentBranch === baseBranch) {
+    if (fs.existsSync(driftFile)) {
+      try { fs.unlinkSync(driftFile); } catch { /* non-fatal */ }
+    }
+    return;
+  }
+
+  // Drift detected. Check whether auto-correction is safe.
+  let dirty = false;
+  try {
+    const status = execFileSync('git', ['status', '--porcelain'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+    }).trim();
+    dirty = status.length > 0;
+  } catch {
+    dirty = true; // fail-closed — can't verify, don't auto-correct
+  }
+
+  let midMerge = false;
+  try {
+    const gitDir = execFileSync('git', ['rev-parse', '--git-dir'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 3000, stdio: 'pipe',
+    }).trim();
+    const gitDirAbs = path.isAbsolute(gitDir) ? gitDir : path.join(PROJECT_DIR, gitDir);
+    midMerge = (
+      fs.existsSync(path.join(gitDirAbs, 'MERGE_HEAD')) ||
+      fs.existsSync(path.join(gitDirAbs, 'REBASE_HEAD')) ||
+      fs.existsSync(path.join(gitDirAbs, 'rebase-merge')) ||
+      fs.existsSync(path.join(gitDirAbs, 'rebase-apply'))
+    );
+  } catch { /* non-fatal */ }
+
+  if (dirty || midMerge) {
+    // Unsafe to auto-correct. Record drift state so session-briefing can warn.
+    const driftState = {
+      branch: currentBranch,
+      baseBranch,
+      dirty,
+      midMerge,
+      detectedAt: new Date().toISOString(),
+    };
+    try {
+      if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
+      const tmp = driftFile + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(driftState, null, 2));
+      fs.renameSync(tmp, driftFile);
+    } catch { /* non-fatal */ }
+    log(`Main tree drift: on ${currentBranch} (base: ${baseBranch}), dirty=${dirty}, midMerge=${midMerge} — skipping auto-correction`);
+    return;
+  }
+
+  // Safe to auto-correct: clean tree, no merge/rebase in progress.
+  try {
+    execFileSync('git', ['checkout', baseBranch], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+    });
+    execFileSync('git', ['pull', '--ff-only', 'origin', baseBranch], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 10000, stdio: 'pipe',
+    });
+    log(`Main tree auto-corrected: ${currentBranch} -> ${baseBranch}`);
+    if (fs.existsSync(driftFile)) {
+      try { fs.unlinkSync(driftFile); } catch { /* non-fatal */ }
+    }
+  } catch (err) {
+    log(`Main tree auto-correction failed (${currentBranch} -> ${baseBranch}): ${err.message.split('\n')[0]}`);
   }
 }
 

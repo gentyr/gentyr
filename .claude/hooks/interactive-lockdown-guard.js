@@ -447,16 +447,15 @@ async function main() {
       ? `Worktree: ${ctoWorktreePath}`
       : ctoWorktreePath
         ? `Worktree MISSING: ${ctoWorktreePath} (recreate: git worktree add ${ctoWorktreePath} preview)`
-        : 'No worktree provisioned — spawn worktree-isolated sub-agents OR /lockdown on then off';
-    const mergeSeq = worktreeExists
-      ? `Manual fallback (small urgent fixes only): cd ${ctoWorktreePath} && git add -A && git commit -m "..." && git push -u origin HEAD && gh pr create --base preview --title "..."`
-      : 'Manual fallback: cd into the worktree, then git add+commit+push+gh pr create --base preview';
-    const orchestrationReminder = 'PREFER GENTYR orchestration over direct Task/Agent calls: /spawn-tasks for one-shot work, /persistent-task for multi-session objectives, /plan for multi-phase plans. Those run the 6-step pipeline (investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager) automatically with tracking, audit gates, and crash recovery. Direct Task(subagent_type=\'code-writer\', ...) calls bypass all of that.';
+        : 'No worktree provisioned — toggle /lockdown on then off to provision';
+    const pipelineReminder = worktreeExists
+      ? `PIPELINE: Run the 6-step sequence in-session via Task(subagent_type=..., cwd=${ctoWorktreePath}) — investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager. All six share this worktree; only project-manager commits/pushes/merges. After merge, pnpm demo:preview in the main tree hot-reloads (preview-watcher pulls origin/preview into the main tree).`
+      : 'PIPELINE: Run the 6-step sequence in-session via Task(subagent_type=..., cwd=<worktree>) — investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager. All six share the CTO worktree; only project-manager commits/pushes/merges.';
     const guidance = [
       '[LOCKDOWN OFF] Main-tree edits + git mutations BLOCKED. Worktree workflow active.',
-      orchestrationReminder,
+      pipelineReminder,
       worktreeStatus,
-      mergeSeq,
+      'Async alternatives (for stepping away): /spawn-tasks, /persistent-task, /plan.',
       'After merge: /lockdown on (re-enables lockdown and removes this worktree).',
     ].join(' | ');
     process.stdout.write(JSON.stringify({

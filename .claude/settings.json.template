@@ -429,16 +429,6 @@
         ]
       },
       {
-        "matcher": "Task,Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/lockdown-off-pipeline-nudge.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {

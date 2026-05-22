@@ -155,22 +155,51 @@ After pushing but BEFORE creating the PR, run the pre-merge quality gate:
    - If merge fails (conflict), rebase: `git pull --rebase origin preview` and retry.
 9. Sync local base branch after merge:
    ```bash
-   git checkout preview && git pull --ff-only origin preview
-   git branch -D <feature-branch-name>
+   # SKIP this entire step in a cto-interactive worktree — the parent CTO session
+   # still owns the worktree and needs to stay on the feature branch (or be ready
+   # for further commits). Switching to preview would evict the CTO from the
+   # working tree they're using.
+   case "$(pwd)" in
+     */.claude/worktrees/cto-interactive*)
+       echo "Skipping base branch sync — cto-interactive worktree, parent CTO owns it";;
+     *)
+       git checkout preview && git pull --ff-only origin preview
+       git branch -D <feature-branch-name>
+       ;;
+   esac
    ```
-   This fetches the squash-merged commit. Without this pull, `git checkout preview`
-   reverts the working tree to the pre-edit state and all merged changes appear lost.
-10. **Clean up worktree (MANDATORY if you are in a worktree):**
+   For standard worktrees, this fetches the squash-merged commit. Without this pull,
+   `git checkout preview` reverts the working tree to the pre-edit state and all
+   merged changes appear lost. For cto-interactive worktrees, the preview-watcher
+   daemon fast-forward-pulls origin/preview into the main tree on its next 30s poll,
+   triggering hot reload for dev servers there.
+10. **Clean up worktree (MANDATORY if you are in a worktree, EXCEPT for CTO-interactive worktrees):**
    ```bash
    WORKTREE_PATH="$(pwd)"
-   cd "$(git -C "$WORKTREE_PATH" rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
-   git worktree remove "$WORKTREE_PATH" --force
-   git worktree prune
+   # SKIP worktree removal if the path matches `.claude/worktrees/cto-interactive*`:
+   # the parent CTO interactive session still owns it. The /lockdown on toggle
+   # (handled by authorization-audit-spawner.js) or the hourly
+   # interactive_session_reaper block will remove it when appropriate.
+   case "$WORKTREE_PATH" in
+     */.claude/worktrees/cto-interactive*)
+       echo "Skipping worktree removal — cto-interactive worktree owned by parent CTO session";;
+     *)
+       cd "$(git -C "$WORKTREE_PATH" rev-parse --path-format=absolute --git-common-dir | sed 's|/\.git$||')"
+       git worktree remove "$WORKTREE_PATH" --force
+       git worktree prune
+       ;;
+   esac
    ```
-   This switches your CWD to the main tree before removing the worktree directory.
+   Standard worktrees: this switches your CWD to the main tree before removing the worktree directory.
    If removal fails (e.g., locked files), report the failure but do NOT skip it silently.
 
-**Your session is NOT complete until the PR is merged, the branch is deleted, AND the worktree is removed.**
+   For cto-interactive worktrees: also do NOT delete the local feature branch via `git branch -D` in step 9
+   — `gh pr merge --delete-branch` already removed the remote ref, and the local branch will be cleaned
+   by the branch-pruner block in hourly automation. Deleting it manually while the CTO session is still
+   on it would orphan the worktree.
+
+**Your session is NOT complete until the PR is merged, the branch is deleted (standard worktrees only),
+AND the worktree is removed (standard worktrees only).**
 
 Note: Commits on feature branches pass through immediately (lint + security only).
 

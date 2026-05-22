@@ -30,15 +30,22 @@ Or use `/spawn-tasks <description>` for interactive task creation and spawning.
 
 **Lockdown toggle:** `/lockdown on` (default) / `/lockdown off` (dev/debug only)
 
-**Per-session CTO worktrees.** When lockdown is OFF, each interactive CTO session gets its own worktree at `.claude/worktrees/cto-interactive-<sid8>/` (`<sid8>` = first 8 chars of the session UUID). Multiple concurrent interactive sessions no longer collide on a single `cto-interactive` directory. Paths are recorded in `automation-config.json` as `ctoWorktreePaths: { [sessionId]: path }`, and `/lockdown on` cleans up only the current session's worktree. Liveness is tracked in `.claude/state/interactive-sessions.json` (refreshed by `interactive-heartbeat.js` on every prompt); `rescueAbandonedWorktrees()` and `reapStaleWorktrees()` skip `cto-interactive-*` worktrees whose owner session is alive — they will no longer hijack an active operator's worktree. A 5-minute `interactive_session_reaper` block cleans up worktrees whose owner session has been dead for >30 min. A 30-minute `branch_pruner` block deletes local AND remote branches whose PR is merged, plus stale local-only branches with no PR after 24h with no commits ahead of base. `preview-watcher.js` also fast-forward-pulls `origin/<base>` into the main tree when it's clean and on the base branch, so `pnpm demo:preview` (or any long-running dev server in the main tree) hot-reloads after worktree merges — gated by `services.json` `mainTreeAutoPull` (default true).
+**Per-session CTO worktrees.** When lockdown is OFF, each interactive CTO session gets its own worktree at `.claude/worktrees/cto-interactive-<sid8>/` (`<sid8>` = first 8 chars of the session UUID). Multiple concurrent interactive sessions no longer collide on a single `cto-interactive` directory. Paths are recorded in `automation-config.json` as `ctoWorktreePaths: { [sessionId]: path }`, and `/lockdown on` cleans up only the current session's worktree. Liveness is tracked in `.claude/state/interactive-sessions.json` (refreshed by `interactive-heartbeat.js` on every prompt); `rescueAbandonedWorktrees()` and `reapStaleWorktrees()` skip `cto-interactive-*` worktrees whose owner session is alive — they will no longer hijack an active operator's worktree. A 5-minute `interactive_session_reaper` block cleans up worktrees whose owner session has been dead for >30 min. A 30-minute `branch_pruner` block deletes local AND remote branches whose PR is merged, plus stale local-only branches with no PR after 24h with no commits ahead of base. `preview-watcher.js` also fast-forward-pulls `origin/<base>` into the main tree when it's clean and on the base branch, so `pnpm demo:preview` (or any long-running dev server in the main tree) hot-reloads after worktree merges — gated by `services.json` `mainTreeAutoPull` (default true). A companion `keepMainTreeOnBase()` helper runs on every poll regardless of new commits — when it detects the main tree drifted to a non-base branch (e.g., from an external terminal `git checkout`), it auto-corrects via `git checkout <base> && git pull --ff-only` if the working tree is clean; otherwise it records the drift to `.claude/state/main-tree-drift.json` for `session-briefing.js` to surface as a prominent `=== MAIN TREE DRIFT ===` block at the top of the interactive briefing. Gated by `services.json` `mainTreeKeepOnBase` (default true).
 
-**When lockdown is OFF**, you regain access to `Task`/`Agent` (all sub-agent types) and direct `Write`/`Edit` inside your session's CTO worktree. Even so, **prefer the GENTYR orchestration systems** over direct sub-agent spawning:
+**When lockdown is OFF**, the CTO is babysitting interactively. The preferred workflow is to **run the 6-step pipeline directly in-session** via `Task(subagent_type=..., cwd=<cto-interactive worktree>)` — each step lands in the same worktree so the CTO sees cumulative state and can interrupt mid-pipeline:
 
-- `/spawn-tasks <description>` — one-shot work via `create_task`; auto-runs the 6-step pipeline in a fresh worktree
-- `/persistent-task` — multi-session objective with a monitor that orchestrates sub-tasks
-- `/plan` — multi-phase plan with phases, gates, and a plan-manager
+```
+Task(subagent_type='investigator',     cwd=<worktree>, prompt: ...)
+Task(subagent_type='code-writer',      cwd=<worktree>, prompt: ...)
+Task(subagent_type='test-writer',      cwd=<worktree>, prompt: ...)
+Task(subagent_type='code-reviewer',    cwd=<worktree>, prompt: ...)
+Task(subagent_type='user-alignment',   cwd=<worktree>, prompt: ...)
+Task(subagent_type='project-manager',  cwd=<worktree>, prompt: <commit, PR, CI, self-merge to preview>)
+```
 
-Direct `Task(subagent_type='code-writer', ...)` calls in the session work but bypass tracking (todo.db / persistent-tasks.db / plans.db), audit gates, crash recovery, and progress monitoring. Reserve them for one-off scratch work you want to babysit. The session briefing's `=== LOCKDOWN OFF ===` block and the `interactive-agent-guard.js` / `lockdown-off-pipeline-nudge.js` hooks reinforce this guidance.
+Critical conventions: do NOT use `isolation: "worktree"` — that creates a fresh worktree per Task call and breaks state flow between steps. Pass `cwd=<your cto-interactive path>` on EVERY call. Only `project-manager` commits/pushes/merges. After the merge to preview lands, `pnpm demo:preview` in the main tree hot-reloads automatically.
+
+**Async alternatives — for stepping away**: `/spawn-tasks <description>` (one-shot, fresh provisioned worktree), `/persistent-task` (multi-session monitor), `/plan` (multi-phase plan-manager). Use these when you don't want to babysit; they give tracking, audit gates, and crash recovery at the cost of latency.
 
 ### Golden Rules
 
