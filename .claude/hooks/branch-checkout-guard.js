@@ -316,6 +316,14 @@ async function main() {
     return;
   }
 
+  // Allow main-tree repair agents to create rescue branches and checkout
+  // the base branch as part of the salvage-then-restore flow. See
+  // .claude/hooks/lib/main-tree-rescue.js for the prompt contract.
+  if (process.env.GENTYR_MAIN_TREE_REPAIR === 'true') {
+    process.stdout.write(JSON.stringify({ allow: true }));
+    return;
+  }
+
   // Extract command from tool input
   const command = event?.tool_input?.command || '';
   if (!command) {

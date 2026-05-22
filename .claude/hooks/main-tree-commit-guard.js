@@ -365,7 +365,7 @@ async function main() {
   // staging/preview (in gentyr repo). Catches the problem BEFORE the
   // git pre-commit hook runs, preventing lint-staged stash corruption.
   // ====================================================================
-  if (process.env.GENTYR_PROMOTION_PIPELINE !== 'true' && !isWorktree() && isMainTree()) {
+  if (process.env.GENTYR_PROMOTION_PIPELINE !== 'true' && process.env.GENTYR_MAIN_TREE_REPAIR !== 'true' && !isWorktree() && isMainTree()) {
     let currentBranch = '';
     try {
       currentBranch = execFileSync('git', ['branch', '--show-current'], {
@@ -419,6 +419,15 @@ async function main() {
 
   // Allow promotion pipeline agents
   if (process.env.GENTYR_PROMOTION_PIPELINE === 'true') {
+    process.stdout.write(JSON.stringify({ allow: true }));
+    return;
+  }
+
+  // Allow main-tree repair agents (spawned by repair_main_tree_drift MCP tool).
+  // Narrowly scoped: only the rescue session gets this env var, and its
+  // rescue prompt is locked down to salvage-then-restore — see
+  // .claude/hooks/lib/main-tree-rescue.js for the prompt contract.
+  if (process.env.GENTYR_MAIN_TREE_REPAIR === 'true') {
     process.stdout.write(JSON.stringify({ allow: true }));
     return;
   }

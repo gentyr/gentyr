@@ -524,6 +524,63 @@ describe('main-tree-commit-guard.js (PreToolUse hook)', () => {
     });
   });
 
+  describe('allows main-tree-repair agents (GENTYR_MAIN_TREE_REPAIR)', () => {
+    it('allows git commit for the rescue session', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "Rescue: salvage main-tree work"' },
+      }, { env: {
+        CLAUDE_PROJECT_DIR: mainTree.path,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        GENTYR_MAIN_TREE_REPAIR: 'true',
+      }});
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.allow, true);
+    });
+
+    it('allows git add -A for the rescue session', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git add -A' },
+      }, { env: {
+        CLAUDE_PROJECT_DIR: mainTree.path,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        GENTYR_MAIN_TREE_REPAIR: 'true',
+      }});
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.allow, true);
+    });
+
+    it('allows git pull --ff-only for the rescue session', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git pull --ff-only origin preview' },
+      }, { env: {
+        CLAUDE_PROJECT_DIR: mainTree.path,
+        CLAUDE_SPAWNED_SESSION: 'true',
+        GENTYR_MAIN_TREE_REPAIR: 'true',
+      }});
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.allow, true);
+    });
+
+    it('still blocks git commit when GENTYR_MAIN_TREE_REPAIR is unset', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "test"' },
+      }, { env: {
+        CLAUDE_PROJECT_DIR: mainTree.path,
+        CLAUDE_SPAWNED_SESSION: 'true',
+      }});
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.permissionDecision, 'deny');
+    });
+  });
+
   describe('non-git passthrough', () => {
     it('allows non-Bash tool calls', async () => {
       const result = await runHook({
