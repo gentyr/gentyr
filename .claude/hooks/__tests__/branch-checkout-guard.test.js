@@ -212,6 +212,32 @@ describe('branch-checkout-guard.js (PreToolUse hook)', () => {
       assert.strictEqual(output.permissionDecision, 'deny');
     });
 
+    it('main-tree-repair agents bypass the block (GENTYR_MAIN_TREE_REPAIR=true allows checkout -b rescue/*)', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git checkout -b rescue/main-tree-20260523T120000Z' },
+      }, { env: {
+        CLAUDE_PROJECT_DIR: mainTree.path,
+        GENTYR_MAIN_TREE_REPAIR: 'true',
+      } });
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.allow, true);
+    });
+
+    it('main-tree-repair agents bypass the block (GENTYR_MAIN_TREE_REPAIR=true allows checkout preview)', async () => {
+      const result = await runHook({
+        tool_name: 'Bash',
+        tool_input: { command: 'git checkout preview' },
+      }, { env: {
+        CLAUDE_PROJECT_DIR: mainTree.path,
+        GENTYR_MAIN_TREE_REPAIR: 'true',
+      } });
+
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output.allow, true);
+    });
+
     it('blocks /usr/bin/git checkout', async () => {
       const result = await runHook({
         tool_name: 'Bash',

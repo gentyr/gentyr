@@ -78,6 +78,7 @@ import {
   ResolveBlockingItemArgsSchema,
   GetBlockingSummaryArgsSchema,
   StageMcpServerArgsSchema,
+  RepairMainTreeDriftArgsSchema,
   AcquireSharedResourceArgsSchema,
   ReleaseSharedResourceArgsSchema,
   RenewSharedResourceArgsSchema,
@@ -138,6 +139,7 @@ import {
   type ResolveBlockingItemArgs,
   type GetBlockingSummaryArgs,
   type StageMcpServerArgs,
+  type RepairMainTreeDriftArgs,
   type CheckDeferredActionArgs,
   CheckDeferredActionArgsSchema,
   type RecordCtoDecisionArgs,
@@ -2318,6 +2320,48 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
       }
     }
     return { error: `force-spawn-tasks.js failed: ${execErr.message ?? String(err)}` };
+  }
+}
+
+function repairMainTreeDrift(args: RepairMainTreeDriftArgs): object | ErrorResult {
+  // Mirrors the force_spawn_tasks shape: thin shell-out to a standalone
+  // Node script that owns the framework module imports. Keeps the shared
+  // MCP daemon free of project-specific state.
+  const thisFile = fileURLToPath(import.meta.url);
+  const frameworkRoot = path.resolve(path.dirname(thisFile), '..', '..', '..', '..');
+  const scriptPath = path.join(frameworkRoot, 'scripts', 'repair-main-tree-drift.js');
+
+  if (!fs.existsSync(scriptPath)) {
+    return { error: `repair-main-tree-drift.js not found at ${scriptPath}. Framework root resolved to: ${frameworkRoot}` };
+  }
+
+  try {
+    const scriptArgs = [scriptPath, '--project-dir', PROJECT_DIR];
+    if (args.reason) {
+      scriptArgs.push('--reason', args.reason);
+    }
+    if (args.force) {
+      scriptArgs.push('--force');
+    }
+    if (args.dry_run) {
+      scriptArgs.push('--dry-run');
+    }
+    const output = execFileSync('node', scriptArgs, {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+    });
+    return JSON.parse(output.trim());
+  } catch (err: unknown) {
+    const execErr = err as { stdout?: string; message?: string };
+    if (execErr.stdout) {
+      try {
+        return JSON.parse(execErr.stdout.trim());
+      } catch {
+        // Fall through to error return
+      }
+    }
+    return { error: `repair-main-tree-drift.js failed: ${execErr.message ?? String(err)}` };
   }
 }
 
@@ -7020,6 +7064,12 @@ const tools: AnyToolHandler[] = [
     description: 'Force-spawn a deputy-CTO triage agent to process all pending reports immediately, bypassing the hourly automation triage interval. Returns the spawned agent ID, PID, and session ID.',
     schema: ForceTriageReportsArgsSchema,
     handler: forceTriageReports,
+  },
+  {
+    name: 'repair_main_tree_drift',
+    description: 'Detect and repair main-tree drift (detached HEAD, dirty working tree, or wrong branch) that is blocking the preview-watcher from fast-forwarding origin/<base> into the main tree (which breaks pnpm demo:preview HMR). Spawns a project-manager rescue session at critical priority. The rescue agent salvages any orphaned work to a DRAFT PR (never auto-merges) before restoring the main tree to its base branch. Idempotent — returns no_drift when the tree is clean, already_queued when a rescue session is already in flight.',
+    schema: RepairMainTreeDriftArgsSchema,
+    handler: repairMainTreeDrift,
   },
   {
     name: 'monitor_agents',

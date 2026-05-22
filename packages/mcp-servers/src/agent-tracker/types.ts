@@ -576,6 +576,16 @@ export type ListBlockingItemsArgs = z.infer<typeof ListBlockingItemsArgsSchema>;
 export type ResolveBlockingItemArgs = z.infer<typeof ResolveBlockingItemArgsSchema>;
 export type GetBlockingSummaryArgs = z.infer<typeof GetBlockingSummaryArgsSchema>;
 
+export const RepairMainTreeDriftArgsSchema = z.object({
+  reason: z.string().min(1).max(500).optional()
+    .describe('Why repair was requested (logged to audit + injected into the rescue prompt). E.g. "HMR broken — preview-watcher refusing to pull"'),
+  force: z.boolean().default(false)
+    .describe('If true, enqueue the rescue session even when no drift is detected. Rare; for manual cleanup.'),
+  dry_run: z.boolean().default(false)
+    .describe('If true, report what WOULD happen without enqueuing a session. Safe to call repeatedly for inspection.'),
+});
+export type RepairMainTreeDriftArgs = z.infer<typeof RepairMainTreeDriftArgsSchema>;
+
 export const StageMcpServerArgsSchema = z.object({
   name: z.string().min(1).max(100).describe('Server name (e.g., "notion", "my-postgres"). Must not collide with a GENTYR template server name.'),
   config: z.object({
