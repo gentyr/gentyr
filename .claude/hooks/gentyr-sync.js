@@ -119,6 +119,12 @@ function computeConfigHash(frameworkDir) {
   const files = [
     path.join(frameworkDir, '.claude', 'settings.json.template'),
     path.join(frameworkDir, '.mcp.json.template'),
+    // Include CLAUDE.md.gentyr-section so that section-only changes
+    // invalidate the fast-exit at the top of doStateBasedSync(). Without
+    // this, sessions read stale lockdown/workflow guidance until some
+    // other config file also changes. Discovered 2026-05-22 when PR #710/#711
+    // (which only modified this file) failed to propagate to target projects.
+    path.join(frameworkDir, 'CLAUDE.md.gentyr-section'),
   ];
   const hash = crypto.createHash('sha256');
   for (const f of files) {
