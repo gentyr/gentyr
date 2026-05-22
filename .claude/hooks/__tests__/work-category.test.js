@@ -184,6 +184,46 @@ describe('deriveWorkCategory', () => {
       metadata: { isPlanManager: true },
     }), 'plan-manager');
   });
+
+  // Regression tests for the snake/kebab classification gap that landed
+  // the majority of unclassified spend on interactive CTO sessions and
+  // several hourly-automation block agents. The kebab-case agent_type
+  // values shown below are what hourly-automation.js actually writes into
+  // queue_items.agent_type via `tagContext`.
+  it('classifies kebab-case agent_type values from hourly-automation spawners', () => {
+    assert.equal(deriveWorkCategory({ agentType: 'production-health-monitor' }), 'health-monitor');
+    assert.equal(deriveWorkCategory({ agentType: 'staging-health-monitor' }), 'health-monitor');
+    assert.equal(deriveWorkCategory({ agentType: 'todo-processing' }), 'todo-maintenance');
+    assert.equal(deriveWorkCategory({ agentType: 'deputy-cto-review' }), 'deputy-cto');
+    assert.equal(deriveWorkCategory({ agentType: 'standalone-compliance-checker' }), 'compliance-checker');
+    assert.equal(deriveWorkCategory({ agentType: 'standalone-antipattern-hunter' }), 'antipattern-hunter');
+    assert.equal(deriveWorkCategory({ agentType: 'antipattern-hunter' }), 'antipattern-hunter');
+    assert.equal(deriveWorkCategory({ agentType: 'compliance-checker' }), 'compliance-checker');
+    assert.equal(deriveWorkCategory({ agentType: 'test-fixer' }), 'test-fixer');
+    assert.equal(deriveWorkCategory({ agentType: 'feedback-agent' }), 'feedback-agent');
+    assert.equal(deriveWorkCategory({ agentType: 'lint-fixer' }), 'lint-fixer');
+    assert.equal(deriveWorkCategory({ agentType: 'todo-maintenance' }), 'todo-maintenance');
+  });
+
+  it('maps source=interactive-cto to the interactive-cto category', () => {
+    // resolveAttribution() step (5) tags non-spawned sessions with
+    // source='interactive-cto' and agent_type=null. Without this mapping,
+    // CTO interactive sessions land in the `other` bucket and inflate
+    // unclassified spend.
+    assert.equal(deriveWorkCategory({ source: 'interactive-cto' }), 'interactive-cto');
+  });
+
+  it('falls back to source for unmapped hourly-automation block agents', () => {
+    // When agent_type is unset or unrecognized, the source string alone
+    // should classify these well-known automation blocks.
+    assert.equal(deriveWorkCategory({ source: 'hourly-automation:triage_check' }), 'deputy-cto');
+    assert.equal(deriveWorkCategory({ source: 'hourly-automation:stale_work_detector' }), 'deputy-cto');
+    assert.equal(deriveWorkCategory({ source: 'hourly-automation:production_health_monitor' }), 'health-monitor');
+    assert.equal(deriveWorkCategory({ source: 'hourly-automation:staging_health_monitor' }), 'health-monitor');
+    assert.equal(deriveWorkCategory({ source: 'hourly-automation:standalone_compliance_checker' }), 'compliance-checker');
+    assert.equal(deriveWorkCategory({ source: 'hourly-automation:standalone_antipattern_hunter' }), 'antipattern-hunter');
+    assert.equal(deriveWorkCategory({ source: 'todo-maintenance' }), 'todo-maintenance');
+  });
 });
 
 describe('REVIVAL_SOURCES contents', () => {

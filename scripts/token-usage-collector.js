@@ -693,7 +693,12 @@ export function backfillSubagentAttribution({
 export function backfillWorkCategoryAttribution({
   dbPath = DB_PATH,
   queueDbPath = QUEUE_DB_PATH,
-  marker = 'work_category_backfill_v1',
+  // v2 — bumped after the deriveWorkCategory() fix that (a) normalizes
+  // hyphenated agent_type values to snake_case before comparison and
+  // (b) maps source='interactive-cto' + hourly-automation block sources
+  // to their proper categories. Re-runs once per installed DB to rewrite
+  // rows previously stuck in the 'other' bucket.
+  marker = 'work_category_backfill_v2',
 } = {}) {
   const db = openDb(dbPath);
   let rewrote = 0;
