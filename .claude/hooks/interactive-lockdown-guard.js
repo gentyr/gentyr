@@ -269,18 +269,43 @@ async function main() {
     // worktree under .claude/worktrees/cto-interactive-<sid8>/.
     let ctoWorktreePath = '';
     let worktreeExists = false;
+    let ctoWorktreePathsRegistry = null;
+    const eventSessionId = event?.session_id || event?.sessionId || '';
     try {
       const configPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      const ctoSessionId = event?.session_id || event?.sessionId || '';
-      if (ctoSessionId && config.ctoWorktreePaths && typeof config.ctoWorktreePaths === 'object') {
-        ctoWorktreePath = config.ctoWorktreePaths[ctoSessionId] || '';
+      if (config.ctoWorktreePaths && typeof config.ctoWorktreePaths === 'object') {
+        ctoWorktreePathsRegistry = config.ctoWorktreePaths;
+        if (eventSessionId) {
+          ctoWorktreePath = config.ctoWorktreePaths[eventSessionId] || '';
+        }
       }
       if (!ctoWorktreePath) {
         ctoWorktreePath = config.ctoWorktreePath || '';
       }
       worktreeExists = !!ctoWorktreePath && fs.existsSync(ctoWorktreePath);
     } catch { /* non-fatal */ }
+
+    // Task-tool sub-agent detection. Sub-agents spawned via the Task tool share
+    // the interactive CTO's process (and thus inherit process.env without
+    // CLAUDE_SPAWNED_SESSION set), but each has its own session_id. The
+    // ctoWorktreePaths registry only contains interactive ROOT session IDs
+    // (populated by authorization-audit-spawner.js on /lockdown off). When the
+    // event's session_id is set AND the registry has entries AND this session
+    // is NOT in the registry, the caller is a Task sub-agent — fast-exit
+    // approve so it does not receive the LOCKDOWN OFF guidance addressed to
+    // the interactive root. Other guards (main-tree-commit-guard,
+    // credential-file-guard, worktree-path-guard, etc.) still fire because
+    // they do not gate on lockdown state.
+    if (
+      eventSessionId &&
+      ctoWorktreePathsRegistry &&
+      Object.keys(ctoWorktreePathsRegistry).length > 0 &&
+      !Object.prototype.hasOwnProperty.call(ctoWorktreePathsRegistry, eventSessionId)
+    ) {
+      process.stdout.write(JSON.stringify({ decision: 'approve' }));
+      return;
+    }
 
     // Build a consistent recovery block. Three states:
     //   1. Worktree exists → "cd <path> && retry"

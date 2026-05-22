@@ -409,6 +409,138 @@ describe('interactive-lockdown-guard.js', () => {
     });
   });
 
+  describe('lockdown disabled → Task sub-agent fast-exit (no LOCKDOWN OFF guidance)', () => {
+    const CTO_SESSION_ID = '11111111-1111-1111-1111-111111111111';
+    const SUBAGENT_SESSION_ID = '22222222-2222-2222-2222-222222222222';
+    const ctoWorktreePath = '/tmp/lockdown-guard-test-cto-wt';
+
+    before(() => {
+      // Lockdown disabled + per-session CTO worktree registry populated.
+      fs.writeFileSync(
+        path.join(tmpConfigDir, 'automation-config.json'),
+        JSON.stringify({
+          interactiveLockdownDisabled: true,
+          ctoWorktreePaths: { [CTO_SESSION_ID]: ctoWorktreePath },
+        })
+      );
+    });
+
+    after(() => {
+      const configPath = path.join(tmpConfigDir, 'automation-config.json');
+      if (fs.existsSync(configPath)) fs.unlinkSync(configPath);
+    });
+
+    it('CTO root session (session_id in registry) still receives LOCKDOWN OFF guidance', async () => {
+      const result = await runHook(
+        { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: CTO_SESSION_ID },
+        { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+      assert.ok(
+        output?.hookSpecificOutput?.additionalContext?.includes('[LOCKDOWN OFF]'),
+        'CTO root session must still see LOCKDOWN OFF guidance'
+      );
+    });
+
+    it('Task sub-agent (session_id NOT in registry) approves WITHOUT LOCKDOWN OFF guidance', async () => {
+      const result = await runHook(
+        { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: SUBAGENT_SESSION_ID },
+        { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+      assert.strictEqual(
+        output?.hookSpecificOutput,
+        undefined,
+        'Sub-agent must NOT receive any additionalContext (would mislead it into delegating)'
+      );
+    });
+
+    it('Task sub-agent Edit to main-tree path is NOT blocked (sub-agent has its own worktree)', async () => {
+      // Without the fix, this would hit the lockdown-off main-tree edit block
+      // with a "BLOCKED: Main-tree edits are not allowed" message — even
+      // though the sub-agent is running in its own isolation worktree.
+      const result = await runHook(
+        {
+          tool_name: 'Edit',
+          tool_input: { file_path: '/some/main/tree/file.ts' },
+          session_id: SUBAGENT_SESSION_ID,
+        },
+        { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+      assert.notStrictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'Sub-agent Edit must not be denied by the lockdown-off main-tree guard'
+      );
+    });
+
+    it('Task sub-agent code-modifying Task() call approves WITHOUT lockdown-off rerouting message', async () => {
+      // Without the fix, the sub-agent hitting Task(subagent_type='code-writer')
+      // would get reroutered into the GENTYR queue via the "Only read-only
+      // sub-agents are allowed" deny message at line ~526.
+      const result = await runHook(
+        {
+          tool_name: 'Task',
+          tool_input: { subagent_type: 'code-writer' },
+          session_id: SUBAGENT_SESSION_ID,
+        },
+        { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+    });
+
+    it('session_id missing from event → falls through to lockdown-off treatment (back-compat)', async () => {
+      // Some hook invocations (older Claude Code versions, edge cases) may
+      // not include session_id. In that case the sub-agent detection cannot
+      // fire and the existing lockdown-off behavior must hold.
+      const result = await runHook(
+        { tool_name: 'Bash', tool_input: { command: 'ls' } },
+        { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(output?.decision, 'approve');
+      assert.ok(
+        output?.hookSpecificOutput?.additionalContext?.includes('[LOCKDOWN OFF]'),
+        'Missing session_id must fall through to lockdown-off behavior, not silently approve'
+      );
+    });
+
+    it('ctoWorktreePaths empty → sub-agent detection inactive (back-compat with legacy singular path)', async () => {
+      // Write a config with the legacy singular ctoWorktreePath but no
+      // per-session registry. Sub-agent detection must NOT fire (it would
+      // misclassify the legacy CTO root as a sub-agent).
+      const legacyConfigPath = path.join(tmpConfigDir, 'automation-config.json');
+      const originalConfig = fs.readFileSync(legacyConfigPath, 'utf8');
+      fs.writeFileSync(
+        legacyConfigPath,
+        JSON.stringify({
+          interactiveLockdownDisabled: true,
+          ctoWorktreePath: ctoWorktreePath,
+        })
+      );
+      try {
+        const result = await runHook(
+          { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: SUBAGENT_SESSION_ID },
+          { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+        );
+        const output = parseOutput(result.stdout);
+        assert.strictEqual(output?.decision, 'approve');
+        assert.ok(
+          output?.hookSpecificOutput?.additionalContext?.includes('[LOCKDOWN OFF]'),
+          'Empty registry must preserve legacy lockdown-off behavior'
+        );
+      } finally {
+        // Restore the per-session-registry config for subsequent tests in this describe.
+        fs.writeFileSync(legacyConfigPath, originalConfig);
+      }
+    });
+  });
+
   describe('G001 fail-closed on errors', () => {
     it('denies on malformed JSON input', async () => {
       const result = await runHook('not valid json {{{}');
