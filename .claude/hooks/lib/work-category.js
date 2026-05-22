@@ -106,70 +106,86 @@ export function deriveWorkCategory({
   // Global deputy-CTO monitor: persistent-task-monitor with taskType: 'global_monitor'.
   const isGlobalMonitor = !!(metadata && (metadata.taskType === 'global_monitor' || metadata.globalMonitor === true));
 
-  // Normalize agent_type comparisons (some spawners use UPPER_SNAKE constants,
-  // others use the kebab agent-definition name).
-  const at = typeof agentType === 'string' ? agentType.toLowerCase() : '';
+  // Normalize agent_type comparisons. Spawners use a mix of UPPER_SNAKE
+  // constants and kebab agent-definition names — normalize both to lowercase
+  // snake_case so every conditional below matches regardless of which form
+  // the queue row stored. Without this normalization, kebab-case values like
+  // `production-health-monitor` or `todo-processing` silently failed every
+  // snake_case match and landed in the unclassified `other` bucket.
+  const at = typeof agentType === 'string'
+    ? agentType.toLowerCase().replace(/-/g, '_')
+    : '';
+
+  // NOTE: `at` is normalized to lowercase snake_case at the top of this
+  // function (hyphens → underscores), so every conditional below uses the
+  // snake_case form. The original kebab-case alternates were dead code after
+  // normalization and have been removed.
 
   // Persistent-task-monitor family
-  if (at === 'persistent-task-monitor' || at === 'persistent_task_monitor') {
+  if (at === 'persistent_task_monitor') {
     if (isGlobalMonitor) return 'global-monitor';
     if (isPlanManager) return 'plan-manager';
     return 'persistent-monitor';
   }
 
   // Auditors
-  if (at === 'universal-auditor' || at === 'universal_auditor') return 'universal-auditor';
-  if (at === 'plan-auditor' || at === 'plan_auditor') return 'plan-auditor';
-  if (at === 'authorization-auditor' || at === 'authorization_auditor') return 'authorization-auditor';
+  if (at === 'universal_auditor') return 'universal-auditor';
+  if (at === 'plan_auditor') return 'plan-auditor';
+  if (at === 'authorization_auditor') return 'authorization-auditor';
 
   // Gate agent (Haiku review of pending_review tasks + AI PR reviewer)
-  if (at === 'task_gate' || at === 'task-gate') return 'gate-agent';
-  if (at === 'ai_pr_reviewer' || at === 'ai-pr-reviewer') return 'pr-reviewer';
+  if (at === 'task_gate') return 'gate-agent';
+  if (at === 'ai_pr_reviewer') return 'pr-reviewer';
 
   // Demo
-  if (at === 'task_runner_demo_manager' || at === 'demo-manager' || at === 'demo_repair' || at === 'demo_validator') return 'demo-manager';
+  if (at === 'task_runner_demo_manager' || at === 'demo_manager' || at === 'demo_repair' || at === 'demo_validator') return 'demo-manager';
 
   // Project-manager rescue (abandoned-worktree spawn)
   if (at === 'task_runner_project_manager') return 'task-runner'; // rolled into task-runner — same lifecycle
 
   // Promotion pipeline
-  if (at === 'preview-promoter' || at === 'preview_promoter') return 'preview-promoter';
-  if (at === 'hotfix_promotion' || at === 'hotfix-promotion') return 'hotfix-promotion';
+  if (at === 'preview_promoter') return 'preview-promoter';
+  if (at === 'hotfix_promotion') return 'hotfix-promotion';
 
   // Reviewer/auditor sub-categories
-  if (at === 'staging-reactive-reviewer' || at === 'staging_reactive_reviewer' || at === 'staging-reviewer') return 'staging-reviewer';
-  if (at === 'security-auditor' || at === 'security_auditor') return 'security-auditor';
-  if (at === 'antipattern_hunter_repo' || at === 'antipattern_hunter_commit' || at === 'standalone_antipattern_hunter' || at === 'antipattern-hunter') return 'antipattern-hunter';
-  if (at === 'compliance_global' || at === 'standalone_compliance_checker' || at === 'compliance-checker') return 'compliance-checker';
+  if (at === 'staging_reactive_reviewer' || at === 'staging_reviewer') return 'staging-reviewer';
+  if (at === 'security_auditor') return 'security-auditor';
+  if (at === 'antipattern_hunter_repo' || at === 'antipattern_hunter_commit' || at === 'standalone_antipattern_hunter' || at === 'antipattern_hunter') return 'antipattern-hunter';
+  if (at === 'compliance_global' || at === 'standalone_compliance_checker' || at === 'compliance_checker') return 'compliance-checker';
 
   // Deputy-CTO / triage
-  if (at === 'deputy_cto_review' || at === 'deputy-cto-triage' || at === 'deputy-cto') return 'deputy-cto';
+  if (at === 'deputy_cto_review' || at === 'deputy_cto_triage' || at === 'deputy_cto') return 'deputy-cto';
 
   // Health monitoring
   if (at === 'production_health_monitor' || at === 'staging_health_monitor') return 'health-monitor';
 
   // Maintenance
-  if (at === 'lint_fixer' || at === 'lint-fixer') return 'lint-fixer';
-  if (at === 'claudemd_refactor' || at === 'claudemd-refactor') return 'claudemd-refactor';
-  if (at === 'todo_processing' || at === 'todo-maintenance') return 'todo-maintenance';
-  if (at === 'federation_mapper' || at === 'federation-mapper') return 'federation-mapper';
+  if (at === 'lint_fixer') return 'lint-fixer';
+  if (at === 'claudemd_refactor') return 'claudemd-refactor';
+  if (at === 'todo_processing' || at === 'todo_maintenance') return 'todo-maintenance';
+  if (at === 'federation_mapper') return 'federation-mapper';
 
   // Test fixers
-  if (at === 'test_failure_jest' || at === 'test_failure_playwright' || at === 'test_failure_vitest' || at === 'test-fixer') return 'test-fixer';
+  if (at === 'test_failure_jest' || at === 'test_failure_playwright' || at === 'test_failure_vitest' || at === 'test_fixer') return 'test-fixer';
 
   // Feedback persona agents
-  if (at === 'feedback_orchestrator' || at === 'feedback-agent' || at === 'feedback-orchestrator') return 'feedback-agent';
+  if (at === 'feedback_orchestrator' || at === 'feedback_agent') return 'feedback-agent';
 
   // Workstream coordinator
   if (at === 'task_runner_workstream_manager') return 'task-runner';
 
   // Generic task-runner (TASK_RUNNER_* family, code-writer, etc.)
-  if (at.startsWith('task_runner_') || at.startsWith('task-runner-') || at === 'task-runner' || at === 'task_runner') return 'task-runner';
-  if (at === 'session_revived' || at === 'session-revived') return 'task-runner'; // resumed work — still task-runner
+  if (at.startsWith('task_runner_') || at === 'task_runner') return 'task-runner';
+  if (at === 'session_revived') return 'task-runner'; // resumed work — still task-runner
 
   // Source-based fallback: when the queue row's agent_type wasn't set but the
   // spawner name is recognizable.
   if (typeof source === 'string') {
+    // CTO interactive sessions are tagged source='interactive-cto' by
+    // resolveAttribution() step (5) — agent_type is null because there is no
+    // queue row. Map them to the dedicated category so they don't fall into
+    // the `other` bucket.
+    if (source === 'interactive-cto') return 'interactive-cto';
     if (source === 'antipattern-hunter-hook') return 'antipattern-hunter';
     if (source === 'ai-pr-review-hook') return 'pr-reviewer';
     if (source === 'compliance-checker') return 'compliance-checker';
@@ -181,7 +197,19 @@ export function deriveWorkCategory({
     if (source === 'demo-failure-spawner') return 'demo-manager';
     if (source === 'persistent-task-spawner') return isPlanManager ? 'plan-manager' : 'persistent-monitor';
     if (source === 'plan-activation-spawner') return 'plan-manager';
+    if (source === 'todo-maintenance') return 'todo-maintenance';
     if (source && source.startsWith('subprocess:')) return 'subprocess-llm';
+    // hourly-automation block sources — used when agent_type was kebab-case
+    // and didn't normalize cleanly above, or when no agent_type was set.
+    // Mirror the agent_type-based branches above so the block name alone is
+    // enough to classify the work.
+    if (source === 'hourly-automation:triage_check' || source === 'hourly-automation:stale_work_detector') return 'deputy-cto';
+    if (source === 'hourly-automation:production_health_monitor' || source === 'hourly-automation:staging_health_monitor') return 'health-monitor';
+    if (source === 'hourly-automation:standalone_compliance_checker') return 'compliance-checker';
+    if (source === 'hourly-automation:standalone_antipattern_hunter') return 'antipattern-hunter';
+    if (source === 'hourly-automation:todo_processing') return 'todo-maintenance';
+    if (source === 'hourly-automation:demo_validation') return 'demo-manager';
+    if (source === 'hourly-automation:feedback_check') return 'feedback-agent';
   }
 
   // Subprocess tag (broadcaster, live-feed daemon, llm-client) routes here.
