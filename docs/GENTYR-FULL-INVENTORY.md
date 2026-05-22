@@ -79,9 +79,14 @@
 - Stripe: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
 
 ### 2.4 Secret Sync to Deployment Platforms
-- `secret_sync_secrets` — push from 1Password to Render/Vercel
-- `populate_secrets_local` — add op:// refs to services.json
-- Secret profiles (named bundles of keys)
+- `secret_sync_secrets` — push from 1Password to Render / Vercel / **Fly.io** (`target: 'fly'` added to the SyncSecrets / ListMappings / VerifySecrets enums; uses Fly Machines API `POST /v1/apps/{app}/secrets` with bulk upsert body `{ secrets: [{ name, type: 'opaque', value }] }` — bare arrays and `label` are rejected by the API)
+- `populate_secrets_local` — add op:// refs to `services.json` `secrets.local`
+- `populate_secrets_fly` — add op:// refs to `services.json` `secrets.fly[appName]`. Stages to `.claude/state/secrets-fly-pending.json` when `services.json` is root-protected; sync step 1.6b applies on next sync. Eliminates the bypass-request loop when agents need to push secrets to a Fly app
+- `op://` reference validation — both `npx gentyr sync` step 1.6 and `populate_secrets_local` run `op read --no-newline` against each entry before applying. Per-entry ✓/✗ with targeted fix suggestion: ambiguous title → item-ID form; isn't-an-item / isn't-a-field → check vault/item/section/field. Failed entries stay in pending with their error visible. `populate_secrets_local` returns `validationFailures` so agents see which refs are broken. Skips validation when `OP_SERVICE_ACCOUNT_TOKEN` is unset or `op` CLI is unavailable
+- Idempotency for `populate_secrets_local` — partitions entries into no-ops (already in `services.json` with same value) vs dirty. All-no-op call returns `noOp: true` with no write. EACCES fallback drops any stale pending entries that already match `services.json` before re-staging. `sync.js` step 1.6 applies the same defensive pre-filter
+- Secret profiles (named bundles of keys) with `localCheck: required | optional | skip` — `skip` suppresses the per-prompt `secrets-local-health` warning for profiles whose keys live exclusively in external targets (Fly app secrets, GitHub Actions secrets, CI provider env)
+- Schema null-tolerance — `loadServicesConfig()` strips top-level `null` fields before Zod validation; `secrets` is optional in `ServicesConfigSchema`; accessors use optional chaining throughout
+- Surfacing silent propagation failures — `isProtected()` checks on-disk owner of `services.json` as secondary signal; sync step 1.6 re-reads after write and throws if staged keys are missing (preserves pending); end-of-run summary banner prints applied/failed counts across all sync steps; `pending-sync-notifier.js` injects `additionalContext` so the model sees pending state (not just terminal `systemMessage`)
 - `/push-secrets` slash command
 
 ### 2.5 Credential Health Check (SessionStart hook)
@@ -952,6 +957,8 @@ The Persistent Task System orchestrates long-running, amendment-driven monitorin
 
 **Failure Modes & Recovery** — Fetch timeout: non-fatal. Install failure: lenient=warning, strict=abort+remove. Port allocation exhausted (50 max): cleanup needed.
 
+**Per-session CTO worktrees** (PR #709): When `/lockdown off` is approved, `authorization-audit-spawner.js` provisions a session-scoped worktree named `cto-interactive-<sid8>` and stores its path in `automation-config.json` under `ctoWorktreePaths: { [sessionId]: path }`. The legacy singular `ctoWorktreePath` is still written for back-compat. `/lockdown on` removes only the current session's worktree. Two concurrent CTO sessions no longer collide on a shared `cto-interactive` worktree. Liveness tracked by `lib/interactive-liveness.js` + `interactive-heartbeat.js` UserPromptSubmit hook (root-owned) at `.claude/state/interactive-sessions.json`, keyed by session UUID with 30-min staleness + PID liveness check. `rescueAbandonedWorktrees()` and `reapStaleWorktrees()` cross-check this state so automation cannot hijack the CTO's worktree mid-session.
+
 ---
 
 ### 11.2 Worktree Freshness (Multi-Layer)
@@ -966,6 +973,8 @@ The Persistent Task System orchestrates long-running, amendment-driven monitorin
 
 **Failure Modes & Recovery** — Merge conflict: marked conflict=true, agent must resolve. Dirty worktree: can't auto-merge, agent notified. Offline: cycle skipped.
 
+**Main-tree drift mechanism** (PR #710, #709): `scripts/preview-watcher.js` adds `keepMainTreeOnBase()` called every 30s. Auto-corrects clean main-tree drift via `git checkout <base> && git pull --ff-only`. Records to `.claude/state/main-tree-drift.json` when unsafe (dirty / mid-merge / mid-rebase). Gated by `services.json` `mainTreeKeepOnBase` (default `true`); `mainTreeAutoPull` (default `true`) controls the fast-forward-pull of `origin/<base>` into the main tree after each base-branch update. `session-briefing.js` adds a prominent `=== MAIN TREE DRIFT ===` block at briefing top with live git re-check and recovery command. Both fields are in `ServicesConfigSchema`. Closes the `pnpm demo:preview` hot-reload failure mode where the main tree silently drifted to another branch.
+
 ---
 
 ### 11.3 Worktree Cleanup & Maintenance
@@ -975,6 +984,12 @@ The Persistent Task System orchestrates long-running, amendment-driven monitorin
 **Architecture** — `cleanupMergedWorktrees()` (preview-watcher, every 5 min): detect merged branches → session-queue guard (skip if active session) → lsof check (fail-closed) → dirty check → removeWorktree(force:true). Stale reaper (hourly, >4h clean worktrees). Abandoned rescue (hourly, 15 min, uncommitted+no agent → spawn project-manager).
 
 **Configuration** — Cleanup interval: 5 min. Stale threshold: 4h. Rescue threshold: 15 min. Lsof timeout: 5s (fail-closed). All safety checks: session-queue cross-check + lsof + dirty check.
+
+**Abandoned rescue safety hardening** (PR #712, doc PR #713): Rescue logic extracted to `.claude/hooks/lib/rescue-worktree.js`. Rescue prompts now require `git fetch origin <base> && git merge origin/<base> --no-edit` BEFORE any push (conflict → file bypass request and exit, never auto-resolve), open the PR as `--draft`, never auto-merge, and embed a `computeWorktreeDivergence()` snapshot (commits ahead/behind, files/lines changed, branch age, dirty file mtimes, `fresh_crash` / `stale_orphan` heuristic) in the PR body for human review. Closes the 2026-05-22 destructive-overwrite failure mode where rescue squash-merged stale worktree snapshots into preview and overwrote recently-merged work. Background: `docs/abandoned-worktree-rescue.md`.
+
+**Interactive session reaper** (`interactive_session_reaper`, 5-min cooldown, gate-exempt): purges dead-session entries from `.claude/state/interactive-sessions.json`, removes their `cto-interactive-*` worktrees ONLY when clean (never auto-commits in-progress CTO work), and cleans up `automation-config.json` `ctoWorktreePaths`.
+
+**Branch pruner** (`branch_pruner`, 30-min cooldown, gate-exempt): deletes local AND remote branches with merged PRs; deletes local-only branches >24h old with no PR and no commits ahead of base; runs `git remote prune origin`. Closes accumulation of stale branches from old worktrees.
 
 ---
 
@@ -1014,7 +1029,7 @@ The Persistent Task System orchestrates long-running, amendment-driven monitorin
 
 ---
 
-## 12. Hook System (89 JS files)
+## 12. Hook System (92 JS files)
 
 The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks intercept Claude Code tool execution at five lifecycle points and run Node.js scripts that can block actions, inject context, spawn agents, or log audit events. Agents cannot bypass hooks.
 
@@ -1097,7 +1112,7 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 
 ## 13. Automation & Daemons
 
-### 13.1 Persistent Daemons (6 services)
+### 13.1 Persistent Daemons (7 services)
 
 **1. MCP Shared Daemon** (`scripts/mcp-server-daemon.js`, 532 lines)
 - **Purpose**: Single HTTP server hosting 15 Tier 1 MCP servers, saving ~750MB RAM per agent
@@ -1129,7 +1144,13 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 - **Config**: launchd `com.local.gentyr-live-feed-daemon` (KeepAlive). Tail: 8KB per session.
 - **Failure**: Unchanged fingerprint → no LLM call. Stream timeout → skip entry. DB: 500 entry cap.
 
-**6. Hourly Automation** (`.claude/hooks/hourly-automation.js`, 5,767 lines)
+**6. Token Usage Collector** (`scripts/token-usage-collector.js`)
+- **Purpose**: Every 60s, parse every Claude session JSONL for assistant `message.usage`, attribute each session to a source/work_category/spawn_origin, persist per-message events + daily rollups in `token-usage.db`
+- **Architecture**: KeepAlive launchd `com.local.gentyr-token-usage-collector`. Incremental scan via `scan_offsets` (per-file byte offset). Idempotent ingest via `UNIQUE(session_id, message_uuid)`. Backfill passes on startup: `backfillSubagentAttribution()` (re-resolves `subagent:unknown`) + `backfillWorkCategoryAttribution()` (populates new dimensions on legacy rows).
+- **Config**: 90-day retention on `usage_events`, 30-day on `subprocess_calls`, indefinite on `session_attribution` and `daily_rollup`. Weekly VACUUM. Pricing in `lib/token-pricing.js`.
+- **Failure**: Missing JSONL → skip. Schema migration → idempotent ALTER TABLE on every open. See Section 16.6 for the full attribution model.
+
+**7. Hourly Automation** (`.claude/hooks/hourly-automation.js`, 5,767 lines)
 - **Purpose**: 10-min timer service running 36 automation blocks with CTO gate and cooldown management
 - **Architecture**: Load config → check CTO gate (24h briefing required) → run gate-exempt blocks → check gate → run gate-required blocks → finalize. Each block: `runIfDue(key, cooldown)` checks `hourly-automation-state.json`.
 - **Config**: launchd `com.local.plan-executor` (StartInterval: 600s). Cooldowns from `config-reader.js` (181 lines, 50+ defaults).
@@ -1154,6 +1175,9 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 | report_auto_resolve | 2 min | Match merged PRs to pending reports |
 | report_dedup | 30 min | Deduplicate similar reports |
 | triage_check | 30 min | Spawn triage agents for pending reports |
+| interactive_session_reaper | 5 min | Purge dead-session entries from `interactive-sessions.json`, remove their `cto-interactive-*` worktrees IF clean (never auto-commits in-progress CTO work), clean up `automation-config.json` `ctoWorktreePaths` |
+| branch_pruner | 30 min | Delete local AND remote branches with merged PRs; delete local-only branches >24h old with no PR and no commits ahead of base; runs `git remote prune origin` |
+| timed_pause_auto_resume | 1 min | Auto-resolve expired timed bypass pauses (≤60 min) without CTO action; resume linked persistent task, clear blocking_queue |
 
 Plus: staging reactive review (60 min), preview promotion (30 min), health monitors, PR sweep, deploy event monitor, DORA metrics, security audit, bypass staleness check, orphan process reaper, screenshot cleanup, Fly stale machine cleanup, stale work detector, antipattern hunter, compliance checker, user feedback, demo validation, daily feedback.
 
@@ -1184,6 +1208,7 @@ Plus: staging reactive review (60 min), preview promotion (30 min), health monit
 | Preview Watcher | com.local.gentyr-preview-watcher | KeepAlive (persistent) | Restart=always, 5s |
 | Activity Broadcaster | com.local.gentyr-session-activity-broadcaster | KeepAlive (persistent) | Restart=always, 5s |
 | Live Feed Daemon | com.local.gentyr-live-feed-daemon | KeepAlive (persistent) | Restart=always, 5s |
+| Token Usage Collector | com.local.gentyr-token-usage-collector | KeepAlive (persistent) | Restart=always, 5s |
 
 **Installation**: `scripts/setup-automation-service.sh setup --path /project [--op-token TOKEN]`. macOS: plists in `~/Library/LaunchAgents/`. Linux: systemd user services. OP token preservation: existing token carried forward on regeneration.
 
@@ -1250,7 +1275,7 @@ Plus: staging reactive review (60 min), preview promotion (30 min), health monit
 
 ---
 
-## 15. Slash Commands (42 commands)
+## 15. Slash Commands (47 commands)
 
 **Purpose** — Interactive control interface for the deputy-CTO workflow. All commands resolve framework path via: `GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })"`
 
@@ -1262,8 +1287,8 @@ demo, demo-all, demo-interactive, demo-autonomous, demo-bulk, demo-session, demo
 ### 15.2 Task & Agent Commands (5)
 spawn-tasks, persistent-task, persistent-tasks, task-queue, session-queue
 
-### 15.3 Monitoring Commands (4)
-monitor (continuous loop), status (one-shot), triage, global-monitor (toggle always-on deputy-CTO alignment monitor)
+### 15.3 Monitoring Commands (5)
+monitor (continuous loop), status (one-shot), triage, global-monitor (toggle always-on deputy-CTO alignment monitor), tokens (group-by-work_category usage report with /tokens 24h source | revivals | originals drill-downs)
 
 ### 15.4 Plan Commands (5)
 plan, plan-progress, plan-timeline, plan-audit, plan-sessions
@@ -1288,7 +1313,15 @@ persona-feedback, product-manager, run-feedback
 
 ### 16.1 Interactive Session Lockdown
 
-**Architecture** — `interactive-lockdown-guard.js` (393 lines) PreToolUse hook. Blocks Edit/Write/NotebookEdit and code-modifying Agent spawns. Allows Read/Glob/Grep/Bash (read-only). MCP prefix whitelist: agent-tracker, todo-db, user-feedback, playwright, release-ledger. Whitelists: .claude/plans/ writes, ~/.claude/projects/*/memory/ writes, claude-sessions tools, 1Password tools (6 specific). HMAC token required to disable via `/lockdown off`.
+**Architecture** — `interactive-lockdown-guard.js` (393 lines) PreToolUse hook. Blocks Edit/Write/NotebookEdit and code-modifying Agent spawns. Allows Read/Glob/Grep/Bash (read-only). MCP prefix whitelist: agent-tracker, todo-db, user-feedback, playwright, release-ledger. Whitelists: .claude/plans/ writes, ~/.claude/projects/*/memory/ writes, claude-sessions tools, 1Password tools (6 specific). Disabling requires CTO authorization via `record_cto_decision({ decision_type: 'lockdown_toggle' })` — agent files a deferred action, presents it to the CTO, and `authorization-audit-spawner.js` executes inline (writes `automation-config.json` directly; no auditor spawned, since interactive sessions have no `agent_id`/`queue_id` for `peek_session` to verify).
+
+**Lockdown-off enforcement** — When lockdown is off the CTO regains direct `Task`/`Agent` access plus `Write`/`Edit` inside the per-session `cto-interactive-<sid8>` worktree. The guard still BLOCKS `Write`/`Edit` to main-tree files and Bash git mutation commands (`stash`, `checkout`, `switch`, `merge`, `pull`, `rebase`, `reset`, `clean`, `add`, `commit`, `push`, `worktree remove`) in the main tree to prevent conflicts with other running agents. Read-only git commands stay allowed. Deny messages explicitly say restrictions are "INDEPENDENT of /lockdown" so agents do not waste time toggling lockdown (`main-tree-commit-guard.js` deny messages carry the same wording). The `lockdown.md` command doc includes a "Still blocked when lockdown is OFF" section listing the 4 categories of independent restrictions.
+
+**Lockdown-off guidance to Claude (in-session pipeline)** (PR #707, #710, #711) — When `/lockdown off` is active, the preferred workflow is to **run the standard 6-step pipeline directly in-session** via `Task(cwd=<cto-interactive-* worktree>)`, NOT to delegate to `/spawn-tasks` / `/persistent-task` / `/plan`. The async task systems remain available for stepping away. Guidance is rendered in second person to Claude: `session-briefing.js` LOCKDOWN OFF block leads with `IN-SESSION PIPELINE`; `interactive-lockdown-guard.js` `orchestrationReminder` rewritten as `YOUR PIPELINE: run...`; `interactive-agent-guard.js` no longer nudges away from code-modifying agents when lockdown is off; the deleted `lockdown-off-pipeline-nudge.js` and its `criticalHooks` entry are gone. Project-manager, when invoked with `cwd:` inside `.claude/worktrees/cto-interactive*/`, still self-merges after CI passes but skips worktree removal AND base branch sync because the parent CTO session still owns the worktree.
+
+**Explicit CTO worktree merge sequence in briefing** (30eea98) — When the CTO turns lockdown off and edits files in `ctoWorktreePath`, agents previously tried `Agent(subagent_type='project-manager')` or `create_task + force_spawn_tasks` to merge — both spawn into FRESH worktrees and cannot see the CTO's in-progress edits. The session briefing in lockdown-off mode now renders the EXACT 8-command Bash sequence (`cd worktree`, `git status`, `git add`, `git commit`, `git push`, `gh pr create`, `gh pr checks`, `gh pr merge`) with the worktree path interpolated, plus "DO NOT use Agent/Task — they create fresh worktrees" warnings. `lockdown.md` includes a parallel section. The approve-other-tools guidance string includes a one-line merge sequence with the actual worktree path on every approved tool call.
+
+**Inline execution column-name fix** (32b04f8) — The inline execution path for `lockdown_toggle` and `local_mode_toggle` decisions previously used `completed_at` instead of `executed_at` in its UPDATE. The error was swallowed and the deferred action row sat in `status='executing'` forever even though `automation-config.json` was written. Every prior toggle was silently broken at the DB-transition step since Phase 1 of the Unified CTO Authorization System (PR #625) shipped. Now uses the canonical `markCompleted()` helper.
 
 ### 16.2 CTO Bypass System
 
@@ -1308,13 +1341,41 @@ persona-feedback, product-manager, run-feedback
 
 **Architecture** — `packages/cto-dashboard-live/` (real-time Ink/React TUI, polls 3s). Page 1: Observe (sessions + activity stream). Page 2: Demos & Tests (scenarios, branch selector, launch/stop, display lock preemption). Page 3: Plans (phases, tasks, audit info, progress bars). Page 4: Specs (category navigator). Page 5: Feed (AI commentary from live-feed.db).
 
-### 16.6 Token Usage Tracking (Per-Agent-Type)
+### 16.6 Token Usage Tracking (Collector + Attribution + `/tokens`)
 
-**Purpose** — Track and display how many tokens different automated session types consume, enabling cost visibility and optimization.
+**Purpose** — End-to-end attribution of every `claude` and `claude -p` invocation, answering "where are the tokens going?" with per-source, per-work-category, and per-revival breakdowns. Plan: `~/.claude/plans/foamy-dancing-cook.md`.
 
-**Architecture** — Two layers in `packages/cto-dashboard/src/utils/`:
-- **Global usage** (`data-reader.ts:getTokenUsage(hours)`) — Sums input/output/cache_read/cache_creation tokens across ALL sessions in last N hours. Parses session JSONL `message.usage` fields. Displayed as QuotaBars (5h/7d) + cache hit rate on CTO Dashboard Page 1 and in the CTO notification hook status line.
-- **Per-agent-type usage** (`automated-instances.ts:getAutomationTokenUsage()`) — Scans session JSONL files modified in last 24h. Extracts `[Automation][agent-type]` or `[Task][agent-type]` prefix from first user message to classify the session. Sums all `message.usage` token fields (input_tokens + output_tokens + cache_read_input_tokens + cache_creation_input_tokens) per session. Rolls up raw agent types into display names via `INSTANCE_DEFINITIONS` map. Returns `Record<string, number>` (display name → total tokens).
+**Architecture** — Three components:
+1. **Collector daemon** (`scripts/token-usage-collector.js`, KeepAlive launchd `com.local.gentyr-token-usage-collector`): polls every 60s, walks every session JSONL under `~/.claude/projects/<project>/`, parses assistant `message.usage`, joins to `session-queue.db`, persists per-message events + daily rollups in `.claude/state/token-usage.db`. Incremental scan via `scan_offsets`; idempotent ingest via `UNIQUE(session_id, message_uuid)`. 90-day retention on `usage_events`, indefinite on `session_attribution` and `daily_rollup`, weekly `VACUUM`.
+2. **Attribution module** (`lib/work-category.js`): adds `work_category`, `spawn_origin`, `is_revival`, `revived_by`, `revival_count` to `session_attribution` (idempotent ALTER TABLE on every open). `REVIVAL_SOURCES` set covers all 9+ revival paths and `hourly-automation:*` variants. `deriveWorkCategory()` deterministic mapping covers all 56 spawn sites. `WORK_CATEGORY_DESCRIPTIONS` legend rendered in the `/tokens` header. Backfill (`backfillWorkCategoryAttribution()`) populates new columns from stored fields on daemon startup; idempotent.
+3. **Subprocess tagging** (`lib/subprocess-call-tracker.js` + `lib/llm-client.js`): every `claude -p` invocation writes a `subprocess_calls` row with a unique `tag` and injects `CLAUDE_USAGE_TAG` + `CLAUDE_USAGE_PARENT` env vars. Wired callers: report-auto-resolver, ai-pr-decomposition, ai-compatibility-check, ai-changelog, migration-safety, session-activity-broadcaster, compact-session, release-report-generator, live-feed-daemon. 30-day retention.
+
+**Attribution precedence chain** (per session): (1) agent marker in JSONL first user message; (2) `resume_session_id` on session-queue.db (for `--resume` revivals); (3) `subprocess_calls` join; (4) `CLAUDE_USAGE_TAG` env var; (5) `interactive-cto` for raw user sessions; (6) `unknown`. Subagent meta normalizes both `agentType` (camelCase, what Claude Code actually writes) and `agent_type` (snake_case, legacy). `agent-acompact-*.jsonl` files are routed to `compaction-subagent` so their cost is visible. `backfillSubagentAttribution()` re-resolves existing `subagent:unknown` rows on daemon startup, then rebuilds today's rollup.
+
+**Hourly-automation source granularity** (PR #698): All 26 `enqueueSession()` callsites in `hourly-automation.js` use `source: currentSource()`. A module-level `_currentBlock` tracker set in `runIfDue()` via try/finally threads the active block name through helpers without changing signatures. Each spawn is attributed to its specific block (e.g., `hourly-automation:task_runner`, `hourly-automation:demo_validation`). `isAutomatedSource()` in `session-queue.js` accepts both exact `AUTOMATED_SOURCES` entries and the `hourly-automation:<block>` prefix, so prefixed sources still auto-promote to the no-cap `automated` lane.
+
+**DB schema** (`.claude/state/token-usage.db`):
+
+| Table | Purpose | Retention |
+|---|---|---|
+| `usage_events` | per-message tokens + cost in micro-USD | 90 days |
+| `session_attribution` | one row per session_id with source/lane/agent/task/persistent_task/plan + work_category/spawn_origin/revival flags | indefinite |
+| `subprocess_calls` | `claude -p` invocations (tagged) | 30 days |
+| `scan_offsets` | per-file byte offset for incremental scan | indefinite |
+| `daily_rollup` | source × model aggregate per day | indefinite |
+
+**5 MCP tools** (on `agent-tracker` server):
+- `query_token_usage` — default `group_by` is `work_category` (the stable kind-of-work). Other dimensions: `source`, `lane`, `agent_type`, `model`, `category`, `day`, `persistent_task`, `plan`, `spawn_origin`, `revived_by`. Filters: `filter_work_category`, `filter_spawn_origin`, `filter_revived_by`, `only_revivals`, `only_originals`. Response includes `category_descriptions` map when grouped by `work_category`. `roll_up_compaction: true` (opt-in) attributes `/compact` subprocess cost back to the parent's `work_category` — a relabel, not a re-sum, so totals are preserved
+- `top_token_sessions` — single sessions by total spend
+- `token_attribution_health` — share of rows that are `subagent:unknown` / `unknown`; detects attribution regressions
+- `revival_cost_summary` — `{ totals: { revival_tokens, revival_cost_usd, revival_sessions, original_tokens, original_cost_usd, original_sessions, revival_pct_of_total }, by_revived_by: [...] }`
+- Pricing in micro-USD: `lib/token-pricing.js` (Opus / Sonnet / Haiku 4.x, dated 2026-05-19)
+
+**`/tokens` slash command** — Default view groups by `work_category` with category legend. Drill-down modes: `/tokens 24h source`, `/tokens 24h revivals`, `/tokens 24h originals`. Horizontal bar chart. Recipes documented: "Who's the most expensive subagent type?", "How much are revivals costing?", "Where did this work come from originally?", "What's spending Opus tokens?".
+
+**Per-cycle polling budget for monitors** (PR #708) — `agents/persistent-monitor.md` and `agents/plan-manager.md` enforce a hard per-cycle cap: ≤1 `inspect_persistent_task` + ≤2 `peek_session` per cycle, with `bash -c "sleep 60"` between cycles when nothing changed. After 3+ no-state-change cycles the monitor writes `last_summary` and exits cleanly via `summarize_work`; the orphan catch-all respawns it on the next actionable change. Advisory enforcement: `.claude/hooks/monitor-poll-budget-hook.js` tracks `peek_session` frequency per spawned monitor session and emits `additionalContext` warning when >5 calls in 5-min rolling window. Fast-exits in <1ms for non-`peek_session` tools, interactive sessions, and non-monitor spawned sessions. NOT root-owned — real enforcement lives in agent docs because context-aware diagnostic drill-down should not be hard-blocked.
+
+**Legacy per-agent-type dashboard** (`packages/cto-dashboard/src/utils/automated-instances.ts`) — the old `getAutomationTokenUsage()` JSONL-walk path is preserved and still renders the `AutomatedInstances` bar chart on Page 1. Global usage (`getTokenUsage(hours)`) is unchanged. The new collector-based path is the authoritative source for analytical queries; the dashboard still uses the old code for rendering.
 
 **Supported Types (22 INSTANCE_DEFINITIONS):**
 
@@ -1811,11 +1872,26 @@ Daemon generates per-session LLM summaries (Haiku) every 5 min. Stored in sessio
 
 ## 32. Workstream Management
 
-**Purpose** — Track and enforce queue dependencies between sessions to prevent race conditions.
+**Purpose** — Track and enforce queue dependencies between sessions and across todo / persistent / plan_task entities to prevent race conditions.
 
 ### 32.1 Queue Dependency System
 
 **Architecture** — workstream.db: queue_dependencies table. Blocks spawning until dependencies satisfied. workstream-manager agent (Haiku-tier, read-only) analyzes queue for conflicts, adds/removes dependencies, reorders items. 8 MCP tools on agent-tracker: add_dependency, remove_dependency, list_dependencies, get_queue_context, reorder_item, record_assessment.
+
+### 32.2 Cross-Entity Dependencies (PR #696, foundation)
+
+**Schema extensions** (idempotent migration on `workstream.db`): `blocked_entity_type` / `blocker_entity_type` columns (`'todo' | 'persistent' | 'plan_task'`, default `'todo'`) plus `pause_action` column (`'killed_session' | 'paused_persistent' | 'paused_plan_task' | NULL`). `UNIQUE` constraint broadened to `(blocked_entity_type, blocked_task_id, blocker_entity_type, blocker_task_id)` via shadow-table swap (SQLite cannot ALTER a UNIQUE). Narrow indexes replaced with composite `(entity_type, task_id, status)` indexes.
+
+**`add_dependency` (backward-compatible union)**: Accepts both legacy `{ blocker_task_id, blocked_task_id, reasoning }` (normalized to todo→todo) and the new `{ blocker: {entity_type, entity_id}, blocked: {entity_type, entity_id}, reasoning }` shape. Validates both entities exist in their source DB (`todo.db` / `persistent-tasks.db` / `plans.db`). Entity-aware cycle detection via DFS over `(entity_type, entity_id)` nodes. Already-completed short-circuit: inserts as `'satisfied'` when blocker is in a satisfying terminal state.
+
+**Pause-if-running semantics** (CTO-confirmed):
+- `todo` + `in_progress` → SIGTERM linked session, cancel queue item, reset task to `pending`. Records `pause_action='killed_session'`.
+- `persistent` + `active` → `status='paused'` with `metadata.pause_reason='cross_dep'` + `do_not_auto_resume=true`. Records `pause_action='paused_persistent'`.
+- `plan_task` + `in_progress`/`ready` → `status='paused'`. Records `pause_action='paused_plan_task'`.
+
+**New tool `list_dependencies_for_entity`**: Query deps involving a specific entity with `direction='blocking' | 'blocked_by' | 'both'` (default `both`). Plan-managers and persistent-monitors use this to surface why a child is not spawning.
+
+**Backward compatibility**: `areDependenciesMet()` and `satisfyCompletedDeps()` are deliberately restricted to `entity_type='todo'` so the existing `session-queue.js` gate sees no behavior change. Three gate extensions, three creator-tool extensions (`depends_on` on `create_task` / `create_persistent_task` / `add_plan_task`), shared satisfier module `.claude/hooks/lib/cross-dep-satisfier.js`, and doc updates ship in follow-up PRs.
 
 ---
 
@@ -2011,6 +2087,13 @@ Real-time Ink/React TUI polling every 3s. 5 pages: Observe (sessions + activity)
 - Base image: Universal Playwright runner (~2 min startup with clone+install)
 - Project image: Pre-built with deps (~30s startup, skip install)
 - deploy_fly_image MCP tool builds and pushes via /setup-fly
+- Both base and project Dockerfiles include `bun@1` (pinned via `npm install -g bun@1`, replacing the curl installer) so demos that shell out to `bun` work on Fly machines
+
+### 40.4 Live Observability for Running Fly.io Demos (PR #693)
+- `tail_running_fly_demo` MCP tool — execs into the live Fly machine and pulls in-container stdout/stderr/error.log plus system diagnostics. Locates the live demo by `pid` / `run_id` / `scenario_id`. Closes the gap where `get_fly_logs` (even when working) only showed Fly's lifecycle stream, not the actual test process output
+- `get_fly_logs` fix — was broken because flyctl has no line-count flag and parsed `-n <count>` as `--no-tail --no-tail <count>` ("unknown command 200"), and `--instance` was renamed. Now pipes flyctl output through `tail(1)` and uses `--machine`
+- Live telemetry shipping — `pullFlyTelemetryDelta()` and `shipTelemetryDelta()` (byte-offset-aware, incremental) run every 30s during running-Fly polls so even dying machines stream their telemetry to Elastic before destruction. Final ship is offset-aware to prevent double-shipping
+- `verify_logging_config` reachability fix — `client.cluster.health()` 404s on Elastic Serverless and 403s for read-only API keys; replaced with `ping()` → fallback `size:0` search probe against the configured index pattern, matching the exact permissions used by `query_logs`
 
 ---
 
@@ -2179,7 +2262,7 @@ Same allowlist as the former focus mode: priority cto/critical, lanes persistent
 
 ## 49. Workstream System
 
-**Purpose** — Track and enforce queue dependencies between sessions to prevent race conditions.
+**Purpose** — Track and enforce queue dependencies between sessions to prevent race conditions; foundation for cross-entity dependencies across todo / persistent / plan_task entities.
 
 ### 49.1 Queue Dependencies
 workstream.db: queue_dependencies table. Blocks spawning until dependencies satisfied. Checked in drainQueue Step 5 spawn loop.
@@ -2187,8 +2270,11 @@ workstream.db: queue_dependencies table. Blocks spawning until dependencies sati
 ### 49.2 Workstream Manager Agent (Haiku-tier)
 Analyzes active queue for file-path conflicts. Adds/removes dependencies. Reorders items. Records assessments.
 
-### 49.3 Workstream Tools (8)
-add_dependency, remove_dependency, list_dependencies, get_queue_context, reorder_item, record_assessment, get_workstream_status, clear_resolved_dependencies
+### 49.3 Workstream Tools (9)
+add_dependency, remove_dependency, list_dependencies, list_dependencies_for_entity (cross-entity), get_queue_context, reorder_item, record_assessment, get_workstream_status, clear_resolved_dependencies
+
+### 49.4 Cross-Entity Dependency Foundation (PR #696)
+See Section 32.2 for full details. Schema adds `blocked_entity_type` / `blocker_entity_type` / `pause_action` columns; UNIQUE constraint broadened via shadow-table swap; `add_dependency` accepts both legacy and entity-aware shapes with pause-if-running on the blocked entity.
 
 ---
 
@@ -2768,7 +2854,7 @@ All 3 layers must pass. No other session — not even another deputy-cto sub-age
 ### 61.7 alignment-reminder.js / agent-comms-reminder.js / monitor-reminder.js
 - alignment-reminder: every 20 tool calls → reminds to run user-alignment
 - agent-comms-reminder: every 10 tool calls → reminds to coordinate
-- monitor-reminder: every 10/30 tool calls → compact/full protocol dump
+- monitor-reminder: every 10/30 tool calls → compact/full protocol dump. Every reminder leads with an explicit applicability gate so non-`/monitor` sessions can identify and ignore it (was being misclassified as prompt injection by recipients who weren't running the protocol). Self-heals stale state: when `.claude/state/monitor-active.json` `lastRoundAt` is more than 20 minutes old, the hook deletes both the state file and the per-session counter so subsequent tool calls fast-exit at the top instead of repeatedly leaking stale directives after a `/monitor` session died without calling `stop_monitoring`.
 
 ---
 
@@ -2808,16 +2894,16 @@ All 3 layers must pass. No other session — not even another deputy-cto sub-age
 
 ### 64.1 Scale
 - ~38 MCP servers
-- ~730+ MCP tools across all servers
-- 87 hook JavaScript files
-- 35 shared hook library modules
+- ~735+ MCP tools across all servers (5 added on agent-tracker for token usage; +1 for cross-entity workstream)
+- 92 hook JavaScript files (added `interactive-heartbeat.js`, `monitor-poll-budget-hook.js`; deleted `lockdown-off-pipeline-nudge.js`)
+- 38 shared hook library modules (added `interactive-liveness.js`, `subprocess-call-tracker.js`, `token-pricing.js`, `jsonl-usage-parser.js`, `work-category.js`, `rescue-worktree.js`)
 - 25 agent definitions
-- 47 slash commands
-- 6 persistent daemons (launchd KeepAlive)
-- 36 automation blocks (29 gate-exempt + 6 gate-required + 1 hourly tasks)
+- 47 slash commands (added `/tokens`)
+- 7 persistent daemons (launchd KeepAlive — added token-usage collector)
+- 39+ automation blocks (29 gate-exempt + 6 gate-required + new: `interactive_session_reaper`, `branch_pruner`, `timed_pause_auto_resume`)
 - 18 feature toggles
-- 16+ SQLite databases
-- 25+ JSON state files
+- 17+ SQLite databases (added `token-usage.db`, `interactive-sessions.json` state, `main-tree-drift.json` state)
+- 27+ JSON state files
 - 4 CI/CD workflow templates
 - 8 root-owned enforcement hooks
 - 67 hook unit tests
