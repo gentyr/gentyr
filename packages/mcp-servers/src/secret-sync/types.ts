@@ -270,6 +270,8 @@ export const ServicesConfigSchema = z.object({
     .describe('Glob patterns of build artifact directories to copy from main tree to worktrees (e.g., ["packages/*/dist"]). Copied BEFORE install so bin symlinks resolve. Single-level * wildcards only.'),
   mainTreeAutoPull: z.boolean().optional()
     .describe('When true (default), preview-watcher.js fast-forward-pulls origin/<base> into the main tree after each successful base-branch update so dev servers running there (e.g., `pnpm demo:preview`) hot-reload when merged worktree changes land. Safety-gated: only fires when main tree is on the base branch AND clean AND no in-flight merge/rebase.'),
+  mainTreeKeepOnBase: z.boolean().optional()
+    .describe('When true (default), preview-watcher.js auto-corrects main-tree drift back to the base branch on every 30s poll. Only checks out and pulls when the working tree is clean and no merge/rebase is in progress; otherwise records drift state to `.claude/state/main-tree-drift.json` for the session briefing to surface to the CTO. Set false to opt out (e.g., if the CTO regularly works on feature branches in the main tree).'),
   testScopes: z.record(z.string(), TestScopeSchema).optional()
     .describe('Named test scope profiles for vertical slice deployment gating. Each scope defines patterns that classify which tests are "in scope" for push/promotion gating.'),
   activeTestScope: z.string().nullable().optional()
