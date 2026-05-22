@@ -1837,13 +1837,45 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
   // Merge valid entries into secrets.local
   const secrets = (current.secrets || {}) as Record<string, unknown>;
   const existingLocal = (secrets.local || {}) as Record<string, string>;
-  const merged = { ...existingLocal, ...validEntries };
 
+  // Idempotency: split valid entries into (a) no-ops — already present with the
+  // same op:// ref — and (b) dirty entries — new or changed. The no-op set is
+  // discarded entirely (no write, no stage). This breaks the post-sync re-stage
+  // loop where revived spawned agents see prompt hints and re-stage keys that
+  // were already applied during the previous sync.
+  const noOpKeys: string[] = [];
+  const dirtyEntries: Record<string, string> = {};
   let newCount = 0;
   let updatedCount = 0;
-  for (const key of Object.keys(validEntries)) {
-    if (key in existingLocal) { updatedCount++; } else { newCount++; }
+  for (const [key, val] of Object.entries(validEntries)) {
+    if (existingLocal[key] === val) {
+      noOpKeys.push(key);
+    } else {
+      dirtyEntries[key] = val;
+      if (key in existingLocal) updatedCount++;
+      else newCount++;
+    }
   }
+
+  const hasFailures = Object.keys(validationFailures).length > 0;
+  const failureSuffix = hasFailures
+    ? ` ${Object.keys(validationFailures).length} entr${Object.keys(validationFailures).length === 1 ? 'y' : 'ies'} failed op:// validation — see validationFailures.`
+    : '';
+
+  // Early return if nothing actually needs to change
+  if (Object.keys(dirtyEntries).length === 0) {
+    return JSON.stringify({
+      applied: false,
+      pending: false,
+      noOp: true,
+      noOpCount: noOpKeys.length,
+      noOpKeys,
+      ...(hasFailures ? { validationFailures } : {}),
+      message: `All ${noOpKeys.length} entr${noOpKeys.length === 1 ? 'y is' : 'ies are'} already in services.json with the same op:// reference. No changes made.${failureSuffix}`,
+    });
+  }
+
+  const merged = { ...existingLocal, ...dirtyEntries };
 
   // Build the updated config
   const updated = { ...current, secrets: { ...secrets, local: merged } };
@@ -1854,11 +1886,6 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
     return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
   }
 
-  const hasFailures = Object.keys(validationFailures).length > 0;
-  const failureSuffix = hasFailures
-    ? ` ${Object.keys(validationFailures).length} entr${Object.keys(validationFailures).length === 1 ? 'y' : 'ies'} failed op:// validation — see validationFailures.`
-    : '';
-
   // Try direct write — atomic with backup
   try {
     safeWriteJson(configPath, result.data, { backupPath: SERVICES_BACKUP_PATH, backupValidator: hasSecretsLocal });
@@ -1867,19 +1894,27 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
       pending: false,
       newCount,
       updatedCount,
+      noOpCount: noOpKeys.length,
       totalLocalSecrets: Object.keys(merged).length,
       ...(hasFailures ? { validationFailures } : {}),
-      message: `${newCount} new + ${updatedCount} updated entries in secrets.local.${failureSuffix}`,
+      message: `${newCount} new + ${updatedCount} updated + ${noOpKeys.length} unchanged entries in secrets.local.${failureSuffix}`,
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
-      // Root-owned — stage for next sync, merging with existing pending
+      // Root-owned — stage for next sync, merging with existing pending.
+      // Stage only dirty entries (no-ops would just bloat the pending file and
+      // re-apply something that's already correct).
       let existingPending: Record<string, string> = {};
       try {
         const raw = JSON.parse(readFileSync(pendingPath, 'utf-8')) as { entries?: Record<string, string> };
         existingPending = raw.entries || {};
       } catch { /* new */ }
-      const mergedPending = { ...existingPending, ...validEntries };
+      // Drop any stale pending entries whose values now match what's in
+      // services.json (no longer needed — already applied).
+      for (const k of Object.keys(existingPending)) {
+        if (existingLocal[k] === existingPending[k]) delete existingPending[k];
+      }
+      const mergedPending = { ...existingPending, ...dirtyEntries };
       mkdirSync(dirname(pendingPath), { recursive: true });
       writeFileSync(pendingPath, JSON.stringify({ entries: mergedPending, timestamp: new Date().toISOString() }, null, 2) + '\n');
       return JSON.stringify({
@@ -1887,9 +1922,10 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
         pending: true,
         newCount,
         updatedCount,
+        noOpCount: noOpKeys.length,
         stagedEntries: Object.keys(mergedPending).length,
         ...(hasFailures ? { validationFailures } : {}),
-        message: `Entries staged in secrets-local-pending.json. Ask the CTO to run: sudo true && npx gentyr sync. Do NOT re-call populate_secrets_local for the same keys — entries are already staged.${failureSuffix}`,
+        message: `${Object.keys(dirtyEntries).length} entr${Object.keys(dirtyEntries).length === 1 ? 'y' : 'ies'} staged in secrets-local-pending.json (${noOpKeys.length} already-applied skipped). Ask the CTO to run: sudo true && npx gentyr sync.${failureSuffix}`,
       });
     }
     throw err;

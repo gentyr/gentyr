@@ -930,12 +930,34 @@ export default async function sync(args) {
     console.log(`\n${YELLOW}Applying pending secrets.local entries...${NC}`);
     try {
       const pending = JSON.parse(fs.readFileSync(pendingSecretsPath, 'utf8'));
-      const entries = pending.entries || {};
+      const rawEntries = pending.entries || {};
       // Validate all values are op:// references (format check only)
-      for (const [key, val] of Object.entries(entries)) {
+      for (const [key, val] of Object.entries(rawEntries)) {
         if (typeof val !== 'string' || !val.startsWith('op://')) {
           throw new Error(`Invalid entry: ${key} is not an op:// reference`);
         }
+      }
+
+      // Idempotency pre-filter: drop pending entries that are already in
+      // services.json with the same value. These are leftovers from the
+      // pre-fix re-stage loop (revived agents called populate_secrets_local
+      // with keys that were already applied). Removing them now both skips
+      // the op CLI validation cost and cleans up the pending file.
+      let preFilterStaleSkipped = 0;
+      const entries = {};
+      try {
+        const currentBefore = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
+        const currentLocal = (currentBefore.secrets && currentBefore.secrets.local) || {};
+        for (const [key, val] of Object.entries(rawEntries)) {
+          if (currentLocal[key] === val) preFilterStaleSkipped++;
+          else entries[key] = val;
+        }
+      } catch {
+        // Cannot read services.json — apply everything (preserve old behavior)
+        Object.assign(entries, rawEntries);
+      }
+      if (preFilterStaleSkipped > 0) {
+        console.log(`  ${YELLOW}Skipped ${preFilterStaleSkipped} stale pending entr${preFilterStaleSkipped === 1 ? 'y' : 'ies'} (already in services.json)${NC}`);
       }
 
       // Per-entry op:// resolution check. Catches ambiguous titles, missing
