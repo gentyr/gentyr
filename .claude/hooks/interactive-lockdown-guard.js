@@ -449,14 +449,14 @@ async function main() {
         ? `Worktree MISSING: ${ctoWorktreePath} (recreate: git worktree add ${ctoWorktreePath} preview)`
         : 'No worktree provisioned — toggle /lockdown on then off to provision';
     const pipelineReminder = worktreeExists
-      ? `PIPELINE: Run the 6-step sequence in-session via Task(subagent_type=..., cwd=${ctoWorktreePath}) — investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager. All six share this worktree; only project-manager commits/pushes/merges. After merge, pnpm demo:preview in the main tree hot-reloads (preview-watcher pulls origin/preview into the main tree).`
-      : 'PIPELINE: Run the 6-step sequence in-session via Task(subagent_type=..., cwd=<worktree>) — investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager. All six share the CTO worktree; only project-manager commits/pushes/merges.';
+      ? `YOUR PIPELINE: run the 6-step sequence here via Task(subagent_type=..., cwd=${ctoWorktreePath}) — investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager. All six share that worktree (do NOT use isolation: "worktree"). Only step 6 (project-manager) commits/pushes/merges. After merge, pnpm demo:preview in the main tree hot-reloads automatically.`
+      : 'YOUR PIPELINE: run the 6-step sequence here via Task(subagent_type=..., cwd=<worktree>) — investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager. All six share the worktree; only step 6 commits/pushes/merges.';
     const guidance = [
-      '[LOCKDOWN OFF] Main-tree edits + git mutations BLOCKED. Worktree workflow active.',
+      '[LOCKDOWN OFF] Your direct main-tree edits + git mutations are BLOCKED. Worktree workflow active.',
       pipelineReminder,
       worktreeStatus,
-      'Async alternatives (for stepping away): /spawn-tasks, /persistent-task, /plan.',
-      'After merge: /lockdown on (re-enables lockdown and removes this worktree).',
+      'Async alternatives (only when the user explicitly wants async): /spawn-tasks, /persistent-task, /plan.',
+      'When the user is done: /lockdown on re-enables lockdown and removes the worktree.',
     ].join(' | ');
     process.stdout.write(JSON.stringify({
       decision: 'approve',
