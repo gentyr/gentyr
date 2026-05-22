@@ -41,6 +41,11 @@ import { resolveCategory, buildPromptFromCategory, enrichTaskWithAuditFailure } 
 import { runReportAutoResolve, runReportDedup } from './lib/report-auto-resolver.js';
 import { isStagingLocked } from './lib/staging-lock.js';
 import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
+import {
+  resolveBaseBranch,
+  computeWorktreeDivergence,
+  buildRescuePrompt,
+} from './lib/rescue-worktree.js';
 // shouldAllowSpawn import removed — session queue handles memory pressure internally
 
 // Try to import better-sqlite3 for task runner
@@ -2489,48 +2494,53 @@ function rescueAbandonedWorktrees() {
     }
 
     // Spawn project-manager to rescue this worktree
-    log(`Rescue: spawning project-manager for abandoned worktree ${wt.path} (branch: ${wt.branch})`);
-
     const wtPath = wt.path;
     const wtBranch = wt.branch;
     const mcpConfig = path.join(wtPath, '.mcp.json');
     const actualMcp = fs.existsSync(mcpConfig) ? mcpConfig : path.join(PROJECT_DIR, '.mcp.json');
 
+    // Compute divergence stats up-front so the rescue PR body and the
+    // probable-case classification reflect state at enqueue time, not
+    // the agent's later (possibly post-merge) snapshot.
+    let baseBranch = null;
+    let divergenceStats = null;
+    try {
+      baseBranch = resolveBaseBranch(wtPath);
+      if (baseBranch) {
+        divergenceStats = computeWorktreeDivergence(wtPath, baseBranch);
+      }
+    } catch (err) {
+      log(`Rescue: divergence computation failed for ${wtPath} (non-fatal): ${err.message}`);
+    }
+
+    const probableCase = divergenceStats?.probableCase ?? 'unknown';
+    log(`Rescue: spawning project-manager for ${wt.path} (branch: ${wt.branch}, base: ${baseBranch ?? 'unknown'}, case: ${probableCase}, behind: ${divergenceStats?.commitsBehind ?? '?'})`);
+
     ensureCredentials();
     enqueueSession({
-      title: `Rescue abandoned worktree: ${wtBranch}`,
+      title: `Rescue (draft) abandoned worktree: ${wtBranch}`,
       agentType: AGENT_TYPES.TASK_RUNNER_PROJECT_MANAGER,
       hookType: HOOK_TYPES.TASK_RUNNER,
       tagContext: 'rescue-project-manager',
       source: currentSource(),
       priority: 'low',
-      buildPrompt: (agentId) => `[Automation][rescue-project-manager][AGENT:${agentId}] You are a project-manager rescuing abandoned work in a worktree.
-
-## Context
-
-A previous agent left uncommitted changes in this worktree at: ${wtPath}
-Branch: ${wtBranch}
-
-## Your Mission
-
-1. Run \`git status\` to see what changed
-2. Run \`git diff\` to understand the changes
-3. Stage the relevant files: \`git add <specific files>\` (never \`git add .\`)
-4. Commit with a descriptive message
-5. Push and create a PR:
-\`\`\`
-git push -u origin HEAD
-BASE=$(git rev-parse --verify origin/preview 2>/dev/null && echo preview || echo main)
-gh pr create --base "$BASE" --head "$(git branch --show-current)" --title "Rescue: ${wtBranch}" --body "Automated rescue of abandoned worktree changes" 2>/dev/null || true
-\`\`\`
-6. Self-merge: \`gh pr merge --squash --delete-branch\`
-
-IMPORTANT: Do NOT remove the worktree directory. The cleanup automation will handle
-worktree removal after the PR is merged. Your job is only to commit, push, merge, and exit.
-
-Then summarize and exit.`,
+      buildPrompt: (agentId) => buildRescuePrompt({
+        agentId,
+        wtPath,
+        wtBranch,
+        baseBranch,
+        stats: divergenceStats,
+      }),
       extraEnv: { ...resolvedCredentials },
-      metadata: { worktreePath: wtPath, branch: wtBranch, source: 'rescue-abandoned-worktree' },
+      metadata: {
+        worktreePath: wtPath,
+        branch: wtBranch,
+        source: 'rescue-abandoned-worktree',
+        baseBranch,
+        probableCase,
+        commitsBehind: divergenceStats?.commitsBehind ?? null,
+        commitsAhead: divergenceStats?.commitsAhead ?? null,
+      },
       cwd: wtPath,
       mcpConfig: actualMcp,
       worktreePath: wtPath,
