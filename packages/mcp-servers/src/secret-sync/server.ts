@@ -1785,6 +1785,46 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
   const configPath = join(PROJECT_DIR, '.claude', 'config', 'services.json');
   const pendingPath = join(PROJECT_DIR, '.claude', 'state', 'secrets-local-pending.json');
 
+  // Validate each op:// reference resolves against 1Password BEFORE staging.
+  // Catches ambiguous-title resolution (two items with the same name in a vault),
+  // missing fields, and wrong section paths at stage time, instead of silently
+  // writing broken refs that fail only at runtime.
+  // Skipped gracefully when OP_SERVICE_ACCOUNT_TOKEN is unavailable.
+  const validationFailures: Record<string, string> = {};
+  if (process.env.OP_SERVICE_ACCOUNT_TOKEN) {
+    for (const [key, ref] of Object.entries(entries)) {
+      try {
+        opRead(ref);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const stripped = message.replace(/^Failed to read [^:]+: /, '');
+        let suggestion = '';
+        if (/more than one item matches/i.test(message)) {
+          suggestion = ' (ambiguous title — use item-ID form: op://Vault/<item-id>/field)';
+        } else if (/isn't an item|isn't a field|couldn't find|no field/i.test(message)) {
+          suggestion = ' (check vault, item ID, section path, and field name)';
+        }
+        validationFailures[key] = stripped.trim() + suggestion;
+      }
+    }
+  }
+  // Drop invalid entries from the apply set. Caller sees them in
+  // `validationFailures` and can re-call with corrected refs.
+  const validEntries: Record<string, string> = {};
+  for (const [key, val] of Object.entries(entries)) {
+    if (!(key in validationFailures)) validEntries[key] = val;
+  }
+  if (Object.keys(validEntries).length === 0) {
+    return JSON.stringify({
+      applied: false,
+      pending: false,
+      newCount: 0,
+      updatedCount: 0,
+      validationFailures,
+      message: 'All entries failed op:// validation. Use mcp__onepassword__op_vault_map to discover valid references, then re-call with corrected paths.',
+    });
+  }
+
   // Load current config — seed with { secrets: {} } only when file truly doesn't exist
   let current: Record<string, unknown>;
   try {
@@ -1794,14 +1834,14 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
     return JSON.stringify({ error: `Cannot read services.json: ${(readErr as Error).message}. Aborting update to prevent data loss.` });
   }
 
-  // Merge into secrets.local
+  // Merge valid entries into secrets.local
   const secrets = (current.secrets || {}) as Record<string, unknown>;
   const existingLocal = (secrets.local || {}) as Record<string, string>;
-  const merged = { ...existingLocal, ...entries };
+  const merged = { ...existingLocal, ...validEntries };
 
   let newCount = 0;
   let updatedCount = 0;
-  for (const key of Object.keys(entries)) {
+  for (const key of Object.keys(validEntries)) {
     if (key in existingLocal) { updatedCount++; } else { newCount++; }
   }
 
@@ -1814,7 +1854,12 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
     return JSON.stringify({ error: `Validation failed: ${result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; ')}` });
   }
 
-  // Try direct write ��� atomic with backup
+  const hasFailures = Object.keys(validationFailures).length > 0;
+  const failureSuffix = hasFailures
+    ? ` ${Object.keys(validationFailures).length} entr${Object.keys(validationFailures).length === 1 ? 'y' : 'ies'} failed op:// validation — see validationFailures.`
+    : '';
+
+  // Try direct write — atomic with backup
   try {
     safeWriteJson(configPath, result.data, { backupPath: SERVICES_BACKUP_PATH, backupValidator: hasSecretsLocal });
     return JSON.stringify({
@@ -1823,7 +1868,8 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
       newCount,
       updatedCount,
       totalLocalSecrets: Object.keys(merged).length,
-      message: `${newCount} new + ${updatedCount} updated entries in secrets.local.`,
+      ...(hasFailures ? { validationFailures } : {}),
+      message: `${newCount} new + ${updatedCount} updated entries in secrets.local.${failureSuffix}`,
     });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EACCES') {
@@ -1833,7 +1879,7 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
         const raw = JSON.parse(readFileSync(pendingPath, 'utf-8')) as { entries?: Record<string, string> };
         existingPending = raw.entries || {};
       } catch { /* new */ }
-      const mergedPending = { ...existingPending, ...entries };
+      const mergedPending = { ...existingPending, ...validEntries };
       mkdirSync(dirname(pendingPath), { recursive: true });
       writeFileSync(pendingPath, JSON.stringify({ entries: mergedPending, timestamp: new Date().toISOString() }, null, 2) + '\n');
       return JSON.stringify({
@@ -1842,7 +1888,8 @@ async function populateSecretsLocal(args: PopulateSecretsLocalArgs): Promise<str
         newCount,
         updatedCount,
         stagedEntries: Object.keys(mergedPending).length,
-        message: `Entries staged in secrets-local-pending.json. Ask the CTO to run: sudo true && npx gentyr sync. Do NOT re-call populate_secrets_local — entries are already staged; re-staging will not force application.`,
+        ...(hasFailures ? { validationFailures } : {}),
+        message: `Entries staged in secrets-local-pending.json. Ask the CTO to run: sudo true && npx gentyr sync. Do NOT re-call populate_secrets_local for the same keys — entries are already staged.${failureSuffix}`,
       });
     }
     throw err;

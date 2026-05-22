@@ -931,30 +931,118 @@ export default async function sync(args) {
     try {
       const pending = JSON.parse(fs.readFileSync(pendingSecretsPath, 'utf8'));
       const entries = pending.entries || {};
-      // Validate all values are op:// references
+      // Validate all values are op:// references (format check only)
       for (const [key, val] of Object.entries(entries)) {
         if (typeof val !== 'string' || !val.startsWith('op://')) {
           throw new Error(`Invalid entry: ${key} is not an op:// reference`);
         }
       }
-      const current = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
-      if (!current.secrets) current.secrets = {};
-      if (!current.secrets.local) current.secrets.local = {};
-      Object.assign(current.secrets.local, entries);
-      safeWriteJson(svcConfigPath, current, { backupPath: svcBackupPath, backupValidator: hasSecretsLocal });
-      // Verify post-write: confirm all keys actually landed in services.json.
-      // This catches the case where safeWriteJson "succeeded" but the file is
-      // stale (e.g., shadow copy, FUSE oddity) — without it, we'd unlink the
-      // pending file and lose the staged entries.
-      const verify = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
-      const verifyLocal = (verify.secrets && verify.secrets.local) || {};
-      const missing = Object.keys(entries).filter(k => !(k in verifyLocal));
-      if (missing.length > 0) {
-        throw new Error(`Post-write verification failed: ${missing.length} key(s) missing from services.json (${missing.join(', ')})`);
+
+      // Per-entry op:// resolution check. Catches ambiguous titles, missing
+      // fields, wrong section paths — failure modes that the old code silently
+      // wrote into services.json where they'd only fail at runtime.
+      const opToken = process.env.OP_SERVICE_ACCOUNT_TOKEN;
+      let opAvailable = false;
+      if (opToken) {
+        try {
+          execFileSync('op', ['--version'], { stdio: 'pipe', timeout: 5000 });
+          opAvailable = true;
+        } catch { /* op CLI missing — fall through to skip-validation path */ }
       }
-      fs.unlinkSync(pendingSecretsPath);
-      console.log(`  Applied ${Object.keys(entries).length} secrets.local entry/entries`);
-      pendingSummary.applied.push({ kind: 'secrets.local', count: Object.keys(entries).length });
+
+      const validationResults = {};
+      if (opAvailable) {
+        const opEnv = { ...process.env, OP_SERVICE_ACCOUNT_TOKEN: opToken };
+        for (const [key, ref] of Object.entries(entries)) {
+          try {
+            execFileSync('op', ['read', '--no-newline', ref], {
+              stdio: 'pipe', timeout: 15000, env: opEnv,
+            });
+            validationResults[key] = { ok: true };
+          } catch (opErr) {
+            const stderr = (opErr.stderr && opErr.stderr.toString()) || '';
+            const stdout = (opErr.stdout && opErr.stdout.toString()) || '';
+            const combined = (stderr + stdout).trim();
+            // Pull the most informative line (op typically prints "[ERROR] ...")
+            const errLine = combined.split('\n').reverse().find(l => /\S/.test(l)) || opErr.message;
+            let suggestion = '';
+            if (/more than one item matches/i.test(combined)) {
+              suggestion = ' (ambiguous title — re-stage using item-ID form: op://Vault/<item-id>/field)';
+            } else if (/isn't an item|isn't a field|couldn't find|no field/i.test(combined)) {
+              suggestion = ' (check vault, item ID, section path, and field name)';
+            }
+            validationResults[key] = { ok: false, error: errLine.trim() + suggestion };
+          }
+        }
+      } else {
+        const reason = opToken ? 'op CLI not available' : 'OP_SERVICE_ACCOUNT_TOKEN not set';
+        console.log(`  ${YELLOW}Skipping op:// validation (${reason}) — entries will be written unverified${NC}`);
+        for (const key of Object.keys(entries)) validationResults[key] = { ok: true, unvalidated: true };
+      }
+
+      // Partition into valid and failed
+      const validEntries = {};
+      const failedEntries = {};
+      for (const [key, val] of Object.entries(entries)) {
+        if (validationResults[key].ok) validEntries[key] = val;
+        else failedEntries[key] = val;
+      }
+
+      // Apply valid entries to services.json
+      if (Object.keys(validEntries).length > 0) {
+        const current = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
+        if (!current.secrets) current.secrets = {};
+        if (!current.secrets.local) current.secrets.local = {};
+        Object.assign(current.secrets.local, validEntries);
+        safeWriteJson(svcConfigPath, current, { backupPath: svcBackupPath, backupValidator: hasSecretsLocal });
+        // Verify post-write: confirm valid keys actually landed in services.json.
+        // Catches the case where safeWriteJson "succeeded" but the file is
+        // stale (e.g., shadow copy, FUSE oddity).
+        const verify = safeReadJson(svcConfigPath, { backupPath: svcBackupPath }) ?? {};
+        const verifyLocal = (verify.secrets && verify.secrets.local) || {};
+        const missing = Object.keys(validEntries).filter(k => !(k in verifyLocal));
+        if (missing.length > 0) {
+          throw new Error(`Post-write verification failed: ${missing.length} key(s) missing from services.json (${missing.join(', ')})`);
+        }
+      }
+
+      // Print per-entry status
+      for (const [key, val] of Object.entries(entries)) {
+        const r = validationResults[key];
+        if (r.unvalidated) {
+          console.log(`  ${GREEN}~${NC} ${key} (applied, not validated)`);
+        } else if (r.ok) {
+          console.log(`  ${GREEN}✓${NC} ${key}`);
+        } else {
+          console.log(`  ${RED}✗${NC} ${key} ← ${val}`);
+          console.log(`      ${RED}${r.error}${NC}`);
+        }
+      }
+
+      // Rewrite or delete pending file based on what survived
+      if (Object.keys(failedEntries).length === 0) {
+        fs.unlinkSync(pendingSecretsPath);
+      } else {
+        fs.writeFileSync(pendingSecretsPath, JSON.stringify({
+          entries: failedEntries,
+          timestamp: new Date().toISOString(),
+        }, null, 2) + '\n');
+      }
+
+      const applied = Object.keys(validEntries).length;
+      const failed = Object.keys(failedEntries).length;
+      if (failed === 0) {
+        console.log(`  ${GREEN}Applied ${applied} secrets.local entry/entries${NC}`);
+        pendingSummary.applied.push({ kind: 'secrets.local', count: applied });
+      } else {
+        console.log(`  ${YELLOW}Applied ${applied}, failed ${failed} — failed entries kept in secrets-local-pending.json${NC}`);
+        pendingSummary.applied.push({ kind: 'secrets.local', count: applied });
+        pendingSummary.failed.push({
+          kind: 'secrets.local',
+          error: `${failed} entr${failed === 1 ? 'y' : 'ies'} failed op:// validation`,
+          code: 'OP_RESOLVE_FAIL',
+        });
+      }
     } catch (err) {
       console.log(`  ${RED}Warning: Failed to apply pending secrets.local: ${err.message}${NC}`);
       pendingSummary.failed.push({ kind: 'secrets.local', error: err.message, code: err.code });
