@@ -282,6 +282,197 @@ function checkDaemonHealth(port, timeoutMs = 3000) {
  * Non-fatal — always resolves (never throws).
  * @param {string} projectDir
  */
+/**
+ * Worker launchd labels that run gentyr framework code in-memory and therefore
+ * must be force-restarted on `npx gentyr sync` so they pick up new code on disk.
+ *
+ * The MCP daemon is intentionally NOT in this list — Phase 2b
+ * (`ensureMcpDaemonHealthy`) handles it with bespoke kill-by-PID + port-cleanup
+ * + bootstrap + health-poll logic that this generic kickstart pass cannot replace.
+ *
+ * Must stay in sync with the labels declared in
+ * `scripts/setup-automation-service.sh` lines 490–497. The mismatch is checked
+ * by the test at `cli/commands/__tests__/sync-worker-daemons.test.js`.
+ */
+const WORKER_DAEMON_LABELS = Object.freeze([
+  'com.local.gentyr-revival-daemon',
+  'com.local.gentyr-quota-recovery-daemon',
+  'com.local.gentyr-preview-watcher',
+  'com.local.gentyr-session-activity-broadcaster',
+  'com.local.gentyr-live-feed-daemon',
+  'com.local.gentyr-synthetic-monitor',
+  'com.local.gentyr-token-usage-collector',
+]);
+
+/**
+ * Phase 0 — auto-pull `~/git/gentyr` from origin/main when the framework
+ * checkout is clean.
+ *
+ * Background: target projects symlink `node_modules/gentyr` to the framework
+ * checkout, so a stale local checkout silently runs old code even after the
+ * latest fix is merged on GitHub. Without this step the user would have to
+ * remember to `cd ~/git/gentyr && git pull` before every `npx gentyr sync`,
+ * and the SessionStart staleness warning (`gentyr-sync.js`) currently only
+ * warns — it never acts.
+ *
+ * Behavior:
+ *  - skipped silently when frameworkDir is not a git checkout (npm-published
+ *    install, or symlink already broken — outer sync logic handles those).
+ *  - skipped when the checkout is dirty (uncommitted changes, unmerged files,
+ *    HEAD not on a tracking branch, local commits ahead of upstream) with a
+ *    yellow warning. Active gentyr development must never have its in-progress
+ *    work disturbed by a consumer project's sync.
+ *  - otherwise runs `git fetch` + `git pull --ff-only` against the tracked
+ *    upstream. Failure is non-fatal — sync continues with whatever is on disk.
+ *
+ * Non-fatal throughout: every git call is wrapped in try/catch and logs a
+ * yellow warning rather than aborting sync.
+ *
+ * @param {string} frameworkDir Absolute path to the resolved gentyr framework checkout.
+ */
+function autoPullFrameworkRepo(frameworkDir) {
+  // Confirm the framework dir is a git checkout. npm-published installs are
+  // not git repos (no .git directory) — bail silently in that case.
+  const gitDir = path.join(frameworkDir, '.git');
+  let gitDirExists = false;
+  try {
+    const st = fs.statSync(gitDir);
+    gitDirExists = st.isDirectory() || st.isFile(); // worktree .git is a file
+  } catch { /* missing — not a git repo */ }
+  if (!gitDirExists) return;
+
+  const gitArgs = (...rest) => ['-C', frameworkDir, ...rest];
+  const run = (args, opts = {}) => execFileSync('git', args, {
+    stdio: 'pipe', encoding: 'utf8', timeout: 15000, ...opts,
+  }).trim();
+
+  // Check dirty state — porcelain returns empty when fully clean
+  let dirty = '';
+  try {
+    dirty = run(gitArgs('status', '--porcelain'));
+  } catch (err) {
+    console.log(`  ${YELLOW}Auto-pull skipped: git status failed in ${frameworkDir} (${err.message})${NC}`);
+    return;
+  }
+  if (dirty) {
+    console.log(`  ${YELLOW}Auto-pull skipped: ${frameworkDir} has uncommitted changes — pull manually after committing${NC}`);
+    return;
+  }
+
+  // Confirm current branch has a tracking upstream — detached HEAD or
+  // disconnected branch should not silently move
+  let upstream = '';
+  try {
+    upstream = run(gitArgs('rev-parse', '--abbrev-ref', '@{upstream}'));
+  } catch {
+    console.log(`  ${YELLOW}Auto-pull skipped: ${frameworkDir} has no tracking upstream${NC}`);
+    return;
+  }
+
+  // Fetch first so ahead/behind counts are accurate against the latest remote
+  try {
+    run(gitArgs('fetch', '--quiet', 'origin'), { timeout: 30000 });
+  } catch (err) {
+    console.log(`  ${YELLOW}Auto-pull skipped: git fetch failed (${err.message})${NC}`);
+    return;
+  }
+
+  // If local has commits the upstream doesn't, the user is mid-development.
+  // Fast-forward pull is impossible anyway — bail.
+  let aheadBehind = '0\t0';
+  try {
+    aheadBehind = run(gitArgs('rev-list', '--left-right', '--count', `${upstream}...HEAD`));
+  } catch { /* fall through with 0/0 — pull will no-op or fail safely */ }
+  const [behind, ahead] = aheadBehind.split(/\s+/).map((n) => parseInt(n, 10) || 0);
+  if (ahead > 0) {
+    console.log(`  ${YELLOW}Auto-pull skipped: ${frameworkDir} is ${ahead} commit(s) ahead of ${upstream} (active development)${NC}`);
+    return;
+  }
+  if (behind === 0) {
+    // Already up to date — silent
+    return;
+  }
+
+  // Fast-forward pull
+  try {
+    run(gitArgs('pull', '--ff-only', '--quiet'), { timeout: 30000 });
+    console.log(`  ${GREEN}Pulled ${behind} commit(s) from ${upstream} into ${frameworkDir}${NC}`);
+  } catch (err) {
+    console.log(`  ${YELLOW}Auto-pull failed (non-fatal): ${err.message}${NC}`);
+  }
+}
+
+/**
+ * Phase 2c — force-restart every worker launchd/systemd-user service so each
+ * daemon picks up the framework code that was just pulled (Phase 0) and/or
+ * rebuilt in this sync. KeepAlive=true means launchd re-launches the process
+ * on its own after the kill.
+ *
+ * Without this, the MCP daemon is the only daemon `npx gentyr sync` actually
+ * restarts; every other daemon keeps the previous process image in memory and
+ * silently runs stale code — exactly the failure mode that left PR #718's
+ * `work_category_backfill_v2` marker bump dormant across the user's sync until
+ * the token-usage-collector daemon was manually kicked.
+ *
+ * Non-fatal: per-daemon failures (service not installed, launchctl missing)
+ * print a yellow warning and continue. Linux uses `systemctl --user restart`
+ * which is both idempotent and handles the kill + restart in one shot.
+ *
+ * @param {string} _projectDir Reserved for future per-daemon health-polling.
+ */
+async function restartWorkerDaemons(_projectDir) {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') {
+    return; // Other platforms have no automation services to restart.
+  }
+
+  console.log(`  Restarting ${WORKER_DAEMON_LABELS.length} worker daemon(s) so they pick up fresh code...`);
+  const restarted = [];
+  const failed = [];
+
+  for (const label of WORKER_DAEMON_LABELS) {
+    if (process.platform === 'darwin') {
+      try {
+        execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid()}/${label}`], {
+          stdio: 'pipe', timeout: 10000,
+        });
+        restarted.push(label);
+      } catch (err) {
+        // `Could not find service` (3 / "Service is disabled") is fine — the
+        // user may not have run setup-automation-service.sh on this project.
+        const msg = String(err.stderr || err.message || '');
+        if (/Could not find specified service|No such process|3: No such process/i.test(msg)) {
+          // Not loaded — silent skip
+        } else {
+          failed.push({ label, error: msg.trim().split('\n')[0] || 'unknown' });
+        }
+      }
+    } else if (process.platform === 'linux') {
+      // Translate label to systemd unit name (drop com.local.gentyr- prefix,
+      // append .service). e.g. com.local.gentyr-token-usage-collector →
+      // gentyr-token-usage-collector.service
+      const unit = `${label.replace(/^com\.local\./, '')}.service`;
+      try {
+        execFileSync('systemctl', ['--user', 'restart', unit], { stdio: 'pipe', timeout: 15000 });
+        restarted.push(label);
+      } catch (err) {
+        const msg = String(err.stderr || err.message || '');
+        if (/Unit .* could not be found|not loaded/i.test(msg)) {
+          // Not loaded — silent skip
+        } else {
+          failed.push({ label, error: msg.trim().split('\n')[0] || 'unknown' });
+        }
+      }
+    }
+  }
+
+  if (restarted.length > 0) {
+    console.log(`  ${GREEN}Worker daemons restarted: ${restarted.length}${NC}`);
+  }
+  for (const { label, error } of failed) {
+    console.log(`  ${YELLOW}Worker daemon restart failed: ${label} (${error})${NC}`);
+  }
+}
+
 async function ensureMcpDaemonHealthy(projectDir) {
   const stateFile = path.join(projectDir, '.claude', 'state', 'shared-mcp-daemon.json');
 
@@ -533,6 +724,20 @@ async function recycleAutomatedSessions(projectDir) {
     console.log(`  ${YELLOW}Warning: MCP daemon health check threw: ${err.message}${NC}`);
   }
 
+  // ── Phase 2c: Force-restart worker daemons so they pick up new code ───────
+  // Every long-running daemon (token-usage-collector, revival-daemon,
+  // session-activity-broadcaster, etc.) holds the gentyr framework source in
+  // memory. Without an explicit kickstart, a `npx gentyr sync` after a
+  // framework update leaves the previous process image running stale code —
+  // exactly how PR #718's `work_category_backfill_v2` marker bump went
+  // dormant. Phase 2b already restarts the MCP daemon with its own bespoke
+  // logic; this pass covers everything else.
+  try {
+    await restartWorkerDaemons(projectDir);
+  } catch (err) {
+    console.log(`  ${YELLOW}Warning: worker daemon restart pass threw: ${err.message}${NC}`);
+  }
+
   // ── Phase 3: Re-enqueue all with resume ───────────────────────────────────
   // Ensure PROJECT_DIR resolves correctly when session-queue.js is loaded
   process.env.CLAUDE_PROJECT_DIR = projectDir;
@@ -742,6 +947,18 @@ export default async function sync(args) {
 
   const frameworkRel = resolveFrameworkRelative(projectDir);
   const agents = getFrameworkAgents(frameworkDir);
+
+  // ── Phase 0: auto-pull the framework checkout from origin/main when clean ──
+  // Target projects symlink node_modules/gentyr to the framework checkout, so a
+  // stale local checkout silently runs old code even after the latest fix has
+  // landed on GitHub. Running pull BEFORE the rest of sync (build, MCP daemon
+  // restart, worker daemon restart, session recycle) is what makes the new
+  // code actually take effect in this run.
+  try {
+    autoPullFrameworkRepo(frameworkDir);
+  } catch (err) {
+    console.log(`  ${YELLOW}Auto-pull threw (non-fatal): ${err.message}${NC}`);
+  }
 
   // Auto-unprotect if needed so sync can write to root-owned files.
   // Wrap in try/catch and verify the file is actually writable afterward. If unprotect
