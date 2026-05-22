@@ -822,7 +822,7 @@ function buildInteractiveBriefing() {
         // liveness in .claude/state/interactive-sessions.json on the next prompt.
         // Session-briefing runs at SessionStart which is sync, so we skip the write
         // here and rely on the heartbeat (which fires within seconds of session start).
-        lines.push('=== LOCKDOWN OFF — CTO INTERACTIVE PIPELINE ===');
+        lines.push('=== LOCKDOWN OFF — IN-SESSION PIPELINE ===');
         if (wtExists) {
           lines.push(`Worktree: ${wt} (exists)`);
         } else if (wt) {
@@ -832,9 +832,9 @@ function buildInteractiveBriefing() {
           lines.push('No worktree path recorded — toggle /lockdown on then /lockdown off to provision.');
         }
         lines.push('');
-        lines.push('=== RECOMMENDED — run the 6-step pipeline directly in this session ===');
+        lines.push('=== YOUR JOB — run the 6-step pipeline directly in THIS session ===');
         lines.push('');
-        lines.push('Drive the standard sequence interactively, watching each step land in your CTO worktree:');
+        lines.push('Run the standard sequence here, watching each step land in the worktree above. Each Task call below produces output you read in this session before launching the next:');
         lines.push('');
         lines.push('  1. Task(subagent_type=\'investigator\',    cwd=<worktree>, prompt: <research question>)');
         lines.push('  2. Task(subagent_type=\'code-writer\',     cwd=<worktree>, prompt: <implementation>)');
@@ -843,22 +843,22 @@ function buildInteractiveBriefing() {
         lines.push('  5. Task(subagent_type=\'user-alignment\',  cwd=<worktree>, prompt: <intent check>)');
         lines.push('  6. Task(subagent_type=\'project-manager\', cwd=<worktree>, prompt: <commit, push, PR, wait for CI, self-merge to preview>)');
         lines.push('');
-        lines.push('Critical conventions:');
+        lines.push('Critical conventions you MUST follow:');
         lines.push('  - DO NOT use isolation: "worktree" — that creates a fresh worktree per Task call and breaks state flow between steps.');
-        lines.push('  - Pass cwd=<your cto-interactive worktree path> on EVERY Task call so all six steps share the same working tree.');
-        lines.push('  - Only project-manager commits/pushes/PRs/merges. The other five must not commit.');
+        lines.push('  - Pass cwd=<the worktree path shown above> on EVERY Task call so all six steps share the same working tree.');
+        lines.push('  - Only step 6 (project-manager) commits/pushes/PRs/merges. Steps 1–5 must not commit.');
         lines.push('  - After the merge to preview lands, pnpm demo:preview in the main tree hot-reloads automatically (preview-watcher pulls origin/preview into the main tree every 30s).');
-        lines.push('  - Skip steps when justified (e.g., investigator-only for research). The only invariant: if files changed, project-manager runs last.');
+        lines.push('  - Skip steps when justified (e.g., investigator-only for research). The only invariant: if files changed, step 6 runs last.');
         lines.push('');
-        lines.push('STILL BLOCKED when lockdown is off:');
-        lines.push('  - Write/Edit/NotebookEdit to main-tree files (only worktree, .claude/, ~/.claude/ allowed)');
-        lines.push('  - Bash git mutations in main tree (stash, checkout, switch, merge, pull, rebase, reset, clean, add, commit, push, worktree remove)');
-        lines.push('  - --no-verify, --no-gpg-sign, core.hooksPath writes (block-no-verify guard — independent of lockdown)');
-        lines.push('  - Main-tree commits on protected branches main/staging/preview (main-tree-commit-guard — independent of lockdown)');
+        lines.push('STILL BLOCKED when lockdown is off (these guards are independent of lockdown state):');
+        lines.push('  - Your own Write/Edit/NotebookEdit to main-tree files (only worktree, .claude/, ~/.claude/ allowed)');
+        lines.push('  - Your own Bash git mutations in main tree (stash, checkout, switch, merge, pull, rebase, reset, clean, add, commit, push, worktree remove)');
+        lines.push('  - --no-verify, --no-gpg-sign, core.hooksPath writes (block-no-verify guard)');
+        lines.push('  - Main-tree commits on protected branches main/staging/preview (main-tree-commit-guard)');
         lines.push('');
         lines.push('=== MANUAL FALLBACK — direct edits in the worktree ===');
         lines.push('');
-        lines.push('For trivial fixes (typo, one-line config) you can edit directly in the worktree and ship via Bash:');
+        lines.push('For trivial fixes (typo, one-line config) you may edit directly in the worktree yourself and ship via Bash:');
         lines.push('');
         if (wtExists) {
           lines.push(`  cd ${wt}`);
@@ -873,13 +873,13 @@ function buildInteractiveBriefing() {
         lines.push('  gh pr checks <num> --watch --fail-fast   # wait for CI');
         lines.push('  gh pr merge <num> --squash --delete-branch');
         lines.push('');
-        lines.push('=== ASYNC ALTERNATIVES — for stepping away ===');
+        lines.push('=== ASYNC ALTERNATIVES — only when the user wants async work ===');
         lines.push('');
-        lines.push('When you want to step away while work continues, use the async task systems instead:');
+        lines.push('If the user explicitly asks for async / "go do this in the background" work, hand off to:');
         lines.push('  /spawn-tasks <description>   — one-shot work; spawns in a fresh provisioned worktree');
         lines.push('  /persistent-task             — multi-session objective with a monitor');
         lines.push('  /plan                        — multi-phase plan with phases/gates');
-        lines.push('These give you tracking, audit gates, and crash recovery at the cost of latency. Use them when you don\'t want to babysit.');
+        lines.push('These add tracking, audit gates, and crash recovery at the cost of latency. Default to the in-session 6-step pipeline above; only switch to async when the user wants it.');
         lines.push('');
         lines.push('After merge: /lockdown on (re-enables standard interactive console and removes this worktree).');
         lines.push('');
