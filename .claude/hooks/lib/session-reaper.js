@@ -908,6 +908,13 @@ export function reapSyncPass(db) {
       // Sub-agent exemption: if the parent is blocked on Agent() but the sub-agent's
       // JSONL is still being written to, the session is legitimately working — skip kill.
       const JSONL_STALE_MS = getCooldown('jsonl_stale_kill_minutes', 5) * 60 * 1000;
+      // Sub-agent activity uses a SEPARATE, more generous threshold than the parent
+      // stale-kill window. A sub-agent doing extended thinking or running a long MCP
+      // tool call (test suite, demo, large diff) easily goes silent for 5+ minutes
+      // while still working — falsely classifying it as inactive would kill the
+      // parent mid-Agent(). 30 min default catches truly orphaned sub-agents without
+      // false-positiving on legitimate long-running work.
+      const SUBAGENT_ACTIVE_MS = getCooldown('jsonl_subagent_active_minutes', 30) * 60 * 1000;
       if (elapsed > JSONL_STALE_MS && item.agent_id && sessionDir &&
           !['gate', 'audit', 'persistent'].includes(item.lane || '')) {
         try {
@@ -918,8 +925,8 @@ export function reapSyncPass(db) {
             if (staleMs > JSONL_STALE_MS) {
               // Check for active sub-agents before killing.
               // Sub-agent JSONLs live at {sessionDir}/{sessionId}/subagents/*.jsonl
-              // If any sub-agent JSONL was written recently, the parent is legitimately
-              // waiting on Agent() — not stuck.
+              // If any sub-agent JSONL was written within SUBAGENT_ACTIVE_MS (default
+              // 30 min), the parent is legitimately waiting on Agent() — not stuck.
               const sessionId = item.resume_session_id;
               if (sessionId) {
                 const subagentDir = path.join(sessionDir, sessionId, 'subagents');
@@ -929,7 +936,7 @@ export function reapSyncPass(db) {
                     const hasActiveSubagent = subFiles.some(f => {
                       try {
                         const subStat = fs.statSync(path.join(subagentDir, f));
-                        return (now - subStat.mtimeMs) < JSONL_STALE_MS;
+                        return (now - subStat.mtimeMs) < SUBAGENT_ACTIVE_MS;
                       } catch { return false; }
                     });
                     if (hasActiveSubagent) continue; // Parent waiting on active sub-agent — skip
