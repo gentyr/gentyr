@@ -13,6 +13,18 @@
  */
 
 /**
+ * Set of agent_type strings for every auditor variant. Used by revival paths
+ * (revival-daemon, drain-step-1d) to detect when a dead session was an auditor
+ * — those deaths are handled by reapSyncPass Step 1b.5, not by the generic
+ * task-runner revival paths.
+ */
+export const AUDITOR_AGENT_TYPES = new Set([
+  'universal-auditor',
+  'plan-auditor',
+  'authorization-auditor',
+]);
+
+/**
  * Resolve the pass/fail MCP tool names and agent definition for a given task type.
  * @param {'todo'|'persistent'|'plan'|'authorization'} taskType
  * @returns {{ passTool: string, failTool: string, agent: string, idParam: string }}

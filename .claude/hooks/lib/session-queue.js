@@ -28,7 +28,7 @@ import { killProcessGroup, isClaudeProcess } from './process-tree.js';
 import { compactSessionIfNeeded } from './compact-session.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
-import { buildAuditorSessionSpec, buildAuthorizationAuditorSessionSpec } from './auditor-prompt.js';
+import { buildAuditorSessionSpec, buildAuthorizationAuditorSessionSpec, AUDITOR_AGENT_TYPES } from './auditor-prompt.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorStrictInfraInstructions } from './persistent-monitor-strict-infra-instructions.js';
 import { checkAndExpireResources, releaseAllResources, removeFromAllQueues } from './resource-lock.js';
@@ -1634,9 +1634,19 @@ export function drainQueue() {
       const taskId = candidate.metadata?.taskId;
       if (!taskId) continue;
 
-      // Dedup: check if already queued for this task
+      // Detect auditor candidates. A dead universal/plan/authorization auditor must
+      // NOT be revived as itself (its session is a verdict-rendering loop, not a
+      // task-runner workflow). Instead, the linked task may need a fresh task-runner
+      // attempt (most commonly after task_audit_fail transitions pending_audit →
+      // in_progress and the auditor exits). We force agent_type='task-runner' and
+      // prefer --resume against the most recent non-audit-lane session for the task.
+      const candidateIsAuditor = AUDITOR_AGENT_TYPES.has(candidate.agentType);
+
+      // Dedup: check if another non-audit queue item already covers this task.
+      // Auditors in the 'audit' lane don't block a task-runner revival in the
+      // 'revival' lane — they coexist legitimately.
       const existing = db.prepare(
-        "SELECT id FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND json_extract(metadata, '$.taskId') = ?"
+        "SELECT id FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND lane != 'audit' AND json_extract(metadata, '$.taskId') = ?"
       ).get(taskId);
       if (existing) continue;
 
@@ -1659,10 +1669,34 @@ export function drainQueue() {
             const revivalId = generateQueueId();
             const revivalPriority = task.priority === 'urgent' ? 'urgent' : 'normal';
 
-            // Try to find the dead agent's session file for --resume
+            // Decide spawn_type / resume_session_id and revival agent_type.
+            //
+            // Non-auditor candidate: resume from the dead agent's own session file
+            // when available — that session is the same workflow we're continuing.
+            //
+            // Auditor candidate: NEVER resume from the auditor's JSONL (it's an
+            // auditor verdict loop, not a task-runner workflow). Look up the most
+            // recent non-audit-lane queue item for this task and resume from THAT
+            // session if possible; otherwise fall back to a fresh task-runner spawn.
             let spawnType = 'fresh';
             let resumeSessionId = null;
-            if (sessionDir && candidate.agentId) {
+            let revivalAgentType = candidate.agentType || candidate.metadata?.agentType || 'task-runner';
+
+            if (candidateIsAuditor) {
+              revivalAgentType = 'task-runner';
+              try {
+                const priorTaskRunner = db.prepare(
+                  "SELECT resume_session_id FROM queue_items " +
+                  "WHERE json_extract(metadata, '$.taskId') = ? AND lane != 'audit' " +
+                  "AND resume_session_id IS NOT NULL " +
+                  "ORDER BY spawned_at DESC LIMIT 1"
+                ).get(taskId);
+                if (priorTaskRunner?.resume_session_id) {
+                  spawnType = 'resume';
+                  resumeSessionId = priorTaskRunner.resume_session_id;
+                }
+              } catch (_) { /* non-fatal — fall back to fresh */ }
+            } else if (sessionDir && candidate.agentId) {
               const sessionFile = findSessionFileByAgentId(sessionDir, candidate.agentId);
               if (sessionFile) {
                 const sid = extractSessionIdFromPath(sessionFile);
@@ -1683,12 +1717,33 @@ export function drainQueue() {
               }
             } catch (_) { /* non-fatal */ }
 
+            // If the dead candidate was an auditor, surface that context so the
+            // task-runner knows it's being respawned to address an audit failure.
+            // Best-effort lookup of the most recent task_audits row.
+            let auditFailureBlock = '';
+            if (candidateIsAuditor) {
+              try {
+                const todoDb2 = new Database(todoDbPath, { readonly: true });
+                todoDb2.pragma('busy_timeout = 3000');
+                const lastAudit = todoDb2.prepare(
+                  "SELECT verdict, failure_reason, evidence FROM task_audits WHERE task_id = ? ORDER BY id DESC LIMIT 1"
+                ).get(taskId);
+                todoDb2.close();
+                if (lastAudit) {
+                  auditFailureBlock = `\n## Prior Audit Result\nThe previous auditor (${candidate.agentType}) rendered: ${lastAudit.verdict || 'unknown'}\n${lastAudit.failure_reason ? `Failure reason: ${lastAudit.failure_reason}\n` : ''}${lastAudit.evidence ? `Evidence: ${lastAudit.evidence}\n` : ''}\nAddress the audit findings before re-attempting completion.\n`;
+                } else {
+                  auditFailureBlock = `\n## Prior Audit Result\nThe previous auditor (${candidate.agentType}) exited without leaving a recorded verdict.\nThe task transitioned out of pending_audit but no verdict row was persisted; re-attempt completion and let the audit gate re-fire if needed.\n`;
+                }
+              } catch (_) { /* non-fatal — auditFailureBlock stays empty */ }
+            }
+
             const revivalPrompt = [
               `[Revival] Re-spawned after agent death.`,
               `Task: ${task.title}`,
               task.section ? `Section: ${task.section}` : null,
               task.description ? `\nDescription:\n${task.description}` : null,
               bypassCtxBlock || null,
+              auditFailureBlock || null,
               `\nThis task was previously being worked on by agent ${candidate.agentId} which died unexpectedly.`,
               `Continue from where the previous agent left off. Check the task status and any existing work before starting.`,
             ].filter(Boolean).join('\n');
@@ -1702,13 +1757,19 @@ export function drainQueue() {
               revivalPriority,
               spawnType,
               `[Revival] ${task.title || taskId}`,
-              candidate.agentType || candidate.metadata?.agentType || 'task-runner',
+              revivalAgentType,
               'session-reviver',
               `revival-${taskId.slice(0, 8)}`,
               revivalPrompt,
               resumeSessionId,
               PROJECT_DIR,
-              JSON.stringify({ taskId, revivalReason: 'dead_agent_requeue', originalAgentId: candidate.agentId })
+              JSON.stringify({
+                taskId,
+                revivalReason: candidateIsAuditor ? 'auditor_exit_task_needs_rework' : 'dead_agent_requeue',
+                originalAgentId: candidate.agentId,
+                originalAgentType: candidate.agentType,
+                respawnedAsType: revivalAgentType,
+              })
             );
 
             auditEvent('session_revival_triggered', {
@@ -1716,10 +1777,12 @@ export function drainQueue() {
               queue_id: revivalId,
               task_id: taskId,
               original_agent_id: candidate.agentId,
+              original_agent_type: candidate.agentType,
+              respawned_as_type: revivalAgentType,
               spawn_type: spawnType,
             });
 
-            log(`Step 1d: Re-enqueued dead task ${taskId} as ${revivalId} (revival lane, ${revivalPriority}, ${spawnType})`);
+            log(`Step 1d: Re-enqueued dead task ${taskId} as ${revivalId} (revival lane, ${revivalPriority}, ${spawnType}, agent_type=${revivalAgentType}${candidateIsAuditor ? ', original was auditor' : ''})`);
             revivalCount++;
           }
         }

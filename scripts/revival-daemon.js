@@ -79,6 +79,7 @@ let buildRevivalPrompt, spawnResumedSession, getSessionDir, findSessionFileByAge
 let shouldAllowSpawn;
 let drainQueue;
 let auditEvent;
+let AUDITOR_AGENT_TYPES = null;
 let Database = null;
 
 async function loadDependencies() {
@@ -108,6 +109,11 @@ async function loadDependencies() {
     const sessionAudit = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js'));
     auditEvent = sessionAudit.auditEvent;
   } catch { /* non-fatal */ }
+
+  try {
+    const auditorPrompt = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'auditor-prompt.js'));
+    AUDITOR_AGENT_TYPES = auditorPrompt.AUDITOR_AGENT_TYPES;
+  } catch { /* non-fatal — if unavailable, daemon falls back to legacy behavior */ }
 
   try {
     Database = (await import('better-sqlite3')).default;
@@ -252,6 +258,24 @@ function scanAndRevive() {
         continue;
       }
       if (memCheck.reason) log(`  ${memCheck.reason}`);
+    }
+
+    // Auditor deaths are NOT generic agent crashes.
+    // A clean auditor exit transitions the linked task pending_audit → completed
+    // (task_audit_pass) or pending_audit → in_progress (task_audit_fail), then
+    // the auditor process exits. If we reset the task to pending here and revive
+    // the auditor's session as a generic task-runner, we (a) lose the audit-failure
+    // context and (b) end up resuming a task-runner workflow from an auditor's
+    // JSONL with a mismatched agent_type. reapSyncPass Step 1b.5 / Step 1d (after
+    // the lane-aware fix) knows the right thing to do — defer to it.
+    if (AUDITOR_AGENT_TYPES && AUDITOR_AGENT_TYPES.has(agent.type)) {
+      log(`  Agent ${agent.id} type=${agent.type} is an auditor — deferring revival to reapSyncPass`);
+      agent.revivalAttempted = true;
+      revivalAttempted.set(agent.id, now);
+      if (auditEvent) {
+        try { auditEvent('revival_skipped_auditor', { agent_id: agent.id, agent_type: agent.type }); } catch {}
+      }
+      continue;
     }
 
     // Only count a retry when we actually attempt revival (not when blocked by memory/quota)
