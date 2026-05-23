@@ -304,12 +304,19 @@ function scanAndRevive() {
             revivalAttempted.set(agent.id, now);
             continue;
           }
-          // Reset in_progress tasks to pending so revival can re-claim
+          // Reset in_progress tasks to pending so revival can re-claim.
+          // TOCTOU-safe: the WHERE status='in_progress' clause prevents a race
+          // where a concurrent auditor verdict (task_audit_pass → completed,
+          // task_audit_fail → in_progress) flips the row between the SELECT
+          // above and this UPDATE. Without the guard, the daemon could silently
+          // demote a just-completed task back to pending.
           if (task.status === 'in_progress') {
             const writeDb = new Database(todoDbPath);
-            writeDb.prepare("UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ?").run(taskId);
+            const updateResult = writeDb.prepare(
+              "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
+            ).run(taskId);
             writeDb.close();
-            if (auditEvent) {
+            if (auditEvent && updateResult.changes > 0) {
               try { auditEvent('task_reset_pre_revival', { agent_id: agent.id, task_id: taskId }); } catch {}
             }
           }
