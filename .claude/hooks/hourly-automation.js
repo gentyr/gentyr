@@ -3274,6 +3274,37 @@ async function main() {
   const startTime = Date.now();
   log('=== Hourly Automation Starting ===');
 
+  // FIX-16: Global watchdog. Hard-kill ourselves at 5 minutes wall-clock.
+  // An audited target-project install showed a single hourly-automation cycle
+  // hung 2h 7m (one PID), blocking every subsequent launchd invocation.
+  // Without a watchdog, a wedged subprocess (e.g. blocked `gh` call, MCP
+  // daemon healthcheck, session-reaper lsof) silently starves all later
+  // cycles. launchd will respawn us at the next 5-min StartInterval.
+  const watchdogMs = Number(process.env.GENTYR_HOURLY_WATCHDOG_MS) || 5 * 60 * 1000;
+  const watchdogTimer = setTimeout(() => {
+    log(`[watchdog] Hourly automation exceeded ${Math.round(watchdogMs / 1000)}s wall-clock — force-exiting so launchd can respawn cleanly.`);
+    // Use exit code 99 so launchd telemetry can distinguish watchdog kills from
+    // normal exits (0) and crash exits (1).
+    process.exit(99);
+  }, watchdogMs);
+  // Don't keep the event loop alive solely for the watchdog.
+  if (typeof watchdogTimer.unref === 'function') watchdogTimer.unref();
+
+  // FIX-16: Heartbeat file updated every 10s so external monitors can detect
+  // hung cycles without parsing the rolling log. Written atomically.
+  const heartbeatPath = path.join(PROJECT_DIR, '.claude', 'state', 'hourly-automation-heartbeat.json');
+  const writeHeartbeat = () => {
+    try {
+      const payload = JSON.stringify({ pid: process.pid, ts: new Date().toISOString(), startedAt: new Date(startTime).toISOString() });
+      const tmp = `${heartbeatPath}.tmp`;
+      fs.writeFileSync(tmp, payload);
+      fs.renameSync(tmp, heartbeatPath);
+    } catch { /* non-fatal */ }
+  };
+  writeHeartbeat();
+  const heartbeatTimer = setInterval(writeHeartbeat, 10000);
+  if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
+
   // Drain any items that were queued but not yet spawned in a previous cycle.
   await drainQueue();
 
