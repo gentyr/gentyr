@@ -511,65 +511,15 @@ Syncs four GENTYR data sources (Personas, Reviews, Work Log, Tasks) to Notion da
 
 ## AI User Feedback System
 
-Configure user personas to automatically test your app when staging changes are detected:
+Configure user personas to automatically test your app when staging changes are detected. Personas come in 5 consumption modes — `gui` (Playwright browser), `cli`, `api`, `sdk` (developer with scratch workspace + docs portal), `adk` (AI agent with docs-feedback MCP). Feedback agents spawn on staging changes and report findings to the deputy-CTO triage pipeline. The `product-manager` agent creates fully-functional personas automatically as a post-Section-6 step (Fill gaps or Full rebuild); `/configure-personas` is the interactive manual path.
 
-```bash
-# In a Claude Code session after GENTYR is installed:
-/configure-personas
-```
+Persona profiles let the CTO archive a complete persona set with a guiding strategic prompt and switch between them — useful for A/B testing target markets without losing prior research. Active profile shows at the top of the interactive session briefing.
 
-Creates personas (GUI/CLI/API/SDK/ADK modes), registers features with file patterns, and maps personas to features. Feedback agents spawn on staging changes and report findings to deputy-CTO triage pipeline.
+**Slash commands:**
+- `/configure-personas` — initial setup or backfill
+- `/persona-feedback` — browse feedback history or spawn an on-demand feedback session
 
-**5 Consumption Modes:**
-
-| Mode | Tools Available | Docs Access | Use Case |
-|------|----------------|-------------|----------|
-| `gui` | Playwright browser | N/A (browses app) | Web UI testing as a real user |
-| `cli` | programmatic-feedback (CLI) | N/A | Command-line tool testing |
-| `api` | programmatic-feedback (API) | N/A | REST/GraphQL API testing |
-| `sdk` | Claude Code tools + programmatic-feedback + Playwright | Docs portal via browser | Developer testing SDK in scratch workspace |
-| `adk` | Claude Code tools + programmatic-feedback + docs-feedback | Docs via MCP search/read | AI agent testing SDK programmatically |
-
-**SDK and ADK modes** spawn feedback agents with a scratch workspace (`/tmp/gentyr-feedback/workspace-{sessionId}/`) where the SDK is pre-installed via `npm install`. Agents have Claude Code tools (`Bash,Read,Write,Edit,Glob,Grep`) to write and run test scripts. The difference is docs access: SDK uses Playwright to browse the docs portal (human-like), ADK uses the `docs-feedback` MCP server for programmatic search/read (agent-like).
-
-**`endpoints` field semantics per mode:**
-- GUI: `[app-url]`
-- CLI: `[cli-command]`
-- API: `[api-base-url]`
-- SDK: `[sdk-packages-csv, docs-portal-url]` — `endpoints[1]` optional
-- ADK: `[sdk-packages-csv, docs-directory-path]` — `endpoints[1]` optional
-
-**Docs configuration** is user-driven via `/configure-personas` or the product-manager agent. If `endpoints[1]` is not configured for SDK/ADK personas, the agent runs without docs access (code-only testing) and receives a warning in the prompt.
-
-**`docs-feedback` MCP server** (`packages/mcp-servers/src/docs-feedback/`): Serves the project's own developer docs. Reads `FEEDBACK_DOCS_PATH` env var, recursively walks for `.md`/`.mdx` files, provides 4 tools: `docs_search`, `docs_list`, `docs_read`, `docs_status`. Uses `AuditedMcpServer` for audit trail.
-
-To browse a persona's feedback history or spawn a one-shot feedback session on demand:
-
-```bash
-/persona-feedback
-```
-
-Shows an overview of all personas and recent feedback runs, lets you pick a persona, view its satisfaction trend and CTO reports, drill into past session details, or spawn a live feedback session (fire-and-forget).
-
-The `product-manager` agent also creates fully-functional personas automatically as a post-analysis step. After Section 6 is completed, the agent receives a persona evaluation task where it first asks the user to choose between **Fill gaps only** (idempotent — backfill missing data without replacing existing) or **Full rebuild** (create everything fresh). It then reads `package.json` to detect the dev server URL and framework, scans for route/feature directories, registers them as features, creates or backfills personas with all required fields (`name`, `display_name`, `endpoints`, `behavior_traits`, `consumption_mode`), maps personas to features, maps pain points to personas, and reports compliance to the deputy-CTO. For SDK/ADK personas, the agent sets `endpoints[1]` to the project's docs path/URL when auto-detectable (e.g., `docs/` directory or `docs` script in `package.json`). This is the primary automated path; `/configure-personas` is the interactive manual path for user-driven setup.
-
-### Persona Profile System
-
-Named snapshots of an entire persona/market-research configuration. Profiles let the CTO archive the current set of personas, features, and a guiding strategic prompt, then switch between them instantly — useful for A/B testing different target markets or pivoting to a new ICP without losing prior research.
-
-**State**: `persona_profiles` table in `user-feedback.db` (auto-migrated). Fields: `id`, `name`, `description`, `guiding_prompt`, `persona_ids` (JSON array of persona IDs included in the profile), `is_active` (boolean, at most one active at a time), `archived_at`, `created_at`.
-
-**6 MCP tools** (on `user-feedback` server):
-- `create_persona_profile` — create a named profile with a `guiding_prompt` and optional list of `persona_ids`; auto-activates if no other profile is active
-- `archive_persona_profile` — archive a profile (soft-delete); deactivates it if it was active
-- `switch_persona_profile` — make a profile active, deactivating any currently active profile; updates `is_active` atomically
-- `list_persona_profiles` — list all profiles (active, inactive, and optionally archived); returns `is_active`, `persona_count`, and truncated `guiding_prompt`
-- `get_persona_profile` — retrieve full profile detail including the complete `guiding_prompt` and all linked persona IDs
-- `delete_persona_profile` — permanently delete a profile (irreversible; use `archive_persona_profile` for soft-delete)
-
-**Product-manager integration**: `get_analysis_status` surfaces the active profile's `name` and `guiding_prompt` so the product-manager agent orients its research within the correct market context.
-
-**Session briefing integration**: When a persona profile is active, `session-briefing.js` displays the profile name and guiding prompt at the top of the interactive session briefing, giving the CTO immediate context about the current research focus.
+> Full details: [AI User Feedback System](docs/CLAUDE-REFERENCE.md#ai-user-feedback-system) — consumption mode tools/docs table, `endpoints` field semantics per mode, `docs-feedback` MCP server tools, product-manager persona creation workflow, persona profile system (6 MCP tools, schema, briefing integration).
 
 ## Product Manager MCP Server
 
@@ -578,6 +528,8 @@ The product-manager MCP server (`packages/mcp-servers/src/product-manager/`) man
 > Full details: [Product Manager MCP Server](docs/CLAUDE-REFERENCE.md#product-manager-mcp-server)
 
 ## Automation Service
+
+> See also: [Automation Systems](docs/AUTOMATION-SYSTEMS.md) for the background-automation orchestration internals (hook registration, lifecycle phases, optimizers). The cooldown table for individual `runIfDue` blocks is in [Session Lifecycle](docs/SESSION-LIFECYCLE.md#background-automation-affecting-lifecycle).
 
 ```bash
 scripts/setup-automation-service.sh status --path /project                  # Check service status
@@ -738,59 +690,27 @@ CTO-gated mechanism to lock features and prevent endless agent nitpick chains on
 
 ## Persistent Task System
 
-Lets the CTO delegate complex multi-step objectives to a dedicated monitor session that orchestrates sub-agents to completion.
-
-**State machine**: `draft` → `active` → `paused` / `completed` / `cancelled` / `failed`. Activation spawns the persistent monitor agent.
-
-**`persistent-task` MCP server** (`packages/mcp-servers/src/persistent-task/`): State in `.claude/state/persistent-tasks.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
+Lets the CTO delegate complex multi-step objectives to a dedicated monitor session that orchestrates sub-agents to completion. State at `.claude/state/persistent-tasks.db` (SQLite, WAL). Tier 2 MCP server (`packages/mcp-servers/src/persistent-task/`, per-session stdio). Lifecycle state machine, revival mechanics, crash-loop circuit breaker, stale-pause auto-resume, and self-healing are all documented in [Session Lifecycle](docs/SESSION-LIFECYCLE.md) — those concerns are queue-layer, not task-layer.
 
 **13 tools**: `create_persistent_task`, `activate_persistent_task`, `get_persistent_task`, `list_persistent_tasks`, `amend_persistent_task`, `acknowledge_amendment`, `pause_persistent_task`, `resume_persistent_task`, `cancel_persistent_task`, `complete_persistent_task`, `link_subtask`, `get_persistent_task_summary`, `inspect_persistent_task`.
 
-**Amendment system**: After activation the CTO can amend a task (`amend_persistent_task`) with `addendum`, `correction`, `scope_change`, or `priority_shift` types. The monitor polls for unacknowledged amendments on each cycle and must call `acknowledge_amendment` before proceeding. **Auto-resume on amendment**: If the task is paused when an amendment is added, `amendPersistentTask()` automatically transitions the task back to `active` and the spawner hook fires immediately to launch a new monitor session — no manual `resume_persistent_task` call needed.
+**Amendment system**: After activation the CTO can amend a task with `addendum`, `correction`, `scope_change`, or `priority_shift` types. The monitor polls for unacknowledged amendments each cycle and must call `acknowledge_amendment` before proceeding. Adding an amendment to a paused task auto-resumes it (no manual `resume_persistent_task` needed).
 
-**`persistent-monitor` agent** (`agents/persistent-monitor.md`): Opus-tier. Read-only for files — orchestrates sub-agents via `todo-db` task creation, not direct edits. Never executes sub-tasks itself and never uses the Task tool to spawn code-writers — all code changes must go through `create_task` + `force_spawn_tasks` so they are tracked, gated, and run in provisioned worktrees. The Task tool is permitted only for immediate, lightweight investigation work (investigator sub-agents). Runs a polling loop: check sub-task progress → verify child claims → spawn new tasks as needed → check for amendments → heartbeat → sleep. Completes when outcome criteria are satisfied or the task is cancelled. **Skepticism protocol** (Step 1b): Monitors do NOT accept child agent success claims at face value. When a child reports completion, passing tests, or a working demo, the monitor must `inspect_persistent_task` and `peek_session` to find concrete evidence (exit codes, PASS/FAIL strings, `check_demo_result` with `status: 'passed'`, PR merge confirmations). When evidence is missing, the monitor sends a `send_session_signal` directive demanding proof before `complete_task` may be called. If the child has already exited unverified, a new re-verification task is created. `persistent-task-briefing.js` reinforces this: it adds a skepticism nudge when completed sub-tasks exist and promotes `inspect_persistent_task` as the primary monitoring tool. **Supersession protocol**: When a `scope_change` amendment indicates the task is superseded, monitors must call `cancel_persistent_task` (not `pause_persistent_task`) to permanently stop the task and prevent auto-reviver loops. Pausing a superseded task creates an infinite cycle: the stale-pause auto-resume wakes the monitor every 30 min, the monitor re-reads the amendment, pauses again, and the cycle repeats. The `do_not_auto_resume` metadata flag (set by the self-pause circuit breaker after 2+ pauses in 2 hours) is the backup safety net. **CTO-blocking situations**: When the monitor is genuinely blocked and needs CTO authorization (access issues, conflicting requirements, external dependencies), it must call `submit_bypass_request` instead of `pause_persistent_task` directly. `submit_bypass_request` records the reason, signals the CTO, and then the agent MUST call `summarize_work` and exit — it must not continue working.
+**`persistent-monitor` agent** (`agents/persistent-monitor.md`, Opus-tier): Read-only for files. Orchestrates sub-agents via `todo-db` task creation, not direct edits — never uses the Task tool to spawn code-writers (all code changes must go through `create_task` + `force_spawn_tasks` so they are tracked, gated, and worktree-provisioned). The Task tool is only allowed for lightweight investigation. **Skepticism protocol**: monitors do NOT accept child agent success claims at face value — must `inspect_persistent_task` and `peek_session` for concrete evidence (exit codes, PASS/FAIL strings, `check_demo_result` with `status: 'passed'`, PR merge confirmations) before allowing completion. Missing evidence → `send_session_signal` demanding proof, or create a re-verification task if the child already exited. **Supersession**: `scope_change` amendments indicating supersession must trigger `cancel_persistent_task`, NOT `pause_persistent_task` — pausing creates an infinite revive/re-pause cycle. **Blocked situations**: when authorization is needed (access, conflicting requirements, external deps), call `submit_bypass_request`, then `summarize_work`, then exit.
 
-**Session queue `persistent` lane**: Independent of the global concurrency cap. No sub-limit — persistent monitors always spawn immediately (the former `PERSISTENT_LANE_LIMIT = 3` cap was removed). Exempt from the session reaper. **Immediate revival on death**: `drainQueue()` calls `requeueDeadPersistentMonitor()` in Step 1b after the sync reap pass — if a persistent monitor's PID is found dead, a new monitor is re-enqueued at `critical` priority in the same drain cycle, reducing revival latency to seconds instead of the 15-minute automation cycle. **Crash-loop circuit breaker**: Two-layer guard in `requeueDeadPersistentMonitor()`. Layer 1 (fast): in-memory rate limiter (`_monitorRevivalTimestamps` Map) — max 3 revivals per task in 10 minutes, immune to SQLite WAL visibility delays. Layer 2 (slow): DB-based check — max 5 revivals per task per hour sourced from `session-queue-reaper`. When the DB limit is hit, the persistent task is auto-paused (status set to `paused` in `persistent-tasks.db`) with `do_not_auto_resume: true` set in its metadata to stop the crash loop and prevent stale-pause auto-resume from fighting the breaker; `propagatePauseToPlan` is called on both circuit-breaker paths so the linked plan's `blocking_queue` is populated; the task must be manually resumed by the CTO. **Heartbeat-stale revivals are excluded from the circuit breaker count** — only true crashes (`reapReason != 'stale_heartbeat'`) increment the counter, preventing the breaker from tripping on monitors that are alive but momentarily slow to heartbeat. **Step 1c orphan catch-all**: After the dead-PID check, `drainQueue()` also queries `persistent-tasks.db` for `active` tasks that have no corresponding `queued`, `running`, or `spawning` queue item in any lane — a scenario that can arise if the hook fired but the enqueue silently failed. Each orphan is passed to `requeueDeadPersistentMonitor()` for immediate revival. This is a belt-and-suspenders guard that runs on every drain cycle.
+**Demo / strict-infra flags** in task metadata: `demo_involved: true` injects demo-specialized monitor instructions (`lib/persistent-monitor-demo-instructions.js`) and is asked about during `/persistent-task` creation. `strict_infra_guidance: true` adds MCP-only infrastructure prompts (`lib/strict-infra-guidance-prompt.js`) plus the `strict-infra-nudge-hook.js` PostToolUse enforcement and propagates the flag to child tasks.
 
-**3 PostToolUse hooks**:
-- `persistent-task-briefing.js` — injects the current task state into the monitor's context on each tool call (prompt reinforcement)
-- `persistent-task-linker.js` — auto-links newly created todo-db tasks that carry a `persistent_task_id` to their parent persistent task
-- `persistent-task-spawner.js` — fires on `activate_persistent_task`, `resume_persistent_task`, `amend_persistent_task`, `pause_persistent_task`, and `cancel_persistent_task`. For activate/resume/amend: enqueues the monitor session in the `persistent` lane (amendment responses use `persistent_task_id || id` for task ID extraction); on `resume_persistent_task` additionally calls `propagateResumeToPlan` to resolve any `blocking_queue` entries in linked plans. For pause/cancel: emits `persistent_task_paused` / `persistent_task_cancelled` audit events to `session-audit.log` and exits without spawning. Callers should NOT manually spawn monitors after these calls.
+**3 PostToolUse hooks**: `persistent-task-briefing.js` (state injection on every tool call), `persistent-task-linker.js` (auto-link sub-tasks via `persistent_task_id`), `persistent-task-spawner.js` (fires on activate/resume/amend/pause/cancel — enqueues monitor or emits audit event accordingly; callers must NOT manually spawn monitors).
 
-**Hourly automation**: 15-minute health check detects monitors with stale heartbeats and reports dead monitors to the deputy-CTO. This is now a tertiary safety net — primary revival happens immediately in `drainQueue()` via `requeueDeadPersistentMonitor()`, and the sync-pass reaper (`reapSyncPass`) now also kills stale monitors directly (using `persistent_heartbeat_stale_minutes`, default 5 min) for near-instant revival.
+**Cross-system wiring**: `todo-db` `create_task` accepts `persistent_task_id`. `stop-continue-hook.js` blocks normal stop for active monitors and redirects to `submit_bypass_request`. `session-briefing.js` lists active monitors. `cto-notification-hook.js` injects pending bypass requests into `additionalContext` on every CTO prompt.
 
-**Stale-pause auto-resume**: `hourly-automation.js` runs a `persistent_stale_pause_resume` check every 5 minutes. If a task has been `paused` for longer than `persistent_stale_pause_threshold_minutes` (default 30 min) AND no monitor is already queued or running for it, a new monitor is automatically enqueued. This handles self-paused monitors that forgot to self-resume (e.g., after writing a deputy-CTO report and pausing). The resumed task transitions back to `active` via `resume_persistent_task`, and the spawner hook fires to launch a new monitor. After enqueuing, `propagateResumeToPlan` is called to resolve any `blocking_queue` entries in linked plans. Three suppression guards prevent unwanted auto-resume: (1) `do_not_auto_resume: true` in task metadata permanently suppresses auto-resume; (2) self-pause circuit breaker detects tasks that have paused 2+ times in the last 2 hours (monitor keeps waking up and re-pausing per an amendment directive) and auto-sets the `do_not_auto_resume` flag; (3) CTO bypass request guard skips tasks with pending bypass requests.
-
-**Crash-loop login resume** (`crash-loop-resume.js` SessionStart hook): On interactive session start, detects persistent tasks paused by the crash-loop circuit breaker (`reason: 'crash_loop_circuit_breaker'` in the most-recent `paused` event) and auto-resumes them by setting `status = 'active'` and enqueuing a new monitor at `critical` priority. Manually paused tasks are left untouched. Tasks with `do_not_auto_resume: true` in their metadata are permanently skipped — the CTO sees a note in `systemMessage` listing these blocked task titles so they can decide to intervene. Tasks with a pending CTO bypass request are also skipped (checked via `lib/bypass-guard.js` `checkBypassBlock()`). Skipped entirely for spawned sessions (`CLAUDE_SPAWNED_SESSION=true`). Uses a TOCTOU-safe `UPDATE ... WHERE status = 'paused'` guard and deduplicates against in-flight queue items before enqueuing. Rollback sets the task back to `paused` if monitor enqueue fails. All errors are accumulated in `systemMessage` (never stderr, per SessionStart rules). Session briefing shows a PAUSED TASKS section with pause reason (crash-loop / bypass-request / manual) to give the CTO visibility at login.
-
-**`buildPersistentMonitorRevivalPrompt()` helper**: Shared module at `lib/persistent-monitor-revival-prompt.js`, consumed by `hourly-automation.js` (dead monitor path and stale-pause auto-resume), `session-queue.js` revival paths, and `crash-loop-resume.js`. Accepts `(task, revivalReason, projectDir)` and builds the full revival prompt with correct demo/strict-infra flags and revival metadata. Internally calls `buildRevivalContext()` from `lib/persistent-revival-context.js` to assemble enriched context from `last_summary`, recent amendments, and sub-task status. `hourly-automation.js` uses a local `buildRevivalPrompt()` wrapper that binds `PROJECT_DIR`.
-
-**`last_summary` field**: `persistent_tasks` table carries a `last_summary TEXT` column (auto-migrated on DB open). Monitors write their current progress summary here before each sleep cycle. Revival prompts include this field so revived monitors know what was accomplished before the session died, reducing repeated work after crashes.
-
-**`lib/persistent-revival-context.js`** (shared module): Read-only module that assembles a structured revival context block from `persistent-tasks.db` (`last_summary`, amendments), `todo.db` (sub-task status), and session JSONL files (compaction context). Now also includes a **failure diagnosis section** when active `blocker_diagnosis` records exist for the task — revived monitors see their prior failure classification, fix attempts, and fix task IDs so they can pick up where self-healing left off. All reads are wrapped in try/catch and degrade gracefully. Consumed by `hourly-automation.js` and `session-queue.js` revival paths.
-
-**Self-Healing System** (`lib/blocker-auto-heal.js`): Orchestrates automatic diagnosis and recovery when persistent monitors crash repeatedly. Called from `requeueDeadPersistentMonitor()` after the crash-loop circuit breaker's rate-limit cooldown pass. Decision tree: (1) `rate_limit` transient errors → return `cooldown` action (caller handles backoff); (2) `unknown` error or zero consecutive errors → `retry` (normal revival); (3) fix already in-flight (checked via `blocker_diagnosis` status and `todo.db` self-heal tasks) → `retry` without spawning a duplicate; (4) max fix attempts not yet reached → create a `Deep Investigation` task in `todo.db` with `assigned_by: 'self-heal-system'` and targeted investigation steps for the error type; (5) max fix attempts exceeded → submit a bypass request to `bypass-requests.db`, pause the persistent task with `reason: 'self_heal_exhausted'`, and return `escalated`. Deduplicates via the `blocker_diagnosis` table in `persistent-tasks.db`. Error types classified by `diagnoseSessionFailure()`: `rate_limit` (transient, cooldown), `auth_error` (credential investigation), `crash` (code/infra investigation), `unknown` (generic retry). Fix attempts and linked fix task IDs are tracked across revivals in `blocker_diagnosis`. Configurable via `self_heal_max_fix_attempts` (default 3) in `automation-config.json`. Log at `.claude/blocker-auto-heal.log`.
-
-**`blocker_diagnosis` table** (in `persistent-tasks.db`, auto-migrated): Tracks self-healing state per persistent task per error type. Fields: `id`, `persistent_task_id`, `error_type`, `is_transient`, `diagnosis_details` (JSON from `diagnoseSessionFailure()`), `fix_attempts`, `max_fix_attempts`, `fix_task_ids` (JSON array), `status` (`active` / `fix_in_progress` / `cooling_down` / `resolved` / `escalated`), `cooldown_until`, `resolved_at`, `created_at`. One active record per `(persistent_task_id, error_type)` pair — subsequent failures with the same type increment `fix_attempts` on the existing record. Resolved automatically when `self_heal_fix_check` in `hourly-automation.js` detects the fix task completed successfully; escalated when `fix_attempts >= max_fix_attempts`.
-
-**Hourly automation self-heal cycles**: Two new `runIfDue` blocks in `hourly-automation.js`:
-- `cooldown_recovery` (10-minute cooldown): Queries `blocker_diagnosis` rows with `status = 'cooling_down'` whose `cooldown_until` timestamp has elapsed, marks them `resolved`, and allows the next circuit-breaker pass to attempt normal revival.
-- `self_heal_fix_check` (15-minute cooldown): Queries `blocker_diagnosis` rows with `status = 'fix_in_progress'`, checks each linked fix task's status in `todo.db`. If the fix task is `completed`, marks the diagnosis `resolved`. If all fix attempts exhausted, escalates to CTO. If still in progress, leaves the record unchanged.
-
-**Demo validation protocol**: When `demo_involved: true` is set on the task (stored in `metadata`), monitor prompts include specialized instructions from `lib/persistent-monitor-demo-instructions.js`: run demos headed with video recording, review video frames at key moments, keep Playwright timeouts tight, and iterate rapidly. Injected by `persistent-task-spawner.js`, `hourly-automation.js` revivals, and `requeueDeadPersistentMonitor()` in `session-queue.js`. The `/persistent-task` create command now asks about demo involvement during clarification and passes `demo_involved` to `create_persistent_task`. When `demo_involved: true` is set on the task (stored in `metadata`), monitor prompts include specialized instructions from `lib/persistent-monitor-demo-instructions.js`: run demos headed with video recording, review video frames at key moments, keep Playwright timeouts tight, and iterate rapidly. Injected by `persistent-task-spawner.js`, `hourly-automation.js` revivals, and `requeueDeadPersistentMonitor()` in `session-queue.js`. The `/persistent-task` create command now asks about demo involvement during clarification and passes `demo_involved` to `create_persistent_task`.
-
-**Strict Infrastructure Guidance** (`strict_infra_guidance` flag): An opt-in flag that adds three things to persistent task monitors and their child agents: (1) a detailed MCP-only infrastructure instruction block from `lib/strict-infra-guidance-prompt.js` (via `buildStrictInfraGuidancePrompt()`), enforcing Bash prohibition for builds, dev servers, secrets, and demos; (2) `strict-infra-nudge-hook.js` PostToolUse enforcement that detects prohibited Bash infrastructure commands and redirects agents to the correct MCP tools; (3) shared resource coordination guidance for `display`, `chrome-bridge`, and `main-dev-server` resources. Env var `GENTYR_STRICT_INFRA_GUIDANCE=true` is injected into spawned sessions when the flag is set. When a persistent task has `strict_infra_guidance: true` in its `metadata`, the monitor's prompt is augmented with `lib/persistent-monitor-strict-infra-instructions.js` (via `buildPersistentMonitorStrictInfraInstructions()`), which instructs the monitor to propagate `strict_infra_guidance: true` to all child tasks that touch infrastructure. Worktrees already have per-worktree port isolation (base 3100, +100 per worktree) — demos and dev servers run directly from the worktree on isolated ports, no merge needed. Child agents that fail MUST diagnose and retry at least once before reporting blocked; only create a new fix task if the issue is confirmed to be in code, not infrastructure.
-
-**Cross-system wiring**: `todo-db` `create_task` accepts `persistent_task_id`; `stop-continue-hook.js` blocks the normal stop flow for active monitor sessions and forwards `GENTYR_PERSISTENT_TASK_ID` env var — when a monitor is blocked and needs CTO intervention, the hook directs it to use `submit_bypass_request` (not raw `pause_persistent_task`) before stopping; `session-briefing.js` includes a persistent task summary in interactive session briefings; `cto-notification-hook.js` shows active monitor count in the status line and injects pending bypass request details into `additionalContext` on every CTO prompt — the model sees bypass requests directly (not just the terminal UI) so the CTO is never left unaware of blocked work.
-
-**CTO Dashboard**: `PersistentTaskSection` component reads from `persistent-tasks.db` via `packages/cto-dashboard/src/utils/persistent-task-reader.ts`. Rendered on `/cto-report` (static) and `/cto-dashboard` (live TUI).
+**CTO Dashboard**: `PersistentTaskSection` reads from `persistent-tasks.db` via `packages/cto-dashboard/src/utils/persistent-task-reader.ts`. Rendered on `/cto-report` and `/cto-dashboard`.
 
 **4 slash commands**:
-- `/persistent-task` — create flow: researches context, refines the CTO's input into a high-specificity prompt, previews the draft, creates and activates on approval
-- `/persistent-tasks` — management view: lists all tasks, shows monitor health, and provides amend/pause/resume/cancel/revive actions
-- `/monitor` — continuous monitoring loop that shows raw data from plans, persistent tasks, todo-db tasks, running sessions, and the session queue. Each round calls MCP tools directly (no investigator sub-agents) and displays verbatim indexed session messages via `browse_session`. Subscribes the CTO interactive session to verbatim-tier summaries from monitored agents for automatic delivery. Tracks unverified success claims across rounds in `successClaimsUnverified`; classifies evidence as `confirmed`/`unverified`/`refuted` in `evidenceLog`; signals monitors when claims are refuted. Accepts optional argument: `plans` (focus on plans), `persistent` (focus on persistent task monitors), a plan/task-ID prefix (monitor a specific item), or bare (monitors everything). Stops automatically on intervention-needed conditions: monitor dead with no revival queued, task self-paused, task completed/cancelled, critical memory pressure for 3+ rounds, child agent stale 15+ minutes, plan fully blocked with no parallel work for 3+ rounds, or a systemic error pattern across 3+ child attempts.
-- `/status` — one-shot version of `/monitor`. Same data gathering and display format (plans, persistent tasks, tasks, sessions, queue) but runs once and exits — no sleep loop, no state file, no reminder hook. When sessions appear idle (no recent tool calls), the investigator checks `peek_session` for `activeSubagents` and displays a sub-agent tree showing nested Agent tool sub-agents and their current activity.
-
+- `/persistent-task` — create flow (research → refine prompt → preview → create + activate)
+- `/persistent-tasks` — management view (list, monitor health, amend/pause/resume/cancel/revive)
+- `/monitor` — continuous monitoring loop. Each round calls MCP tools directly, displays verbatim indexed session messages via `browse_session`, subscribes CTO to verbatim-tier summaries, tracks unverified success claims across rounds, signals monitors when claims are refuted. Optional argument: `plans` | `persistent` | task-ID prefix | bare. Stops on intervention-needed conditions (monitor dead with no revival queued, self-paused, completed/cancelled, critical memory for 3+ rounds, child stale 15+ min, plan fully blocked, systemic error pattern across 3+ attempts).
+- `/status` — one-shot version of `/monitor` (no loop, no state file, no reminder hook).
 
 ## Token Usage Tracking
 
@@ -925,6 +845,25 @@ Traceability chain from user prompts through tasks, specs, and implementations. 
 
 **`user-alignment` agent** (`agents/user-alignment.md`): Auditor that runs after the code-reviewer in the standard development workflow. Looks up `user_prompt_uuids` on the task (falls back to keyword search), checks `userPromptRefs` in related specs, reviews `git diff`, and verifies the implementation addresses user intent. Creates `CODE-REVIEWER` fix tasks for misalignments; escalates significant drift to the deputy-CTO. Does NOT edit files or commit. **Spec proposals**: After verifying alignment, the agent checks whether specs should be created or updated for changed files. Spec writes (`create_spec`, `edit_spec`) are CTO-gated via deferred actions — the agent calls the tool, the `protected-action-gate` blocks it and stores the proposed spec content, and the CTO approves or rejects before it's written. The agent files a `submit_bypass_request` and exits; on CTO approval the deferred action auto-executes via the MCP daemon (specs-browser is Tier 1).
 
+## CTO Alignment Tracking
+
+Persistent, audited memory of unique CTO-stated goals captured verbatim by the `user-alignment` sub-agent — long-lived, periodically reassessed, and fed back into the specs system once a goal hits 100% completion. Mirrors the cryptographic-proof model of `record_cto_decision` (verbatim substring must exist in a CTO session JSONL, HMAC-bound to the session file) so agents cannot fabricate goals; unlike one-shot CTO decisions, goals are long-lived with a percentage progress dimension.
+
+**Table**: `cto_alignment_goals` in `.claude/state/bypass-requests.db` (shared with `cto_decisions`/`deferred_actions`/`bypass_requests`). Fields: `id` (ag-...), `short_title`, `verbatim_text`, `cto_session_id`, `cto_session_file_hash`, `cto_prompt_timestamp`, `cto_prompt_line_number`, `hmac`, `status` (`active`/`completed`/`archived`/`superseded`), `completion_percentage`, `last_assessment_at`, `last_assessment_evidence`, `completed_at`, `spec_review_triggered_at`, `spec_review_outcome`, `archived_at`, `archived_reason`, `archive_verbatim_text`, `archive_cto_session_id`, `recorded_by_agent`, `created_at`. Partial UNIQUE index on `(cto_session_id, substr(verbatim_text, 1, 500))` where status not in archived/superseded — same goal cannot be recorded twice.
+
+**5 MCP tools** (on `agent-tracker` server):
+- `record_cto_alignment_goal` — RESTRICTED TO user-alignment. Verifies verbatim text against CTO session JSONL via `verifyQuoteInJsonl` (only human/user messages count), HMAC-binds the goal to the session file. Returns `already_exists: true` on dedup.
+- `list_cto_alignment_goals` — open to all agents. Default filter `status: 'active'`. Omits verbatim/evidence by default for compact responses; pass `include_evidence: true` for detail.
+- `get_cto_alignment_goal` — open to all agents. Full row including verbatim_text and HMAC.
+- `update_cto_alignment_goal_progress` — RESTRICTED TO user-alignment. Updates completion_percentage with evidence, and/or sets `spec_review_outcome` after the 100% spec-review pass. When percentage transitions <100→100, the goal moves to `status='completed'`, `spec_review_outcome='pending'`, and the spec-review hook fires.
+- `archive_cto_alignment_goal` — RESTRICTED TO user-alignment. `reason: 'superseded'` REQUIRES verbatim_text proving the CTO changed direction (verified against CTO JSONL). `'obsolete'`/`'completed'` accept optional verbatim.
+
+**Identity verification** (`verifyUserAlignmentIdentity()` in `agent-tracker/server.ts`): Two-layer check — Layer A reads `queue_items.agent`/`agent_type`/`metadata.agent_type` from `session-queue.db` via `CLAUDE_QUEUE_ID` (top-level spawn); Layer B falls back to the sub-agent `.meta.json` adjacent to the current session JSONL when `CLAUDE_QUEUE_ID` is absent (Task() sub-agent). Verbatim verification remains the primary security primitive; identity check is defense-in-depth.
+
+**Spec-review hook** (`cto-alignment-spec-review.js`, PostToolUse on `mcp__agent-tracker__update_cto_alignment_goal_progress`): Fires when an update sets `transitioned_to_complete: true`. Injects `additionalContext` instructing user-alignment to: (1) re-read the verbatim via `get_cto_alignment_goal`; (2) enumerate global and local specs via `list_specs` / `list_suites`; (3) decide whether to `create_spec`/`edit_spec`/`delete_spec` to absorb the goal into living specifications (each write goes through the existing `protected-action-gate` → CTO approval flow); (4) close the loop by calling `update_cto_alignment_goal_progress` again with `spec_review_outcome: 'specs_proposed' | 'no_changes_needed'`. Listed in `criticalHooks` in `cli/commands/protect.js`.
+
+**User-alignment workflow integration**: Every user-alignment run now (a) captures durable CTO goals from resolved user prompts via `record_cto_alignment_goal`, (b) reassesses every active goal with `list_cto_alignment_goals` + `update_cto_alignment_goal_progress`, and (c) archives superseded goals when newer CTO prompts contradict them. Operational one-shot requests are explicitly skipped — only durable outcomes (a feature must do X, a specification must hold) are tracked.
+
 ## Automatic Session Recovery
 
 GENTYR automatically detects and recovers sessions interrupted by unexpected process death. Dead Agent Recovery Hook runs at SessionStart; Session Reviver runs every 10 minutes from hourly automation.
@@ -937,110 +876,56 @@ GENTYR automatically detects and recovers sessions interrupted by unexpected pro
 
 ## Centralized Session Queue
 
-All agent spawning routes through a single SQLite-backed queue (`session-queue.db`). Every call site that previously called `registerSpawn() + spawn('claude', ...) + updateAgent()` now calls `enqueueSession()`. The queue enforces a global concurrency limit, priority ordering, and lane-based sub-limits.
+All agent spawning routes through `enqueueSession()` in `.claude/hooks/lib/session-queue.js`, backed by `.claude/state/session-queue.db` (WAL). Schema: `queue_items` (status, priority, lane, agent_type, prompt, model, cwd, pid, timestamps) + `queue_config` (key/value). Default concurrency: 10 (configurable 1–50). The drain cycle, status values, priority ordering, lane sub-limits, inline preemption, and dedup rules are all in [Session Lifecycle](docs/SESSION-LIFECYCLE.md). **DB corruption auto-recovery**: `getDb()` runs `PRAGMA integrity_check(1)` on every open; corrupt DB + WAL/SHM are renamed `.corrupt.{ts}` and a fresh DB is created. Log at `.claude/session-queue.log`.
 
-**Queue module** (`.claude/hooks/lib/session-queue.js`): Core module. DB at `.claude/state/session-queue.db` (WAL mode). Log at `.claude/session-queue.log`. **DB corruption auto-recovery**: `getDb()` runs `PRAGMA integrity_check(1)` on every open. If the DB is malformed (e.g., from power loss mid-write), the corrupted DB plus `-wal` and `-shm` files are renamed aside as `.corrupt.{timestamp}`, a fresh DB is created, and a `session_queue_db_recovered` audit event is emitted. The session queue is ephemeral — running sessions track their own PIDs independently and are re-discovered by the revival daemon.
-
-**Schema**: `queue_items` table (status, priority, lane, spawn_type, agent_type, hook_type, prompt, model, cwd, pid, enqueued_at, spawned_at, completed_at, expires_at) + `queue_config` table (key/value for `max_concurrent_sessions`).
-
-**Priority ordering**: `cto` > `critical` > `urgent` > `normal` > `low`.
-
-**Status values**: `queued`, `spawning`, `running`, `suspended`, `completed`, `failed`, `cancelled`.
-
-**Lane sub-limits**: The `gate` lane (Haiku gate agents) is capped at 5 concurrent regardless of the global limit. The `automated` lane has no concurrency limit — 22 background automation sources (`hourly-automation`, `demo-failure-spawner`, `antipattern-hunter-hook`, `session-reviver`, `drain-step-1d`, `session-reaper-audit-revival`, and others) are auto-promoted from `standard` to `automated` on enqueue via `AUTOMATED_SOURCES` in `session-queue.js`. Automated sessions do not consume standard concurrency slots, so background system work never blocks CTO-directed tasks. Only auto-promoted when the incoming `spec.lane` is unset or `standard` — explicit lane assignments (`persistent`, `gate`, `audit`, etc.) are always respected.
-
-**Default TTL**: Queued items expire after 30 minutes if not drained.
-
-**Default concurrency**: 10 (configurable 1–50 via `set_max_concurrent_sessions` MCP tool or `/concurrent-sessions N` slash command).
-
-**Inline preemption** (`preemptLowestPriority()`): When a `cto` or `critical` item is dequeued and the queue is at capacity, `drainQueue()` suspends the lowest-priority running session via SIGTSTP instead of waiting for a free slot. The suspended session's status is set to `suspended` (does not count toward the global concurrency limit). After the high-priority session completes and capacity frees up, Step 6 of `drainQueue()` resumes suspended sessions via SIGCONT. If a session dies while suspended, its linked TODO task is reset to `pending`. Emits `session_suspended` and `session_preempted` audit events. Unlike the legacy `preemptForCtoTask()` (which killed and re-enqueued), this is non-destructive — the session resumes from exactly where it stopped.
+**Agent definition loading** (`--agent` flag): The `queue_items` schema includes an `agent TEXT` column. When `spec.agent` is passed to `enqueueSession()`, `spawnQueueItem()` adds `--agent <name>` to the Claude CLI args, loading the corresponding `.claude/agents/<name>.md` agent definition (enforces model, allowedTools, behavioral instructions). Key mappings: plan-manager monitors → `'plan-manager'`, persistent monitors → `'persistent-monitor'`, demo repair → `'demo-manager'`. `buildPersistentMonitorRevivalPrompt()` returns the `agent` field alongside `prompt`, `extraEnv`, and `metadata`.
 
 **5 MCP tools** (on `agent-tracker` server):
-- `get_session_queue_status` — running items (with PID liveness), queued items, suspended items, capacity info, memory pressure level, and 24h throughput; check `memoryPressure` field when items are queued but not spawning. Returns `standardRunning` (sessions consuming concurrency slots) and `automatedRunning` (automated-lane sessions, no slot cost) separately; `availableSlots` is computed from `standardRunning` only
-- `set_max_concurrent_sessions` — update global limit (1–50); takes effect on next drain cycle
+- `get_session_queue_status` — running/queued/suspended items with PID liveness, capacity, memory pressure, 24h throughput; `standardRunning` vs `automatedRunning` separately; `availableSlots` computed from `standardRunning` only
+- `set_max_concurrent_sessions` — update global limit (1–50); next drain cycle
 - `cancel_queued_session` — cancel a queued (not yet running) item by queue ID
 - `drain_session_queue` — trigger an immediate drain; returns `memoryBlocked` count if memory pressure prevented spawning
-- `activate_queued_session` — instantly activate a queued session by promoting it to CTO priority and spawning it; if at capacity, suspends the lowest-priority running session to make room
+- `activate_queued_session` — instantly activate a queued session by promoting to CTO priority; suspends lowest-priority running session if at capacity
 
-**Dashboard integration**: `SessionQueueSection` React component on CTO Dashboard Page 1. Data read from `session-queue.db` via `packages/cto-dashboard/src/utils/session-queue-reader.ts`. Green/yellow/red color coding for capacity utilization.
+**Dashboard integration**: `SessionQueueSection` React component on CTO Dashboard Page 1. Reads `session-queue.db` via `packages/cto-dashboard/src/utils/session-queue-reader.ts`. Green/yellow/red capacity coding.
 
-**Slash commands**: `/session-queue` (show queue status via `show_session_queue`) and `/concurrent-sessions [N]` (view or update concurrency limit).
+**Slash commands**: `/session-queue` (show queue status via `show_session_queue`), `/concurrent-sessions [N]` (view or update concurrency limit).
 
-**Revival integration**: `scripts/revival-daemon.js` calls `drainQueue()` on agent death to unblock queued items when capacity frees up.
+**Revival integration**: `scripts/revival-daemon.js` calls `drainQueue()` on agent death to unblock queued items when capacity frees.
 
-**Dedup-by-taskId**: `enqueueSession()` checks for an existing `queued`, `running`, or `spawning` item with the same `metadata.taskId` **and the same lane** before inserting. If found, returns the existing queue item immediately (no duplicate spawn). Lane-scoped dedup ensures audit-lane auditors are not blocked by the original task running in the standard lane — the same `taskId` can exist in different lanes simultaneously (e.g., the task agent in `standard` and its auditor in `audit`). A second dedup layer checks `metadata.persistentTaskId` for persistent-lane items, preventing duplicate monitor spawns when multiple revival mechanisms fire concurrently for the same persistent task. A third dedup layer checks `tagContext` for values ending in `-promotion` — prevents duplicate preview-promoter sessions when hourly automation re-triggers while an existing promoter is still running.
+### Reserved Pool Slots, Focus Mode, Quota Exhaustion
 
-**Agent definition loading** (`--agent` flag): The `queue_items` schema includes an `agent TEXT` column. When `spec.agent` is passed to `enqueueSession()`, `spawnQueueItem()` adds `--agent <name>` to the Claude CLI args, causing the spawned session to load the corresponding `.claude/agents/<name>.md` agent definition. This enforces model, allowedTools, and behavioral instructions from the agent definition. Key agent mappings: plan-manager monitors pass `agent: 'plan-manager'`, regular persistent monitors pass `agent: 'persistent-monitor'`, demo repair agents pass `agent: 'demo-manager'`. The shared revival prompt builder (`buildPersistentMonitorRevivalPrompt`) returns the `agent` field alongside `prompt`, `extraEnv`, and `metadata`.
+**Reserved Pool Slots** (`getReservedSlots`/`setReservedSlots`): Integer count of concurrency slots (0–10) held back for priority-eligible sessions (`cto`, `critical`, `urgent`). Non-priority-eligible items see `maxConcurrent - reservedSlots` as their effective cap; priority-eligible items always see the full `maxConcurrent`. **Auto-activate**: `persistent-task-spawner.js` sets 2 reserved slots on `activate_persistent_task`/`resume_persistent_task`. **Auto-deactivate**: `hourly-automation.js` resets to 0 when no persistent tasks are `active` or `paused`. **Auto-restore timer**: `setReservedSlots(n, { restoreAfterMinutes: N })` persists a restore record; `drainQueue()` Step 2.5 checks and auto-restores. **2 MCP tools**: `set_reserved_slots`, `get_reserved_slots`. Reported in `get_session_queue_status`.
 
-**Reserved Pool Slots** (`getReservedSlots`/`setReservedSlots`): An integer number of concurrency slots (0–10) that are held back for priority-eligible sessions (`cto`, `critical`, `urgent`). Non-priority-eligible items see `maxConcurrent - reservedSlots` as their effective cap, while priority-eligible items always see the full `maxConcurrent`. `isPriorityEligible()` determines eligibility based on item priority. **Auto-activate**: When the `persistent-task-spawner.js` hook fires on `activate_persistent_task` or `resume_persistent_task`, it sets 2 reserved slots to ensure the newly spawned monitor and any urgent follow-up agents are never blocked by low-priority queue traffic. **Auto-deactivate**: `hourly-automation.js` resets reserved slots to 0 when no persistent tasks are `active` or `paused`. **Auto-restore timer**: `setReservedSlots(n, { restoreAfterMinutes: N })` persists a restore record in `queue_config`; `drainQueue()` (Step 2.5) checks and auto-restores to the prior default after the timer elapses. **2 MCP tools** (on `agent-tracker` server): `set_reserved_slots` (set count + optional auto-restore timer) and `get_reserved_slots` (read current value and pending restore info). Reported in `get_session_queue_status` under `reservedSlots` and `reservedSlotsRestore`.
+**Focus Mode**: Blocks all automated agent spawning except CTO-directed work, persistent task monitors, and session revivals. State at `.claude/state/focus-mode.json`. Allowed-through list (priority/lane/source/persistentTaskId) is in [Session Lifecycle](docs/SESSION-LIFECYCLE.md). **2 MCP tools**: `set_focus_mode`, `get_focus_mode`. Session briefing shows a prominent notice when active. Slash command: `/focus-mode`.
 
-**Focus Mode**: Blocks all automated agent spawning except CTO-directed work, persistent task monitors, and session revivals. State persisted at `.claude/state/focus-mode.json`. Gate applied inside `enqueueSession()` — blocked spawns return `{ queueId: null, blocked: 'focus_mode' }` immediately. **Allowed through focus mode**: `priority: cto/critical`, `lane: persistent/gate/revival/automated`, `source: force-spawn-tasks/persistent-task-spawner/stop-continue-hook/session-queue-reaper/sync-recycle`, and any item with `metadata.persistentTaskId` set. **2 MCP tools** (on `agent-tracker` server): `set_focus_mode` (enable/disable) and `get_focus_mode` (read state + list of allowed sources). **Session briefing**: When focus mode is active, a prominent notice appears at the top of the interactive session briefing. **Slash command**: `/focus-mode` — reads current state and toggles to the opposite. Reported in `get_session_queue_status` under `focusMode`.
-
-**Quota Exhaustion Auto-Pause/Resume**: When the aggregate Anthropic usage quota reaches 99% utilization on either the 5-hour or 7-day window, ALL non-CTO sessions are killed and new enqueues are blocked. Only `priority: 'cto'` (the CTO's interactive session) passes through the gate. State persisted at `.claude/state/quota-exhaustion.json` with `exhausted`, `resets_at`, `window`, and `utilization` fields. Three-layer system: (1) `quota_exhaustion_check` block in `hourly-automation.js` (5-min cycle, gate-exempt) polls `api.anthropic.com/api/oauth/usage`, detects exhaustion, calls `killAllForQuotaExhaustion()` which sends SIGTERM to all running/spawning sessions and cancels queued items; (2) enqueue gate in `enqueueSession()` blocks all non-CTO spawns while `quota-exhaustion.json` indicates exhaustion; `drainQueue()` also skips the spawn phase when exhausted (reaping still runs); (3) `scripts/quota-recovery-daemon.js` (KeepAlive launchd daemon) watches the state file with `fs.watch` + 30s poll fallback, calculates `setTimeout` to `resets_at - 15s`, then polls the usage API every 5 seconds near reset time — clears the state and calls `drainQueue()` within 10 seconds of quota recovery. `requeueDeadPersistentMonitor()` defers to the recovery daemon when global exhaustion is active (skips per-task 60-minute cooldowns). The CTO notification hook shows `QUOTA EXHAUSTED (window) — all agents paused, resets Xh` in the status line. Reported in `get_session_queue_status` under `quotaExhaustion`. To manually clear: delete `.claude/state/quota-exhaustion.json`.
-
-### Session Reaper
-
-Two-pass reaping engine that detects and cleans up dead or stuck sessions in the queue.
-
-**Sync pass** (`reapSyncPass(db)`): Called from `drainQueue()` on every drain cycle. Fast, synchronous, no process kills. Detects dead PIDs (process.kill(pid, 0) fails) and classifies them: sessions that died within 30 seconds of spawning with no JSONL output are marked `failed` with `error = 'no_output_crash'` (crash death classification); all others are marked `completed`. Emits `session_reaped_dead` audit events and returns a `stuckAlive` list for the async pass and an `auditRevivals` list for Step 1b.5 auditor re-spawning. Also kills stale persistent monitors directly in the sync pass (stale heartbeat detected via `persistent_heartbeat_stale_minutes`, default 5 min — configurable), triggering immediate revival via `requeueDeadPersistentMonitor()` in Step 1b rather than waiting for the async pass. **Audit revival detection**: When a dead session is in the `audit` lane and its linked task is still `pending_audit`, the sync pass preserves the audit gate state (does NOT reset the task to `pending`) and adds the item to `auditRevivals[]` for `drainQueue()` Step 1b.5 to re-spawn a fresh auditor. Handles four task types: todo-db tasks (queries `todo.db`), persistent tasks (queries `persistent-tasks.db`), plan tasks (`taskType === 'plan'` or `metadata.planId` set — queries `plans.db` for the `plan_tasks` row, checks `status === 'pending_audit'`), and authorization tasks (`taskType === 'authorization'` — queries `cto_decisions` table in `bypass-requests.db`, checks `status === 'audit_pending'`). All four paths use `buildAuditorSessionSpec()` from `lib/auditor-prompt.js` for the revival spawn.
-
-**Auth-stall detection** (`isAuthStalled(sessionFile)`): Reads the JSONL tail of a running session's file. If the last 3+ consecutive entries are all auth errors (`"authentication_error"`, `"permission_error"`, or similar), the session is considered auth-stalled. The sync pass applies this check to ALL running sessions whose JSONL file hasn't been updated in `auth_stall_detection_minutes` (default 2 min). Auth-stalled sessions are killed immediately with `reapReason: 'auth_stall'` and linked TODO tasks are reset to `pending`.
-
-**Sub-agent exemption + lowered stale-kill threshold**: `jsonl_stale_kill_minutes` default is now **5 minutes** (lowered from 15). Before killing a stale session, the reaper checks for recent writes to any sub-agent JSONL under `{sessionDir}/{sessionId}/subagents/`. If any sub-agent file has been written recently, the parent is legitimately blocked on an `Agent()` call and the kill is skipped — this lets the lower threshold catch genuinely-stuck sessions without false-positiving on legitimate sub-agent work. The threshold is configurable via `jsonl_stale_kill_minutes` in `automation-config.json`. **Revival candidate gate**: the `spawn_type === 'fresh'` restriction is removed — both fresh and resumed sessions are revival candidates when they die. A resumed session that dies again gets re-spawned with `--resume`, preserving its prior context, instead of a fresh spawn that loses everything.
-
-**Failure diagnosis** (`diagnoseSessionFailure(sessionFile)`): Exported from `session-reaper.js`. Reads the JSONL tail and classifies the terminal failure mode — scanning backward through the last N lines to count consecutive error entries. Returns `{ stalled, error_type, is_transient, consecutive_errors, sample_error, suggested_action }`. Error types: `rate_limit` (rate-limit or usage-limit messages, `is_transient: true`), `auth_error` (401/authentication errors, `is_transient: false`), `crash` (any other consecutive error pattern, `is_transient: false`), `unknown` (no error pattern detected). Used by the sync pass for persistent-lane dead sessions (attaches `diagnosis` to each reaped item) and by auth-stall detection. The structured output feeds directly into `handleBlocker()` in `blocker-auto-heal.js` to drive self-healing decisions. `isAuthStalled()` is now a thin backward-compat wrapper around `diagnoseSessionFailure().stalled`.
-
-**Async pass** (`reapAsyncPass(projectDir, stuckAliveItems)`): Called from `hourly-automation.js`. For sessions alive longer than `session_hard_kill_minutes` (default 60 min), performs multi-signal completion check — JSONL last-message analysis (no pending tool_use), terminal tool detection (`complete_task`/`summarize_work` in last 16KB), and zombie/stopped process state. If any signal is positive, the session is killed and marked `completed` (reaped). If no signal, it's hard-killed and marked `failed`. Hard kills reset the linked TODO task to `pending` and write a deputy-CTO report. **Per-task override**: If the session is linked to a persistent task with `hard_kill_minutes` set in its `metadata` JSON, that value overrides the global `session_hard_kill_minutes` threshold for that session, enabling long-running tasks (e.g., multi-hour demos) to avoid premature termination.
-
-**TODO reconciliation**: After reaping, `reconcileTodo()` updates the linked `todo.db` task — `completed` for reaped sessions where a terminal tool was detected, `pending` (reset) for hard-killed sessions.
-
-**Gate lane exemption**: Gate-lane agents (Haiku task gate) are exempt from both passes — they're lightweight and short-lived.
-
-**Configurable thresholds**: `session_hard_kill_minutes` (default 60), `persistent_heartbeat_stale_minutes` (default 5), and `auth_stall_detection_minutes` (default 2) — all in `automation-config.json`. Per-task override: set `hard_kill_minutes` in a persistent task's `metadata` JSON to override the global hard-kill threshold for that task's monitor sessions.
-
-**Key files**: `.claude/hooks/lib/session-reaper.js` (core), `.claude/hooks/hourly-automation.js` (async pass trigger via `runIfDue('session_reaper', ...)`).
-
-**Legacy coexistence**: `scripts/reap-completed-agents.js` (deprecated) still operates on `agent-tracker-history.json` for any agents not routed through the queue. Both coexist.
+**Quota Exhaustion Auto-Pause/Resume**: When the aggregate Anthropic usage quota reaches 99% utilization on either the 5-hour or 7-day window, ALL non-CTO sessions are killed and new enqueues are blocked. Only `priority: 'cto'` passes the gate. State at `.claude/state/quota-exhaustion.json` (`exhausted`, `resets_at`, `window`, `utilization`). Three layers: (1) `quota_exhaustion_check` block in `hourly-automation.js` (5-min cycle, gate-exempt) polls `api.anthropic.com/api/oauth/usage`, calls `killAllForQuotaExhaustion()` (SIGTERM all running/spawning, cancel queued); (2) enqueue gate in `enqueueSession()` blocks all non-CTO spawns; `drainQueue()` skips the spawn phase (reaping still runs); (3) `scripts/quota-recovery-daemon.js` (KeepAlive launchd) watches the state file with `fs.watch` + 30s poll, schedules `setTimeout` to `resets_at - 15s`, then polls usage API every 5s — clears state and calls `drainQueue()` within 10s of recovery. `requeueDeadPersistentMonitor()` defers to the recovery daemon when global exhaustion is active. CTO notification hook shows `QUOTA EXHAUSTED (window) — all agents paused, resets Xh`. To manually clear: delete `quota-exhaustion.json`.
 
 ### Shared Resource Registry
 
-SQLite-backed multi-resource coordination system. Worktree agents acquire exclusive access to shared main-tree resources via acquire/release/renew/queue semantics, preventing concurrent conflicts (e.g., overlapping headed demos, simultaneous chrome-bridge sessions, or competing dev server owners).
+SQLite-backed multi-resource coordination. Worktree agents acquire exclusive access to shared main-tree resources via acquire/release/renew/queue semantics, preventing concurrent conflicts (overlapping headed demos, simultaneous chrome-bridge sessions, competing dev server owners). Lock TTL expiry, dead-holder cleanup, and reaper integration are in [Session Lifecycle](docs/SESSION-LIFECYCLE.md#resource-lock-lifecycle).
 
-**Module**: `.claude/hooks/lib/resource-lock.js` (canonical). `.claude/hooks/lib/display-lock.js` is a 19-line backward-compat re-export shim — all existing callers continue to work unchanged. DB at `.claude/state/display-lock.db` (same file, migrated schema). Logs to `session-queue.log`.
+**Module**: `.claude/hooks/lib/resource-lock.js` (canonical). `lib/display-lock.js` is a 19-line backward-compat re-export shim. DB at `.claude/state/display-lock.db`. Logs to `session-queue.log`.
 
-**Built-in resources**: `display` (headed browser / ScreenCaptureKit, TTL 15 min), `chrome-bridge` (real Chrome via Claude for Chrome extension, TTL 15 min), `main-dev-server` (port 3000 dev server, TTL 30 min). Additional resources can be registered dynamically via `register_shared_resource`.
+**Built-in resources**: `display` (headed browser / ScreenCaptureKit, TTL 15 min), `chrome-bridge` (real Chrome via Claude for Chrome extension, TTL 15 min), `main-dev-server` (port 3000 dev server, TTL 30 min). Additional resources registered dynamically via `register_shared_resource`.
 
-**Lock semantics** (per resource): TTL auto-expiry prevents orphaned locks when holders die. Holder must renew every ~5 min to stay alive. On expiry or dead-holder detection: `checkAndExpireResources()` (called from `drainQueue()`) checks holder PID liveness first (fast-path via `getAgentPid()` + `isPidAlive()` cross-referencing `session-queue.db`) — dead holders are released immediately without waiting for TTL. Live holders that have passed TTL are also released. After clearing the lock, `promoteNextWaiter()` loops through waiting agents, skipping any whose PID is confirmed dead (marks them `status = 'skipped'`), and promotes the first live waiter found. On agent death: session-reaper calls `releaseAllResources()` and `removeFromAllQueues()` for all resources held or queued by the dead agent. Headless demos do NOT need the display lock.
+**6 MCP tools** (on `agent-tracker` server): `acquire_shared_resource`, `release_shared_resource`, `renew_shared_resource`, `get_shared_resource_status`, `register_shared_resource`, `force_release_shared_resource` (CTO override; blocked for spawned sessions; locks marked `protected_by` additionally require `ctoOverride: true`). Playwright server display lock tools (`acquire_display_lock`, etc.) remain available as backward-compat aliases via the shim.
 
-**6 MCP tools** (on `agent-tracker` server):
-- `acquire_shared_resource` — request exclusive access to a named resource; returns `{ acquired: true }` or `{ acquired: false, position: N, holder: {...} }` with auto-enqueue on contention
-- `release_shared_resource` — release a resource after work completes; promotes next waiter
-- `renew_shared_resource` — heartbeat to prevent TTL expiry (call every ~5 min during long sessions)
-- `get_shared_resource_status` — status of one resource (by `resource_id`) or all registered resources (omit argument)
-- `register_shared_resource` — add a new resource type to the registry with a custom `default_ttl_minutes`
-- `force_release_shared_resource` — CTO override: force-releases a lock regardless of holder identity, purging dead waiters before promoting the next live one; use when the holder is confirmed dead/stuck and waiting for TTL expiry is unacceptable. **Blocked for spawned sessions** (`CLAUDE_SPAWNED_SESSION=true`) — spawned agents cannot seize CTO-held locks; they must use `acquire_shared_resource` and wait in the queue. Locks marked `protected_by` additionally require `ctoOverride: true` to release.
+**Auto-acquire in `run_demo`**: When `recorded: true` (the default, which sets headed mode), `run_demo` automatically acquires the `display` resource if not already held. Released on demo completion, crash, or stop.
 
-**Playwright server display lock tools** (`acquire_display_lock`, `release_display_lock`, `renew_display_lock`, `get_display_queue_status`) remain available as backward-compat aliases via the shim.
+**`forceAcquireResource(resourceId, agentId, queueId, title, opts)`**: Programmatic force-acquisition for non-MCP callers. Atomically displaces the current holder (re-enqueued as `urgent` waiter by default), assigns the lock to the caller. `opts.protectedBy` sets the `protected_by` column — subsequent `forceReleaseResource` calls require `opts.ctoOverride`. Used by `packages/cto-dashboard-live/utils/display-lock-manager.ts` (`preemptForCtoDashboardDemo`) to take display + chrome-bridge with `protectedBy: 'cto-dashboard'`, with a follow-up signal to the displaced agent.
 
-**Auto-acquire in `run_demo`**: When `recorded: true` (the default, which sets headed mode), `run_demo` automatically acquires the `display` resource if not already held (tracked in `DemoRunState`). Released automatically on demo completion, crash, or stop. Agents may also acquire manually before calling `run_demo`.
-
-**`forceAcquireResource(resourceId, agentId, queueId, title, opts)`** (exported from `resource-lock.js`): Programmatic force-acquisition for non-MCP callers. Atomically displaces the current holder (if any), re-enqueues them as an `urgent`-priority waiter (configurable via `opts.reEnqueuePriority`), and assigns the lock to the caller. Returns `{ acquired: boolean, prev_holder?: { agent_id, queue_id, title, acquired_at } }`. Emits a `resource_lock_force_acquired` audit event. Accepts `opts.protectedBy` (string): when set, the value is stored in the `protected_by` column on the lock row; subsequent `forceReleaseResource` calls are refused unless `opts.ctoOverride` is passed, protecting CTO-held locks from being seized by spawned agents. Used by `packages/cto-dashboard-live/utils/display-lock-manager.ts` (`preemptForCtoDashboardDemo`) to atomically take display + chrome-bridge when the CTO launches a dashboard demo (with `protectedBy: 'cto-dashboard'`), with a follow-up signal to the displaced agent to pause and resume.
-
-**Session reaper integration**: `reapSyncPass()` calls `releaseAllResources(agentId)` and `removeFromAllQueues(agentId)` for any agent it marks as dead, releasing all resources at once regardless of how many the agent held.
-
-**Audit events**: `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted`, `resource_lock_force_released`, `resource_lock_force_acquired` — all emitted to `session-audit.log` (event names preserved for backward compatibility; `resource_lock_force_released` is emitted on CTO MCP override or dead-holder auto-release; `resource_lock_force_acquired` is emitted by `forceAcquireResource()` when a new caller atomically displaces the current holder).
+**Audit events** (to `session-audit.log`): `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted`, `resource_lock_force_released`, `resource_lock_force_acquired` (legacy event names preserved for backward compatibility).
 
 ### Session Audit Log
 
-Structured JSON-lines audit trail covering the full session lifecycle.
+Structured JSON-lines audit trail covering the full session lifecycle. Log file: `.claude/state/session-audit.log`. JSON-lines format, one event per line. 30-day retention, 50MB cap (halved on overflow), atomic tmp+rename cleanup.
 
-**Log file**: `.claude/state/session-audit.log`. JSON-lines format, one event per line. 30-day retention, 50MB cap (halved on overflow), atomic tmp+rename cleanup.
+**Event types**: `session_enqueued`, `session_spawned`, `session_completed`, `session_failed`, `session_cancelled`, `session_ttl_expired`, `session_reaped_dead`, `session_reaped_complete`, `session_hard_killed`, `session_revival_triggered`, `session_suspended`, `session_preempted`, `session_sync_recycled`, `session_sync_revived`, `display_lock_*` (acquired, released, renewed, expired, enqueued, promoted), `persistent_task_paused`, `persistent_task_cancelled`, `audit_revival_candidate`, `audit_session_revived`, `session_queue_db_recovered`. Task lifecycle events (emitted by `todo-db`): `task_created`, `task_completed`, `task_deleted`, `task_gate_killed`, `task_gate_approved`, `task_status_changed`.
 
-**Event types**: `session_enqueued`, `session_spawned`, `session_completed`, `session_failed`, `session_cancelled`, `session_ttl_expired`, `session_reaped_dead`, `session_reaped_complete`, `session_hard_killed`, `session_revival_triggered`, `session_suspended`, `session_preempted`, `session_sync_recycled`, `session_sync_revived`, `display_lock_acquired`, `display_lock_released`, `display_lock_renewed`, `display_lock_expired`, `display_lock_enqueued`, `display_lock_promoted`, `persistent_task_paused`, `persistent_task_cancelled`, `audit_revival_candidate` (sync pass flagged a dead auditor for re-spawn), `audit_session_revived` (Step 1b.5 spawned a fresh auditor), `session_queue_db_recovered` (DB corruption detected and fresh DB created). Task lifecycle events (emitted by `todo-db` MCP server): `task_created`, `task_completed`, `task_deleted`, `task_gate_killed`, `task_gate_approved`, `task_status_changed`.
+**Emission points**: `session-queue.js` (all lifecycle transitions), `session-reviver.js`, `stop-continue-hook.js`, `revival-daemon.js`, `persistent-task-spawner.js`, `cli/commands/sync.js`, `todo-db/server.ts`.
 
-**Emission points**: `session-queue.js` (all lifecycle transitions), `session-reviver.js` (all 3 revival modes), `stop-continue-hook.js` (inline revival), `revival-daemon.js` (dead agent detection and revival), `persistent-task-spawner.js` (pause and cancel lifecycle transitions), `cli/commands/sync.js` (`session_sync_recycled` on kill, `session_sync_revived` on re-enqueue), `todo-db/server.ts` (task lifecycle: create, complete, delete, gate approve/kill, status changes).
-
-**Cleanup**: `cleanupAuditLog()` called from hourly-automation's `session_reaper` runIfDue block. Also triggered internally every 100 writes when file exceeds 50MB.
+**Cleanup**: `cleanupAuditLog()` called from hourly-automation's `session_reaper` block; also internally every 100 writes when file exceeds 50MB.
 
 **Key file**: `.claude/hooks/lib/session-audit.js`.
 
@@ -1176,82 +1061,14 @@ The **Interactive Session Lockdown Guard** (`.claude/hooks/interactive-lockdown-
 
 ## Playwright MCP Server
 
-The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for running E2E tests, managing auth state, and launching demos. Uses project-agnostic config discovery from `playwright.config.ts`. Key tools: `launch_ui_mode`, `run_tests`, `run_demo`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `open_video`, `get_demo_screenshot`, `extract_video_frames`, `get_fly_status`, `set_fly_machine_ram`, `get_fly_machine_ram`.
+The Playwright MCP server (`packages/mcp-servers/src/playwright/`) provides tools for E2E tests, auth state, and demo execution. Demos route across three execution targets:
+- **Local** — structural (`remote_eligible=false`, chrome-bridge) or explicit (`run_demo({ local: true })`, CTO-gated for spawned agents)
+- **Fly.io** — default; headed with Xvfb + ffmpeg recording; per-mode RAM, shared machine slot pool, project images for fast cold-start
+- **Steel.dev** — stealth (`run_demo({ stealth: true })` or `stealth_required=true`); cloud browser via CDP; native MP4 recording
 
-**Demo Execution Routing (local / fly / steel)**: `run_demo` and `run_demo_batch` use a simple 3-rule routing model:
-1. **Structural local** — scenarios with `remote_eligible=false` in the DB or `usesChromeBridge=true` (detected from the test file path) route to local execution. No flags needed; no error.
-2. **Explicit local** — `run_demo({ local: true })` forces local execution. CTO-gated for spawned agents via `demo-local-guard.js`. Conflicts with `stealth: true` (returns input error).
-3. **Stealth** — `run_demo({ stealth: true })` or a scenario with `stealth_required=true` routes to Steel.dev. Fail-closed if Steel is not configured, unhealthy, or at session capacity.
-4. **Default (no flags)** — routes to Fly.io. Fail-closed if Fly.io is not configured, unhealthy, or at machine capacity.
+Key tools: `run_demo`, `run_demo_batch`, `check_demo_result`, `preflight_check`, `run_auth_setup`, `tail_running_fly_demo`, `get_fly_status`, `deploy_fly_image`, `deploy_project_image`.
 
-Key behaviors:
-- `run_demo` and `run_demo_batch` default to neither `local` nor `stealth`, meaning they route to Fly.io.
-- `run_demo` also defaults to `recorded: true` — runs headed with video recording (ScreenCaptureKit locally, Xvfb + ffmpeg on Fly.io). Set `recorded: false` for headless without recording. The low-level `headless` and `skip_recording` params still work as explicit overrides.
-- `run_demo_batch` runs multiple scenarios in parallel across Fly machines (limited by `fly.maxConcurrentMachines`, default 10). When all pool slots are contended, the batch waits up to 10 minutes before timing out with a pool contention error.
-- Spawned agents requesting `local: true` without CTO approval are blocked by `demo-local-guard.js`. Structural local scenarios pass through without bypass.
-- **Worktree branch auto-push**: Before spawning a Fly machine, `server.ts` checks if the current `gitRef` exists on the remote (`git ls-remote --heads origin <ref>`). If not (worktree branches are local-only), it pushes the branch automatically (`git push -u origin HEAD:<ref>`) so the Fly machine can clone it. Falls back to `preview` or `main` if the push fails.
-- **Machine kill timeout**: Fly machines are configured with `stop_config.timeout: '75s'` (API) and `kill_timeout = "75s"` in `fly.toml.template` to allow the EXIT trap's 60-second artifact-retrieval window to complete before Fly force-kills the machine.
-- `check_demo_result` returns `execution_target` (`'local'` | `'fly'` | `'steel'`), `fly_machine_id`, `fly_region`, `steel_session_id` (for Steel.dev runs), `steel_recording_path` (Steel-only stealth scenarios) and `fly_recording_path`, and — when a recording was captured — `recording_path`, `recording_source` (`'window'`), `failure_frames`, and `screenshot_hint` (identical fields to local). Also returns `run_id` (unique demo run identifier) and, when telemetry was enabled, `telemetry_dir` and `telemetry_summary`. Screenshots are extracted from the Fly recording via `extractScreenshotsFromRecording()` at 3-second intervals and placed in `.claude/recordings/demos/{scenarioId}/screenshots/` using the same `screenshot-XXXX.png` naming convention as local macOS captures, so `get_demo_screenshot` works identically for both local and Fly.io runs.
-- `get_fly_status` reports configured/healthy state, current machine count, region, `imageDeployed` (if `false`, no Docker image has been pushed and remote execution will fail silently), `imageStale` (boolean — true when infra files changed since last deploy), `machineRamHeadless`, and `machineRamHeaded` (current per-mode RAM settings from the state file).
-- **Image freshness detection**: `get_fly_status` also returns `imageAgeHours` (hours since last deployment) and `imageMetadata` (deployment timestamp, app name, file hashes). `deploy_fly_image` writes `.claude/state/fly-image-metadata.json` with SHA-256 hashes of the infra files after successful deployment. `run_demo` includes a non-blocking `image_staleness_warning` in its response when the image is stale. Session briefing shows a one-line Fly.io image health status at login. Hourly automation checks image freshness every 60 minutes and files a deputy-CTO report when stale. Shared module: `.claude/hooks/lib/fly-image-freshness.js`. The module also exports `readProjectImageMetadata()` and `checkProjectImageStaleness()` for project-image-specific lifecycle checks (lockfile hash comparison, stuck-deploy detection). **`preflight_check` also surfaces Fly.io image health** via two new checks: `fly_image` (check 10a — verifies the base image is deployed and infra files match stored hashes; fail if not deployed, warn if stale) and `project_image_branch` (check 10b — during releases, warns when the project image was built from a branch other than `staging`). Both checks are gated on `fly.enabled` and run without network calls.
-- **Per-mode RAM configuration**: `set_fly_machine_ram` and `get_fly_machine_ram` MCP tools configure RAM independently for headless vs headed Fly machines. State persisted at `.claude/state/fly-machine-config.json` (always writable, no root protection, no `npx gentyr sync` needed). Defaults: headless 2048MB (~900MB actually needed), headed 4096MB (~2GB for Xvfb + ffmpeg + headed Chromium). Changes take effect immediately on the next `run_demo` — no restart required. The `machineRam` field in `services.json` is now superseded by the per-mode values from the state file.
-- Infrastructure: `infra/fly-playwright/` contains the Dockerfile, fly.toml template, and provisioning scripts. Setup via `/setup-fly` slash command; step 8 calls `deploy_fly_image()` MCP tool to build and push the Docker image after app creation. Step 6b of `/setup-fly` covers adding `GITHUB_TOKEN` to `secrets.local` for private repositories — the token is resolved at runtime and passed as `GIT_AUTH_TOKEN` to the Fly.io machine for authenticated git clone; the value never enters agent context.
-- Config fields in `services.json` `fly` object: `apiToken` (op:// ref), `appName`, `region`, `machineSize`, `machineRam` (legacy flat value, now superseded by per-mode state file), `maxConcurrentMachines` (default 10), `enabled`.
-- `FLY_API_TOKEN` is in the `INFRA_CRED_KEYS` set — treated as an infrastructure credential by the secret-sync server.
-
-**Batch Diagnostic Enrichment**: Failed batch scenarios include per-scenario diagnostic fields: `stderr_tail` (last 5KB of stderr/stdout/error.log captured during machine polling), `fly_machine_log` (dmesg/process list/memory captured via exec while machine is alive), `failure_classification` (one of `test_failure`, `build_failure`, `oom`, `timeout`, `startup_failure`, `external_kill`, `recording_failure`, `install_timeout`, `unknown`), `failure_suggestion` (actionable fix guidance), and `elastic_query_hint` (Elastic log query when configured). The shared `classifyFailure()` function in `server.ts` centralizes failure classification for both single-demo and batch paths. `install_timeout` specifically identifies cold-install stall-outs (base image fallback with slow `pnpm install`) distinct from mid-test timeouts.
-
-**Per-Scenario Retry**: `run_demo_batch` accepts `retry_infra_failures` (default 1, max 3). After all scenarios complete, infra-classified failures (`oom`, `timeout`, `startup_failure`, `external_kill`) are automatically retried. OOM retries auto-upgrade to `compute_size: 'large'`. `retried_scenarios` array on the batch result tracks retry outcomes.
-
-**Batch Timeouts**: `run_demo_batch` accepts `scenario_timeout` (default 600000ms = 10 min per scenario) and `batch_timeout` (default 1800000ms = 30 min total). Scenarios exceeding their timeout are killed and classified as `timeout`. Exceeding the batch timeout skips remaining scenarios.
-
-**All Demos Run Headed**: The `headed` DB column and `headless` parameter are deprecated. All demos run headed with video recording (Xvfb+ffmpeg on Fly.io, ScreenCaptureKit locally). `DEMO_HEADLESS` is always `'0'`. The `headless` param in `RunDemoArgsSchema` and `RunDemoBatchArgsSchema` is ignored.
-
-**Shared Machine Slot Pool** (`packages/mcp-servers/src/playwright/machine-pool.ts`): SQLite-backed pool at `.claude/state/fly-machine-pool.db` coordinates Fly.io machine capacity across concurrent batch runs. `acquireSlot()` / `releaseSlot()` with dead-PID cleanup and TTL expiry. Seeds `max_slots` from `services.json` `fly.maxConcurrentMachines` (default 10). `check_demo_batch_result` returns `pool_status` showing active slots, max, and per-batch breakdown. Replaces the chunk-based batch loop with a streaming slot-aware execution model. When the pool has zero available slots, acquisition waits up to 10 minutes before returning a pool contention error — preventing indefinite batch starvation. `check_demo_batch_result` also accepts a `compact: true` parameter that reduces the response payload from ~4KB to ~500B (omitting per-scenario detail fields) to prevent context burn during rapid polling. A 10-second server-side throttle cache prevents redundant processing on back-to-back polls.
-
-**`batch_size` Default**: `run_demo_batch` defaults `batch_size` to `maxConcurrentMachines` from fly config (typically 10), not a fixed value. Multiple concurrent batches share the machine pool.
-
-**Project-Specific Docker Images**: `deploy_project_image` MCP tool builds Docker images with project dependencies pre-installed, reducing cold start from ~90s to ~10s. `resolveAppImage()` prefers `project-*` registry tags when `fly.projectImageEnabled: true`. **Staleness model**: lockfile hash comparison is informational only — a mismatched lockfile does NOT trigger "stale" warnings, timeout extensions, or deploy instructions. `pnpm install` on the machine handles the lockfile delta (~30s). The `get_fly_status` response provides `projectImageAgeHours`, `projectImageLockfileMatch` (informational boolean), and `projectImageRecommendation` (age-based suggestion, null when image is fresh). Agents evaluate image health via these fields and decide when to deploy — there is no automated staleness-triggered deployment. `deploy_project_image` has a 2-hour cooldown (non-forced deploys within 2 hours of the last successful deploy are rejected with an informational message). **Project image lifecycle protection** (multi-layer, added PR #633): (1) `checkProjectImageStaleness()` in `fly-image-freshness.js` — returns `freshnessTier` (`fresh`/`warm`/`stale`/`missing`/`deploying`) for informational/logging use; `stale` is always `false` (project image is usable when deployed); (2) `recoverStuckProjectDeploy()` — auto-clears metadata stuck in `deploying` state after 30 minutes, preventing permanent lockout from a crashed deploy; (3) auto-enable — `deploy_project_image` writes `projectImageEnabled: true` back to `services.json` after a successful deploy so subsequent runs use the fast image automatically; (4) adaptive stall timeouts — only extend timeouts when NO project image exists (true base-image fallback); when a project image exists (even with mismatched lockfile), no timeout extension is applied; (5) `install_timeout` failure classification — identifies cold-install stall-outs as a distinct failure type from `timeout`, enabling targeted repair guidance.
-
-**Live Log Capture**: `captureRunningMachineLogs()` runs every 30s during the batch polling loop AND at scenario completion, capturing stderr/stdout/error.log and system diagnostics (dmesg/ps/meminfo) via exec while the machine is alive. This is the primary log capture mechanism — the Fly NATS SSE stream is live-only and returns empty for dead machines.
-
-**Live observability for running Fly.io demos**: `tail_running_fly_demo` MCP tool execs into the live Fly machine and pulls in-container stdout/stderr/error.log plus system diagnostics. Locates the live demo by `pid` / `run_id` / `scenario_id`. Closes the gap where `get_fly_logs` (even when working) only showed Fly's lifecycle stream, not the actual test process output. `get_fly_logs` itself is fixed: it now pipes flyctl output through `tail(1)` for line-count limiting (flyctl has no line-count flag and parsed `-n <count>` as `--no-tail --no-tail <count>`, yielding "unknown command 200"), and uses `--machine` instead of the renamed `--instance`. **Live telemetry shipping**: `pullFlyTelemetryDelta()` and `shipTelemetryDelta()` run every 30s during running-Fly polls (byte-offset-aware, incremental). Even dying machines stream their telemetry to Elastic before destruction. Final ship is offset-aware so we do not double-ship. **`verify_logging_config` reachability fix**: `client.cluster.health()` 404s on Elastic Serverless and 403s for read-only API keys, so it was replaced with `ping()` → fallback to a `size:0` search probe against the configured index pattern. Now matches the exact permissions used by `query_logs`.
-
-**Base image contents**: `infra/fly-playwright/` Dockerfile installs `pnpm@10` and `bun@1` via `npm install -g` (replacing the prior unpinned curl bun installer). Required for downstream packages whose build script invokes `bun run build.ts`. Without bun, such builds silently fail on Fly.io remote machines (typically masked by `|| echo 'bun not available...'` band-aids in target `package.json` scripts).
-
-**`get_session_activity_summary` accuracy fixes** (21a1be5): Three bugs fixed simultaneously. Bug B (timezone): `elapsed_minutes` was inflated by the local timezone offset (e.g., +2h on CEST). SQLite `datetime('now')` stores UTC without a `Z` suffix; `new Date()` parsed it as local time. Now parsed as UTC by appending `T` + `Z`. Bug C (PID liveness): the tool reported dead sessions as `running` while `get_session_queue_status` showed 0. A PID liveness filter is now applied so both tools agree on session state. Bug A (worktree JSONL): worktree sessions (e.g., preview-promoter) have JSONL in the worktree-specific session dir, but the lookup only searched the main project dir. Now checks `resume_session_id` from `queue_items` first (populated by reaper backfill using CWD), then falls back to agent history and direct search. Promotion session metadata includes `worktreePath`.
-
-**Stale gentyr checkout detection + dead deploy recovery** (8db3335): `gentyr-sync.js` SessionStart hook fetches `origin/main` for the gentyr source repo and warns if the local checkout is behind — catches the scenario where a PR was merged via `gh` but `git pull` was never run, so dependent projects see stale code via the symlink. Runs after all other checks so branch protection and CTO gate still fire. `recoverStuckProjectDeploy()` checks PID liveness BEFORE the 30-minute time threshold — a dead PID means the deploy is finished regardless of age, so recovery happens immediately rather than waiting 30 minutes.
-
-**Demo Run IDs and Telemetry**: Every demo run gets a unique `run_id` (format: `dr-{scenarioId}-{ts}-{hex}`) returned in both `run_demo` and `check_demo_result` responses. This ID is the correlation key across all telemetry, artifacts, and Elastic logs for a single run.
-
-**Demo Telemetry (Maximum Capture Mode)**: Optional deep observability for debugging. Enable per-scenario (`update_demo_scenario({ id, telemetry: true })`) or per-run (`run_demo({ ..., telemetry: true })`). When enabled, captures:
-- Browser console logs from ALL open tabs (log/warn/error/info/debug) via CDP
-- Network requests and responses (method, URL, status, timing, headers) via CDP
-- JavaScript errors and unhandled exceptions with full stack traces
-- Performance metrics (Web Vitals: LCP, FCP, CLS, TTFB, navigation timing)
-- System metrics (CPU%, memory, load averages) sampled every 2 seconds from `packages/mcp-servers/src/playwright/telemetry-capture.ts`
-- On remote Fly.io machines: system metrics also polled inside `infra/fly-playwright/remote-runner.sh`
-
-Browser-level telemetry is injected via `--import .claude/hooks/lib/playwright-telemetry-setup.mjs` (Node.js ESM loader monkey-patch) applied to the Playwright child process. Telemetry files stored as JSONL at `.claude/recordings/demos/{scenarioId}/telemetry/` (`console-logs.jsonl`, `network-log.jsonl`, `js-errors.jsonl`, `performance-metrics.jsonl`, `system-metrics.jsonl`). `check_demo_result` returns `telemetry_summary` with counts of each type and `telemetry_dir` path. Telemetry is shipped to Elastic (index `logs-demo-telemetry-{date}`) when `ELASTIC_CLOUD_ID` or `ELASTIC_ENDPOINT` and `ELASTIC_API_KEY` env vars are set — fire-and-forget, silent no-op when credentials are missing. Query pattern: `demo.run_id:"dr-xxx"` in `mcp__elastic-logs__query_logs`. The `telemetry` field on `demo_scenarios` table in `user-feedback.db` (auto-migrated, settable via `create_demo_scenario`/`update_demo_scenario`) persists per-scenario telemetry configuration.
-
-**Steel.dev Cloud Browser (`stealth: true`)**: When the `steel` section is configured in `services.json`, callers can route demos to Steel.dev with `run_demo({ stealth: true })`, or scenarios can set `stealth_required=true` in the DB to auto-enable stealth routing. Steel.dev runs as a peer of Fly.io — Playwright executes locally on the host but connects to the Steel cloud browser via CDP (`STEEL_CDP_URL` / `STEEL_SESSION_ID` / `STEEL_SESSION_VIEWER_URL` are injected into the test environment). Routing is fail-closed: if Steel is configured but unhealthy, or at session capacity, `run_demo` returns an error rather than silently falling back to a non-stealth execution path. `resolveExecutionTarget()` in `packages/mcp-servers/src/playwright/execution-target.ts` implements the 3-rule routing model (structural local → explicit local → stealth → default Fly.io). Config fields in `services.json` `steel` object: `apiKey` (op:// ref), `orgId` (optional), `enabled`, `defaultTimeout`, `extensionId` (pre-uploaded extension for Steel sessions), `proxyConfig` (`enabled`, `country`), `maxConcurrentSessions`, `region` (optional default; per-run override via `run_demo({ steel_region })`). The `checkSteelHealth()` utility in `execution-target.ts` probes `https://api.steel.dev/v1/sessions` with a configurable timeout (default 5s). GENTYR provides the generic Steel REST API client (`steel-runner.ts`), MCP tools (`steel_health_check`, `upload_steel_extension`), and env var passthrough (`STEEL_CDP_URL`, `STEEL_SESSION_ID`, `STEEL_SESSION_VIEWER_URL`). Target project test code handles CDP connection, extension loading, and bridge wiring.
-
-**Steel skip-local-setup**: stealth runs do NOT execute registered prerequisites or auto-start the local dev server — Playwright runs locally but the browser is in Steel's cloud, so any localhost the test reached would be unreachable from the Steel browser anyway. Stealth scenarios must target public URLs (deployed env, third-party sites). Use the `PLAYWRIGHT_BASE_URL` env or absolute URLs in `page.goto()`.
-
-**Steel native recording download**: On stealth runs, GENTYR releases the Steel session and downloads the MP4 recording (Steel records server-side via WebRTC) at the end of `check_demo_result`. The downloaded file lands at `.claude/recordings/demos/{scenarioId}/steel-{runId}.mp4` and is surfaced as `steel_recording_path` on the result. When the demo passed, the recording is also persisted as the scenario's last-known-good via `persistScenarioRecording`. Implementation: `downloadSteelRecording()` in `steel-runner.ts` plus `finalizeSteelSession()` in `server.ts`. Idempotent and gated by `entry.steel_finalized`. Local ScreenCaptureKit and screenshot capture are suppressed on stealth runs (the local Chrome window doesn't exist).
-
-**Steel Profiles**: pass `steel_profile_id` to `run_demo` to load a previously persisted Steel Profile (cookies, localStorage, fingerprint, auth tokens) — useful for skipping repeated logins on stealth runs. Pass `steel_persist_profile: true` to save the session's state as a new Profile on release; the returned `check_demo_result` includes the assigned `steel_profile_id` so you can wire it back into the scenario for the next run. **Scenario-level auto-persist**: when `steel_persist_profile: true` is set on a run that has a `scenario_id`, `finalizeSteelSession()` writes the returned `profile_id` back to `demo_scenarios.steel_profile_id` (auto-migrated column on `user-feedback.db`). Subsequent runs of the same scenario auto-load the saved profile without the caller having to pass `steel_profile_id` explicitly — `run_demo` reads the column at startup and uses it when no explicit profile was passed. Explicit `steel_profile_id` always wins.
-
-**Steel sessionContext**: pass `steel_session_context` to `run_demo` to inject a `sessionContext` blob (cookies, localStorage) directly into the Steel session at create time, without going through the Profiles API. Useful when the auth state was captured elsewhere (e.g. via Playwright `storageState`). Transient — Steel does NOT persist this between sessions; use `steel_persist_profile` if you want it to stick.
-
-**Steel-aware Playwright fixture** (`@gentyr/playwright-helpers/steel`): The Steel-only execution path injects `STEEL_CDP_URL` and expects target test code to call `chromium.connectOverCDP(url)`. To honor that contract without bespoke wiring per test, import `steelAwareTest` from `@gentyr/playwright-helpers/steel` (or `connectToSteelOrLaunch` for tests that orchestrate their own Browser). When `STEEL_CDP_URL` is unset the helpers fall through to the project's default launch, so the same `.demo.ts` file works for local, Fly.io, and Steel runs.
-
-**CTO Dashboard STEALTH launch**: Page 2 of the live dashboard exposes a STEALTH mode alongside LOCAL/FLY. Selecting STEALTH and pressing Enter on a scenario calls `launchStealthDemo()` in `packages/cto-dashboard-live/utils/process-runner.ts`, which resolves the Steel API key from `services.json` secrets.local, creates a Steel session via the REST API, spawns Playwright locally with `STEEL_CDP_URL` injected, and releases the Steel session on child exit. Scenarios flagged `remote_eligible=false` are blocked from STEALTH the same way they are from FLY.
-
-**Ad-hoc runs without `scenario_id`**: `RunDemoArgsSchema.scenario_id` is optional. Pass `test_file` alone to run a demo file without a registered user-feedback scenario — useful for scripts, throwaway stealth experiments against public URLs, or any case where the user-feedback MCP isn't reachable. The Zod schema requires `scenario_id` OR `test_file` (schema-level `.refine()`). Without a scenario_id: scenario-scoped prerequisites, env_vars, telemetry flags, and demo_results persistence are skipped; recordings still land under `.claude/recordings/demos/<run_id>/`; the routing/Steel/Fly machinery and `run_demo` return shape are unchanged. `scenario_id` remains required for `verify_demo_completeness` (the production promotion gate uses registered scenarios only).
-
-> Full details: [Playwright MCP Server](docs/CLAUDE-REFERENCE.md#playwright-mcp-server)
+> Full details: [Playwright MCP Server](docs/CLAUDE-REFERENCE.md#playwright-mcp-server) — routing model, batch diagnostics, project images, Steel.dev integration, telemetry, ad-hoc runs.
 
 ## Playwright Helpers Package
 
@@ -1263,31 +1080,15 @@ cd packages/playwright-helpers && npm run build
 
 ## Demo Scenario System
 
-Curated product walkthroughs mapped to personas. Managed by product-manager agent, implemented by code-writer agents. Only `gui` and `adk` consumption_mode personas can have scenarios. `*.demo.ts` naming convention enforced.
+Curated product walkthroughs mapped to personas. Managed by product-manager agent, implemented by `demo-manager` (the ONLY agent that creates or modifies `.demo.ts` files; `code-writer`, `test-writer`, `feedback-agent` are forbidden from `.demo.ts`). Only `gui` and `adk` consumption_mode personas can have scenarios. `*.demo.ts` naming convention enforced server-side. When any agent encounters demo-related work, it MUST create a `Demo Design` category task.
 
-**Demo task enforcement** (4 layers):
-- **`create_task` auto-correction**: Tasks with `demo_involved: true` automatically get `strict_infra_guidance: true` and are rerouted to the `demo-design` category. Warnings are returned in the response.
-- **`secret_run_command` blocklist**: `validateCommand()` in the secret-sync server blocks `playwright test` and `playwright show-report` commands with an error redirecting to `run_demo`/`run_tests` MCP tools.
-- **`playwright-cli-guard` scope**: The PreToolUse hook intercepts both `Bash` and `mcp__secret-sync__secret_run_command` tool calls, blocking Playwright CLI patterns on both paths.
-- **Task gate demo check**: When `demo_involved: true`, the gate agent checks task descriptions for anti-patterns: direct CLI commands via `secret_run_command`, "main tree" / "DO NOT worktree" instructions, and wrong category routing.
+**Scenario flags** (columns on `demo_scenarios` in `user-feedback.db`):
+- `headed` (default `false`) — requires display lock; `run_demo` auto-acquires when set
+- `remote_eligible` (default `true`) — when `false`, structural local override; takes precedence over every other routing rule including explicit `stealth: true`; auto-seeded `false` on migration for headed/chrome-bridge/extension scenarios
+- `stealth_required` (default `false`) — auto-enables Steel.dev stealth routing at `run_demo` time; fail-closed when Steel unhealthy or unconfigured
+- `telemetry` (default `false`) — captures browser console, network, JS errors, performance and system metrics for every run (see Demo Telemetry under Playwright MCP Server)
 
-**`headed` flag on scenarios** (`demo_scenarios.headed` column in `user-feedback.db`): Boolean field (default `false`) indicating a scenario requires a headed browser (i.e., display access). When `headed: true`, `run_demo` automatically acquires the display lock before launching (if not already held), serializing access to avoid window capture conflicts. Set via `create_demo_scenario`/`update_demo_scenario` tools on the `user-feedback` server.
-
-**`remote_eligible` flag on scenarios** (`demo_scenarios.remote_eligible` column in `user-feedback.db`): Boolean field (default `true`) indicating whether a scenario can run on Fly.io. Set `false` for scenarios that require local Chrome, extension sockets, or headed display access that cannot be replicated remotely. When `remote_eligible=false`, `resolveExecutionTarget()` in `packages/mcp-servers/src/playwright/execution-target.ts` routes the scenario to local execution unconditionally — this DB-level structural override takes precedence over every other routing rule (including chrome-bridge heuristics and explicit `stealth: true`). On migration, the DB auto-seeds existing headed and chrome-bridge/extension scenarios as `remote_eligible=0` (detected via `headed=1` or test file path patterns for `ext-`, `platform`, `/extension/`, `/platform-fixtures`). Set via `create_demo_scenario`/`update_demo_scenario` tools; filterable in `list_scenarios` via the `remote_eligible` query parameter. In the CTO Dashboard Page 2, scenarios with `remote_eligible=false` display a `local-only` tag in their metadata line and are blocked from FLY/STEALTH launch with a status-bar error message.
-
-**`stealth_required` flag on scenarios** (`demo_scenarios.stealth_required` column in `user-feedback.db`): Boolean field (default `false`). When `true`, the scenario auto-enables stealth routing at `run_demo` time — equivalent to passing `stealth: true`. Routes to Steel.dev cloud browser instead of Fly.io. Fail-closed: if Steel is not configured in `services.json`, not reachable, or at session capacity, `run_demo` returns an error. Set via `create_demo_scenario`/`update_demo_scenario` tools; filterable in `list_scenarios` via the `stealth_required` query parameter. Auto-migrated on DB open.
-
-**`telemetry` flag on scenarios** (`demo_scenarios.telemetry` column in `user-feedback.db`): Boolean field (default `false`). When `true`, enables maximum telemetry capture for every run of this scenario — browser console, network, JS errors, performance metrics, and system metrics. Can also be enabled per-run via `run_demo({ telemetry: true })`. Set via `create_demo_scenario`/`update_demo_scenario` tools. See Demo Telemetry section under Playwright MCP Server for full details. Auto-migrated on DB open.
-
-**`verify_demo_completeness` tool** (on `user-feedback` server): Machine-checkable gate for the production promotion pipeline. Queries all enabled scenarios and returns whether each has a `passed` result and a fresh recording since a given `since` ISO timestamp (and optional `branch` filter, applied only when the `branch` column exists). Returns `{ complete: boolean, total_scenarios: number, scenarios_missing_pass: DemoCompletenessScenarioStatus[], scenarios_missing_recording: DemoCompletenessScenarioStatus[] }`. Each `DemoCompletenessScenarioStatus` includes `scenario_id`, `title`, `persona_name`, `latest_result_status` (`passed`/`failed`/`none`), `latest_result_at`, `has_fresh_recording`, `recording_path`, and `last_recorded_at`. Used by the Phase 4 plan-auditor during production promotion to confirm `complete: true` before marking the task done.
-
-**Remote-ineligible exclusion from promotion**: `verify_demo_completeness` filters to `remote_eligible=1` scenarios only. Remote-ineligible demos (chrome-bridge, local-only) cannot be validated on Fly.io and are excluded from the production promotion gate.
-
-**Demo local execution guard** (`demo-local-guard.js` PreToolUse hook): Spawned agents are blocked from running demos locally (`run_tests`, `launch_ui_mode`, `run_demo` with `local: true`, `run_demo_batch` with `local: true`) without CTO approval via a deferred action. CTO interactive sessions and the CTO Dashboard GUI are exempt. Root-owned via `criticalHooks` in `protect.js`. Structural local scenarios (`remote_eligible=false`, chrome-bridge) are decided server-side at the routing layer and skipped from Fly.io batches without requiring the bypass flow.
-
-**Scenario flag protection**: Spawned agents cannot change `remote_eligible`, `enabled`, or `headed` flags on demo scenarios without CTO approval. These fields control which demos run in the production promotion pipeline. The `update_demo_scenario` and `create_demo_scenario` handlers block protected field changes for `CLAUDE_SPAWNED_SESSION=true` with instructions to file a bypass request.
-
-> Full details: [Demo Scenario System](docs/CLAUDE-REFERENCE.md#demo-scenario-system)
+All four are set via `create_demo_scenario`/`update_demo_scenario` on the `user-feedback` server. Filterable on `list_scenarios`. Spawned agents cannot change `remote_eligible`, `enabled`, or `headed` without CTO approval — these gate production promotion via `verify_demo_completeness`.
 
 ### Demo Command Decision Tree
 
@@ -1301,99 +1102,12 @@ Curated product walkthroughs mapped to personas. Managed by product-manager agen
 | "Browse tests interactively" | `/demo` (Playwright UI mode) |
 | "Register demo setup commands" | `register_prerequisite` MCP tool |
 
-**Bulk defaults** (`/demo-bulk` or `run_demo_batch`):
-headless=true, batch_size=5, slow_mo=0
+**Bulk defaults** (`/demo-bulk` or `run_demo_batch`): headless=true, batch_size=5, slow_mo=0
+**Session defaults** (`/demo-session` or `run_demo_batch` with headed): headless=false, slow_mo=800
 
-**Session defaults** (`/demo-session` or `run_demo_batch` with headed):
-headless=false, slow_mo=800
+Dev server is auto-started by `run_demo` (3-layer: registered prerequisites → `services.json` `devServices` → `pnpm run dev` fallback). Agents must NOT manually call `secret_dev_server_start` before `run_demo`.
 
-Video recording is automatic in headed demo modes on macOS and in remote Fly.io demos. Scenario videos: `.claude/recordings/demos/{scenarioId}.mp4`
-
-**Window recording via ScreenCaptureKit** (headed demos, macOS only): `run_demo` spawns Playwright first, then waits for Chrome to appear (up to 30s via AppleScript `waitForChromeWindow`), then starts the `WindowRecorder` Swift CLI and screenshot capture. Chrome is maximized via `--start-maximized` (set by `DEMO_MAXIMIZE=1`) — native macOS fullscreen (`AXFullScreen`) is NOT used because it intercepts the Escape key at the OS level, preventing the demo interrupt feature from working. `startWindowRecorder()` always passes `--skip-snapshot` to the `WindowRecorder` binary because the recorder starts after Chrome is already running. The `--skip-snapshot` flag instructs the binary to match ANY existing window (not just newly-appearing ones), fixing the prior bug where Chrome was excluded because it already existed in the window list when the recorder launched. Uses `SCContentFilter(desktopIndependentWindow:)` to capture the specific Chromium window even when occluded or in another Space — recording quality is identical to fullscreen since the recorder captures window pixels directly, not the screen. The recorder streams H.264 frames to an MP4 via AVAssetWriter. Window recorder PID and output path are tracked in `DemoRunState` (`window_recorder_pid`, `window_recording_path`). On demo completion, the recording is persisted via `persistScenarioRecording()`; temp files are cleaned up automatically. `stop_demo` and `check_demo_result` also handle window recorder teardown gracefully: SIGINT is sent first; if the process exits cleanly within 10s, the MP4 is persisted; if SIGKILL is required (process did not exit in time), persistence is skipped because SIGKILL prevents AVAssetWriter from writing the moov atom (corrupted MP4). All teardown paths gate persistence on the recorder's clean exit. `check_demo_result` returns `recording_path` and `recording_source` (`'window' | 'none'`) indicating whether a recording was persisted.
-
-**Window recording via Xvfb + ffmpeg** (remote Fly.io demos — when headed): `remote-runner.sh` conditionally starts Xvfb and ffmpeg only when `DEMO_HEADLESS != 1`. When active: Xvfb starts on `:99` at `1920x1080` (configurable via `GENTYR_RECORDING_RESOLUTION`), `DISPLAY=:99` and `DEMO_MAXIMIZE=1` are exported, then ffmpeg captures the display to `/app/.recording.mp4` at `GENTYR_RECORDING_FPS` fps (default 25). When `DEMO_HEADLESS=1` (the default for remote runs), Xvfb and ffmpeg are skipped entirely and Playwright runs headless. In both modes a comprehensive `trap cleanup EXIT` fires on ANY exit (including early failures like git clone) and: (1) writes `/app/.exit-code` immediately so the proactive artifact poll can detect completion, (2) stops ffmpeg gracefully if running (SIGINT → up to 10s wait → SIGKILL, ensuring the moov atom is written), (3) stops Xvfb if running, (4) copies whatever artifacts exist to `/app/.artifacts/` (even partial logs from early failures), and (5) sleeps 60s for MCP artifact retrieval before the machine is destroyed. Ten `setup` progress events are emitted to the progress JSONL file (created at script start, not after Playwright launches) at key phases (clone_start, clone_done, install_start, install_done, prerequisites_start, prerequisites_done, devserver_start, devserver_ready, test_start) to prevent the stall detector from timing out during long setup steps. A background heartbeat process additionally emits `install_progress` events every 30 seconds during `pnpm install` to keep the stall detector alive during the 2–4 minute install phase (cold machines with 1600+ packages emit no output between `install_start` and `install_done`). The MCP polling loop in `server.ts` also attempts a last-chance artifact pull when the machine dies unexpectedly — if an exit-code file is recovered, the demo result is resolved to `passed` or `failed` instead of `unknown`. `fly-runner.ts` pulls `recording.mp4` and `ffmpeg.log` as individual artifacts. `check_demo_result` for remote runs persists the recording via `persistScenarioRecording()`, extracts failure frames from the last 3 seconds on failure, and returns `recording_path`, `recording_source: 'window'`, and `failure_frames` — identical fields to local macOS recording. If Xvfb or ffmpeg fails to start, the runner falls back to headless execution with no recording (`recording_source: 'none'`).
-
-**Periodic screenshot capture** (headed demos — macOS local and remote Fly.io): Local macOS demos: `run_demo` calls `getChromeWindowId()` (uses `swift -e` + CoreGraphics `CGWindowListCopyWindowInfo` to find Chrome's CGWindowID) and passes the result to `startScreenshotCapture()`. When a `windowId` is available, `screencapture` is invoked with `-l <windowId>` to capture only that specific Chrome window instead of the full screen, producing clean window-only screenshots at the display's native resolution. `startScreenshotCapture()` runs `screencapture -x` every 3 seconds throughout the demo. Screenshots are stored in `DemoRunState` as `screenshot_dir`, `screenshot_start_time`, and `screenshot_interval`. Remote Fly.io demos: `check_demo_result` calls `extractScreenshotsFromRecording()` to extract frames from the pulled recording via ffmpeg at 3-second intervals, renames them to `screenshot-XXXX.png` (XXXX = elapsed seconds, zero-padded), cleans stale screenshots from prior runs, and stores them in `.claude/recordings/demos/{scenarioId}/screenshots/`. Both paths: `check_demo_result` returns `screenshot_hint` (path pattern for retrieving screenshots) and `analysis_guidance` (REQUIRED instructions for agents to analyze captured screenshots and verify UI state matches user requirements). When a demo fails with video recording, failure frames are auto-extracted from 3 seconds before the failure end using `extract_video_frames` (ffprobe+ffmpeg at 0.5s intervals) and returned as `failure_frames` in the result. `check_demo_result` also returns `duration_seconds` for the total demo run time. The `get_demo_screenshot` MCP tool retrieves screenshots by timestamp and works identically for local and remote runs; `extract_video_frames` extracts frames from any recording around a given timestamp.
-
-**Automatic Screenshot Reminder** (`screenshot-reminder.js` PostToolUse hook): Fires on every tool call. When a tool response contains a screenshot file path (e.g., `[Screenshot saved: /path/to/file.png]`, `"file_path": "...png"`, or `"screenshot_hint": "..."`), injects a `hookSpecificOutput.additionalContext` reminder instructing the agent to use the `Read` tool to view the screenshot before proceeding. Fast path: exits in under 1ms when no screenshot path is present (regex-only check). Skips reminder when the current tool is `Read` (agent is already viewing a screenshot). Caps at 5 paths per response. Registered in the global empty-matcher PostToolUse block in `settings.json.template`.
-
-**Screenshot and recording cleanup** (30-day retention): The `screenshot_cleanup` runIfDue block in `hourly-automation.js` (24h cooldown) walks `.claude/screenshots/` and `.claude/recordings/demos/`, removes `.png` and `.mp4` files whose `mtime` is older than 30 days, and prunes empty directories. Non-fatal on any I/O error. Empty parent directories are removed after their contents are pruned.
-
-**Escape key interrupt** (headed demos): Pressing Escape during a headed demo triggers a clean interrupt. The persona overlay immediately shows "Demo Interrupted — interact freely" (updated directly by the Chrome extension content script for instant visual feedback). All in-progress helper actions in `playwright-helpers` (cursor highlight, terminal/editor tab operations, persona overlay interactions) check `isInterrupted()` and exit early. On the server side, the Playwright MCP server detects the interrupt (via progress JSONL event or signal file — see Interrupt mechanism below), discards any in-progress recording (window recorder is killed without persisting the MP4), keeps the browser alive for manual inspection, and returns `status: 'interrupted'` with `interrupted_at` and `interrupt_reason` fields from `stopDemo`/`check_demo_result`. The associated task (if any) is paused via `submit_bypass_request` so the parent persistent task monitor receives a signal to wait rather than retrying.
-
-**Interrupt mechanism**: Two paths deliver the interrupt signal, one framework-level and one in-process:
-
-- **Framework-level (automatic, no target project changes)**: The gentyr Chrome extension content script (`tools/chrome-extension/extension/assets/demo-interrupt-listener.js`) detects Escape keydown, updates the persona overlay DOM directly for instant visual feedback, then sends a `demo_interrupt` message to the service worker (`service-worker-loader.js`). The service worker forwards it via `chrome.runtime.sendNativeMessage` to the native host (`host.cjs`), which writes a signal file at `/tmp/gentyr-demo-interrupt.signal`. The Playwright MCP server background monitor (5s poll interval) detects the file, consumes it, sets `interruptDetectedAt`, appends a `demo_interrupted` event to the progress JSONL with `source: 'escape_key_extension'`, and the existing interrupt handling takes over. Any stale signal file from a previous demo is deleted at demo start to prevent false interrupts.
-
-- **In-process (faster, requires target project wiring)**: `page.exposeFunction('__gentyrDemoInterrupt')` bridge + JSONL progress file. The browser-side listener calls `window.__gentyrDemoInterrupt()` which triggers the Node-side handler immediately (no 5s polling delay). Two setup paths: (1) `enableDemoInterrupt(page)` from `@gentyr/playwright-helpers` (called automatically by `injectPersonaOverlay` in demo mode), and (2) `setupDemoInterrupt(context)` from `.claude/hooks/lib/demo-interrupt-setup.js` — a standalone module for target projects that auto-wires all pages in a BrowserContext. Target projects should call `setupDemoInterrupt(context)` once in their Playwright fixtures after creating the context. The content script attempts the in-process path first (via injected inline script) and falls through to the extension path if CSP blocks it.
-
-Agents handling `status: 'interrupted'` results should NOT spawn repair agents — the CTO will resolve the bypass request to resume.
-
-Dev server is auto-started if not running — no manual setup needed.
-
-### Demo Prerequisites
-
-Register setup commands that must run before demos. Prerequisites are idempotent: if a health check passes, the setup command is skipped.
-
-**3 scopes:**
-- `global` — runs before all demos
-- `persona` — runs before demos for a specific persona
-- `scenario` — runs before a specific scenario
-
-**Execution order:** global → persona → scenario, sorted by `sort_order` within each scope.
-
-**Health checks:** Optional verification command. If exit 0, setup command is skipped entirely. For `run_as_background` prerequisites (e.g., dev servers), the health check is polled every 2s until ready or timeout. **Port-aware health checks are mandatory** — use `${PORT:-3000}` instead of hardcoded `localhost:3000`. GENTYR injects `PORT` from the worktree-allocated `PLAYWRIGHT_WEB_PORT` so the same prerequisite works in both main tree (port 3000) and worktrees (port 3100+).
-
-**CRUD tools** (on `user-feedback` server): `register_prerequisite`, `update_prerequisite`, `delete_prerequisite`, `list_prerequisites`.
-
-**Execution tool** (on `playwright` server): `run_prerequisites` — automatically called by `run_demo`, `run_demo_batch`, `preflight_check`, and `run_auth_setup`.
-
-**Dev server lifecycle is fully automated.** `run_demo` handles dev server startup in 3 layers: (1) registered prerequisites, (2) auto-start from `services.json` `devServices` config with secrets resolved from 1Password, (3) fallback `pnpm run dev`. Agents MUST NOT manually call `secret_dev_server_start` before `run_demo` — it handles this automatically. If the auto-start fails, register a prerequisite rather than adding manual steps.
-
-**Auto-set `PLAYWRIGHT_BASE_URL`**: When `ensureDevServer()` confirms the dev server is healthy, `run_demo` and `run_demo_batch` auto-inject `PLAYWRIGHT_BASE_URL` so Playwright skips its `webServer` startup. No `base_url` arg needed — defaults to `http://localhost:3000` (main tree) or the worktree-allocated `PLAYWRIGHT_WEB_PORT` when running from a worktree.
-
-**Prerequisite stall detection**: Foreground prerequisites are killed after 120 seconds of no stdout/stderr. Background demo processes are killed after 45 seconds of silence (configurable via `stall_timeout_ms` on `run_demo`, 0 to disable) following a 30-second startup grace period for local demos; remote Fly.io demos default to 300 seconds (5 minutes) to accommodate the 2–4 minute pnpm install phase on cold machines. Stall detection tracks stdout, stderr, AND JSONL progress events — any output resets the timer. Use `run_as_background: true` with a health check for long-silent commands. Demos must emit `console.warn('[demo-progress] ...')` checkpoints or break long operations into `test.step()` blocks — see "Progress Checkpoints" in the demo-manager agent definition. For demos with slow fixture setup (bridge server, extension rebuild), pass `stall_timeout_ms: 120000` or higher.
-
-**Prerequisite timeout defaults**: `timeout_ms` defaults to 60s (raised from 30s) — this is the total polling budget for background service health checks. `health_check_timeout_ms` defaults to 5s per attempt and is capped at 60s (raised from 30s). For services with long startup (code-server postinstall, database init), set `timeout_ms: 300000` (5 min). Never increase timeouts as a fix for `ECONNREFUSED` — the service is not starting at all, not starting slowly.
-
-**Infrastructure readiness detection**: `run_demo_batch` calls `checkInfraReadiness()` before starting the batch and returns `missing_prerequisite_warnings` when scenarios reference localhost URLs (via `env_vars`) that have no registered background prerequisite at any scope. `preflight_check` runs the same check as step 0.6 (`infrastructure_readiness`) and surfaces warnings before any test execution. Use these to proactively discover missing prerequisites rather than diagnosing ECONNREFUSED failures after the fact.
-
-**Demo execution step ordering**: `run_demo`, `run_demo_batch`, and `preflight_check` execute steps in this order: (1) validate prerequisites (fast credential check), (2) worktree freshness gate (auto-sync if behind), (3) verify dist artifacts, (4) execute registered prerequisites (starts dev server), (5) ensure dev server healthy. Steps 2-3 run BEFORE step 4 to prevent the dev server from dying during the 45-second worktree sync window. `preflight_check` additionally runs step 0.6 (infrastructure readiness) before step 1. `run_demo_batch` returns `missing_prerequisite_warnings` alongside the batch start confirmation when gaps are detected.
-
-**Demo crash diagnostics**: `check_demo_result` returns `stderr_tail` (last 5KB of stderr) and preserves `progress_file` and `stdout_tail` across MCP server restarts. When a demo exits with `status: "unknown"`, stderr is used as fallback `failure_summary`. The stall detector persists its failure_summary to `demo-runs.json` before sending SIGTERM, ensuring diagnostic data survives MCP restarts. **Periodic crash-safe persistence**: The background monitor persists `stdout_tail` and `stderr_tail` to `demo-runs.json` every 30 seconds during demo runs, so if the MCP server crashes mid-demo, the most recent stdio data is available for `check_demo_result` to recover. An `uncaughtException` handler also calls `persistDemoRuns()` as a last resort before exit.
-
-**`demoDevModeEnv`**: Optional `Record<string, string>` in `services.json` — env vars injected into both demo child processes (when dev server is healthy) and prerequisite execution environments. Applied after 1Password secrets, before `extra_env`. Example: `"E2E_REBUILD_EXTENSION": "false"`.
-
-### Automated Demo Validation
-
-6-hour automated cycle that runs all enabled demo scenarios headless and spawns repair agents for failures.
-
-**Opt-in:** Set `demoValidationEnabled: true` in `.claude/state/automation-config.json`.
-
-**Flow:**
-1. Query enabled scenarios from `user-feedback.db`
-2. Run global prerequisites
-3. Execute each scenario headless (`DEMO_HEADLESS=1, DEMO_SLOW_MO=0`); scenario `env_vars` are merged into the execution environment; `op://` references in `env_vars` are resolved via 1Password before merging
-4. Persist results to `.claude/state/demo-validation-history.json` (last 100 runs)
-5. Spawn `demo-manager` repair agents (max 3) for failures in isolated worktrees; repair prompts include prerequisite context queried from `user-feedback.db`
-6. Report failures to deputy-CTO via `agent-reports`
-
-ADK-category scenarios are skipped (require replay data). Cooldown: `demo_validation` (default 360 minutes / 6 hours).
-
-### Demo-Manager Agent
-
-Sole authority for demo lifecycle work. Handles prerequisite registration, scenario creation, `.demo.ts` implementation, preflight, execution, video recording, debugging, repair, AND persona scenario planning/scaffolding. Routable via the `Demo Design` category in `todo.db`.
-
-**When to assign to DEMO-MANAGER:**
-- Creating or modifying `.demo.ts` files
-- Registering or updating demo prerequisites
-- Planning persona feedback feature scenarios (scaffolding prerequisites, coverage audits)
-- Repairing failed demo scenarios
-- Any demo-related work that other agents encounter
-
-**Rules:** Only modifies `.demo.ts` files and demo configuration. Does NOT commit (project-manager handles git). Other agents (`code-writer`, `test-writer`, `feedback-agent`) are explicitly forbidden from modifying `.demo.ts` files. When any agent encounters demo-related work, it MUST create a `Demo Design` category task.
-
-**Failure-triggered automation:** A PostToolUse hook on `check_demo_result`, `check_demo_batch_result`, and `run_demo` detects failures, deduplicates against in-flight repairs, and spawns demo-manager agents in isolated worktrees. Repair prompts are enriched with prerequisite context (global, persona, and scenario-scoped prerequisites queried from `user-feedback.db`) so agents diagnose prerequisite failures before modifying `.demo.ts` files. The `run_demo` hook handles immediate failures (e.g., prerequisite failure before test execution begins), with title and test file fallback lookup from `user-feedback.db` when the tool response lacks them. **Repair prompt enrichments**: `failure_classification` (from batch diagnostic enrichment) is passed through to repair prompts so agents know the classified failure mode upfront. When `error` contains `ECONNREFUSED`/`connection refused`/`ERR_CONNECTION`, an `infraGuidance` block is injected with step-by-step instructions to register a background prerequisite rather than patching the `.demo.ts` file. **Skipped scenario accountability**: On completed batches with skipped scenarios, a `skippedContext` block is injected into `additionalContext` mandating the agent either fix the skip reason or create a DEMO-MANAGER task — it cannot silently ignore skipped scenarios. When escalation is also triggered, `skippedContext` is prepended to the escalation message (single stdout write prevents dual output).
+> Full details: [Demo Scenario System](docs/CLAUDE-REFERENCE.md#demo-scenario-system) — schema, env_vars validation, demo task enforcement (4 layers), `verify_demo_completeness` gate, window recording (ScreenCaptureKit/Xvfb), screenshot capture and reminders, escape-key interrupt (framework + in-process paths), demo prerequisites (3 scopes, stall detection, timeouts), automated demo validation cycle, demo-manager failure-triggered automation.
 
 ## Chrome Browser Automation
 
@@ -1600,69 +1314,53 @@ Emergency bypass for directly merging staging to main without quality gates. CTO
 
 ## Plan Orchestrator MCP Server
 
-The plan-orchestrator MCP server (`packages/mcp-servers/src/plan-orchestrator/`) manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db` and the persistent task system. State is in `.claude/state/plans.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
+`packages/mcp-servers/src/plan-orchestrator/` manages structured execution plans with phases, tasks, substeps, dependencies, and cross-DB integration with `todo.db` and the persistent task system. State at `.claude/state/plans.db` (SQLite, WAL). Tier 2 (per-session stdio). Plan/plan-task lifecycle transitions, hierarchical pause propagation, and plan-manager revival are documented in [Session Lifecycle](docs/SESSION-LIFECYCLE.md#plan-lifecycle).
 
 **22 tools**: `create_plan`, `get_plan`, `list_plans`, `update_plan_status`, `add_phase`, `update_phase`, `add_plan_task`, `update_task_progress`, `link_task`, `add_substeps`, `complete_substep`, `add_dependency`, `get_spawn_ready_tasks`, `plan_dashboard`, `plan_timeline`, `plan_audit`, `plan_sessions`, `force_close_plan`, `check_verification_audit`, `verification_audit_pass`, `verification_audit_fail`, `get_plan_blocking_status`.
 
-**`force_close_plan`**: CTO-only tool (requires `cto_bypass: true`). Cancels a plan and cascades by default — auto-cancels the plan's manager persistent task and all plan-task persistent tasks in one call. Set `cascade: false` to skip cascading and return persistent task IDs for manual cancellation. Irreversible.
+**7-table SQLite schema**: `plans`, `phases`, `plan_tasks`, `substeps`, `dependencies`, `state_changes`, `plan_audits`. Cycle detection on dependency graph. Progress rollup substep → task → phase → plan.
 
-**7-table SQLite schema**: `plans`, `phases`, `plan_tasks`, `substeps`, `dependencies`, `state_changes`, `plan_audits`. Cycle detection on dependency graph. Progress rollup from substep → task → phase → plan.
-
-**Plan completion gate enforcement**: Multi-layer protection preventing plans from being marked "completed" when verification phases were skipped:
+**Plan completion gate enforcement** — multi-layer protection preventing plans from being marked "completed" when verification phases were skipped:
 - **Skip guard**: `update_task_progress` with `status: "skipped"` requires `skip_reason` and `skip_authorization` (`cto`, `blocked_external`, `superseded`). Tasks in gate phases cannot be skipped (server-side rejection).
-- **Auto-completion cascade**: When ALL tasks in a phase are skipped, the phase becomes `skipped` (not `completed`). Plans with any skipped required phase do NOT auto-complete — they require explicit `update_plan_status` with `force_complete: true` + `completion_note`.
-- **Phase metadata**: `phases` table has `required` (default 1) and `gate` (default 0) columns. Set `gate: true` on verification/proof phases to block any task skipping. Set `required: false` on optional phases that don't block plan completion.
-- **Stop hook escape hatch**: Plan-managers blocked by external dependencies can pause their persistent task, and the stop hook will allow exit instead of pressuring them to skip tasks.
-- **`update_plan_status` validation**: Transitioning to `completed` requires all phases to be resolved. If any phase is skipped, `force_complete: true` with `completion_note` is required.
+- **Auto-completion cascade**: When ALL tasks in a phase are skipped, the phase becomes `skipped` (not `completed`). Plans with any skipped required phase do NOT auto-complete — `update_plan_status` requires `force_complete: true` + `completion_note`.
+- **Phase metadata**: `phases` has `required` (default 1) and `gate` (default 0) columns. `gate: true` blocks task skipping. `required: false` makes a phase optional.
+- **Stop hook escape hatch**: Plan-managers blocked by external deps can pause their persistent task; the stop hook allows exit instead of pressuring them to skip tasks.
 
-**Verification audit gate**: Independent auditor agents verify plan task completion claims before they can be marked complete. `verification_strategy` is **mandatory** for all plan tasks — `add_plan_task` and inline tasks in `create_plan` are rejected by the server when `verification_strategy` is absent. Tasks with this field enter `pending_audit` instead of `completed` when marked done. A Sonnet-tier `plan-auditor` agent spawns in the `audit` lane (5 concurrent limit, signal-excluded — auditors cannot receive messages from plan managers), verifies the strategy against actual artifacts, and renders a pass/fail verdict via `verification_audit_pass` or `verification_audit_fail`. On pass: task transitions to `completed` and the normal phase/plan cascade runs. On fail: task reverts to `in_progress` for the plan manager to investigate. CTO bypass: `update_task_progress(status: 'completed', force_complete: true)` skips the audit gate. The `plan-persistent-sync.js` hook also routes through `pending_audit` when `verification_strategy` exists. Stale `pending_audit` tasks (auditor died) are detected by `session-reaper.js` and re-enqueued via `buildAuditorSessionSpec({ taskType: 'plan' })`. Stale tasks can also be re-attempted by calling `update_task_progress(status: 'completed')` again or force-completed by the CTO. `plan_audits` table tracks audit history (verdicts, evidence, retry counts). **Direct `pending_audit` transitions are blocked** — `update_task_progress(status: 'pending_audit')` returns an error; tasks must use `status: 'completed'` and let the gate route automatically, otherwise no auditor is spawned and the task gets stuck.
+**Verification audit gate**: `verification_strategy` is **mandatory** for all plan tasks — `add_plan_task` and inline tasks in `create_plan` are rejected without it. Tasks with this field enter `pending_audit` instead of `completed` when marked done. A Sonnet-tier `plan-auditor` agent spawns in the `audit` lane (5 concurrent, signal-excluded), verifies the strategy against actual artifacts, renders pass/fail verdict via `verification_audit_pass` / `verification_audit_fail`. On pass: `pending_audit → completed`, cascade runs. On fail: reverts to `in_progress`. CTO bypass: `update_task_progress(status: 'completed', force_complete: true)`. Stale `pending_audit` tasks (auditor died) are detected by `session-reaper.js` and re-enqueued via `buildAuditorSessionSpec({ taskType: 'plan' })`. **Direct `pending_audit` transitions are blocked** — must use `status: 'completed'` and let the gate route automatically. `plan_audits` table tracks verdicts, evidence, retry counts.
 
-**3 verification audit tools** (on `plan-orchestrator` server):
-- `check_verification_audit` — read-only poll: returns verdict status (pending/pass/fail), evidence, and attempt number
-- `verification_audit_pass` — auditor-only: marks audit passed, transitions task `pending_audit → completed`, runs cascade
-- `verification_audit_fail` — auditor-only: marks audit failed, transitions task `pending_audit → in_progress`
+**3 verification audit tools**: `check_verification_audit` (read-only poll), `verification_audit_pass` (auditor-only), `verification_audit_fail` (auditor-only).
 
-**Plan audit spawner hook** (`plan-audit-spawner.js`, PostToolUse): Fires on `update_task_progress`. When the response shows `status: 'pending_audit'`, enqueues a Sonnet-tier `plan-auditor` in the `audit` lane with 8-minute TTL via `buildAuditorSessionSpec({ taskType: 'plan' })`. The auditor's prompt includes the task title and `verification_strategy`.
+**`force_close_plan`**: CTO-only (`cto_bypass: true`). Cancels plan and cascade-cancels the plan manager + all plan-task persistent tasks. `cascade: false` returns IDs for manual cancellation. Irreversible.
 
-**Plan-persistent task marriage schema**: Plans and persistent tasks are linked at two levels. The `plans` table carries `persistent_task_id` (the plan manager's own persistent task), `manager_agent_id`, `manager_pid`, `manager_session_id`, and `last_heartbeat`. The `plan_tasks` table carries `persistent_task_id` (the persistent task executing that plan step) and `category_id`. Plan status now includes `cancelled` in addition to `draft`, `active`, `paused`, `completed`, and `archived`. Plan task status now includes `paused` (added by hierarchical pause propagation — a plan task is set to `paused` when its linked persistent task is paused, blocking downstream dependencies). `add_plan_task` accepts an optional `category_id` for routing.
+**Plan-persistent marriage**: `plans` carries `persistent_task_id` (plan manager's own), `manager_agent_id`, `manager_pid`, `manager_session_id`, `last_heartbeat`. `plan_tasks` carries `persistent_task_id` (the executing task) and `category_id`. Status set includes `cancelled` and `paused` (the latter set by pause propagation).
 
-**Hierarchical pause propagation** (`lib/pause-propagation.js`): When a persistent task is paused (via bypass request or stop-continue hook), three functions propagate the pause up to the plan layer and back: `propagatePauseToPlan(persistentTaskId, pauseReason, bypassRequestId)` — updates the linked plan task to `paused`, assesses downstream impact (blocked tasks, gate phases, parallel paths), auto-pauses the plan itself when blocking level is `plan`, and inserts a `blocking_queue` entry; `propagateResumeToPlan(persistentTaskId)` — resumes the plan task, resolves active `blocking_queue` entries, and auto-resumes the plan if no other tasks remain paused; `assessPlanBlocking(planId)` — read-only snapshot of which tasks are paused, what work is blocked, and what parallel work is still available. Wired into `persistent-task-spawner.js` (pause handler) and `submit_bypass_request` / `resolve_bypass_request` in the agent-tracker server. Non-fatal throughout: if the plan linkage is absent or the DB is missing, functions return `{ propagated: false }` and callers proceed normally.
+**Cross-DB integration**: `add_plan_task` optionally creates a corresponding `todo.db` task and links via `todo_task_id`. `plan-merge-tracker.js` PostToolUse hook detects `gh pr merge` and auto-advances linked plan tasks to `completed`, cascading `ready` status to unblocked dependents.
 
-**`get_plan_blocking_status`** (on `plan-orchestrator` server): Returns whether a plan is fully or partially blocked, which plan tasks are paused with their downstream blocked task IDs, what parallel work is still available, and active `blocking_queue` items. Plan managers call this each cycle to decide whether to continue with parallel work or wait for the CTO to resolve a bypass request.
-
-**Cross-DB integration**: `add_plan_task` optionally creates a corresponding `todo.db` task and links them via `todo_task_id`. `plan-merge-tracker.js` hook detects `gh pr merge` calls (PostToolUse Bash) and auto-advances linked plan tasks to `completed`, then cascades `ready` status to unblocked dependents.
-
-**Plan-persistent sync hook** (`plan-persistent-sync.js`, PostToolUse): Fires on `complete_persistent_task`. When the completed persistent task has `plan_task_id` in its metadata, auto-marks the linked plan task as `completed`, cascades phase completion when all tasks in the phase are done (phases with ALL tasks skipped become `skipped` not `completed`), and cascades plan completion only when all phases are `completed` with no skipped required phases. Non-fatal — always exits 0. **Cross-check guard**: Before cascading, verifies that the plan task's linked `todo_task_id` (if set) is already `completed` in `todo.db`. If the linked todo task is still `pending`, `in_progress`, or `pending_audit`, the cascade is blocked and `additionalContext` warns the agent — preventing plan task completion from outrunning the actual work completion.
-
-**Plan activation spawner hook** (`plan-activation-spawner.js`, PostToolUse): Fires on `update_plan_status`. When a plan transitions to `active` and has no `persistent_task_id`, atomically creates a persistent task for the plan-manager, links it to the plan (TOCTOU-safe via `UPDATE ... WHERE persistent_task_id IS NULL`), and enqueues the monitor in the `persistent` lane at `critical` priority. This ensures plans always have an automated orchestrator driving phase advancement. If the enqueue is blocked (focus mode, etc.), the persistent task exists and will be picked up when the block clears. Emits `plan_manager_spawned` audit event.
-
-**Plan orphan detection** (`hourly-automation.js`, gate-exempt, 10-minute cooldown): Detects active plans whose plan-manager persistent task is missing, dead, or in a terminal state (`completed`/`cancelled`/`failed`), or permanently blocked (`paused` with `do_not_auto_resume` flag). Three revivable orphan scenarios each create a new plan-manager persistent task (without the `do_not_auto_resume` flag), link it to the plan (TOCTOU-safe), and enqueue it at `critical` priority: (1) plan has no `persistent_task_id` (activation hook failed), (2) `persistent_task_id` points to a nonexistent task, (3) `persistent_task_id` points to a terminal-state task (plan-manager completed prematurely). One non-revivable scenario: (4) `persistent_task_id` points to a `paused` task with `do_not_auto_resume=true` (crash-loop circuit breaker gave up permanently) — in this case the plan itself is auto-paused via `UPDATE plans SET status = 'paused'` rather than creating a new task, breaking the zombie-manager proliferation loop. The CTO must resolve the blocked persistent task before the plan can resume. Plans with `active` persistent tasks are handled by the existing persistent monitor revival system (Step 1c orphan catch-all in `drainQueue()`). Plans with `paused` persistent tasks without `do_not_auto_resume` are handled by `persistent_stale_pause_resume`. Emits `plan_manager_revived` audit event.
-
-**Plan-manager env var preservation on revival**: When a plan-manager monitor crashes or is resumed, all revival/spawn paths extract `plan_id` from the persistent task's `metadata` JSON and inject `GENTYR_PLAN_MANAGER=true` and `GENTYR_PLAN_ID` into the session's environment. This is applied in: `requeueDeadPersistentMonitor()` (session-queue.js), `buildPersistentMonitorRevivalPrompt()` (persistent-monitor-revival-prompt.js), `persistent-task-spawner.js` (resume/amend hook), and `reviveOrphanedPlan()` (hourly-automation.js). The revival prompt also includes plan-manager role context so the revived monitor knows it must follow plan-manager agent instructions. The `stop-continue-hook.js` plan completion gate reads `GENTYR_PLAN_MANAGER` and `GENTYR_PLAN_ID` to verify plan completion before allowing the monitor to stop.
+**Plan-manager env var preservation on revival**: When a plan-manager monitor crashes or is resumed, all revival/spawn paths extract `plan_id` from the persistent task's `metadata` JSON and inject `GENTYR_PLAN_MANAGER=true` + `GENTYR_PLAN_ID`. Applied in `requeueDeadPersistentMonitor()`, `buildPersistentMonitorRevivalPrompt()`, `persistent-task-spawner.js`, and `reviveOrphanedPlan()`. The `stop-continue-hook.js` plan completion gate reads these env vars to verify plan completion before allowing exit.
 
 **6 hooks registered in `settings.json.template`**:
 - `plan-briefing.js` (SessionStart) — briefs the active session on current plan state
 - `plan-work-tracker.js` (PostToolUse `summarize_work`) — records agent work against plan tasks
 - `plan-merge-tracker.js` (PostToolUse Bash) — detects PR merges and auto-completes plan tasks
-- `plan-persistent-sync.js` (PostToolUse) — syncs persistent task completion back to the linked plan task; routes through `pending_audit` when `verification_strategy` exists
-- `plan-activation-spawner.js` (PostToolUse) — spawns plan-manager persistent task on plan activation
+- `plan-persistent-sync.js` (PostToolUse) — syncs persistent task completion back to plan task; routes through `pending_audit` when `verification_strategy` exists; cross-check guard verifies linked todo task is `completed` before cascading
+- `plan-activation-spawner.js` (PostToolUse) — atomically creates plan-manager persistent task on plan activation (TOCTOU-safe), enqueues at `critical`
 - `plan-audit-spawner.js` (PostToolUse `update_task_progress`) — spawns independent auditor on `pending_audit` status
+
+All hooks are in the `criticalHooks` list in `cli/commands/protect.js` (root-owned when protection enabled).
 
 **5 slash commands**: `/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`, `/plan-sessions`.
 
-**CTO Dashboard integration**: 5 sections (`plans`, `plan-progress`, `plan-timeline`, `plan-audit`, `plan-sessions`) rendered via `PlanSection`, `PlanProgressSection`, `PlanTimelineSection`, `PlanAuditSection`, `PlanSessionSection` components. Data read from `plans.db` via `packages/cto-dashboard/src/utils/plan-reader.ts`; session correlation data from 7 sources via `packages/cto-dashboard/src/utils/plan-session-reader.ts`.
-
-All 4 hooks are in the `criticalHooks` list in `cli/commands/protect.js` and are root-owned when protection is enabled.
+**CTO Dashboard integration**: 5 sections (`plans`, `plan-progress`, `plan-timeline`, `plan-audit`, `plan-sessions`) via `PlanSection`/`PlanProgressSection`/`PlanTimelineSection`/`PlanAuditSection`/`PlanSessionSection`. Data read from `plans.db` via `packages/cto-dashboard/src/utils/plan-reader.ts`; session correlation from 7 sources via `plan-session-reader.ts`.
 
 ### Plan Manager and Plan Updater Agents
 
-**`plan-manager` agent** (`agents/plan-manager.md`): Opus-tier. A specialized persistent task monitor that executes a structured plan by spawning persistent tasks for each plan step. Runs as a persistent task itself (spawned via the persistent task system with `GENTYR_PLAN_MANAGER=true`, `GENTYR_PLAN_ID`, and `GENTYR_PERSISTENT_TASK_ID` env vars). On each cycle: checks ready tasks via `get_spawn_ready_tasks`, creates and activates persistent tasks for each ready plan task that lacks a `persistent_task_id`, monitors running persistent tasks via `inspect_persistent_task`, checks plan blocking state via `get_plan_blocking_status` (identifies which tasks are paused and whether parallel work is available), verifies auto-sync from `plan-persistent-sync.js` hook, processes CTO amendments, and checks for plan completion. Does NOT create standalone tasks in `todo.db`, edit files, or run Bash commands. Spawns `plan-updater` sub-agents for explicit progress sync.
+**`plan-manager` agent** (`agents/plan-manager.md`, Opus-tier): Specialized persistent task monitor that executes a structured plan by spawning persistent tasks for each plan step. Runs as a persistent task itself with `GENTYR_PLAN_MANAGER=true`, `GENTYR_PLAN_ID`, `GENTYR_PERSISTENT_TASK_ID` injected. Each cycle: `get_spawn_ready_tasks` → create+activate persistent tasks for ready plan tasks lacking `persistent_task_id` → `inspect_persistent_task` for running monitors → `get_plan_blocking_status` (decide parallel work vs wait for CTO) → verify auto-sync → process amendments → check completion. Does NOT create standalone `todo.db` tasks, edit files, or run Bash. Spawns `plan-updater` sub-agents for explicit progress sync.
 
-**Plan task granularity rule**: Each plan task must represent a persistent-task-grade objective — work requiring multiple sessions. If a task can be completed by a single category sequence (one task-runner session), it should be a substep inside a plan task, NOT a standalone plan task.
+**Plan task granularity rule**: Each plan task must represent a persistent-task-grade objective — work requiring multiple sessions. If completable by a single category sequence (one task-runner session), it should be a substep inside a plan task, NOT a standalone plan task.
 
-**`plan-updater` agent** (`agents/plan-updater.md`): Haiku-tier lightweight sync agent. Given a `plan_task_id` and `plan_id`, reads completed standalone tasks for the linked persistent task, maps them to plan substeps by title/description matching, calls `complete_substep` for each match, and updates plan task progress. Completes in under 30 seconds. Does not create tasks or edit files.
+**`plan-updater` agent** (`agents/plan-updater.md`, Haiku-tier): Given `plan_task_id` and `plan_id`, reads completed standalone tasks for the linked persistent task, maps to plan substeps by title/description matching, calls `complete_substep` for each match, updates plan task progress. Completes in <30s. No tasks, no edits.
 
-**`plan-auditor` agent** (`agents/plan-auditor.md`): Sonnet-tier independent verification agent. Spawned automatically when a plan task with `verification_strategy` enters `pending_audit`. Verifies completion claims against actual artifacts (files, test output, PR status, directory contents). Renders exactly one verdict via `verification_audit_pass` or `verification_audit_fail`, then exits. Runs in the `audit` lane — cannot receive signals or messages from the plan manager. 8-minute TTL. Does not edit files or create tasks. Stale `plan-auditor` sessions in the `audit` lane are detected and re-enqueued by `session-reaper.js` via the plan task audit revival path in `reapSyncPass()`.
+**`plan-auditor` agent** (`agents/plan-auditor.md`, Sonnet-tier): Spawned automatically when a plan task with `verification_strategy` enters `pending_audit`. Verifies completion against actual artifacts (files, test output, PR status). Renders verdict via `verification_audit_pass` or `verification_audit_fail` then exits. Runs in `audit` lane — cannot receive signals from the plan manager. 8-min TTL. Stale sessions re-enqueued by `session-reaper.js`.
 
 ## CTO Dashboard Development
 
@@ -1684,559 +1382,15 @@ The CTO dashboard (`packages/cto-dashboard/`) supports `--mock` for development 
 
 > Full details: [CTO Dashboard Development](docs/CLAUDE-REFERENCE.md#cto-dashboard-development)
 
-## Control Surface Inventory
+## Control Surfaces
 
-GENTYR guides Claude Code agents through **8 distinct control surface categories**, each operating at a different point in the agent lifecycle. This inventory is the authoritative reference for understanding how GENTYR shapes agent behavior.
+GENTYR guides Claude Code through **8 control-surface categories**, each operating at a different lifecycle point: hooks (92 JS files across 5 phases), agent definitions (26 shared with target projects only), MCP servers (~38 servers, ~730+ tools), slash commands (47), CLAUDE.md (the managed section in target-project CLAUDE.md, not this dev-facing one), session briefing, prompt templates, and automation scripts. Each category differs in what it can do — PreToolUse hooks BLOCK, PostToolUse hooks REACT (inject context, spawn agents), automation scripts run outside agent sessions entirely.
 
-### Overview
+> Full details: [Control Surface Inventory](docs/CONTROL-SURFACES.md) — full hook roster by lifecycle phase, agent definition table, MCP server tables (Tier 1/Tier 2/browser/content/feedback), shared hook libraries, slash command groupings, prompt injection points, end-to-end interaction flow diagram.
 
-| Category | Count | When It Fires | What It Controls |
-|----------|-------|---------------|-----------------|
-| 1. Hooks | 92 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
-| 2. Agent Definitions | 26 shared (target projects only) | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow. The gentyr repo itself has no `.claude/agents/` — these definitions live in the framework's `agents/` directory and are symlinked into target projects on install. |
-| 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
-| 4. Slash Commands | 46 commands | User-initiated | Workflows, dashboards, configuration |
-| 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
-| 6. Session Briefing | 1 hook + content | Session start | One-time context dump: queue status, active tasks, bypass requests |
-| 7. Prompt Templates | ~10 builders | Agent spawn | Task-specific instructions injected into spawn prompts |
-| 8. Automation Scripts | 26 scripts | Cron/launchd/daemon | Background orchestration outside of agent sessions |
+## Session Lifecycle
 
-### What Each Category CAN and CANNOT Do
+GENTYR runs a centralized session queue (`session-queue.js`) with 7-step drain cycles, 8 overlapping revival mechanisms, and synchronous + asynchronous reaping. The same state machine governs todo-db tasks, persistent tasks, and plan tasks — each gets its own lifecycle layered on top of the queue. Suspension uses non-destructive SIGTSTP/SIGCONT preemption for CTO/critical priority work.
 
-| Category | Can Block | Can Inject Context | Can Spawn Agents | Can Modify Code | Persists Across Sessions |
-|----------|-----------|-------------------|-----------------|----------------|------------------------|
-| PreToolUse hooks | **Yes** | No | No | No | No (stateless) |
-| PostToolUse hooks | No | **Yes** | **Yes** | No | No (stateless) |
-| SessionStart hooks | No | **Yes** | **Yes** | No | No (one-shot) |
-| Agent Definitions | No | **Yes** (instructions) | No | Indirectly | **Yes** (file-based) |
-| MCP Tools | No | **Yes** (returns) | No | Indirectly | **Yes** (DB-backed) |
-| CLAUDE.md | No | **Yes** (system prompt) | No | No | **Yes** (file-based) |
-| Prompt Templates | No | **Yes** (spawn prompt) | No | No | No (per-spawn) |
-| Automation Scripts | No | No | **Yes** | No | **Yes** (daemon) |
+> Full details: [Session Lifecycle](docs/SESSION-LIFECYCLE.md) — state machines, 7 enqueue gate checks, drain cycle steps, sync/async reaping rules, revival mechanism table, task/persistent-task/plan lifecycle transitions, background automation cooldowns, daemon roster, cross-cutting guards, sync/recycle behavior.
 
-### Hooks by Lifecycle Phase
-
-#### PreToolUse (18 hooks — BLOCK dangerous actions)
-
-| Hook | Matcher | Purpose |
-|------|---------|---------|
-| interactive-lockdown-guard.js | `""` (all) | Block file-editing tools in interactive CTO sessions |
-| block-no-verify.js | `Bash` | Block hook bypass and lint-weakening commands: `--no-verify`, `-n` shorthand, `--no-gpg-sign`, `core.hooksPath` writes/unset, `.husky` or `.claude/hooks` deletion, ESLint `--quiet`/`--max-warnings N`; also blocks 1Password CLI access — all secrets must flow through MCP env fields |
-| credential-file-guard.js | `Bash,Read,Write,Edit,NotebookEdit,Grep,Glob` | Block access to credential files |
-| playwright-cli-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block direct Playwright CLI via Bash or secret_run_command (use MCP tools) |
-| branch-checkout-guard.js | `Bash` | Block branch switching in main tree |
-| main-tree-commit-guard.js | `Bash` | Block git add/commit on protected branches |
-| worktree-cwd-guard.js | `Bash` | Block Bash when CWD is deleted worktree |
-| worktree-path-guard.js | `Write,Edit,NotebookEdit` | Block file writes outside worktree boundary |
-| worktree-remove-guard.js | `Bash` | Block `git worktree remove` on worktrees owned by other active sessions (Bug #6 Layer 3) |
-| interactive-agent-guard.js | `Agent` | Block code-modifying sub-agents in interactive sessions |
-| block-team-tools.js | `TeamCreate,TeamDelete,SendMessage` | Block Team tools (use Agent tool instead) |
-| secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
-| protected-action-gate.js | `mcp__*` | Block protected MCP actions; store as deferred action for spawned agents |
-| staging-lock-guard.js | `Bash` | Block staging operations (gh pr create --base staging, gh pr merge targeting staging, gh pr merge --admin, git push, git merge) for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`; CI check verification on staging merges |
-| worktree-sync-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block `gentyr sync` when CWD is inside a worktree (sync destroys the worktree directory) |
-| gate-confirmation-enforcer.js | `mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task` | Block task completion while `pending_audit` is active; prevents bypassing the audit gate |
-| signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |
-| demo-local-guard.js | `mcp__playwright__run_demo,mcp__playwright__run_demo_batch,mcp__playwright__run_tests,mcp__playwright__launch_ui_mode` | Block local demo execution for spawned agents (CTO HMAC bypass required) |
-
-#### PostToolUse (40 hooks — REACT to actions, inject context, spawn agents)
-
-| Hook | Matcher | Purpose |
-|------|---------|---------|
-| signal-reader.js | `""` (all) | Read inter-agent signals/directives |
-| worktree-freshness-check.js | `""` (all) | Nag if worktree is stale (every 2 min) |
-| agent-comms-reminder.js | `""` (all) | Remind agents to check for communications |
-| alignment-reminder.js | `""` (all) | Remind agents to check task alignment |
-| persistent-task-briefing.js | `""` (all) | Inject persistent task state into monitor context |
-| progress-tracker.js | `""` (all) | Track pipeline stage progress |
-| monitor-reminder.js | `""` (all) | Remind monitors to check sub-task status |
-| uncommitted-change-monitor.js | `Write,Edit` | Warn after 5 uncommitted file edits |
-| pr-auto-merge-nudge.js | `Bash` | Nudge to self-merge after PR creation |
-| ai-pr-review-hook.js | `Bash` | Spawn Haiku gate agent to review PR diff on every PR creation; posts PR comments for critical findings, adds ai-reviewed label when clean (5-min TTL, gate lane) |
-| plan-merge-tracker.js | `Bash` | Auto-advance plan tasks on PR merge |
-| strict-infra-nudge-hook.js | `Bash` | Redirect agents from Bash infra commands to MCP tools |
-| urgent-task-spawner.js | `create_task` | Auto-spawn urgent tasks |
-| task-gate-spawner.js | `create_task` | Spawn gate agent for pending_review tasks |
-| workstream-spawner.js | `create_task` | Auto-spawn workstream tasks |
-| persistent-task-linker.js | `create_task` | Auto-link sub-tasks to persistent tasks |
-| orchestration-guidance-hook.js | `create_task` | Analyze task complexity; nudge CTO toward parallel tasks, persistent tasks, or plans when complexity signals detected |
-| task-deletion-cascade.js | `delete_task` | Cascade-kill running sessions linked to a deleted task via `cancelSessionsByTaskId` |
-| project-manager-reminder.js | `summarize_work` | Remind to spawn project-manager |
-| worktree-cleanup-gate.js | `summarize_work` | Remind to clean up worktree |
-| plan-work-tracker.js | `summarize_work` | Record work against plan tasks |
-| session-completion-gate.js | `summarize_work,complete_task` | Validate completion prerequisites |
-| workstream-dep-satisfier.js | `complete_task` | Cascade workstream dependency satisfaction |
-| demo-failure-spawner.js | `check_demo_result,check_demo_batch_result,run_demo` | Auto-spawn repair agents on demo failure; enriches repair prompts with `failure_classification` and ECONNREFUSED infrastructure guidance; injects skipped-scenario accountability context for completed batches |
-| demo-remote-enforcement.js | `run_demo` | Enforce remote+batch execution for spawned agents; detect sequential local anti-pattern |
-| long-command-warning.js | `secret_run_command` | Warn about MCP transport timeout |
-| persistent-task-spawner.js | `activate/resume/amend/pause/cancel_persistent_task` | Spawn/stop persistent monitors |
-| plan-persistent-sync.js | `complete_persistent_task` | Sync completion to plan tasks |
-| plan-activation-spawner.js | `update_plan_status` | Spawn plan manager on plan activation |
-| plan-audit-spawner.js | `update_task_progress` | Spawn independent auditor on pending_audit |
-| screenshot-reminder.js | `""` (all) | Remind agents to Read screenshot paths in tool responses |
-| context-pressure-hook.js | `""` (all) | Monitor spawned-agent context window size and session age; nudge at configurable tiers; call `request_self_compact` at critical threshold |
-| release-artifact-collector.js | `complete_task,summarize_work` | Archive session transcripts to release artifact directory when GENTYR_RELEASE_ID is set |
-| release-completion-hook.js | `complete_persistent_task` | On release plan-manager completion: unlock staging, generate report, emit audit event, broadcast signal |
-| universal-audit-spawner.js | `complete_task,update_task_progress,complete_persistent_task` | Fire on task completion; when `gate_success_criteria` / `verification_strategy` set, transition to `pending_audit` and enqueue Haiku auditor in `audit` lane |
-| alignment-monitor-briefing.js | `""` (all) | Deliver cross-session alignment violation summaries to active deputy-CTO monitor sessions |
-| bypass-request-router.js | `submit_bypass_request` | Route bypass requests to global monitor via directive signal; CTO sees after 5-min grace period |
-| authorization-audit-spawner.js | `mcp__agent-tracker__record_cto_decision` | On verified CTO decision: for `lockdown_toggle`/`local_mode_toggle`, executes inline (writes state files, skips auditor — interactive sessions have no `agent_id`/`queue_id`); for all others, transitions to `audit_pending` and enqueues `authorization-auditor` in `audit` lane (8-min TTL); skips auditor when `decision_type === 'audit_override'` |
-| deferred-action-audit-executor.js | `mcp__agent-tracker__cto_decision_audit_pass` | On authorization audit pass, load linked deferred action and execute via MCP daemon (Tier 1) or Bash (Tier 2); signal original agent with result |
-| monitor-poll-budget-hook.js | `mcp__agent-tracker__peek_session` | Advisory: track `peek_session` frequency per spawned monitor session; emit `additionalContext` warning when >5 calls in 5-min rolling window. Fast-exits in under 1ms for non-`peek_session` tools, interactive sessions, and non-monitor spawned sessions |
-
-#### SessionStart (9 hooks — set initial context)
-
-| Hook | Purpose |
-|------|---------|
-| gentyr-splash.js | Display GENTYR branding |
-| gentyr-sync.js | Auto-rebuild MCP servers if stale, re-merge configs |
-| todo-maintenance.js | Clean up stale tasks |
-| dead-agent-recovery.js | Detect and revive dead agents |
-| crash-loop-resume.js | Resume persistent tasks paused by circuit breaker |
-| credential-health-check.js | Verify 1Password connectivity |
-| playwright-health-check.js | Verify Playwright and browser availability |
-| plan-briefing.js | Brief agent on active plan state |
-| session-briefing.js | Comprehensive context dump: queue, tasks, deferred actions, bypass requests, focus mode, active persona profile; also warns when main has commits not in staging (merge-back needed) |
-
-#### UserPromptSubmit (13 hooks — process user/CTO input)
-
-| Hook | Purpose |
-|------|---------|
-| cto-notification-hook.js | Update CTO status line; inject pending bypass request details into model context on every prompt |
-| secret-leak-detector.js | Scan for leaked secrets |
-| bypass-approval-hook.js | Deprecated (Phase 2). Detect "APPROVE BYPASS" pattern — preserved for HOTFIX flow pending Phase 5 cleanup |
-| protected-action-approval-hook.js | Deprecated (Phase 3). Previously detected approval phrase+code tokens and executed deferred actions via MCP daemon — superseded by authorization-audit-spawner.js + deferred-action-audit-executor.js |
-| slash-command-prefetch.js | Pre-fetch data for slash commands |
-| branch-drift-check.js | Check for upstream branch drift |
-| comms-notifier.js | Notify about pending inter-agent communications |
-| workstream-notifier.js | Notify about workstream updates |
-| cto-prompt-detector.js | Detect CTO-directed prompts in spawned sessions |
-| secrets-local-health.js | Warn about missing secrets.local entries |
-| mcp-guidance-hook.js | Inject MCP server guidance and pending server notifications |
-| pending-sync-notifier.js | Warn CTO when pending config files need npx gentyr sync; injects `additionalContext` so the model also sees pending state (not just terminal `systemMessage`) |
-| interactive-heartbeat.js | Track per-session interactive liveness; writes `.claude/state/interactive-sessions.json` keyed by session UUID for rescue/reaper cross-check; 30-min staleness threshold + PID liveness; root-owned via `criticalHooks` |
-
-#### Stop (1 hook — gate session termination)
-
-| Hook | Purpose |
-|------|---------|
-| stop-continue-hook.js | Gate session stop, check unfinished work, trigger revival |
-
-### Shared Hook Libraries (hooks/lib/ — 38 modules)
-
-Key modules consumed by hooks:
-- `session-queue.js` — Central queue management (enqueue, drain, spawn, suspend/resume)
-- `session-reaper.js` — Dead session detection and cleanup (sync + async passes); includes audit revival detection in `reapSyncPass()` — stale `audit`-lane sessions for all four task types (`todo`, `persistent`, `plan`, `authorization`) are re-enqueued via `buildAuditorSessionSpec({ taskType })`
-- `session-audit.js` — Audit event emission to session-audit.log
-- `session-signals.js` — Inter-agent signal delivery
-- `resource-lock.js` — Shared resource coordination (display, chrome-bridge, main-dev-server)
-- `memory-pressure.js` — RAM monitoring for spawn gating
-- `worktree-manager.js` — Worktree provisioning and cleanup
-- `port-allocator.js` — Per-worktree port isolation
-- `process-tree.js` — Process group management (killProcessGroup, killProcessesInDirectory)
-- `task-category.js` — Task pipeline resolution (resolveCategory, buildPromptFromCategory)
-- `bypass-guard.js` — CTO bypass request checking
-- `blocker-auto-heal.js` — Self-healing orchestrator for persistent monitors: diagnoses crash type, spawns fix tasks, escalates to CTO after max attempts (`handleBlocker`)
-- `pause-propagation.js` — Hierarchical pause/resume propagation between persistent tasks and plans (propagatePauseToPlan, propagateResumeToPlan, assessPlanBlocking)
-- `persistent-monitor-revival-prompt.js` — Revival prompt builder (now includes self-heal context from blocker_diagnosis)
-- `persistent-revival-context.js` — Revival context assembly (last_summary, amendments, sub-tasks, blocker_diagnosis)
-- `persistent-monitor-demo-instructions.js` — Demo-specific monitor instructions
-- `persistent-monitor-strict-infra-instructions.js` — Infrastructure guidance for monitors
-- `strict-infra-guidance-prompt.js` — Bash prohibition prompts
-- `user-prompt-resolver.js` — Resolve user prompt UUIDs to content
-- `spawn-env.js` — Environment variable injection for spawned agents
-- `feature-branch-helper.js` — Branch naming and detection
-- `llm-client.js` — Shared `callLLMStructured` for Haiku structured JSON output via `--json-schema`
-- `report-auto-resolver.js` — PR-based report auto-resolution and dedup (runReportAutoResolve, runReportDedup)
-- `deferred-action-db.js` — Deferred protected action DB operations (create, read, list, mark approved/executing/completed/failed, dedup, expire)
-- `deferred-action-executor.js` — MCP HTTP execution, HMAC verification with timing-safe comparison, full execution pipeline for deferred actions
-- `staging-lock.js` — Staging lock state management (`lockStaging`, `unlockStaging`, `isStagingLocked`, `getStagingLockState`); persists lock to `.claude/state/staging-lock.json`; best-effort GitHub branch protection via `gh api`
-- `release-orchestrator.js` — Production release artifact collection: `enumerateReleasePRs` (gh pr list with git fallback), `getArtifactDir` (create `.claude/releases/{id}/prs|sessions|reports/`), `collectSessionArtifact` (copy JSONL by agent marker), `collectDemoArtifacts` (copy screenshots/recordings + demo-results.json), `collectTriageArtifacts` (query cto-reports.db + deputy-cto.db)
-- `release-report-generator.js` — Structured release report pipeline: `generateStructuredReport` reads release-ledger.db + artifacts, fills `templates/release-report-template.md` with 17 placeholders (including `{cto_approval}`), writes `report.md` to artifact dir; `convertToPdf` converts to PDF via headless Chromium; `generateCtoApproval` reads `cto-approval.json` to fill Section 9
-- `cto-approval-proof.js` — CTO release approval cryptographic proof: `verifyQuoteInJsonl` (line-by-line JSONL scan for verbatim quote), `computeApprovalHmac` (HMAC-SHA256 with `cto-release-approval` domain separator), `verifyApprovalHmac` (constant-time verification), `computeFileHash` (SHA-256), `findCurrentSessionJsonl` (session discovery — encodes project path by replacing all non-alphanumeric chars with dashes to match canonical `~/.claude/projects/` directory naming). Consumed by `record_cto_approval` tool on release-ledger server. **TOCTOU defense**: `record_cto_approval` copies the live JSONL to a stable snapshot first, then verifies the quote and hashes the snapshot (not the live file), ensuring the archived hash matches the verified content. **Spawned-session guard**: `record_cto_approval` blocks `CLAUDE_SPAWNED_SESSION=true` sessions — only interactive CTO sessions can sign off releases. **`approval_text` minimum**: 10 characters (enforced by Zod schema) to ensure a substantive audit trail
-- `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
-- `auditor-prompt.js` — Single source of truth for building auditor session specs. Exports `buildAuditorSessionSpec()` consumed by `universal-audit-spawner.js` (first spawn), `authorization-audit-spawner.js` (CTO authorization audits), and `session-queue.js` Step 1b.5 (revival spawn). Also exports `buildAuthorizationAuditorSessionSpec()`. Internally calls `resolveAuditTools(taskType)` to dispatch across four task types: `'todo'` (universal-auditor + todo-db tools), `'persistent'` (universal-auditor + persistent-task tools), `'plan'` (plan-auditor + plan-orchestrator tools), `'authorization'` (authorization-auditor + agent-tracker cto_decision tools).
-- `load-test-runner.js` — Lightweight autocannon-based load test runner. Reads route configuration from `services.json` (`loadTest` section), runs load tests per route, and returns structured performance results. `autocannon` must be installed in the target project. Used by the promotion pipeline when `loadTest.enabled: true`.
-- `ai-compatibility-check.js` — LLM-powered (Haiku) dependency upgrade compatibility validator. Fetches npm registry metadata and changelogs, analyzes project usage patterns, and classifies upgrades as compatible/risky with specific breaking-change identification. Returns `{ compatible, risks, recommendation }`.
-- `ai-pr-decomposition.js` — LLM-powered (Haiku) large-PR decomposer. When a PR exceeds 3000 lines, suggests how to split commits into independently-promotable groups by feature/concern. Returns `{ groups }` with each group's commits, rationale, and suggested branch name.
-
-### Agent Definitions (26 shared, target projects only)
-
-These agent definitions live in the framework's `agents/` directory and are installed into target projects at `.claude/agents/` via the CLI's symlink pipeline. The gentyr source repo itself has no `.claude/agents/` directory.
-
-| Agent | Model | Purpose | Key Constraints |
-|-------|-------|---------|----------------|
-| code-writer | opus | Write code | Must run in worktree, does NOT commit |
-| code-reviewer | opus | Review code | Read-only, does NOT commit |
-| test-writer | sonnet | Write/update tests | Must run in worktree, does NOT commit |
-| project-manager | sonnet | Git operations | ONLY agent that commits, pushes, creates PRs, self-merges |
-| investigator | opus | Research/diagnose | Read-only, no worktree needed |
-| user-alignment | sonnet | Verify user intent, propose specs | Auditor; proposes spec changes via deferred actions (CTO-gated), no source code edits |
-| deputy-cto | opus | Triage/escalation | Review promotion PRs, manage task queue; can operate as global alignment monitor |
-| persistent-monitor | opus | Long-running orchestrator | Never edits files, spawns sub-agents via create_task |
-| plan-manager | opus | Plan execution | Spawns persistent tasks for plan steps |
-| plan-updater | haiku | Sync plan substeps | Lightweight, completes in <30s |
-| plan-auditor | sonnet | Verify plan task completion | Independent, 8-min TTL, audit lane |
-| universal-auditor | sonnet | Verify todo-db and persistent task completion | Independent, 8-min TTL, audit lane, signal-excluded; does NOT audit plan tasks |
-| authorization-auditor | sonnet | Verify CTO authorization decisions against presented context | Independent, 8-min TTL, audit lane, signal-excluded; verifies via peek_session JSONL; fail-closed on missing session |
-| demo-manager | sonnet | Demo lifecycle | Only agent that creates/modifies .demo.ts files |
-| feedback-agent | sonnet | User persona testing | No source code access |
-| product-manager | opus | PMF analysis | External research only |
-| antipattern-hunter | sonnet | Anti-pattern detection | Read-only |
-| icon-finder | opus | Icon sourcing | SVG processing pipeline |
-| secret-manager | sonnet | Credential lifecycle | 1Password-based operations |
-| repo-hygiene-expert | sonnet | Repo structure analysis | Read-only |
-| workstream-manager | haiku | Queue dependency analysis | Read-only |
-| staging-reviewer | sonnet | Staging reactive review (antipattern, code-quality, user-alignment, spec-compliance) | Read-only reviewer; spawns code-writer sub-agents for fixes |
-| cicd-manager | sonnet | Deployment, promotion, rollback, release infrastructure | Single authority for CI/CD pipeline; does NOT edit source code |
-| security-auditor | sonnet | OWASP Top 10 code security review (Injection, Auth, XSS, CSRF, IDOR, SSRF, Misconfiguration, Data Exposure) | Read-only; does NOT fix issues, reports via agent-reports; reviews recent git history |
-
-### MCP Servers (~38 servers)
-
-#### Core State Servers (Tier 2 — per-session, stateful)
-
-| Server | Key Tools | Purpose |
-|--------|-----------|---------|
-| todo-db | create_task, list_tasks, complete_task, summarize_work, gate_approve_task, list_categories | Task CRUD, categories, gate approval |
-| persistent-task | create/activate/amend/pause/resume/cancel/complete_persistent_task, inspect_persistent_task | Persistent task lifecycle |
-| plan-orchestrator | create_plan, add_phase, add_plan_task, get_spawn_ready_tasks, plan_dashboard | Plans, phases, tasks, dependencies |
-| agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, list/resolve_blocking_item, get_blocking_summary, peek_session, browse_session, set_automation_toggle, get_automation_toggles, record_cto_decision, check_cto_decision, cto_decision_audit_pass, cto_decision_audit_fail, repair_main_tree_drift, query_token_usage, top_token_sessions, token_attribution_health, revival_cost_summary | Session queue, signals, locks, bypass, blocking queue, automation toggles, CTO authorization chain, main-tree drift repair, token usage attribution |
-| user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature, create/archive/switch/list/get/delete_persona_profile, verify_demo_completeness | Personas, features, scenarios, prerequisites, persona profiles, demo completeness gate |
-| product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
-| deputy-cto | create_report, list_reports, acknowledge_report, force_promote_to_prod | Reports, triage, delegation, CTO-gated force production promotion |
-| release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report, present_release_summary, record_cto_approval | Production release evidence chain (staging lock → CTO sign-off with cryptographic proof) |
-
-#### Infrastructure Servers (Tier 1 — shared daemon)
-
-| Server | Purpose |
-|--------|---------|
-| secret-sync | Credential resolution, services.json config (`get/update_services_config`, `populate_secrets_local`, `populate_secrets_fly`, secret profile CRUD), command execution with secrets, secret_sync_secrets with `target: 'render' | 'vercel' | 'fly'` |
-| github | GitHub API (issues, PRs, repos) |
-| cloudflare | DNS and worker management |
-| supabase | Database operations |
-| onepassword | 1Password read/write |
-| vercel | Deployment management |
-| render | Service management |
-| codecov | Coverage tracking |
-| resend | Email sending |
-| elastic-logs | Log querying, logging config verification (`query_logs`, `get_log_stats`, `verify_logging_config`) |
-
-#### Browser Automation Servers
-
-| Server | Tool Count | Purpose |
-|--------|-----------|---------|
-| playwright | ~38 | Demo execution, test running, screenshots, video, prerequisites |
-| chrome-bridge | 35 | 17 socket-based + 2 AppleScript + 4 convenience + 4 React automation + diagnostics |
-
-#### Content/Display Servers
-specs-browser, cto-report, cto-reports, show, setup-helper, feedback-explorer, icon-processor, docs-feedback, makerkit-docs
-
-#### Feedback Agent Servers
-feedback-reporter, playwright-feedback, programmatic-feedback
-
-### Slash Commands (47)
-
-**Demo**: demo, demo-all, demo-autonomous, demo-bulk, demo-interactive, demo-session, demo-validate
-**Tasks**: spawn-tasks, task-queue, triage, persistent-task, persistent-tasks
-**Monitoring**: monitor, status, tokens
-**Plans**: plan, plan-progress, plan-timeline, plan-audit, plan-sessions
-**Config**: automation-rate, concurrent-sessions, configure-personas, focus-mode, global-monitor, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
-**Operations**: cto-dashboard, deputy-cto, promote-to-prod, promote-to-prod-force, promote-to-staging, session-queue, show, workstream
-**Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr, setup-fly
-**Analysis**: persona-feedback, product-manager, replay, run-feedback
-
-### Prompt Injection Points (7 major sources)
-
-| Source | When | What |
-|--------|------|------|
-| CLAUDE.md.gentyr-section | Every turn (system prompt) | Merge chain, agent workflow, commit rules, tool reference |
-| session-briefing.js | Session start | Queue state, active tasks, bypass requests, focus mode |
-| plan-briefing.js | Session start | Active plan state and progress |
-| buildPromptFromCategory() | Agent spawn | 6-step pipeline (or custom category sequence) |
-| buildPersistentMonitorRevivalPrompt() | Monitor revival | Last summary, amendments, sub-task status, demo/infra flags |
-| persistent-task-briefing.js | Every tool call (monitors) | Current task state, amendment reminders, heartbeat |
-| strict-infra-guidance-prompt.js | Agent spawn (when flagged) | MCP-only infrastructure instructions |
-
-### Control Surface Interaction Flow
-
-```
-User/CTO Message
-    |
-    +-- UserPromptSubmit hooks (11) --> Context injection, leak detection, notification
-    |
-    v
-Agent Reasoning (informed by CLAUDE.md + session briefing + plan briefing)
-    |
-    +-- PreToolUse hooks (14) --> BLOCK dangerous actions
-    |
-    v
-Tool Execution (MCP tools, Bash, Read, Write, Edit, Agent)
-    |
-    +-- PostToolUse hooks (27) --> REACT: inject context, spawn agents, track progress
-    |
-    v
-Agent Spawn (via Agent tool or session queue)
-    |
-    +-- Agent Definition (.md) --> Model, tools, behavioral constraints
-    +-- Prompt Template --> Task-specific instructions, pipeline steps
-    +-- SessionStart hooks (9) --> Initial context, health checks, briefing
-    |
-    v
-Session Stop
-    |
-    +-- Stop hook (1) --> Gate completion, trigger revival if needed
-    |
-    v
-Background Automation
-    |
-    +-- hourly-automation.js --> Spawn tasks, reap sessions, cleanup worktrees, auto-rollback
-    +-- revival-daemon.js --> Detect dead agents, revive immediately
-    +-- session-activity-broadcaster.js --> Generate and deliver session summaries
-    +-- live-feed-daemon.js --> Generate Live Feed commentary entries to live-feed.db
-    +-- preview-watcher.js --> Keep worktrees fresh
-    +-- synthetic-monitor.js --> Probe health endpoints, write alerts for auto-rollback pipeline
-```
-
-## GENTYR Session Lifecycle — Complete Inventory
-
-### Session Status Values & State Machine
-
-```
-queued → spawning → running → completed
-  ↓                    ↓
-  cancelled            suspended → running (SIGCONT)
-                       ↓
-  queued → failed      completed (if PID dies while suspended)
-```
-
-**Statuses:** `queued`, `spawning`, `running`, `suspended`, `completed`, `failed`, `cancelled`
-
-### Session Entry (Enqueueing)
-
-**Function:** `enqueueSession()` in `session-queue.js`
-
-Seven sequential gate checks before insertion:
-
-| # | Gate | Condition | Result if blocked |
-|---|------|-----------|-------------------|
-| 1 | Validation | Missing required fields | Error |
-| 2 | Task-level dedup | Same `taskId` already queued/running/spawning | Returns existing queueId |
-| 3 | Persistent task dedup | Same `persistentTaskId` in persistent lane | Returns existing queueId |
-| 4 | Plan-level dedup | Another **plan manager** (`isPlanManager: true`) for same `planId` already queued/running/spawning | Returns existing queueId |
-| 5 | Worktree exclusivity | Same worktree/cwd in use by another session | `blocked: 'worktree_exclusive'` |
-| 6 | Bypass request guard | Pending CTO bypass request for this task | `blocked: 'bypass_request'` |
-| 7 | Focus mode gate | Focus mode enabled + not an allowed source/priority | `blocked: 'focus_mode'` |
-
-**Focus mode allows through:** `cto`/`critical` priority, `persistent`/`gate`/`audit`/`revival`/`automated` lanes, `force-spawn-tasks`/`persistent-task-spawner`/`stop-continue-hook`/`session-queue-reaper`/`sync-recycle` sources, or items with `persistentTaskId`.
-
-After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
-
-### Session Spawning (Drain Cycle)
-
-**Function:** `drainQueue()` in `session-queue.js` — 7 steps per cycle
-
-**Step 1: Reap stale running items** — Calls `reapSyncPass(db)`. Detects: dead PIDs, spawning zombies (5+ min no PID), stale persistent monitor heartbeats (default 5 min), auth-stalled sessions (default 2 min). Dead PID actions: mark `completed` (or `failed` with `no_output_crash` for sub-30s deaths with no JSONL), release all resource locks, remove from resource queues, reactive worktree cleanup (if clean), retire progress files, reset linked TODO task to `pending`.
-
-**Step 1b: Re-enqueue dead persistent monitors** — Calls `requeueDeadPersistentMonitor()`. Skips tasks that are not in `active` status (e.g., idle-paused or manually paused monitors are left alone — prevents the reaper from fighting the idle pause). Circuit breaker: max 3 hard revivals per task in 10 min → exponential backoff (5→10→20→60 min). Rate-limit detection: scans session tail, applies 5-min cooldown (excluded from crash counter). Self-healing: calls `handleBlocker()` → may escalate to CTO or spawn fix task.
-
-**Step 1b.5: Audit session revival** — For each item in `reaperResult.auditRevivals`, dedup-checks for an existing auditor in `queued/running/spawning` state for the same task ID (via `json_extract(metadata, '$.taskId')`). If none found, enqueues the appropriate auditor (type determined by `taskType` — `universal-auditor` for todo/persistent, `plan-auditor` for plan, `authorization-auditor` for authorization) in the `audit` lane with an 8-minute TTL. Source tagged `session-reaper-audit-revival`. Emits `audit_session_revived` audit event. This prevents tasks from being permanently stuck in `pending_audit` when an auditor crashes. Covers all four audit types including CTO authorization decisions.
-
-**Step 1c: Orphan persistent task catch-all** — Queries `persistent-tasks.db` for `active` tasks with no queued/running monitor. Re-enqueues via `requeueDeadPersistentMonitor()`.
-
-**Step 1d: Non-persistent task revival** — Max 3 per drain cycle. Prefers `--resume` if session file found. Injects bypass resolution context if CTO approved/rejected a request. Enqueues in `revival` lane at task's original priority.
-
-**Step 2: Expire old queued items** — TTL default: 30 minutes (persistent monitors have no TTL). Marks `cancelled` with `error='TTL expired'`.
-
-**Step 2.5: Reserved slots auto-restore** — Checks `reserved_slots_restore` timer, resets to default when elapsed.
-
-**Step 2.6: Resource lock expiry** — `checkAndExpireResources()` — promotes next waiters for expired locks.
-
-**Step 2.7: Stale port cleanup** — Removes port allocations for deleted worktrees.
-
-**Step 3-4: Count running by lane, fetch queued by priority.**
-
-**Step 5: Spawn loop (per-item):**
-
-| Lane | Capacity Rule |
-|------|--------------|
-| `persistent` | No limit — always spawns |
-| `automated` | No limit — background system sessions (22 auto-promoted sources) |
-| `gate` | Sub-limit: 5 |
-| `audit` | Sub-limit: 5 |
-| `standard`/`revival` | Global `maxConcurrent` minus `reservedSlots` (for non-priority-eligible items) |
-
-**Priority-eligible** (sees full `maxConcurrent`): `cto`/`critical` priority, `persistent` lane, or has `persistentTaskId`. Per-item checks: (1) Capacity — if at cap for CTO/critical items, suspend lowest-priority via SIGTSTP; (2) Memory pressure — `shouldAllowSpawn()` gates by RAM; `cto`/`critical` bypass; (3) Workstream dependencies — checks `queue_dependencies` in workstream.db.
-
-**`spawnQueueItem()`:** Atomic `queued→spawning` claim → register agent → substitute `{AGENT_ID}` in prompt → compaction for `resume` spawns → build CLI args (`--agent`, `--model`, `--disallowedTools`) → build env (`CLAUDE_WORKTREE_DIR`, `CLAUDE_QUEUE_ID`) → validate CWD exists → `spawn('claude', ...)` detached → update `spawning→running` with PID → update persistent-tasks.db with monitor_pid.
-
-**Step 6: Resume suspended sessions** — If capacity freed, sends SIGCONT to suspended items (ordered by priority). Dead suspended PIDs marked `completed`, linked TODO reset to `pending`.
-
-### Session Reaping (Death Detection)
-
-**Sync Pass (`reapSyncPass`) — every drain cycle:**
-
-| Detection | Condition | Action | Kill? |
-|-----------|-----------|--------|-------|
-| Spawning zombie | `spawning` + no PID for 5+ min | Mark `failed` | No |
-| Dead PID | `running` + `process.kill(pid,0)` fails | Mark `completed` (or `failed` with `no_output_crash` if died <30s with no JSONL), release resources, cleanup | No (already dead) |
-| Stale heartbeat | Persistent monitor, heartbeat > 5 min stale, spawned > 60s ago | Kill process group, mark `completed` | Yes (sync kill) |
-| Auth stall | Non-persistent, file mtime > 2 min stale, 3+ consecutive auth errors | Kill process group, mark `completed` | Yes (sync kill) |
-| Stuck alive | Running > hard-kill threshold | Add to `stuckAlive` list for async pass | Deferred |
-
-**`diagnoseSessionFailure()`** classifies: `rate_limit` (transient), `auth_error` (fatal), `crash` (fatal), `unknown` (retry).
-
-**Async Pass (`reapAsyncPass`) — hourly automation, 30-min cooldown:** For each stuck-alive item, 3 completion signal checks: (1) JSONL last message has `stop_reason` + no pending `tool_use`; (2) Last 16KB contains `complete_task` or `summarize_work`; (3) Process state is zombie (Z) or stopped (T). Any positive → graceful cleanup, `in_progress → completed`. All negative → hard kill (SIGTERM→SIGKILL), `in_progress → pending` + deputy-CTO report. Per-task override: persistent tasks with `hard_kill_minutes` in metadata override the global 60-min threshold. Gate-lane exemption: gate agents skipped entirely.
-
-### Session Revival (8 Overlapping Mechanisms)
-
-| # | Mechanism | Trigger | Latency | Priority | Lane | Max Retries | Guards |
-|---|-----------|---------|---------|----------|------|-------------|--------|
-| 1 | **Revival daemon** (`scripts/revival-daemon.js`) | fs.watch on agent-tracker-history | <1s | urgent | revival | 5 (then escalating cooldown) | Memory pressure, bypass guard, suspended check, age <1h |
-| 2 | **Session reviver** (`session-reviver.js`) | Hourly automation, 10-min cooldown | ~10 min | urgent | revival | 1 per cycle, max 3/cycle | Memory pressure, concurrency slots, bypass guard, suspended check |
-| 3 | **Dead agent recovery** (SessionStart hook) | Every interactive session start | Immediate (CTO login) | N/A (no spawn) | N/A | 1 per login | Lock coordination, spawned-session skip |
-| 4 | **Crash-loop resume** (SessionStart hook) | Every interactive session start | Immediate (CTO login) | N/A (informational) | N/A | N/A | Reports only — no auto-resume |
-| 5 | **Stop-continue hook** (Stop hook) | Agent attempts to stop | Real-time | N/A (gates exit) | N/A | Blocks until conditions met | Persistent task status, plan completion, worktree cleanup |
-| 6 | **Stale-pause auto-resume** (hourly automation) | Persistent task paused > 30 min | ~15 min cycle | critical | persistent | Unlimited (unless self-pause circuit breaker) | Bypass guard, 1Password check, do_not_auto_resume flag, self-pause circuit breaker |
-| 7 | **Orphan catch-all** (drainQueue Step 1c) | Every drain cycle | Per-drain | critical | persistent | Unlimited | Bypass guard, dedup |
-| 8 | **requeueDeadPersistentMonitor** (drainQueue Step 1b) | Dead persistent PID detected | Immediate | critical | persistent | 3/10-min (then exponential backoff) | Paused task skip (idle-paused tasks are not revived), rate-limit detection, crash-loop circuit breaker, dedup, self-healing |
-
-**Circuit Breaker (dual-layer):** Layer 1 (in-memory): `_monitorRevivalTimestamps` Map — max 3 hard revivals per task in 10 min. Layer 2 (DB): `revival_events` table — survives process restart. Backoff: 5 min → 10 → 20 → 60 min (exponential, capped). Stale heartbeat revivals excluded from crash counter.
-
-### Session Suspension & Preemption
-
-**Non-destructive (SIGTSTP/SIGCONT):** Trigger: CTO/critical item at capacity in drainQueue Step 5. `preemptLowestPriority()` suspends lowest-priority running session. State: `running → suspended` (doesn't count toward concurrency). Resume: drainQueue Step 6 sends SIGCONT when capacity frees.
-
-**Destructive (legacy, `preemptForCtoTask()`):** Sends SIGTERM to victim, waits 5s, extracts session ID. Re-enqueues victim as `urgent` resume item. Resets victim's TODO task to `pending`.
-
-### Task Lifecycle (todo.db)
-
-```
-pending_review → [gate_approve] → pending → [spawn] → in_progress → [complete_task] → completed
-     ↓                                          ↓
-  [gate_kill]                              [hard_kill/crash]
-   (deleted)                             in_progress → pending (reset for revival)
-```
-
-**Gate bypass creators:** `deputy-cto`, `cto`, `human`, `pr-reviewer`, `system-followup`, `demo`, `self-heal-system`. Urgency downgrade: non-bypass creators' `urgent` silently becomes `normal`.
-
-**Spawning triggers:** `urgent-task-spawner.js` (PostToolUse on `create_task`) — immediate for CTO/human/urgent. `hourly-automation.js` task runner — batch of up to 3 pending tasks per cycle. `scripts/force-spawn-tasks.js` — manual force-spawn via `/spawn-tasks`.
-
-**Completion gates (PostToolUse hooks):** `session-completion-gate.js` verifies `user-alignment` + `project-manager` sub-agents ran. `project-manager-reminder.js` warns about uncommitted changes. `worktree-cleanup-gate.js` reminds to remove worktree.
-
-**Stale task cleanup:** hourly automation resets `in_progress` tasks stuck >30 min back to `pending`. Gate stale cleanup: `pending_review` tasks older than 10 min auto-approved.
-
-### Persistent Task Lifecycle
-
-```
-draft → active → paused ⇆ active → completed
-                    ↓                    ↓
-                cancelled            cancelled
-                    ↓
-                  failed
-```
-
-| Transition | Trigger | Side Effects |
-|-----------|---------|--------------|
-| `draft → active` | `activate_persistent_task` | Spawner hook enqueues monitor in `persistent` lane at `critical` priority; auto-activates 2 reserved slots |
-| `active → paused` | `pause_persistent_task`, bypass request, circuit breaker | `propagatePauseToPlan()` → plan task paused → blocking_queue entry; audit event |
-| `paused → active` | `resume_persistent_task`, amendment auto-resume, stale-pause auto-resume, CTO bypass approval | `propagateResumeToPlan()` → plan task in_progress → blocking_queue resolved; spawner hook re-enqueues monitor |
-| `active → completed` | `complete_persistent_task` | `plan-persistent-sync.js` hook → routes to `pending_audit` or `completed` on linked plan task; cascade to phase/plan |
-| `* → cancelled` | `cancel_persistent_task` | Audit event; plan cascade may auto-pause |
-
-**Self-healing:** `blocker-auto-heal.js` diagnoses crash type → spawns fix tasks (max 3) → exponential backoff → escalates to CTO via bypass request after exhaustion.
-
-### Plan Lifecycle
-
-```
-draft → active → paused ⇆ active → completed
-                    ↓                    ↓
-                cancelled             archived
-```
-
-**Plan task statuses:** `pending → ready → in_progress → paused/completed/pending_audit/skipped`
-
-| Mechanism | Hook/Module | What it does |
-|-----------|------------|--------------|
-| Plan activation | `plan-activation-spawner.js` | Creates plan-manager persistent task, links atomically (TOCTOU-safe), enqueues monitor |
-| PR merge detection | `plan-merge-tracker.js` | Auto-advances linked plan tasks to `completed` on `gh pr merge` |
-| Persistent task completion sync | `plan-persistent-sync.js` | Routes to `pending_audit` (if `verification_strategy`) or `completed`; cascades phase → plan |
-| Verification audit | `plan-audit-spawner.js` | Spawns independent Sonnet `plan-auditor` in `audit` lane (signal-excluded, 8-min TTL) via `buildAuditorSessionSpec({ taskType: 'plan' })` |
-| Pause propagation | `lib/pause-propagation.js` | Persistent task paused → plan task paused → assess blocking level → auto-pause plan if no parallel work |
-| Resume propagation | `lib/pause-propagation.js` | Persistent task resumed → plan task in_progress → resolve blocking_queue → auto-resume plan if no other paused tasks |
-| Plan orphan detection | `hourly-automation.js` | 10-min cycle: detects active plans with no live plan-manager → creates new persistent task + enqueues |
-| Plan completion gate | `stop-continue-hook.js` | Blocks plan-manager exit if incomplete tasks remain (escape hatch: monitor paused/completed/cancelled) |
-
-**Auto-completion cascade:** task completed → check all phase tasks resolved → mark phase completed (or skipped if all skipped) → check all phases resolved → mark plan completed (only if no required phases skipped). Gate phases: tasks in `gate: true` phases cannot be skipped. CTO override: `force_complete: true` with `completion_note`.
-
-### Background Automation Affecting Lifecycle
-
-**Gate-Exempt (always run):**
-
-| Block | Cooldown | What it does |
-|-------|----------|-------------|
-| Session reviver | 10 min | Scans history for dead sessions, revives up to 3 |
-| Session reaper (async) | 30 min | Hard-kills stuck sessions, reconciles TODO tasks |
-| Persistent monitor health | 15 min | Detects dead/stale monitors, re-enqueues |
-| Timed pause auto-resume | 1 min | Auto-resolves expired timed bypass pauses (≤60 min) without CTO action |
-| Stale-pause auto-resume | 15 min | Resumes persistent tasks paused > 30 min |
-| Rate-limit cooldown recovery | 30 min | Clears expired rate-limit cooldowns, re-enqueues |
-| Self-heal fix check | 5 min | Checks fix task completion, resolves/escalates blockers |
-| Plan orphan detection | 10 min | Revives active plans with no live manager |
-| Report auto-resolve | 2 min | Auto-resolves reports matching merged PRs |
-| Report dedup | 30 min | Deduplicates pending reports |
-| Triage check | 5 min | Spawns triage agents for pending reports by tier |
-| Auto-rollback check | 2 min | Reads `synthetic-alerts.json`; triggers rollback on 3+ consecutive probe failures within 5 min of deploy |
-| Fly project image freshness | 30 min | Checks project image staleness (lockfile hash comparison); files deputy-CTO report when stale or stuck deploying |
-| Promotion retry check | configurable | Clears `lastPreviewPromotionSha` and resets cooldown when a promotion agent fails or crashes with `no_output_crash`, allowing immediate retry |
-| Global monitor health | 5 min | Ensures a `global_monitor` persistent task exists and a monitor session is live; creates the task on first run, re-enqueues on crash |
-| Global monitor idle check | 1 min | Auto-pauses the monitor when no work sessions are active; auto-resumes within 1 minute when sessions reappear |
-| Interactive session reaper | 5 min | Purges dead-session entries from `interactive-sessions.json`, removes their `cto-interactive-*` worktrees IF clean (never auto-commits in-progress CTO work), cleans up `automation-config.json` `ctoWorktreePaths` |
-| Branch pruner | 30 min | Delete local AND remote branches with merged PRs; delete local-only branches >24h old with no PR and no commits ahead of base; runs `git remote prune origin` |
-
-**Gate-Required (CTO briefing within 24h):**
-
-| Block | Cooldown | What it does |
-|-------|----------|-------------|
-| Task runner | configurable | Spawns up to 3 pending tasks per cycle |
-| Task gate stale cleanup | every cycle | Auto-approves pending_review tasks > 10 min |
-| Abandoned worktree rescue | configurable | Spawns project-manager for orphaned dirty worktrees |
-| Worktree cleanup | 30 min | Removes worktrees for merged branches |
-| Stale worktree reaper | 60 min | Removes clean worktrees > 4 hours old |
-| Stale task cleanup | 30 min | Resets in_progress tasks stuck > 30 min to pending |
-| Orphan process reaper | 60 min | Kills node/esbuild processes in deleted worktree CWDs |
-| Demo validation | 6 hours | Runs all demo scenarios, spawns repair agents for failures |
-
-### Daemons (Persistent Background Processes)
-
-| Daemon | File | Interval | Purpose |
-|--------|------|----------|---------|
-| Revival daemon | `scripts/revival-daemon.js` | fs.watch + 10s poll | Sub-second dead agent detection, enqueues revival |
-| Preview watcher | `scripts/preview-watcher.js` | 30s poll | Auto-merges base branch into worktrees, syncs deps |
-| Session activity broadcaster | `scripts/session-activity-broadcaster.js` | 5 min | Generates per-session summaries, broadcasts to agents |
-| Live feed daemon | `scripts/live-feed-daemon.js` | 60s | Generates AI commentary for CTO dashboard Page 5 |
-| MCP shared daemon | `scripts/mcp-server-daemon.js` | Always-on | Hosts Tier 1 MCP servers on port 18090 |
-| Synthetic monitor | `scripts/synthetic-monitor.js` | 60s prod / 5 min staging | Probes health endpoints from `services.json`; writes alerts to `synthetic-alerts.json`; stores metrics in `synthetic-metrics.db` |
-| Quota recovery daemon | `scripts/quota-recovery-daemon.js` | fs.watch + 5s poll near reset | Watches `quota-exhaustion.json`; uses `setTimeout` to `resets_at - 15s`, then polls usage API every 5s — clears state and drains queue within 10s of quota recovery |
-| Token usage collector | `scripts/token-usage-collector.js` | 60s | Walks every session JSONL under `~/.claude/projects/<project>/`, parses assistant `message.usage`, joins to `session-queue.db`, persists per-message events + daily rollups in `.claude/state/token-usage.db`. Incremental scan, idempotent ingest, 90-day retention on events. Powers `/tokens` and the 5 `agent-tracker` query tools |
-
-### Cross-Cutting Guards
-
-| Guard | Type | What it blocks |
-|-------|------|---------------|
-| Memory pressure | Spawn gate | Blocks non-critical spawns at high/critical RAM pressure |
-| Focus mode | Enqueue gate | Blocks non-essential automation (allows CTO/critical/persistent) |
-| Quota exhaustion | Enqueue + spawn gate | Blocks all non-CTO spawns and queue draining when usage ≥ 99%; cleared by quota-recovery-daemon |
-| Bypass request | Enqueue + revival gate | Blocks task spawn/revival when CTO decision pending |
-| CTO activity gate | Automation gate | Blocks gate-required hourly automation when no CTO briefing in 24h |
-| Worktree exclusivity | Enqueue gate | Blocks sessions targeting same worktree |
-| Self-pause circuit breaker | Auto-resume guard | Sets `do_not_auto_resume` after 2+ self-pauses in 2 hours |
-| Crash-loop circuit breaker | Revival guard | Exponential backoff after 3+ hard revivals in 10 min |
-| Rate-limit cooldown | Revival guard | 5-min cooldown on rate-limited sessions |
-
-### Resource Lock Lifecycle
-
-Shared resources (`display`, `chrome-bridge`, `main-dev-server`) use acquire/release/renew/queue semantics. On agent death: `releaseAllResources()` + `removeFromAllQueues()` called by reaper. TTL expiry: `checkAndExpireResources()` in every drain cycle; dead holders released immediately via PID check. Force release: CTO override via `force_release_shared_resource`; spawned agents blocked from seizing CTO-held locks. Auto-acquire: `run_demo` with `recorded: true` auto-acquires `display` lock.
-
-### Session Sync/Recycle (npx gentyr sync)
-
-`npx gentyr sync` Step 10: enumerates all running/spawning sessions, sends SIGTERM→SIGKILL, marks old items `failed`, resets linked TODO tasks to `pending`, releases shared resources, re-enqueues each at `urgent` priority. Resume-capable sessions (matching JSONL) use `--resume`. MCP daemon restarted between kill and re-enqueue.
