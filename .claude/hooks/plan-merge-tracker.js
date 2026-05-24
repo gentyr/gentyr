@@ -28,6 +28,76 @@ try {
 
 const NOOP = JSON.stringify({ continue: true });
 
+/**
+ * FIX-4: Three-tier plan_task lookup for `gh pr merge <N>`.
+ *
+ * In the audited plan c0781f93, 5 of 6 docs PRs merged to preview but the
+ * plan_tasks rows stayed `in_progress` indefinitely because nobody had pre-set
+ * `pr_number`. The hook silently no-op'd. This fallback chain catches those
+ * cases without changing existing behavior when pr_number IS set.
+ *
+ * Tier 1 (canonical): exact pr_number match
+ * Tier 2: branch_name from `gh pr view --json headRefName`
+ * Tier 3: todo_task_id mined from the squash commit body (`Task ID: <uuid>`)
+ *
+ * Returns the plan_task row or null. Each tier fails open — a failure in a
+ * Bash lookup never blocks the eventual completion.
+ */
+function findPlanTaskByPr(db, prNumber) {
+  // Tier 1: pr_number match (existing behavior)
+  let planTask = db.prepare(
+    "SELECT id, title, phase_id, plan_id, status FROM plan_tasks WHERE pr_number = ?"
+  ).get(prNumber);
+  if (planTask) return { planTask, matchedBy: 'pr_number' };
+
+  // Tier 2: branch_name match (parsed from `gh pr view`)
+  try {
+    const out = execFileSync('gh', ['pr', 'view', String(prNumber), '--json', 'headRefName,mergeCommit'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const parsed = JSON.parse(out);
+    const branchName = parsed?.headRefName;
+    if (branchName) {
+      planTask = db.prepare(
+        "SELECT id, title, phase_id, plan_id, status FROM plan_tasks WHERE branch_name = ?"
+      ).get(branchName);
+      if (planTask) {
+        // Backfill pr_number while we're here so future hits skip tier 2.
+        try {
+          db.prepare("UPDATE plan_tasks SET pr_number = ? WHERE id = ? AND pr_number IS NULL")
+            .run(prNumber, planTask.id);
+        } catch { /* non-fatal */ }
+        return { planTask, matchedBy: 'branch_name' };
+      }
+
+      // Tier 3: commit body Task ID extraction
+      const mergeSha = parsed?.mergeCommit?.oid;
+      if (mergeSha) {
+        try {
+          const commitMsg = execFileSync('git', ['log', '-1', '--format=%B', mergeSha], {
+            cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+          });
+          const todoMatch = commitMsg.match(/Task ID:\s*([0-9a-f-]{36})/i);
+          if (todoMatch) {
+            planTask = db.prepare(
+              "SELECT id, title, phase_id, plan_id, status FROM plan_tasks WHERE todo_task_id = ?"
+            ).get(todoMatch[1]);
+            if (planTask) {
+              try {
+                db.prepare("UPDATE plan_tasks SET pr_number = ?, branch_name = COALESCE(branch_name, ?) WHERE id = ? AND pr_number IS NULL")
+                  .run(prNumber, branchName, planTask.id);
+              } catch { /* non-fatal */ }
+              return { planTask, matchedBy: 'todo_task_id' };
+            }
+          }
+        } catch { /* git log failure non-fatal */ }
+      }
+    }
+  } catch { /* gh pr view failure non-fatal */ }
+
+  return null;
+}
+
 async function main() {
   let input = '';
   for await (const chunk of process.stdin) {
@@ -74,16 +144,14 @@ async function main() {
   try {
     const db = new Database(PLANS_DB_PATH);
 
-    // Find plan task with this PR number
-    const planTask = db.prepare(
-      "SELECT id, title, phase_id, plan_id, status FROM plan_tasks WHERE pr_number = ?"
-    ).get(prNumber);
-
-    if (!planTask || planTask.status === 'completed') {
+    // FIX-4: Three-tier lookup (pr_number → branch_name → todo_task_id)
+    const matchResult = findPlanTaskByPr(db, prNumber);
+    if (!matchResult || !matchResult.planTask || matchResult.planTask.status === 'completed') {
       db.close();
       process.stdout.write(NOOP);
       return;
     }
+    const planTask = matchResult.planTask;
 
     const now = new Date().toISOString();
 

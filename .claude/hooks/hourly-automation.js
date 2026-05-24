@@ -4665,6 +4665,115 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
   });
 
   // =========================================================================
+  // PLAN TASK MERGE RECONCILER (FIX-6, gate-exempt, 5-minute cooldown)
+  // Catches the case where plan-merge-tracker.js missed a PR merge — typically
+  // because pr_number was never set on plan_tasks (project-manager forgot to
+  // call update_task_progress({pr_number}) before merge). In plan c0781f93
+  // this affected 5 of 6 docs PRs: they merged to preview but plan_tasks
+  // stayed `in_progress` indefinitely, blocking the gate from advancing.
+  //
+  // For each plan_task that is `in_progress` AND has `branch_name` set AND
+  // pr_merged=0, query `gh pr list --search head:<branch> --state merged`
+  // and if a merged PR is found, call update_task_progress to complete it.
+  // =========================================================================
+  await runIfDue('plan_task_merge_reconciler', {
+    state, now,
+    stateKey: 'lastPlanTaskMergeReconcileRun',
+    label: 'Plan task merge reconciler',
+    gateExempt: true,
+    fn: async () => {
+      const plansDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
+      if (!Database || !fs.existsSync(plansDbPath)) return;
+      let plansDb;
+      try {
+        plansDb = new Database(plansDbPath);
+        plansDb.pragma('busy_timeout = 3000');
+
+        // Find stuck tasks: in_progress with a branch name but no merged PR recorded.
+        const stuck = plansDb.prepare(`
+          SELECT id, plan_id, phase_id, title, branch_name, todo_task_id, verification_strategy
+          FROM plan_tasks
+          WHERE status = 'in_progress'
+            AND branch_name IS NOT NULL
+            AND branch_name != ''
+            AND pr_merged = 0
+          LIMIT 50
+        `).all();
+
+        if (!stuck || stuck.length === 0) return;
+
+        const execFile = (await import('child_process')).execFileSync;
+        let reconciled = 0;
+
+        for (const t of stuck) {
+          try {
+            // Ask gh for the merged PR matching this head branch.
+            const out = execFile('gh', ['pr', 'list',
+              '--search', `head:${t.branch_name}`,
+              '--state', 'merged',
+              '--json', 'number,mergeCommit,title',
+              '--limit', '1',
+            ], {
+              cwd: PROJECT_DIR, encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
+            });
+            const parsed = JSON.parse(out);
+            if (!Array.isArray(parsed) || parsed.length === 0) continue;
+            const pr = parsed[0];
+            if (!pr || !pr.number) continue;
+
+            // Backfill pr_number/pr_merged. We perform the same audit-gate
+            // routing logic that update_task_progress does so behavior stays
+            // consistent regardless of which path completes the task.
+            const ts = new Date().toISOString();
+            const passedAudit = plansDb.prepare(
+              "SELECT id FROM plan_audits WHERE task_id = ? AND verdict = 'pass' LIMIT 1"
+            ).get(t.id);
+
+            if (passedAudit || !t.verification_strategy) {
+              plansDb.prepare(
+                "UPDATE plan_tasks SET pr_number = ?, pr_merged = 1, status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?"
+              ).run(pr.number, ts, ts, t.id);
+              plansDb.prepare(
+                "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'task', ?, 'status', 'in_progress', 'completed', ?, 'plan_task_merge_reconciler')"
+              ).run(crypto.randomUUID(), t.id, ts);
+            } else {
+              // Route through audit gate
+              plansDb.prepare(
+                "UPDATE plan_tasks SET pr_number = ?, pr_merged = 1, status = 'pending_audit', updated_at = ? WHERE id = ?"
+              ).run(pr.number, ts, t.id);
+              plansDb.prepare(
+                "INSERT INTO state_changes (id, entity_type, entity_id, field_name, old_value, new_value, changed_at, changed_by) VALUES (?, 'task', ?, 'status', 'in_progress', 'pending_audit', ?, 'plan_task_merge_reconciler')"
+              ).run(crypto.randomUUID(), t.id, ts);
+              const auditId = crypto.randomUUID();
+              const attemptNum = ((plansDb.prepare('SELECT COUNT(*) as c FROM plan_audits WHERE task_id = ?')
+                .get(t.id))?.c || 0) + 1;
+              plansDb.prepare(
+                'INSERT INTO plan_audits (id, task_id, plan_id, verification_strategy, requested_at, attempt_number) VALUES (?, ?, ?, ?, ?, ?)'
+              ).run(auditId, t.id, t.plan_id, t.verification_strategy, ts, attemptNum);
+            }
+            reconciled++;
+            log(`[plan-merge-reconciler] Backfilled PR #${pr.number} for plan task ${t.id} (${t.title})`);
+          } catch (err) {
+            // Silently skip — gh might be rate-limited or branch might have been deleted.
+            // Block iteration cadence (5min) means we'll try again next cycle.
+            if (err.message && !err.message.includes('no pull requests')) {
+              log(`[plan-merge-reconciler] PR lookup failed for ${t.branch_name}: ${err.message.slice(0, 200)}`);
+            }
+          }
+        }
+
+        if (reconciled > 0) {
+          log(`Plan task merge reconciler: backfilled ${reconciled} merge(s).`);
+        }
+      } catch (err) {
+        log(`[plan-merge-reconciler] Error: ${err.message}`);
+      } finally {
+        try { plansDb?.close(); } catch { /* ignore */ }
+      }
+    },
+  });
+
+  // =========================================================================
   // GLOBAL DEPUTY-CTO MONITOR HEALTH (gate-exempt, 5-minute cooldown)
   // Ensures a persistent task with task_type='global_monitor' exists and
   // has a running monitor session. Auto-creates the task and spawns a
