@@ -52,36 +52,39 @@ Repeat this cycle continuously until the plan completes, respecting the per-cycl
 mcp__plan-orchestrator__get_spawn_ready_tasks({ plan_id: "<your plan ID>" })
 ```
 
-### Step 2: Spawn Persistent Tasks for Ready Items
-For each ready plan task that does NOT yet have a `persistent_task_id`:
+### Step 2: Spawn Ready Plan Tasks
+
+**Every plan_task already has a `todo_task_id` linked at plan-creation time** —
+the plan-orchestrator pre-creates a todo task per plan_task inside `createPlan` /
+`addPlanTask` (see `plan-orchestrator/server.ts:712-740`). The auto-linker hook
+(`persistent-task-linker.js`) will link the spawned work back to YOUR persistent
+task automatically. **Do NOT call `create_persistent_task` or `create_task` for
+plan-task work.**
+
+For each ready plan_task returned by `get_spawn_ready_tasks`:
 
 ```
-mcp__persistent-task__create_persistent_task({
-  title: "<plan task title>",
-  prompt: "<plan task description + substeps as outcome criteria>",
-  outcome_criteria: "<derived from plan task substeps>",
-  plan_task_id: "<plan task ID>",
-  plan_id: "<plan ID>"
-})
-```
+// Look at the row you got back — it already has `todo_task_id` set.
+// Spawn the existing todo task directly:
+mcp__agent-tracker__force_spawn_tasks({ taskIds: ["<todo_task_id>"] })
 
-These fields are stored in the persistent task's metadata and enable:
-- `plan-persistent-sync.js` to auto-cascade completion back to the plan
-- `persistent-task-briefing.js` to inject plan context into the monitor's briefing
-
-Then activate it:
-```
-mcp__persistent-task__activate_persistent_task({ id: "<persistent task ID>" })
-```
-
-Then link it to the plan task:
-```
+// Mark the plan_task in-progress so the dashboard reflects active work:
 mcp__plan-orchestrator__update_task_progress({
-  task_id: "<plan task ID>",
-  persistent_task_id: "<persistent task ID>",
+  task_id: "<plan_task_id>",
   status: "in_progress"
 })
 ```
+
+Do NOT pass `persistent_task_id` to `update_task_progress` for plan-task work —
+the link lives on `todo_task_id`, not on `plan_tasks.persistent_task_id`. The
+audit of plan c0781f93 found this exact data-model contradiction left every
+plan_task's `persistent_task_id` permanently NULL because no `create_persistent_task`
+call was ever made, and the docs telling agents to make one were ignored.
+
+**Exception** — `create_persistent_task` for plan-task work is only correct when
+a plan step genuinely needs its own multi-session monitor (a step that
+orchestrates 3+ sub-agents over 60+ minutes). 99% of plan steps do not need
+this. The plan-manager IS the monitor.
 
 ### Step 3: Monitor Running Persistent Tasks
 For each active persistent task linked to a plan task:
@@ -264,3 +267,44 @@ If you cannot proceed because of an external blocker (missing credentials, CTO a
 3. **Do NOT skip tasks to escape the stop hook** — the server enforces skip authorization
 4. Tasks in gate phases cannot be skipped at all (server-enforced)
 5. Skipping a task requires `skip_reason` and `skip_authorization` fields — only use with CTO direction
+
+## Wait Patterns — DO NOT abuse `submit_bypass_request`
+
+If you need to **wait** for a condition (CI to finish, child agent to report, demo
+to complete, PR to merge), do NOT use `submit_bypass_request` as a sleep
+substitute. The bypass request is intended to surface BLOCKERS to the CTO. Using
+it for routine waits:
+
+- Marks your task "blocked, needs CTO action" in the next CTO briefing (false alarm)
+- Pauses your task indefinitely if the timed-auto-resume infrastructure fails (audited
+  failure mode: ISO-8601 vs `datetime('now')` SQL comparison bug left a plan-manager
+  paused 3+ hours past its `auto_resume_at`)
+- Consumes a CTO-attention slot
+
+CORRECT wait patterns:
+
+1. **Short wait (<5 min)**: end your cycle naturally with a brief `last_summary`,
+   exit, and let hourly automation respawn you. Cost of re-spawn: <30s. **THIS IS
+   THE DEFAULT PATTERN. Use it for almost every wait.**
+
+2. **Medium wait (5–60 min) for CI / PR / demo / child agent**: end your cycle
+   with a `last_summary` describing the condition you're waiting for. The next
+   revival will see the merged PR / completed demo / child report and proceed.
+   Do NOT bypass-request "wait for CI" — CI status is visible from
+   `gh pr checks`, and your re-spawn will catch it.
+
+3. **Long wait (60+ min) or true blocker** (missing credentials, external
+   service down, conflicting CTO instructions): use `submit_bypass_request`
+   WITHOUT `pause_duration_minutes` so the CTO sees it on next briefing and
+   resolves with full context.
+
+4. **DO NOT** use `Bash("sleep N && ...")` — the no-sleep guard blocks it for
+   exactly this reason. The correct alternative is exit + revival, NOT
+   submit_bypass_request.
+
+5. **DO NOT** set `pause_duration_minutes > 60` — there is a PreToolUse hook
+   (`bypass-pause-duration-guard.js`) that hard-denies longer pauses without
+   verbatim CTO pre-approval.
+
+If you find yourself reaching for `sleep` or `submit_bypass_request` to wait,
+the right action is `summarize_work` + exit. Period.

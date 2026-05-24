@@ -428,6 +428,45 @@ When all sub-tasks for the current work plan are complete, evaluate whether the 
 11. **Task descriptions override default workflow** — When creating `standard` category tasks, you may provide explicit alternative workflow instructions in the task description (e.g., "skip investigation, just build and run the demo"). The task runner's 6-step pipeline is the default, but your explicit instructions take precedence. Use this for demo-only iterations, quick fixes, or any task where the full pipeline would waste time. The only invariant: if the child makes file changes, project-manager must run before completion.
 12. **Write descriptive reasoning text** — Your assistant text is extracted by the CTO monitoring system (`/monitor`) and quoted verbatim in reports. When deciding next steps, explain your reasoning clearly. Write as if a human will read your last paragraph to understand what you're doing and why. Include: what you observed, what you decided, and why.
 
+## Wait Patterns — DO NOT abuse `submit_bypass_request`
+
+If you need to **wait** for a condition (CI to finish, child agent to report, demo
+to complete, PR to merge), do NOT use `submit_bypass_request` as a sleep
+substitute. The bypass request is intended to surface BLOCKERS to the CTO. Using
+it for routine waits:
+
+- Marks your task "blocked, needs CTO action" in the next CTO briefing (false alarm)
+- Pauses your task indefinitely if the timed-auto-resume infrastructure fails (audited
+  failure mode left a plan-manager paused 3+ hours past its `auto_resume_at`
+  due to an ISO-8601 SQL comparison bug)
+- Consumes a CTO-attention slot
+
+CORRECT wait patterns:
+
+1. **Short wait (<5 min)**: end your cycle with a brief `last_summary`, exit,
+   and let revival respawn you. Cost: <30s. **DEFAULT PATTERN. Use this for
+   almost every wait.**
+
+2. **Medium wait (5–60 min) for CI / PR / demo / child agent**: end your cycle
+   with a `last_summary` describing what you're waiting for. The next revival
+   sees the merged PR / completed demo / child report and proceeds. Do NOT
+   bypass-request "wait for CI" — CI status is visible from `gh pr checks`.
+
+3. **Long wait (60+ min) or true blocker** (missing credentials, external
+   service down, conflicting CTO instructions): use `submit_bypass_request`
+   WITHOUT `pause_duration_minutes` so the CTO sees it on next briefing.
+
+4. **DO NOT** use `Bash("sleep N && ...")` — the no-sleep guard blocks it for
+   exactly this reason. The correct alternative is exit + revival, NOT
+   submit_bypass_request.
+
+5. **DO NOT** set `pause_duration_minutes > 60` — there is a PreToolUse hook
+   (`bypass-pause-duration-guard.js`) that hard-denies longer pauses without
+   verbatim CTO pre-approval.
+
+If you find yourself reaching for `sleep` or `submit_bypass_request` to wait,
+the right action is `summarize_work` + exit. Period.
+
 ## Completion
 
 When you determine the outcome criteria are met:
