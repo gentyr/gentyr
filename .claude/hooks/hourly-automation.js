@@ -782,6 +782,16 @@ function saveState(state) {
 // the generic 'hourly-automation'. Reset to null when no block is active.
 let _currentBlock = null;
 
+// Module-level CTO gate state. Set by main() once after the gate check is
+// computed, read by runIfDue() so the `gateExempt` opt becomes meaningful.
+// When null, gate state is unknown (e.g. unit-test entry points) and we
+// fail-OPEN — assume the gate is open so blocks still run.
+let _gateOpen = null;
+
+function setGateOpen(open) {
+  _gateOpen = open === true;
+}
+
 /**
  * Returns the source string for the currently executing runIfDue block,
  * or 'hourly-automation' when called from outside a block (e.g. setup code).
@@ -791,7 +801,7 @@ function currentSource() {
 }
 
 async function runIfDue(key, opts) {
-  const { state, now, intervals, stateKey, configToggle, config, fn, label = key, localModeSkip } = opts;
+  const { state, now, intervals, stateKey, configToggle, config, fn, label = key, localModeSkip, gateExempt = false } = opts;
 
   // Check local mode skip
   if (localModeSkip) {
@@ -803,6 +813,16 @@ async function runIfDue(key, opts) {
   if (configToggle && config && config[configToggle] === false) {
     log(`${label}: disabled in config.`);
     return { ran: false, skipped: 'disabled' };
+  }
+
+  // FIX-15: Honor gateExempt opt. Position-based gate enforcement still works
+  // because blocks below the gate-exit short-circuit (line ~5978) never execute
+  // when the gate is closed, but this also makes gateExempt MEANINGFUL — if
+  // someone moves a block past the gate check by mistake, gateExempt=true still
+  // protects it. Fail-OPEN when gate state is unknown (_gateOpen===null).
+  if (_gateOpen === false && !gateExempt) {
+    log(`${label}: skipped (CTO gate closed, not gate-exempt)`);
+    return { ran: false, skipped: 'gate_closed' };
   }
 
   const effectiveStateKey = stateKey || `${key}LastRun`;
@@ -825,14 +845,22 @@ async function runIfDue(key, opts) {
     return { ran: false, skipped: 'cooldown' };
   }
 
+  // FIX-18: time the body and log success (or failure) explicitly. Without
+  // this, blocks that ran successfully with empty results (e.g. timed_pause
+  // auto-resume with no expired rows) leave no trace in the log, which made
+  // FIX-1's silent-failure bug invisible. Gated behind GENTYR_VERBOSE_RUN_IF_DUE
+  // because logging every empty block on every cycle is too noisy by default.
+  const verbose = process.env.GENTYR_VERBOSE_RUN_IF_DUE === '1' || process.env.GENTYR_VERBOSE_RUN_IF_DUE === 'true';
+  const blockStart = Date.now();
   try {
     _currentBlock = key;
     const result = await fn();
     state[effectiveStateKey] = now;
     saveState(state);
+    if (verbose) log(`${label}: ok (${Date.now() - blockStart}ms)`);
     return { ran: true, result };
   } catch (err) {
-    log(`${label} error (non-fatal): ${err.message}`);
+    log(`${label} error (non-fatal) after ${Date.now() - blockStart}ms: ${err.message}`);
     state[effectiveStateKey] = now;
     saveState(state);
     return { ran: false, skipped: 'error' };
@@ -3261,6 +3289,8 @@ async function main() {
   // task runner, promotions, etc.) are skipped when gate is closed.
   const ctoGate = checkCtoActivityGate(config);
   const ctoGateOpen = ctoGate.open;
+  // FIX-15: thread gate state into runIfDue so gateExempt becomes meaningful
+  setGateOpen(ctoGateOpen);
   if (!ctoGateOpen) {
     log(`CTO Activity Gate CLOSED: ${ctoGate.reason}`);
     log('Monitoring-only mode: health monitors, triage, and CI checks will still run.');
@@ -3718,9 +3748,14 @@ async function main() {
         db.pragma('journal_mode = WAL');
         db.pragma('busy_timeout = 3000');
 
-        // Find expired timed pauses
+        // Find expired timed pauses.
+        // NOTE: auto_resume_at is stored as ISO-8601 (e.g. '2026-05-24T14:20:41.321Z'), but
+        // datetime('now') returns SQLite's canonical format ('2026-05-24 14:20:41'). A naive
+        // string compare fails because 'T' (0x54) > ' ' (0x20), so an ISO string sorts AFTER
+        // the bare format for same-day rows. Wrap both sides in datetime() to coerce to the
+        // same canonical format before comparing.
         const expired = db.prepare(
-          "SELECT id, task_type, task_id, task_title, summary, pause_duration_minutes FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NOT NULL AND auto_resume_at <= datetime('now')"
+          "SELECT id, task_type, task_id, task_title, summary, pause_duration_minutes FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NOT NULL AND datetime(auto_resume_at) <= datetime('now')"
         ).all();
 
         if (!expired || expired.length === 0) return;
@@ -3790,6 +3825,183 @@ async function main() {
         }
       } catch (err) {
         log(`[timed-pause-auto-resume] Error: ${err.message}`);
+      } finally {
+        try { db?.close(); } catch { /* ignore */ }
+      }
+    },
+  });
+
+  // =========================================================================
+  // BYPASS SLA ENFORCER (1-minute runIfDue cooldown, gate-exempt)
+  // FIX-31: Hard SLA guarantee — no pending bypass with `auto_resume_at` may
+  // stay pending past `auto_resume_at + 5 minutes`. This is an INDEPENDENT
+  // defense-in-depth path from `timed_pause_auto_resume`:
+  //   - Different SQL (always uses datetime() coercion — would have caught FIX-1
+  //     even if timed_pause_auto_resume's SQL was broken).
+  //   - Different recovery: force-resolves the bypass AND force-resumes the task
+  //     AND emits a high-severity CTO alert, even if either primary path failed.
+  //   - Independent code path: no shared dependency on timed_pause_auto_resume,
+  //     no shared dependency on persistent_stale_pause_resume.
+  // SLA budget: 5 minutes past `auto_resume_at` is the trigger (giving the
+  // primary `timed_pause_auto_resume` path 4 minutes of normal cooldown grace
+  // plus 1 minute of slack). Past 5 min, infrastructure failure is assumed and
+  // forced recovery fires.
+  // =========================================================================
+  await runIfDue('bypass_sla_enforcer', {
+    state, now,
+    stateKey: 'lastBypassSlaEnforcerRun',
+    label: 'Bypass SLA enforcer',
+    gateExempt: true,
+    fn: async () => {
+      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+      if (!Database || !fs.existsSync(bypassDbPath)) return;
+      let db;
+      try {
+        db = new Database(bypassDbPath);
+        db.pragma('journal_mode = WAL');
+        db.pragma('busy_timeout = 3000');
+
+        // Use datetime(auto_resume_at, '+5 minutes') for the SLA grace window AND
+        // for the lex-safe coercion. Works regardless of whether FIX-1 lands.
+        const overdue = db.prepare(`
+          SELECT id, task_type, task_id, task_title, summary, pause_duration_minutes, auto_resume_at, created_at
+          FROM bypass_requests
+          WHERE status = 'pending'
+            AND auto_resume_at IS NOT NULL
+            AND datetime(auto_resume_at, '+5 minutes') <= datetime('now')
+        `).all();
+
+        if (!overdue || overdue.length === 0) return;
+
+        for (const req of overdue) {
+          // Compute how overdue we are for log + alert clarity
+          let overdueMinutes = 0;
+          try {
+            overdueMinutes = Math.round((Date.now() - new Date(req.auto_resume_at).getTime()) / 60000);
+          } catch { /* ignore parse errors */ }
+
+          log(`[bypass-sla-enforcer] OVERDUE bypass ${req.id} for ${req.task_type} task ${req.task_id} (${req.task_title}) — auto_resume_at=${req.auto_resume_at} is ${overdueMinutes}m overdue. Force-resolving and respawning.`);
+
+          // 1. Force-resolve the bypass (idempotent — only fires when still pending)
+          db.prepare(`
+            UPDATE bypass_requests
+            SET status = 'approved',
+                resolution_context = ?,
+                resolved_at = datetime('now'),
+                resolved_by = 'bypass_sla_enforcer'
+            WHERE id = ? AND status = 'pending'
+          `).run(`SLA breach: auto_resume_at + 5 minutes elapsed (${overdueMinutes}m overdue). Force-resolved by enforcer.`, req.id);
+
+          // 2. Force-resume the persistent task and enqueue a revival monitor.
+          //    Mirrors the timed_pause_auto_resume revival path but lives in its
+          //    own try/catch so a failure in the persistent-task layer cannot
+          //    block the bypass row from being resolved.
+          if (req.task_type === 'persistent') {
+            const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+            let ptDb;
+            try {
+              ptDb = new Database(ptDbPath);
+              ptDb.pragma('busy_timeout = 3000');
+              const result = ptDb.prepare(
+                "UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'"
+              ).run(req.task_id);
+
+              if (result.changes > 0) {
+                ptDb.prepare(
+                  "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
+                ).run(
+                  crypto.randomUUID(),
+                  req.task_id,
+                  JSON.stringify({
+                    reason: 'sla_enforced_resume',
+                    bypass_request_id: req.id,
+                    overdue_minutes: overdueMinutes,
+                    pause_duration_minutes: req.pause_duration_minutes,
+                  }),
+                );
+
+                const task = ptDb.prepare(
+                  "SELECT id, title, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?"
+                ).get(req.task_id);
+
+                if (task) {
+                  const revivalResult = await buildRevivalPrompt(task, `SLA-enforced resume: your timed pause was overdue by ${overdueMinutes} minutes (primary auto-resume failed). Resume work where you left off and treat this as a normal revival.`);
+                  if (revivalResult) {
+                    enqueueSession({
+                      ...revivalResult,
+                      title: `[Revival] SLA-enforced resume: ${req.task_title}`,
+                      source: 'bypass-sla-enforcer',
+                      priority: 'critical',
+                      lane: 'persistent',
+                    });
+                  }
+                }
+
+                try {
+                  const ppPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
+                  const { propagateResumeToPlan } = await import(ppPath);
+                  propagateResumeToPlan(req.task_id);
+                } catch { /* non-fatal */ }
+              }
+            } catch (err) {
+              log(`[bypass-sla-enforcer] persistent-task resume failed for ${req.task_id}: ${err.message} (bypass row still force-resolved)`);
+            } finally {
+              try { ptDb?.close(); } catch { /* ignore */ }
+            }
+          } else {
+            log(`[bypass-sla-enforcer] Todo task ${req.task_id} bypass force-resolved — normal spawning will resume`);
+          }
+
+          // 3. Write a CTO alert so the SLA breach is visible at the top of the
+          //    next interactive session briefing (consumed by session-briefing.js
+          //    via the SLA-breach block).
+          try {
+            const alertDir = path.join(PROJECT_DIR, '.claude', 'state');
+            const alertPath = path.join(alertDir, 'sla-breach-alerts.json');
+            let alerts = [];
+            if (fs.existsSync(alertPath)) {
+              try { alerts = JSON.parse(fs.readFileSync(alertPath, 'utf8')) || []; } catch { alerts = []; }
+            }
+            alerts.unshift({
+              id: `sla-${req.id}`,
+              ts: new Date().toISOString(),
+              severity: 'high',
+              category: 'sla_breach',
+              bypass_request_id: req.id,
+              task_type: req.task_type,
+              task_id: req.task_id,
+              task_title: req.task_title,
+              overdue_minutes: overdueMinutes,
+              auto_resume_at: req.auto_resume_at,
+              message: `Plan/persistent task '${req.task_title}' bypass auto-resume was overdue by ${overdueMinutes}m. Enforcer auto-resumed.`,
+            });
+            // Keep at most 50 most recent alerts.
+            alerts = alerts.slice(0, 50);
+            const tmpPath = `${alertPath}.tmp`;
+            fs.writeFileSync(tmpPath, JSON.stringify(alerts, null, 2));
+            fs.renameSync(tmpPath, alertPath);
+          } catch (err) {
+            log(`[bypass-sla-enforcer] Failed to write CTO alert (non-fatal): ${err.message}`);
+          }
+
+          // 4. Append a structured audit-log entry.
+          try {
+            const sa = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js'));
+            if (sa.appendAuditEvent) {
+              sa.appendAuditEvent({
+                type: 'bypass_sla_breach',
+                bypass_request_id: req.id,
+                task_type: req.task_type,
+                task_id: req.task_id,
+                task_title: req.task_title,
+                overdue_minutes: overdueMinutes,
+                auto_resume_at: req.auto_resume_at,
+              });
+            }
+          } catch { /* non-fatal — session-audit may not be available in all installs */ }
+        }
+      } catch (err) {
+        log(`[bypass-sla-enforcer] Error: ${err.message}`);
       } finally {
         try { db?.close(); } catch { /* ignore */ }
       }

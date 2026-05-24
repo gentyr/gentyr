@@ -470,6 +470,99 @@ function getPendingBypassRequests() {
 }
 
 // ---------------------------------------------------------------------------
+// Data gathering: overdue bypass auto-resumes (FIX-23 / FIX-33)
+// SLA breach: pending bypass with auto_resume_at in the past. This is the
+// canonical "plan-manager stuck past CTO approval window" detection. Surfaced
+// at the absolute top of the briefing so the CTO sees it before anything else.
+// ---------------------------------------------------------------------------
+
+function getOverdueBypasses() {
+  if (!Database || !fs.existsSync(BYPASS_DB_PATH)) return null;
+  try {
+    const db = new Database(BYPASS_DB_PATH, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    let rows;
+    try {
+      // Use datetime() coercion so the same lex-comparison bug that caused
+      // FIX-1 cannot quietly hide SLA breaches from the briefing.
+      rows = db.prepare(
+        `SELECT id, task_type, task_id, task_title, summary, auto_resume_at,
+                pause_duration_minutes, created_at
+         FROM bypass_requests
+         WHERE status = 'pending'
+           AND auto_resume_at IS NOT NULL
+           AND datetime(auto_resume_at) <= datetime('now')
+         ORDER BY auto_resume_at ASC`
+      ).all();
+    } catch (_) {
+      rows = [];
+    }
+    db.close();
+    if (!rows || rows.length === 0) return null;
+    return rows.map(r => {
+      let overdueMin = 0;
+      try {
+        overdueMin = Math.round((Date.now() - new Date(r.auto_resume_at).getTime()) / 60000);
+      } catch {}
+      return { ...r, overdue_minutes: overdueMin };
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Data gathering: SLA breach alerts written by bypass_sla_enforcer (FIX-33)
+// These are RESOLVED SLA breaches — the enforcer already auto-resumed the
+// affected task, but the CTO needs visibility that infrastructure failed.
+// ---------------------------------------------------------------------------
+
+function getSlaBreachAlerts() {
+  const alertPath = path.join(PROJECT_DIR, '.claude', 'state', 'sla-breach-alerts.json');
+  if (!fs.existsSync(alertPath)) return null;
+  try {
+    const raw = fs.readFileSync(alertPath, 'utf8');
+    const alerts = JSON.parse(raw);
+    if (!Array.isArray(alerts) || alerts.length === 0) return null;
+    // Only show alerts from the last 24h to avoid stale noise.
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const recent = alerts.filter(a => {
+      try { return new Date(a.ts).getTime() >= cutoff; } catch { return false; }
+    });
+    return recent.length > 0 ? recent : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Data gathering: focus-mode state (FIX-21)
+// Surfaces when focus mode is on so the CTO knows cooldowns are rate-multiplied
+// and plans will progress slowly.
+// ---------------------------------------------------------------------------
+
+function getFocusModeStateForBriefing() {
+  if (!fs.existsSync(FOCUS_MODE_PATH)) return null;
+  try {
+    const raw = fs.readFileSync(FOCUS_MODE_PATH, 'utf8');
+    const state = JSON.parse(raw);
+    if (!state || state.enabled !== true) return null;
+    let ageDays = null;
+    try {
+      ageDays = Math.round((Date.now() - new Date(state.enabledAt).getTime()) / (24 * 60 * 60 * 1000));
+    } catch {}
+    return {
+      enabled: true,
+      enabledAt: state.enabledAt,
+      enabledBy: state.enabledBy,
+      ageDays,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Data gathering: pending deferred protected actions
 // ---------------------------------------------------------------------------
 
@@ -782,6 +875,73 @@ function getGitActivity(hours = 2) {
 
 function buildInteractiveBriefing() {
   const lines = ['[DEPUTY-CTO SESSION BRIEFING]', ''];
+
+  // ⚠ SLA BREACH — overdue bypass auto-resumes (FIX-23/FIX-33)
+  // Surfaced at the absolute top, before everything else, so the CTO sees it
+  // on first interactive session after any plan/persistent task is stuck past
+  // its auto_resume_at deadline. This is the canonical "plan-manager paused
+  // >1h without my approval" detector.
+  const overdueBypasses = getOverdueBypasses();
+  if (overdueBypasses && overdueBypasses.length > 0) {
+    lines.push('=== ⚠ SLA BREACH — BYPASS AUTO-RESUME OVERDUE ===');
+    lines.push('');
+    lines.push('One or more pending bypass requests are past their auto_resume_at deadline.');
+    lines.push('This means a plan/persistent task is paused PAST the CTO-approval window.');
+    lines.push('');
+    for (const r of overdueBypasses) {
+      lines.push(`  • ${r.task_title}`);
+      lines.push(`    id=${r.id} type=${r.task_type} task=${r.task_id}`);
+      lines.push(`    auto_resume_at=${r.auto_resume_at} — OVERDUE by ${r.overdue_minutes}m`);
+      lines.push(`    summary: ${(r.summary || '').slice(0, 200)}`);
+      lines.push('    Likely causes:');
+      lines.push('      - timed_pause_auto_resume SQL bug (datetime() coercion) — see FIX-1');
+      lines.push('      - hourly-automation wedged (no execution watchdog) — see FIX-16');
+      lines.push('      - both auto-resume paths failed simultaneously');
+      lines.push('    Recovery:');
+      if (r.task_type === 'persistent') {
+        lines.push(`      mcp__persistent-task__resume_persistent_task({ id: "${r.task_id}" })`);
+      } else {
+        lines.push(`      mcp__agent-tracker__resolve_bypass_request({ request_id: "${r.id}", decision: "approved", context: "..." })`);
+      }
+      lines.push('    The bypass_sla_enforcer block in hourly-automation.js (FIX-31)');
+      lines.push('    should auto-resume this within 1 minute — if it has not, the entire');
+      lines.push('    hourly-automation cycle may be wedged. Check `.claude/hourly-automation.log`.');
+      lines.push('');
+    }
+    lines.push('=================================================');
+    lines.push('');
+  }
+
+  // SLA breach alert log (FIX-33): resolved breaches in the last 24h. These
+  // were already auto-resumed by bypass_sla_enforcer, but the CTO needs to
+  // know they happened so any pattern of recurring breaches is visible.
+  const slaAlerts = getSlaBreachAlerts();
+  if (slaAlerts && slaAlerts.length > 0) {
+    lines.push(`[SLA BREACH HISTORY] ${slaAlerts.length} auto-recovered breach(es) in the last 24h.`);
+    for (const a of slaAlerts.slice(0, 3)) {
+      lines.push(`  - ${a.ts}: ${a.task_title} overdue ${a.overdue_minutes}m (bypass=${a.bypass_request_id})`);
+    }
+    if (slaAlerts.length > 3) lines.push(`  ... and ${slaAlerts.length - 3} more (see .claude/state/sla-breach-alerts.json)`);
+    lines.push('  Investigate the root cause — repeated SLA breaches mean the primary');
+    lines.push('  auto-resume infrastructure (timed_pause_auto_resume) is failing.');
+    lines.push('');
+  }
+
+  // Focus mode visibility (FIX-21): the user had focus mode on for 20+ days
+  // without realizing cooldowns were inflated 143×. Surface this prominently.
+  const focusState = getFocusModeStateForBriefing();
+  if (focusState) {
+    const ageStr = focusState.ageDays != null ? ` (${focusState.ageDays} day${focusState.ageDays === 1 ? '' : 's'} ago)` : '';
+    lines.push('=== ⚠ FOCUS MODE ON ===');
+    lines.push(`Enabled by ${focusState.enabledBy || 'unknown'} at ${focusState.enabledAt || 'unknown'}${ageStr}.`);
+    lines.push('Effect: automated spawning is blocked except for CTO-directed work,');
+    lines.push('persistent monitors, and revivals. Cooldowns may be inflated by the');
+    lines.push('automation rate multiplier — plans launched in this mode will progress');
+    lines.push('SLOWLY (preview_promotion, staging_promotion, triage_check all delayed).');
+    lines.push('To disable: /focus-mode off  (or set_focus_mode({ enabled: false })).');
+    lines.push('========================');
+    lines.push('');
+  }
 
   // Automation rate notice (prominent — shown before queue state)
   const rateState = getAutomationRateState();

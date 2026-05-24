@@ -226,6 +226,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__agent-tracker__submit_bypass_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/bypass-pause-duration-guard.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [
