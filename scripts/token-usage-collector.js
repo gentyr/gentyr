@@ -34,6 +34,7 @@ import {
   listSessionFiles,
   parseUsageEventsIncremental,
   findAgentMarker,
+  findDebateRole,
   findUsageTagInJsonl,
   isSpawnedSession,
   readSubagentMeta,
@@ -207,10 +208,15 @@ export function openDb(dbPath = DB_PATH) {
   addColumnIfMissing(db, 'session_attribution', 'is_revival INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'session_attribution', 'revived_by TEXT');
   addColumnIfMissing(db, 'session_attribution', 'revival_count INTEGER NOT NULL DEFAULT 0');
+  // Debate-role column — tags adversarial-debate sub-agent sessions
+  // (defender / challenger / judge) so /tokens can measure debate cost
+  // separately from regular investigator usage. NULL for non-debate rows.
+  addColumnIfMissing(db, 'session_attribution', 'debate_role TEXT');
   // Indexes for the new dimensions.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_work_category ON session_attribution(work_category)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_spawn_origin ON session_attribution(spawn_origin)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_is_revival ON session_attribution(is_revival)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_debate_role ON session_attribution(debate_role)`);
   return db;
 }
 
@@ -290,7 +296,7 @@ function chaseSpawnOrigin(queueDb, { taskId, persistentTaskId, planId }) {
  * Falls back to the row's own `source` for `spawn_origin` when no
  * workIdentifier is available.
  */
-function attachWorkCategoryFields(row, { sessionId, queueDb = null, queueRowMetadata = null }) {
+function attachWorkCategoryFields(row, { sessionId, queueDb = null, queueRowMetadata = null, debateRole = null }) {
   const isRev = isRevivalSource(row.source);
   const workCategory = deriveWorkCategory({
     agentType: row.agent_type,
@@ -320,6 +326,7 @@ function attachWorkCategoryFields(row, { sessionId, queueDb = null, queueRowMeta
     is_revival: isRev ? 1 : 0,
     revived_by: isRev ? normalizeRevivalSource(row.source) : null,
     revival_count: revivalCount,
+    debate_role: debateRole || null,
   };
 }
 
@@ -370,6 +377,11 @@ export function resolveAttribution({
     // Claude Code actually writes) to `agent_type`. Pre-fix, the
     // mismatch dropped every Agent-tool subagent into `subagent:unknown`.
     const agentType = meta?.agent_type || 'unknown';
+    // Debate-role tagging: only meaningful on `investigator` sub-agents
+    // (defender / challenger / judge spawned via the adversarial-debate
+    // flow). Cheap to check anyway — skip the read for non-investigator
+    // sub-agents to avoid the file-open cost.
+    const debateRole = agentType === 'investigator' ? findDebateRole(jsonlPath) : null;
     return attachWorkCategoryFields({
       session_id: sessionId,
       source: `subagent:${agentType}`,
@@ -390,7 +402,7 @@ export function resolveAttribution({
       ended_at: null,
       attribution_status: 'resolved',
       last_attempt_at: now,
-    }, { sessionId });
+    }, { sessionId, debateRole });
   }
 
   // (1) Agent marker in JSONL -> queue_items.agent_id
@@ -578,6 +590,8 @@ const ATTR_INSERT_COLUMNS = [
   'started_at', 'ended_at', 'attribution_status', 'last_attempt_at',
   // PR B columns
   'work_category', 'spawn_origin', 'is_revival', 'revived_by', 'revival_count',
+  // Debate-role column — tags adversarial-debate sub-agent sessions
+  'debate_role',
 ];
 
 function upsertAttribution(db, attr, { force = false } = {}) {
@@ -611,7 +625,8 @@ function upsertAttribution(db, attr, { force = false } = {}) {
        spawn_origin = excluded.spawn_origin,
        is_revival = excluded.is_revival,
        revived_by = excluded.revived_by,
-       revival_count = excluded.revival_count
+       revival_count = excluded.revival_count,
+       debate_role = excluded.debate_role
      ${updateGuard}`
   ).run(...values);
 }
@@ -757,6 +772,63 @@ export function backfillWorkCategoryAttribution({
     tx();
 
     try { queueDb?.close(); } catch { /* non-fatal */ }
+  } finally {
+    try { db.close(); } catch { /* non-fatal */ }
+  }
+  return { rewrote, skipped: false };
+}
+
+/**
+ * Backfill debate_role on existing sub-agent attribution rows. Walks every
+ * `is_subagent=1` row, opens its JSONL, runs `findDebateRole()`, and updates
+ * when a marker is found. Idempotent — only writes when the result differs
+ * from the stored value. Gated by a `meta` row so it runs once per database.
+ */
+export function backfillDebateRoleAttribution({
+  projectDir = PROJECT_DIR,
+  dbPath = DB_PATH,
+  marker = 'debate_role_backfill_v1',
+} = {}) {
+  const db = openDb(dbPath);
+  let rewrote = 0;
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    const seen = db.prepare('SELECT value FROM meta WHERE key = ?').get(marker);
+    if (seen) return { rewrote: 0, skipped: true };
+
+    // Only investigator sub-agents can carry a debate role; narrow the scan.
+    const rows = db.prepare(
+      `SELECT session_id, debate_role
+       FROM session_attribution
+       WHERE is_subagent = 1 AND agent_type = 'investigator'`
+    ).all();
+
+    if (rows.length === 0) {
+      db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(marker, String(Date.now()));
+      return { rewrote: 0, skipped: false };
+    }
+
+    const sessionDir = getSessionDir(projectDir);
+    const files = listSessionFiles(sessionDir);
+    const byId = new Map();
+    for (const f of files) byId.set(f.sessionId, f);
+
+    const update = db.prepare(
+      `UPDATE session_attribution SET debate_role = ? WHERE session_id = ?`
+    );
+
+    const tx = db.transaction(() => {
+      for (const row of rows) {
+        const file = byId.get(row.session_id);
+        if (!file) continue;
+        const role = findDebateRole(file.path);
+        if (role === (row.debate_role || null)) continue;
+        update.run(role || null, row.session_id);
+        rewrote++;
+      }
+      db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(marker, String(Date.now()));
+    });
+    tx();
   } finally {
     try { db.close(); } catch { /* non-fatal */ }
   }
@@ -1014,6 +1086,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   } catch (err) {
     log(`work-category backfill error: ${err.stack || err.message}`);
+  }
+
+  // Debate-role backfill: tag existing investigator sub-agent rows whose
+  // JSONL contains a `DEBATE_ROLE: ...` marker. Runs once per DB.
+  try {
+    const bf3 = backfillDebateRoleAttribution();
+    if (!bf3.skipped) {
+      log(`debate-role backfill: tagged ${bf3.rewrote} attribution rows`);
+    }
+  } catch (err) {
+    log(`debate-role backfill error: ${err.stack || err.message}`);
   }
 
   // Kick off first cycle immediately, then schedule

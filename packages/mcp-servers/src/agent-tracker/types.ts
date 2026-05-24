@@ -150,6 +150,12 @@ export const SetLocalModeArgsSchema = z.object({
 
 export const GetLocalModeArgsSchema = z.object({});
 
+export const SetDebateModeArgsSchema = z.object({
+  enabled: z.boolean().describe('Enable (true) or disable (false) the investigator adversarial-debate flow. When disabled, debate-mode-guard.js denies any Task call that tries to spawn a defender/challenger/judge sub-agent.'),
+});
+
+export const GetDebateModeArgsSchema = z.object({});
+
 // ============================================================================
 // Automation Toggle Schemas
 // ============================================================================
@@ -710,6 +716,94 @@ export const DeputyEscalateToCtoArgsSchema = z.object({
 export type DeputyEscalateToCtoArgs = z.infer<typeof DeputyEscalateToCtoArgsSchema>;
 
 // ============================================================================
+// CTO Alignment Tracking Schemas
+// ============================================================================
+
+export const ALIGNMENT_GOAL_STATUSES = ['active', 'completed', 'archived', 'superseded'] as const;
+export type AlignmentGoalStatus = (typeof ALIGNMENT_GOAL_STATUSES)[number];
+
+export const ALIGNMENT_GOAL_ARCHIVE_REASONS = ['superseded', 'obsolete', 'completed'] as const;
+export type AlignmentGoalArchiveReason = (typeof ALIGNMENT_GOAL_ARCHIVE_REASONS)[number];
+
+export const ALIGNMENT_GOAL_SPEC_REVIEW_OUTCOMES = ['pending', 'specs_proposed', 'no_changes_needed'] as const;
+export type AlignmentGoalSpecReviewOutcome = (typeof ALIGNMENT_GOAL_SPEC_REVIEW_OUTCOMES)[number];
+
+export const RecordCtoAlignmentGoalArgsSchema = z.object({
+  verbatim_text: z.string().min(10).max(2000)
+    .describe('Verbatim substring copied EXACTLY from a CTO user prompt — must be a durable goal/specification statement, not an operational one-shot request'),
+  short_title: z.string().min(1).max(200)
+    .describe('Brief summary of the goal (1-200 chars) for listings and dashboards'),
+  cto_session_id: z.string().optional()
+    .describe('Session ID of the CTO session whose JSONL contains the verbatim text. If omitted, the active session is used. When user-alignment runs as a sub-agent, pass the parent CTO session ID; when spawned via a task linked to user prompts, pass the session ID those prompts came from.'),
+});
+export type RecordCtoAlignmentGoalArgs = z.infer<typeof RecordCtoAlignmentGoalArgsSchema>;
+
+export const ListCtoAlignmentGoalsArgsSchema = z.object({
+  status: z.enum([...ALIGNMENT_GOAL_STATUSES, 'all'] as const).optional()
+    .describe("Filter by status (default 'active'). Pass 'all' to include every status."),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Max rows to return (default 50, max 200)'),
+  include_evidence: z.boolean().optional()
+    .describe('When true, includes last_assessment_evidence and verbatim_text in each row. Default false to keep responses small.'),
+});
+export type ListCtoAlignmentGoalsArgs = z.infer<typeof ListCtoAlignmentGoalsArgsSchema>;
+
+export const GetCtoAlignmentGoalArgsSchema = z.object({
+  goal_id: z.string().min(1).describe('The alignment goal ID (ag-...)'),
+});
+export type GetCtoAlignmentGoalArgs = z.infer<typeof GetCtoAlignmentGoalArgsSchema>;
+
+export const UpdateCtoAlignmentGoalProgressArgsSchema = z.object({
+  goal_id: z.string().min(1).describe('The alignment goal ID (ag-...) to update'),
+  completion_percentage: z.number().int().min(0).max(100).optional()
+    .describe('Current honest assessment of completion (0-100). Omit when only updating spec_review_outcome on an already-completed goal.'),
+  evidence: z.object({
+    summary: z.string().min(10).max(2000).describe('Plain-English explanation of how the percentage was determined'),
+    files_checked: z.array(z.string()).optional().describe('Files examined for evidence'),
+    prs_referenced: z.array(z.string()).optional().describe('PR URLs or numbers referenced'),
+    notes: z.string().optional().describe('Additional notes'),
+  }).optional().describe('Evidence backing the assessment. Required when completion_percentage is provided.'),
+  spec_review_outcome: z.enum(ALIGNMENT_GOAL_SPEC_REVIEW_OUTCOMES).optional()
+    .describe("Set the spec_review_outcome after a 100% goal has been reviewed against the specs system. Use 'specs_proposed' when create/edit/delete_spec calls were filed, 'no_changes_needed' when the existing specs already cover the goal."),
+});
+export type UpdateCtoAlignmentGoalProgressArgs = z.infer<typeof UpdateCtoAlignmentGoalProgressArgsSchema>;
+
+export const ArchiveCtoAlignmentGoalArgsSchema = z.object({
+  goal_id: z.string().min(1).describe('The alignment goal ID (ag-...) to archive'),
+  reason: z.enum(ALIGNMENT_GOAL_ARCHIVE_REASONS)
+    .describe("Why the goal is being archived. 'superseded' REQUIRES a verbatim_text proving the CTO changed direction; 'obsolete' for goals no longer relevant; 'completed' for explicit closeout."),
+  verbatim_text: z.string().min(10).max(2000).optional()
+    .describe("For reason='superseded': REQUIRED verbatim substring from a newer CTO prompt that contradicts or replaces this goal. Verified against the CTO session JSONL the same way as record_cto_alignment_goal."),
+  cto_session_id: z.string().optional()
+    .describe("Session ID of the CTO session containing the supersession quote (when reason='superseded')."),
+});
+export type ArchiveCtoAlignmentGoalArgs = z.infer<typeof ArchiveCtoAlignmentGoalArgsSchema>;
+
+export interface AlignmentGoalRow {
+  id: string;
+  short_title: string;
+  verbatim_text?: string;
+  cto_session_id: string;
+  cto_session_file_hash: string;
+  cto_prompt_timestamp: string;
+  cto_prompt_line_number: number | null;
+  hmac: string;
+  status: AlignmentGoalStatus;
+  completion_percentage: number;
+  last_assessment_at: string | null;
+  last_assessment_evidence?: string | null;
+  completed_at: string | null;
+  spec_review_triggered_at: string | null;
+  spec_review_outcome: string | null;
+  archived_at: string | null;
+  archived_reason: string | null;
+  archive_verbatim_text: string | null;
+  archive_cto_session_id: string | null;
+  recorded_by_agent: string | null;
+  created_at: string;
+}
+
+// ============================================================================
 // Type Definitions
 // ============================================================================
 
@@ -743,6 +837,8 @@ export type SetLockdownModeArgs = z.infer<typeof SetLockdownModeArgsSchema>;
 export type GetLockdownModeArgs = z.infer<typeof GetLockdownModeArgsSchema>;
 export type SetLocalModeArgs = z.infer<typeof SetLocalModeArgsSchema>;
 export type GetLocalModeArgs = z.infer<typeof GetLocalModeArgsSchema>;
+export type SetDebateModeArgs = z.infer<typeof SetDebateModeArgsSchema>;
+export type GetDebateModeArgs = z.infer<typeof GetDebateModeArgsSchema>;
 
 // Session Signal Types
 export type SendSessionSignalArgs = z.infer<typeof SendSessionSignalArgsSchema>;
@@ -1057,16 +1153,18 @@ export const QueryTokenUsageArgsSchema = z.object({
   // `work_category` (stable kind-of-work that survives revival). See
   // lib/work-category.js for the full category set and descriptions.
   group_by: z.enum([
-    'work_category', 'agent_type', 'spawn_origin', 'revived_by',
+    'work_category', 'agent_type', 'spawn_origin', 'revived_by', 'debate_role',
     'source', 'lane', 'model', 'category', 'day',
     'persistent_task', 'plan',
   ])
     .optional().default('work_category')
-    .describe('Dimension to group results by. Default `work_category` (PR B/C) is the kind of work — survives revival. `spawn_origin` chases through revivals to the original spawner. `revived_by` shows resurrection cost only. `source` is the legacy spawner code path (kept for backward-compat).'),
+    .describe('Dimension to group results by. Default `work_category` (PR B/C) is the kind of work — survives revival. `spawn_origin` chases through revivals to the original spawner. `revived_by` shows resurrection cost only. `debate_role` splits investigator sub-agents by adversarial-debate role (defender / challenger / judge / not-a-debate). `source` is the legacy spawner code path (kept for backward-compat).'),
   filter_source: z.string().optional().describe('Substring match on source (e.g. "hourly-automation")'),
   filter_work_category: z.string().optional().describe('Exact match on work_category (e.g. "plan-manager")'),
   filter_spawn_origin: z.string().optional().describe('Exact match on spawn_origin (e.g. "plan-activation-spawner")'),
   filter_revived_by: z.string().optional().describe('Exact match on revived_by (e.g. "session-queue-reaper")'),
+  filter_debate_role: z.enum(['defender', 'challenger', 'judge']).optional().describe('Restrict to a single adversarial-debate role'),
+  only_debate: z.boolean().optional().describe('Restrict to adversarial-debate sub-agent rows only (debate_role IS NOT NULL)'),
   only_revivals: z.boolean().optional().describe('Restrict to revival rows only (is_revival=1)'),
   only_originals: z.boolean().optional().describe('Restrict to original-spawn rows only (is_revival=0)'),
   filter_model: z.string().optional().describe('Exact model id filter'),

@@ -32,6 +32,7 @@ const AUTOMATION_RATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automat
 // Legacy path kept for reference only
 const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
 const LOCAL_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
+const DEBATE_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'debate-mode.json');
 const USER_PROMPTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'user-prompts.db');
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
@@ -158,6 +159,22 @@ function getLocalModeState() {
     if (!fs.existsSync(LOCAL_MODE_PATH)) return null;
     const state = JSON.parse(fs.readFileSync(LOCAL_MODE_PATH, 'utf8'));
     if (state.enabled === true) return state;
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Returns the debate-mode state only when explicitly disabled.
+ * Debate is enabled-by-default, so the briefing stays quiet in the common
+ * case and only surfaces a notice when the CTO has flipped it off.
+ */
+function getDebateModeDisabled() {
+  try {
+    if (!fs.existsSync(DEBATE_MODE_PATH)) return null;
+    const state = JSON.parse(fs.readFileSync(DEBATE_MODE_PATH, 'utf8'));
+    if (state.enabled === false) return state;
     return null;
   } catch (_) {
     return null;
@@ -786,6 +803,15 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
+  // Debate mode notice — only shown when explicitly disabled (default is on,
+  // so silent in the common case). When off, the investigator's adversarial-
+  // debate flow is blocked by debate-mode-guard.js.
+  const debateOff = getDebateModeDisabled();
+  if (debateOff) {
+    lines.push('[DEBATE MODE: OFF] Investigator adversarial-debate flow (defender + challenger + judge) is disabled. Investigations skip steps 14-16 and proceed without a debate. Run /debate on to re-enable.');
+    lines.push('');
+  }
+
   // Main-tree drift warning (independent of lockdown state — affects hot reload)
   const mainTreeDrift = getMainTreeDrift();
   if (mainTreeDrift) {
@@ -1362,6 +1388,15 @@ function buildSpawnedBriefing() {
   const localMode = getLocalModeState();
   if (localMode) {
     lines.push('[LOCAL MODE] Remote servers excluded. Local tooling only. Run /local-mode to disable.');
+    lines.push('');
+  }
+
+  // Debate mode notice \u2014 important for investigator spawns so they skip
+  // steps 14-16 cleanly without wasting a Task call that the
+  // debate-mode-guard.js hook would deny.
+  const debateOff = getDebateModeDisabled();
+  if (debateOff) {
+    lines.push('[DEBATE MODE: OFF] Investigator adversarial-debate flow is disabled project-wide. If you are an investigator, skip steps 14-16 and proceed to step 17 without spawning defender/challenger/judge sub-agents.');
     lines.push('');
   }
 

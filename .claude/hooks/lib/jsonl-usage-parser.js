@@ -227,6 +227,38 @@ export function findAgentMarker(filePath, scanBytes = 65536) {
 }
 
 /**
+ * Find a `DEBATE_ROLE: defender|challenger|judge` marker anywhere in the
+ * first N bytes of a JSONL file. The marker is injected by the investigator
+ * agent on the first line of every adversarial-debate sub-agent's spawn
+ * prompt (see agents/investigator.md → "Adversarial Plan Review").
+ *
+ * Anchored multi-line regex (`^...$/m`) so partial words like
+ * `DEBATE_ROLE_EXAMPLE` in body text don't match. Returns null when no
+ * marker is found.
+ */
+export function findDebateRole(filePath, scanBytes = 65536) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+  } catch {
+    return null;
+  }
+  const buf = Buffer.alloc(scanBytes);
+  let bytesRead = 0;
+  try {
+    bytesRead = fs.readSync(fd, buf, 0, scanBytes, 0);
+  } finally {
+    try { fs.closeSync(fd); } catch { /* non-fatal */ }
+  }
+  if (bytesRead <= 0) return null;
+  const text = buf.toString('utf8', 0, bytesRead);
+  // JSONL embeds the prompt string with \n escapes — match anchored at line
+  // start in the prompt content OR right after a literal `\n` escape sequence.
+  const m = text.match(/(?:^|\\n)DEBATE_ROLE:\s*(defender|challenger|judge)\b/);
+  return m ? m[1] : null;
+}
+
+/**
  * Detect CLAUDE_USAGE_TAG and CLAUDE_USAGE_PARENT env vars by scanning the
  * first N bytes of a JSONL file. Some Claude Code versions emit env dumps
  * in early system messages; we match permissively.

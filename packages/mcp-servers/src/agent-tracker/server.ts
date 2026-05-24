@@ -46,6 +46,8 @@ import {
   GetLockdownModeArgsSchema,
   SetLocalModeArgsSchema,
   GetLocalModeArgsSchema,
+  SetDebateModeArgsSchema,
+  GetDebateModeArgsSchema,
   SetAutomationToggleArgsSchema,
   GetAutomationTogglesArgsSchema,
   GetUserPromptArgsSchema,
@@ -110,6 +112,8 @@ import {
   type SetLockdownModeArgs,
   type GetLockdownModeArgs,
   type SetLocalModeArgs,
+  type SetDebateModeArgs,
+  type GetDebateModeArgs,
   type SetAutomationToggleArgs,
   type GetAutomationTogglesArgs,
   type SubscribeSessionSummariesArgs,
@@ -156,6 +160,17 @@ import {
   type DeputyApproveDeferredActionArgs,
   DeputyEscalateToCtoArgsSchema,
   type DeputyEscalateToCtoArgs,
+  RecordCtoAlignmentGoalArgsSchema,
+  type RecordCtoAlignmentGoalArgs,
+  ListCtoAlignmentGoalsArgsSchema,
+  type ListCtoAlignmentGoalsArgs,
+  GetCtoAlignmentGoalArgsSchema,
+  type GetCtoAlignmentGoalArgs,
+  UpdateCtoAlignmentGoalProgressArgsSchema,
+  type UpdateCtoAlignmentGoalProgressArgs,
+  ArchiveCtoAlignmentGoalArgsSchema,
+  type ArchiveCtoAlignmentGoalArgs,
+  type AlignmentGoalRow,
   type AcquireSharedResourceArgs,
   type ReleaseSharedResourceArgs,
   type RenewSharedResourceArgs,
@@ -3387,6 +3402,87 @@ function getLocalMode(): object {
 }
 
 // ============================================================================
+// Debate Mode Tool Implementations
+// ============================================================================
+
+/**
+ * Read/write debate-mode state at `.claude/state/debate-mode.json`. Default
+ * (file absent) is `enabled: true` — the investigator's adversarial-debate
+ * flow runs on non-trivial investigations unless explicitly disabled by
+ * the CTO. Not a security boundary — no deferred-action chain required.
+ * Spawned sessions are blocked from toggling so a misbehaving agent cannot
+ * disable its own kill switch.
+ */
+const DEBATE_MODE_STATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'debate-mode.json');
+
+interface DebateModeState {
+  enabled: boolean;
+  setAt: string | null;
+  setBy: string | null;
+}
+
+function readDebateModeState(): DebateModeState & { default: boolean } {
+  try {
+    if (fs.existsSync(DEBATE_MODE_STATE_PATH)) {
+      const raw = JSON.parse(fs.readFileSync(DEBATE_MODE_STATE_PATH, 'utf8'));
+      return {
+        enabled: raw.enabled !== false,  // any non-false value (including absent) -> enabled
+        setAt: raw.setAt ?? null,
+        setBy: raw.setBy ?? null,
+        default: false,
+      };
+    }
+  } catch { /* fall through to default */ }
+  return { enabled: true, setAt: null, setBy: null, default: true };
+}
+
+function setDebateMode(args: SetDebateModeArgs): object {
+  if (process.env.CLAUDE_SPAWNED_SESSION === 'true') {
+    return {
+      error: 'Spawned sessions cannot toggle debate mode. Only interactive CTO sessions can run /debate on or /debate off.',
+    };
+  }
+
+  const dir = path.dirname(DEBATE_MODE_STATE_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const next: DebateModeState = {
+    enabled: args.enabled,
+    setAt: new Date().toISOString(),
+    setBy: 'cto',
+  };
+
+  // Atomic write — tmp + rename — so a crash mid-write can never leave a
+  // partially-written state file that fails the JSON.parse on next read.
+  const tmpPath = `${DEBATE_MODE_STATE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(next, null, 2) + '\n');
+  fs.renameSync(tmpPath, DEBATE_MODE_STATE_PATH);
+
+  return {
+    success: true,
+    enabled: args.enabled,
+    setAt: next.setAt,
+    message: args.enabled
+      ? 'Debate mode ENABLED. The investigator will run the adversarial-debate flow (defender + challenger + judge) on non-trivial investigations. Takes effect on the next Task spawn.'
+      : 'Debate mode DISABLED. debate-mode-guard.js will deny any Task call that tries to spawn a defender/challenger/judge sub-agent. Investigations proceed without debate. Takes effect on the next Task spawn.',
+  };
+}
+
+function getDebateMode(_args: GetDebateModeArgs): object {
+  const state = readDebateModeState();
+  return {
+    enabled: state.enabled,
+    setAt: state.setAt,
+    setBy: state.setBy,
+    default: state.default,
+    state_file: DEBATE_MODE_STATE_PATH,
+    description: state.enabled
+      ? 'Debate mode is ENABLED. The investigator sub-agent runs an adversarial-debate flow (defender + challenger + judge) on non-trivial investigations. Run /debate off to disable.'
+      : 'Debate mode is DISABLED. The investigator skips the debate flow. Run /debate on to re-enable.',
+  };
+}
+
+// ============================================================================
 // Automation Toggle Tool Implementations
 // ============================================================================
 
@@ -5513,6 +5609,42 @@ function getBypassDb(): InstanceType<typeof Database> {
       db.exec("ALTER TABLE cto_decisions ADD COLUMN decision_context TEXT");
     }
   } catch { /* best-effort migration */ }
+
+  // CTO Alignment Tracking table — persistent record of unique CTO-stated goals
+  // captured verbatim by the user-alignment sub-agent.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cto_alignment_goals (
+      id TEXT PRIMARY KEY,
+      short_title TEXT NOT NULL,
+      verbatim_text TEXT NOT NULL,
+      cto_session_id TEXT NOT NULL,
+      cto_session_file_hash TEXT NOT NULL,
+      cto_prompt_timestamp TEXT NOT NULL,
+      cto_prompt_line_number INTEGER,
+      hmac TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active',
+      completion_percentage INTEGER NOT NULL DEFAULT 0,
+      last_assessment_at TEXT,
+      last_assessment_evidence TEXT,
+      completed_at TEXT,
+      spec_review_triggered_at TEXT,
+      spec_review_outcome TEXT,
+      archived_at TEXT,
+      archived_reason TEXT,
+      archive_verbatim_text TEXT,
+      archive_cto_session_id TEXT,
+      recorded_by_agent TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (status IN ('active', 'completed', 'archived', 'superseded')),
+      CHECK (completion_percentage >= 0 AND completion_percentage <= 100)
+    );
+    CREATE INDEX IF NOT EXISTS idx_alignment_goals_status ON cto_alignment_goals(status);
+    CREATE INDEX IF NOT EXISTS idx_alignment_goals_session ON cto_alignment_goals(cto_session_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_alignment_goals_dedup
+      ON cto_alignment_goals(cto_session_id, substr(verbatim_text, 1, 500))
+      WHERE status NOT IN ('archived', 'superseded');
+  `);
+
   return db;
 }
 
@@ -5999,6 +6131,428 @@ async function ctoDecisionAuditFail(args: CtoDecisionAuditFailArgs): Promise<obj
     };
   } catch (err) {
     return { error: `Failed to record audit fail: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+// ============================================================================
+// CTO Alignment Tracking System
+// ============================================================================
+
+/**
+ * Two-layer identity verification for user-alignment sub-agent.
+ *
+ * Layer A (top-level spawn): CLAUDE_QUEUE_ID set → session-queue.db row's
+ *   `agent` column or metadata.agent_type === 'user-alignment'.
+ * Layer B (Task() sub-agent): no CLAUDE_QUEUE_ID → look up subagent meta.json
+ *   adjacent to the current session JSONL (whose path includes /subagents/);
+ *   meta.agentType === 'user-alignment'.
+ *
+ * Fail-closed. Verbatim verification is the primary security primitive — this
+ * identity check is defense-in-depth and guidance enforcement.
+ */
+async function verifyUserAlignmentIdentity(): Promise<{ verified: boolean; error?: string }> {
+  // Layer A: top-level spawned session
+  const queueId = process.env.CLAUDE_QUEUE_ID;
+  if (queueId) {
+    const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+    if (!fs.existsSync(queueDbPath)) {
+      return { verified: false, error: 'BLOCKED: session-queue.db not found — cannot verify user-alignment identity.' };
+    }
+    let queueDb: InstanceType<typeof Database> | undefined;
+    try {
+      queueDb = openReadonlyDb(queueDbPath);
+      const row = queueDb.prepare(
+        'SELECT agent, agent_type, metadata FROM queue_items WHERE id = ?'
+      ).get(queueId) as { agent: string | null; agent_type: string | null; metadata: string | null } | undefined;
+      if (!row) {
+        return { verified: false, error: `BLOCKED: queue item ${queueId} not found.` };
+      }
+      if (row.agent === 'user-alignment' || row.agent_type === 'user-alignment') {
+        return { verified: true };
+      }
+      // Some spawners store agent type in metadata.agent_type
+      if (row.metadata) {
+        try {
+          const md = JSON.parse(row.metadata) as { agent_type?: string; agentType?: string };
+          if (md.agent_type === 'user-alignment' || md.agentType === 'user-alignment') {
+            return { verified: true };
+          }
+        } catch { /* malformed metadata — fall through to fail */ }
+      }
+      return { verified: false, error: `BLOCKED: This tool is restricted to the user-alignment sub-agent. Queue item agent="${row.agent ?? row.agent_type ?? 'unknown'}".` };
+    } catch (err) {
+      return { verified: false, error: `BLOCKED: failed to read session-queue.db: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      try { queueDb?.close(); } catch { /* best-effort */ }
+    }
+  }
+
+  // Layer B: Task() sub-agent — check our own session's adjacent meta.json
+  // Our JSONL lives at <parent-dir>/<parent-basename>/subagents/<our-sid>.jsonl
+  // with a sibling .meta.json containing { agentType: 'user-alignment' }.
+  try {
+    const proofPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'cto-approval-proof.js');
+    const proofModule = await import(proofPath) as { findCurrentSessionJsonl: (projectDir: string) => { jsonlPath?: string; sessionId?: string } | null };
+    const jsonl = proofModule.findCurrentSessionJsonl(PROJECT_DIR);
+    if (!jsonl || !jsonl.jsonlPath) {
+      return { verified: false, error: 'BLOCKED: could not locate current session JSONL — no CLAUDE_QUEUE_ID and no session file.' };
+    }
+    if (!jsonl.jsonlPath.includes(`${path.sep}subagents${path.sep}`) && !jsonl.jsonlPath.includes('/subagents/')) {
+      return { verified: false, error: 'BLOCKED: current session is neither a queue spawn nor a Task() sub-agent — user-alignment must be one of these.' };
+    }
+    const metaPath = jsonl.jsonlPath.replace(/\.jsonl$/, '.meta.json');
+    if (!fs.existsSync(metaPath)) {
+      return { verified: false, error: `BLOCKED: sub-agent meta.json not found at ${metaPath}.` };
+    }
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { agentType?: string; agent_type?: string };
+    const at = meta.agentType || meta.agent_type;
+    if (at !== 'user-alignment') {
+      return { verified: false, error: `BLOCKED: sub-agent agentType="${at ?? 'unknown'}", expected "user-alignment".` };
+    }
+    return { verified: true };
+  } catch (err) {
+    return { verified: false, error: `BLOCKED: failed to verify user-alignment sub-agent identity: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+function computeAlignmentGoalHmac(keyBase64: string, verbatimText: string, sessionId: string, fileHash: string): string {
+  const keyBuffer = Buffer.from(keyBase64, 'base64');
+  return crypto.createHmac('sha256', keyBuffer)
+    .update(['alignment-goal', verbatimText, sessionId, fileHash, 'cto-alignment-goal'].join('|'))
+    .digest('hex');
+}
+
+async function verifyCtoVerbatimQuote(verbatimText: string, sessionIdHint?: string): Promise<{ ok: true; sessionId: string; fileHash: string; lineNumber: number | null; timestamp: string } | { ok: false; error: string }> {
+  // Loads cto-approval-proof.js, snapshots the CTO session JSONL, verifies the
+  // quote exists as a human/user message, returns sessionId + fileHash + line meta.
+  // Caller is responsible for further DB work. Snapshot is cleaned up here.
+  const proofModule = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'cto-approval-proof.js'));
+
+  // Resolve target JSONL: prefer explicit arg, else findCurrentSessionJsonl
+  let jsonlPath: string | undefined;
+  let resolvedSessionId: string | undefined;
+  if (sessionIdHint) {
+    // Direct path: ~/.claude/projects/<encoded-project>/<sessionId>.jsonl
+    const encodedProject = PROJECT_DIR.replace(/[^A-Za-z0-9]/g, '-');
+    const direct = path.join(os.homedir(), '.claude', 'projects', encodedProject, `${sessionIdHint}.jsonl`);
+    if (fs.existsSync(direct)) {
+      jsonlPath = direct;
+      resolvedSessionId = sessionIdHint;
+    }
+  }
+  if (!jsonlPath) {
+    const found = (proofModule as { findCurrentSessionJsonl: (d: string) => { jsonlPath?: string; sessionId?: string } | null }).findCurrentSessionJsonl(PROJECT_DIR);
+    if (!found || !found.jsonlPath) {
+      return { ok: false, error: 'Cannot locate CTO session JSONL. Pass cto_session_id explicitly, or ensure a non-automation session file exists.' };
+    }
+    jsonlPath = found.jsonlPath;
+    resolvedSessionId = found.sessionId || sessionIdHint || '';
+  }
+
+  const snapshotPath = path.join(PROJECT_DIR, '.claude', 'state', `alignment-goal-snapshot-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.jsonl`);
+  try {
+    fs.copyFileSync(jsonlPath, snapshotPath);
+    const quoteResult = await (proofModule as { verifyQuoteInJsonl: (p: string, q: string) => Promise<{ found: boolean; lineNumber?: number; timestamp?: string; source?: string }> }).verifyQuoteInJsonl(snapshotPath, verbatimText);
+    if (!quoteResult || !quoteResult.found) {
+      return { ok: false, error: 'Verbatim text not found in CTO session JSONL. Copy the EXACT substring the CTO typed — only human user messages count, not assistant or tool output.' };
+    }
+    const fileHash = (proofModule as { computeFileHash: (p: string) => string }).computeFileHash(snapshotPath);
+    return {
+      ok: true,
+      sessionId: resolvedSessionId || '',
+      fileHash,
+      lineNumber: typeof quoteResult.lineNumber === 'number' ? quoteResult.lineNumber : null,
+      timestamp: quoteResult.timestamp || new Date().toISOString(),
+    };
+  } finally {
+    try { fs.unlinkSync(snapshotPath); } catch { /* best-effort */ }
+  }
+}
+
+function loadProtectionKey(): { ok: true; keyBase64: string } | { ok: false; error: string } {
+  const keyPath = path.join(PROJECT_DIR, '.claude', 'protection-key');
+  try {
+    const keyBase64 = fs.readFileSync(keyPath, 'utf-8').trim();
+    if (!keyBase64) {
+      return { ok: false, error: 'G001 FAIL-CLOSED: protection-key file is empty.' };
+    }
+    return { ok: true, keyBase64 };
+  } catch {
+    return { ok: false, error: 'G001 FAIL-CLOSED: Protection key missing at .claude/protection-key' };
+  }
+}
+
+async function recordCtoAlignmentGoal(args: RecordCtoAlignmentGoalArgs): Promise<object | ErrorResult> {
+  const identity = await verifyUserAlignmentIdentity();
+  if (!identity.verified) {
+    return { error: identity.error || 'BLOCKED: user-alignment identity check failed.' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    const verified = await verifyCtoVerbatimQuote(args.verbatim_text, args.cto_session_id);
+    if (!verified.ok) {
+      return { error: verified.error };
+    }
+
+    const keyResult = loadProtectionKey();
+    if (!keyResult.ok) {
+      return { error: keyResult.error };
+    }
+    const hmac = computeAlignmentGoalHmac(keyResult.keyBase64, args.verbatim_text, verified.sessionId, verified.fileHash);
+
+    db = getBypassDb();
+
+    // Dedup: same CTO session + same first 500 chars of verbatim + not archived/superseded
+    const prefix = args.verbatim_text.slice(0, 500);
+    const existing = db.prepare(
+      `SELECT id, short_title, status, completion_percentage, cto_prompt_timestamp
+       FROM cto_alignment_goals
+       WHERE cto_session_id = ?
+         AND substr(verbatim_text, 1, 500) = ?
+         AND status NOT IN ('archived', 'superseded')
+       LIMIT 1`
+    ).get(verified.sessionId, prefix) as { id: string; short_title: string; status: string; completion_percentage: number; cto_prompt_timestamp: string } | undefined;
+    if (existing) {
+      return {
+        id: existing.id,
+        short_title: existing.short_title,
+        status: existing.status,
+        completion_percentage: existing.completion_percentage,
+        cto_prompt_timestamp: existing.cto_prompt_timestamp,
+        already_exists: true,
+        message: `Goal already recorded (id: ${existing.id}). No new row inserted.`,
+      };
+    }
+
+    const id = 'ag-' + crypto.randomUUID().slice(0, 12);
+    const recordedBy = process.env.CLAUDE_AGENT_ID || null;
+    db.prepare(`
+      INSERT INTO cto_alignment_goals (
+        id, short_title, verbatim_text, cto_session_id, cto_session_file_hash,
+        cto_prompt_timestamp, cto_prompt_line_number, hmac, status,
+        completion_percentage, recorded_by_agent
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?)
+    `).run(
+      id,
+      args.short_title,
+      args.verbatim_text,
+      verified.sessionId,
+      verified.fileHash,
+      verified.timestamp,
+      verified.lineNumber,
+      hmac,
+      recordedBy,
+    );
+
+    return {
+      id,
+      short_title: args.short_title,
+      status: 'active',
+      completion_percentage: 0,
+      cto_prompt_timestamp: verified.timestamp,
+      cto_prompt_line_number: verified.lineNumber,
+      message: `Alignment goal recorded. JSONL quote verified at line ${verified.lineNumber ?? 'unknown'}. Reassess this goal on your next run via update_cto_alignment_goal_progress.`,
+    };
+  } catch (err) {
+    return { error: `Failed to record alignment goal: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function listCtoAlignmentGoals(args: ListCtoAlignmentGoalsArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+    const statusFilter = args.status ?? 'active';
+    const limit = Math.min(args.limit ?? 50, 200);
+    const includeEvidence = args.include_evidence === true;
+
+    const cols = includeEvidence
+      ? `id, short_title, verbatim_text, cto_session_id, cto_prompt_timestamp, cto_prompt_line_number,
+         status, completion_percentage, last_assessment_at, last_assessment_evidence,
+         completed_at, spec_review_triggered_at, spec_review_outcome,
+         archived_at, archived_reason, recorded_by_agent, created_at`
+      : `id, short_title, cto_session_id, cto_prompt_timestamp, status, completion_percentage,
+         last_assessment_at, completed_at, spec_review_outcome, archived_at, created_at`;
+
+    let rows: AlignmentGoalRow[];
+    if (statusFilter === 'all') {
+      rows = db.prepare(
+        `SELECT ${cols} FROM cto_alignment_goals ORDER BY created_at DESC LIMIT ?`
+      ).all(limit) as AlignmentGoalRow[];
+    } else {
+      rows = db.prepare(
+        `SELECT ${cols} FROM cto_alignment_goals WHERE status = ? ORDER BY created_at DESC LIMIT ?`
+      ).all(statusFilter, limit) as AlignmentGoalRow[];
+    }
+
+    return {
+      total: rows.length,
+      status_filter: statusFilter,
+      goals: rows,
+    };
+  } catch (err) {
+    return { error: `Failed to list alignment goals: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function getCtoAlignmentGoal(args: GetCtoAlignmentGoalArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+    const row = db.prepare(
+      'SELECT * FROM cto_alignment_goals WHERE id = ?'
+    ).get(args.goal_id) as AlignmentGoalRow | undefined;
+    if (!row) return { error: `Alignment goal not found: ${args.goal_id}` };
+    return { goal: row };
+  } catch (err) {
+    return { error: `Failed to get alignment goal: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function updateCtoAlignmentGoalProgress(args: UpdateCtoAlignmentGoalProgressArgs): Promise<object | ErrorResult> {
+  const identity = await verifyUserAlignmentIdentity();
+  if (!identity.verified) {
+    return { error: identity.error || 'BLOCKED: user-alignment identity check failed.' };
+  }
+
+  // Must supply at least one update dimension
+  const hasPercent = typeof args.completion_percentage === 'number';
+  const hasOutcome = typeof args.spec_review_outcome === 'string';
+  if (!hasPercent && !hasOutcome) {
+    return { error: 'Provide completion_percentage and evidence, spec_review_outcome, or both.' };
+  }
+  if (hasPercent && !args.evidence) {
+    return { error: 'evidence is required when completion_percentage is provided.' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+    const existing = db.prepare(
+      `SELECT id, status, completion_percentage, short_title, spec_review_outcome
+       FROM cto_alignment_goals WHERE id = ?`
+    ).get(args.goal_id) as { id: string; status: string; completion_percentage: number; short_title: string; spec_review_outcome: string | null } | undefined;
+    if (!existing) return { error: `Alignment goal not found: ${args.goal_id}` };
+
+    // Percentage updates only allowed on active goals.
+    if (hasPercent && existing.status !== 'active') {
+      return { error: `Cannot update completion_percentage on goal with status="${existing.status}". Only active goals accept percentage updates.` };
+    }
+    // spec_review_outcome updates allowed on active or completed goals (not archived/superseded).
+    if (hasOutcome && existing.status !== 'active' && existing.status !== 'completed') {
+      return { error: `Cannot update spec_review_outcome on goal with status="${existing.status}".` };
+    }
+
+    const nowIso = new Date().toISOString();
+    const newPercent = hasPercent ? (args.completion_percentage as number) : existing.completion_percentage;
+    const transitionedToComplete = hasPercent && existing.completion_percentage < 100 && newPercent === 100;
+    const newStatus = transitionedToComplete ? 'completed' : existing.status;
+
+    const evidenceJson = args.evidence ? JSON.stringify(args.evidence) : null;
+
+    // Build dynamic UPDATE
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (hasPercent) {
+      sets.push('completion_percentage = ?'); params.push(newPercent);
+      sets.push('last_assessment_at = ?'); params.push(nowIso);
+      if (evidenceJson !== null) {
+        sets.push('last_assessment_evidence = ?'); params.push(evidenceJson);
+      }
+    }
+    if (transitionedToComplete) {
+      sets.push("status = 'completed'");
+      sets.push('completed_at = ?'); params.push(nowIso);
+      sets.push("spec_review_outcome = 'pending'");
+      sets.push('spec_review_triggered_at = ?'); params.push(nowIso);
+    }
+    if (hasOutcome) {
+      sets.push('spec_review_outcome = ?'); params.push(args.spec_review_outcome);
+    }
+    params.push(args.goal_id);
+
+    db.prepare(`UPDATE cto_alignment_goals SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+
+    return {
+      id: args.goal_id,
+      short_title: existing.short_title,
+      completion_percentage: newPercent,
+      status: newStatus,
+      transitioned_to_complete: transitionedToComplete,
+      spec_review_outcome: hasOutcome ? args.spec_review_outcome : (transitionedToComplete ? 'pending' : existing.spec_review_outcome),
+      message: transitionedToComplete
+        ? `Goal "${existing.short_title}" reached 100% completion. A spec-review pass will be requested via additionalContext — review global and local specs and update spec_review_outcome when done.`
+        : 'Progress updated.',
+    };
+  } catch (err) {
+    return { error: `Failed to update alignment goal: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function archiveCtoAlignmentGoal(args: ArchiveCtoAlignmentGoalArgs): Promise<object | ErrorResult> {
+  const identity = await verifyUserAlignmentIdentity();
+  if (!identity.verified) {
+    return { error: identity.error || 'BLOCKED: user-alignment identity check failed.' };
+  }
+
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+    const existing = db.prepare(
+      'SELECT id, status, short_title FROM cto_alignment_goals WHERE id = ?'
+    ).get(args.goal_id) as { id: string; status: string; short_title: string } | undefined;
+    if (!existing) return { error: `Alignment goal not found: ${args.goal_id}` };
+    if (existing.status === 'archived' || existing.status === 'superseded') {
+      return { error: `Goal already in terminal state: ${existing.status}` };
+    }
+
+    let archiveVerbatim: string | null = null;
+    let archiveSessionId: string | null = null;
+
+    if (args.reason === 'superseded') {
+      if (!args.verbatim_text) {
+        return { error: "reason='superseded' requires verbatim_text proving the CTO changed direction." };
+      }
+      const verified = await verifyCtoVerbatimQuote(args.verbatim_text, args.cto_session_id);
+      if (!verified.ok) return { error: verified.error };
+      archiveVerbatim = args.verbatim_text;
+      archiveSessionId = verified.sessionId;
+    } else if (args.verbatim_text) {
+      // Optional verbatim for obsolete/completed — verify if supplied
+      const verified = await verifyCtoVerbatimQuote(args.verbatim_text, args.cto_session_id);
+      if (!verified.ok) return { error: verified.error };
+      archiveVerbatim = args.verbatim_text;
+      archiveSessionId = verified.sessionId;
+    }
+
+    const newStatus = args.reason === 'superseded' ? 'superseded' : 'archived';
+    db.prepare(`
+      UPDATE cto_alignment_goals
+      SET status = ?, archived_at = datetime('now'), archived_reason = ?,
+          archive_verbatim_text = ?, archive_cto_session_id = ?
+      WHERE id = ?
+    `).run(newStatus, args.reason, archiveVerbatim, archiveSessionId, args.goal_id);
+
+    return {
+      id: args.goal_id,
+      short_title: existing.short_title,
+      status: newStatus,
+      archived_reason: args.reason,
+      message: `Goal archived (${newStatus}).`,
+    };
+  } catch (err) {
+    return { error: `Failed to archive alignment goal: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
     try { db?.close(); } catch { /* best-effort */ }
   }
@@ -6964,6 +7518,8 @@ async function queryTokenUsageTool(args: QueryTokenUsageArgs): Promise<object | 
       work_category: args.filter_work_category,
       spawn_origin: args.filter_spawn_origin,
       revived_by: args.filter_revived_by,
+      debate_role: args.filter_debate_role,
+      only_debate: args.only_debate,
       only_revivals: args.only_revivals,
       only_originals: args.only_originals,
       model: args.filter_model,
@@ -7199,6 +7755,19 @@ const tools: AnyToolHandler[] = [
     description: 'Get the current local prototyping mode state, including which servers are excluded.',
     schema: GetLocalModeArgsSchema,
     handler: getLocalMode,
+  },
+  // Debate Mode Tools
+  {
+    name: 'set_debate_mode',
+    description: 'Enable or disable the investigator adversarial-debate flow. When disabled, the debate-mode-guard.js PreToolUse hook denies any Task call that tries to spawn a defender/challenger/judge sub-agent. Reads/writes .claude/state/debate-mode.json. Takes effect on the next Task spawn — no session restart needed. Spawned sessions are blocked from toggling. Not a security boundary; no CTO authorization chain.',
+    schema: SetDebateModeArgsSchema,
+    handler: setDebateMode,
+  },
+  {
+    name: 'get_debate_mode',
+    description: 'Get the current investigator adversarial-debate flow state. Returns enabled flag, setAt/setBy, and whether the value is the default (file absent).',
+    schema: GetDebateModeArgsSchema,
+    handler: getDebateMode,
   },
   // Automation Toggle Tools
   {
@@ -7533,6 +8102,37 @@ const tools: AnyToolHandler[] = [
     schema: RevivalCostSummaryArgsSchema,
     handler: revivalCostSummaryTool,
   },
+  // CTO Alignment Tracking — persistent record of CTO-stated goals captured verbatim by user-alignment
+  {
+    name: 'record_cto_alignment_goal',
+    description: 'RESTRICTED TO user-alignment SUB-AGENT. Capture a unique CTO-stated goal or specification by recording a verbatim substring from a CTO user prompt. Verifies the verbatim text exists in a CTO session JSONL (only human user messages count — not assistant or tool output) and HMAC-binds the goal to the session file. Use only for durable outcomes (a feature must do X, a specification must hold) — skip one-shot operational requests. Returns already_exists=true if the goal is already recorded.',
+    schema: RecordCtoAlignmentGoalArgsSchema,
+    handler: recordCtoAlignmentGoal,
+  },
+  {
+    name: 'list_cto_alignment_goals',
+    description: 'List CTO alignment goals captured by user-alignment. Open to all agents — read-only. Default returns active goals (status="active"); pass status="completed"/"archived"/"superseded"/"all" to broaden. Default omits verbatim_text and last_assessment_evidence to keep responses small — pass include_evidence=true to see the full text and last assessment.',
+    schema: ListCtoAlignmentGoalsArgsSchema,
+    handler: listCtoAlignmentGoals,
+  },
+  {
+    name: 'get_cto_alignment_goal',
+    description: 'Get full details of a single CTO alignment goal by ID. Open to all agents — returns verbatim_text, hmac, evidence, and all metadata.',
+    schema: GetCtoAlignmentGoalArgsSchema,
+    handler: getCtoAlignmentGoal,
+  },
+  {
+    name: 'update_cto_alignment_goal_progress',
+    description: 'RESTRICTED TO user-alignment SUB-AGENT. Update the completion_percentage of an active alignment goal with evidence, and/or set spec_review_outcome after a 100% goal has been reviewed against the specs system. When completion_percentage transitions from <100 to 100, the goal moves to status="completed", spec_review_outcome is set to "pending", and a PostToolUse hook injects additionalContext instructing you to review global and local specs.',
+    schema: UpdateCtoAlignmentGoalProgressArgsSchema,
+    handler: updateCtoAlignmentGoalProgress,
+  },
+  {
+    name: 'archive_cto_alignment_goal',
+    description: 'RESTRICTED TO user-alignment SUB-AGENT. Archive an alignment goal. reason="superseded" REQUIRES verbatim_text proving the CTO changed direction (verified against a CTO session JSONL the same way as record_cto_alignment_goal). reason="obsolete" or "completed" accept optional verbatim_text. The audit trail records exactly why the goal was retired.',
+    schema: ArchiveCtoAlignmentGoalArgsSchema,
+    handler: archiveCtoAlignmentGoal,
+  },
   // Self-compaction
   {
     name: 'request_self_compact',
@@ -7544,7 +8144,7 @@ const tools: AnyToolHandler[] = [
 
 const server = new McpServer({
   name: 'agent-tracker',
-  version: '9.7.0',  // Phase 4: Route deputy resolutions through auditor (deputy_bypass_resolution, deputy_deferred_approval decision types); extended decision types, audit_override
+  version: '9.9.0',  // Debate mode + token granularity: set_debate_mode / get_debate_mode tools; query_token_usage gains group_by='debate_role' and filter_debate_role / only_debate filters
   tools,
 });
 

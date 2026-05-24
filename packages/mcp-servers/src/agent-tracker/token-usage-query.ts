@@ -61,6 +61,10 @@ const GROUP_BY_COL: Record<string, string> = {
   work_category: "COALESCE(sa.work_category, 'other')",
   spawn_origin: "COALESCE(sa.spawn_origin, 'unknown')",
   revived_by: "COALESCE(sa.revived_by, 'not-a-revival')",
+  // Adversarial-debate dimension — tags investigator sub-agents by their
+  // role (defender / challenger / judge). Non-debate rows collapse into
+  // 'not-a-debate' so the bucket isn't lost in mixed queries.
+  debate_role: "COALESCE(sa.debate_role, 'not-a-debate')",
   // Legacy dimensions
   source: 'sa.source',
   lane: "COALESCE(sa.lane, 'unknown')",
@@ -77,6 +81,8 @@ export interface QueryFilter {
   work_category?: string;
   spawn_origin?: string;
   revived_by?: string;
+  debate_role?: 'defender' | 'challenger' | 'judge';
+  only_debate?: boolean;
   only_revivals?: boolean;
   only_originals?: boolean;
   model?: string;
@@ -142,6 +148,8 @@ export function queryTokenUsage({
     if (filter.work_category) { whereClauses.push('sa.work_category = ?'); params.push(filter.work_category); }
     if (filter.spawn_origin) { whereClauses.push('sa.spawn_origin = ?'); params.push(filter.spawn_origin); }
     if (filter.revived_by) { whereClauses.push('sa.revived_by = ?'); params.push(filter.revived_by); }
+    if (filter.debate_role) { whereClauses.push('sa.debate_role = ?'); params.push(filter.debate_role); }
+    if (filter.only_debate) { whereClauses.push('sa.debate_role IS NOT NULL'); }
     if (filter.only_revivals) { whereClauses.push('sa.is_revival = 1'); }
     if (filter.only_originals) { whereClauses.push('sa.is_revival = 0'); }
     if (filter.model) { whereClauses.push('ue.model = ?'); params.push(filter.model); }
