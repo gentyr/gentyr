@@ -443,6 +443,48 @@ describe('interactive-lockdown-guard.js', () => {
       );
     });
 
+    it('CTO root pipelineReminder calls out the ONE-pipeline-at-a-time rule', async () => {
+      // Regression: lockdown-off guidance must explicitly forbid parallel
+      // Task fan-out (Scenario B) and point at multi-terminal as the
+      // supported parallel pattern (Scenario A / PR #709). Without this,
+      // the CTO fans out parallel Tasks A/B/C and project-managers trample
+      // each other at step 6.
+      const result = await runHook(
+        { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: CTO_SESSION_ID },
+        { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      const ctx = output?.hookSpecificOutput?.additionalContext || '';
+      assert.ok(
+        ctx.includes('ONE pipeline at a time'),
+        'pipelineReminder must include "ONE pipeline at a time" wording'
+      );
+      assert.ok(
+        ctx.includes('another `claude` terminal') || ctx.includes('another claude terminal'),
+        'pipelineReminder must direct parallel work to a separate claude terminal (PR #709)'
+      );
+      assert.ok(
+        /fan(?:ning)?[\s-]?out|parallel work|parallel Tasks?/i.test(ctx),
+        'pipelineReminder must name the fan-out anti-pattern explicitly'
+      );
+    });
+
+    it('CTO root pipelineReminder mentions the project-manager worktree-lock-busy refusal', async () => {
+      // Regression: the guidance should tell the model that step 6 will
+      // refuse (with a lock-busy error), so it knows the defensive lock
+      // exists and doesn't try to retry around it.
+      const result = await runHook(
+        { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: CTO_SESSION_ID },
+        { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      const ctx = output?.hookSpecificOutput?.additionalContext || '';
+      assert.ok(
+        /lock-busy|worktree-lock|lock/i.test(ctx),
+        'pipelineReminder must mention the project-manager worktree lock so the model knows step 6 will refuse on collision'
+      );
+    });
+
     it('Task sub-agent (session_id NOT in registry) approves WITHOUT LOCKDOWN OFF guidance', async () => {
       const result = await runHook(
         { tool_name: 'Bash', tool_input: { command: 'ls' }, session_id: SUBAGENT_SESSION_ID },

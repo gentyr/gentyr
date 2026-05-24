@@ -843,6 +843,11 @@ function buildInteractiveBriefing() {
         lines.push('  5. Task(subagent_type=\'user-alignment\',  cwd=<worktree>, prompt: <intent check>)');
         lines.push('  6. Task(subagent_type=\'project-manager\', cwd=<worktree>, prompt: <commit, push, PR, wait for CI, self-merge to preview>)');
         lines.push('');
+        lines.push('ONE PIPELINE AT A TIME — concurrency model:');
+        lines.push('  - SUPPORTED: multiple terminals (separate `claude` sessions) each running their own pipeline. PR #709 gives each session its own cto-interactive-<sid8> worktree; they are fully isolated.');
+        lines.push('  - NOT SUPPORTED: fanning out parallel Tasks A/B/C in THIS session. They all share the cwd above, and step 6 (project-manager) will collide on `git checkout -b feature/X` / `merge` / branch-switch. The project-manager defensively acquires a worktree lock at step 0 and the second concurrent pipeline will refuse with a worktree-lock-busy error.');
+        lines.push('  - If you want parallel work, open another `claude` terminal. If you want async work (no babysitting), use /spawn-tasks (see below).');
+        lines.push('');
         lines.push('Critical conventions you MUST follow:');
         lines.push('  - DO NOT use isolation: "worktree" — that creates a fresh worktree per Task call and breaks state flow between steps.');
         lines.push('  - Pass cwd=<the worktree path shown above> on EVERY Task call so all six steps share the same working tree.');
