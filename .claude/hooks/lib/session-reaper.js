@@ -139,7 +139,10 @@ function readHead(filePath, numBytes) {
     const bytesRead = fs.readSync(fd, buf, 0, numBytes, 0);
     return buf.toString('utf8', 0, bytesRead);
   } catch (err) {
-    console.error('[session-reaper] Warning:', err.message);
+    // FIX-30: ENOENT is benign here — the JSONL file was deleted while we were
+    // iterating (sync recycle, git clean, manual cleanup). Suppress the warning
+    // spam; non-ENOENT errors still surface.
+    if (err.code !== 'ENOENT') console.error('[session-reaper] Warning:', err.message);
     return '';
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
@@ -162,7 +165,8 @@ function readTail(filePath, numBytes) {
     const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
     return buf.toString('utf8', 0, bytesRead);
   } catch (err) {
-    console.error('[session-reaper] Warning:', err.message);
+    // FIX-30: ENOENT is benign — JSONL deleted during iteration. Suppress.
+    if (err.code !== 'ENOENT') console.error('[session-reaper] Warning:', err.message);
     return '';
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
@@ -200,7 +204,8 @@ function findSessionFileByAgentId(sessionDir, agentId) {
       const bytesRead = fs.readSync(fd, buf, 0, 65536, 0);
       if (buf.toString('utf8', 0, bytesRead).includes(marker)) return filePath;
     } catch (err) {
-      console.error('[session-reaper] Warning:', err.message);
+      // FIX-30: ENOENT is benign — file vanished mid-iteration. Suppress spam.
+      if (err.code !== 'ENOENT') console.error('[session-reaper] Warning:', err.message);
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
     }
