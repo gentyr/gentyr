@@ -861,6 +861,27 @@ function buildInteractiveBriefing() {
         lines.push('  - --no-verify, --no-gpg-sign, core.hooksPath writes (block-no-verify guard)');
         lines.push('  - Main-tree commits on protected branches main/staging/preview (main-tree-commit-guard)');
         lines.push('');
+        lines.push('=== RESCUING COMMITTED WORK STUCK IN THE MAIN TREE ===');
+        lines.push('');
+        lines.push('If you (or a prior session) have committed work to a feature branch IN THE MAIN TREE and now need to ship it, the main-tree git-mutation guard will block `git push` from the main-tree cwd. This is INDEPENDENT of lockdown state — toggling /lockdown does NOT unblock it. Three correct recovery paths:');
+        lines.push('');
+        lines.push('  1. Push the named branch from inside a worktree cwd (the branch ref is shared in .git/):');
+        if (wtExists) {
+          lines.push(`       cd ${wt}`);
+        } else {
+          lines.push(`       cd <any .claude/worktrees/* dir>`);
+        }
+        lines.push('       git push origin <branch-name>');
+        lines.push('       gh pr create --base preview --head <branch-name> --title "..." --body "..."');
+        lines.push('       gh pr checks <num> --watch --fail-fast');
+        lines.push('       gh pr merge <num> --squash --delete-branch');
+        lines.push('');
+        lines.push('  2. For UNCOMMITTED main-tree work: call mcp__agent-tracker__repair_main_tree_drift({ dry_run: true }) to preview, then drop the dry_run flag to enqueue a rescue agent. It salvages orphaned work to a draft PR (never auto-merges, never force-pushes); on conflict it files a bypass request. Idempotent.');
+        lines.push('');
+        lines.push('  3. For NEW work delegated async: /spawn-tasks creates a FRESH worktree per task (does NOT touch your in-progress main-tree state). Use this when you want the agent to start from origin/preview rather than rescuing what you have already committed.');
+        lines.push('');
+        lines.push('IMPORTANT: `/lockdown on` is NEVER the right answer for a main-tree push block. Lockdown gates interactive-session edit/spawn permissions only. Task spawning (`create_task` + `force_spawn_tasks`) works in BOTH lockdown states. Toggling lockdown does NOT change git permissions, does NOT enable task spawning, and does NOT make pushes possible.');
+        lines.push('');
         lines.push('=== MANUAL FALLBACK — direct edits in the worktree ===');
         lines.push('');
         lines.push('For trivial fixes (typo, one-line config) you may edit directly in the worktree yourself and ship via Bash:');

@@ -140,6 +140,33 @@ git -C <PROJECT_DIR> worktree remove <ctoWorktreePath>
 # Then in Claude Code: /lockdown on
 ```
 
+## Rescuing committed work stuck in the main tree
+
+If you (or a prior session) committed work to a feature branch directly in the main tree and now `git push` is blocked by the lockdown-off main-tree guard, **do NOT toggle `/lockdown on` as a remedy** — toggling lockdown does NOT change main-tree git permissions, does NOT enable any new task-spawning capability, and does NOT make pushes possible. The block is enforced by `interactive-lockdown-guard.js` and is INDEPENDENT of lockdown state. Three correct recovery paths:
+
+**1. Push the named branch from any worktree cwd.** The branch ref lives in the shared `.git/refs/heads/` directory, so any worktree on the same repo can push it by name. From your cto-interactive worktree (or any other `.claude/worktrees/*` dir):
+
+```bash
+cd <any-worktree-cwd>
+git push origin <branch-name>
+gh pr create --base preview --head <branch-name> --title "..." --body "..."
+gh pr checks <num> --watch --fail-fast
+gh pr merge <num> --squash --delete-branch
+```
+
+`git push origin HEAD` does NOT work for this purpose because `HEAD` refers to the worktree's current branch, not the branch you committed in the main tree. Always pass the branch by name.
+
+**2. For UNCOMMITTED main-tree work, use `repair_main_tree_drift`.** The `mcp__agent-tracker__repair_main_tree_drift` MCP tool enqueues a rescue agent that salvages orphaned main-tree work to a `rescue/main-tree-<ts>` branch, opens a draft PR, then restores the main tree to the base branch. Never auto-merges, never force-pushes, files a bypass request on conflicts. Idempotent — returns `no_drift` when clean, `already_queued` when a rescue is in flight. Pass `dry_run: true` to preview what it would do without enqueuing.
+
+```
+mcp__agent-tracker__repair_main_tree_drift({ dry_run: true })   # preview
+mcp__agent-tracker__repair_main_tree_drift()                     # execute
+```
+
+**3. For NEW async work, use `/spawn-tasks`.** Each spawned task runs in a freshly provisioned worktree — it does NOT touch your main-tree state. Use this when you want the agent to start from `origin/preview` rather than continuing whatever you committed in the main tree.
+
+**Lockdown is orthogonal to all three of these.** Task spawning (`create_task` + `force_spawn_tasks`) works in BOTH lockdown states. The main-tree git block is its own guard layer; lockdown only controls interactive-session edit/spawn permissions. If you find yourself reasoning "if I just toggle lockdown, the agent could push" — that's wrong. The correct mental model is: lockdown gates the CTO console's tool surface; main-tree git restrictions gate WHERE git mutations can run; task spawning gates whether agents are dispatched. Three independent dials.
+
 ## Parallel work in lockdown-off mode
 
 There are two distinct parallelism scenarios and they behave very differently.
