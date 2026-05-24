@@ -9,16 +9,17 @@ The default grouping dimension is **`work_category`** — the kind of work a ses
 
 ## Arguments
 
-`/tokens [range] [by <dimension>] [filter <key>=<value>] [revivals|originals|rollup|top|health]`
+`/tokens [range] [by <dimension>] [filter <key>=<value>] [revivals|originals|rollup|debate|top|health]`
 
 | Argument | Values | Default |
 |----------|--------|---------|
 | range | `1h` / `24h` / `7d` / `30d` / `all` | `24h` |
-| by    | `work_category` (default) / `agent_type` / `spawn_origin` / `revived_by` / `source` / `lane` / `model` / `category` / `day` / `persistent_task` / `plan` | `work_category` |
-| filter | `source=…` `work_category=…` `spawn_origin=…` `revived_by=…` `model=…` `lane=…` `persistent_task=N` `plan=…` | none |
+| by    | `work_category` (default) / `agent_type` / `spawn_origin` / `revived_by` / `debate_role` / `source` / `lane` / `model` / `category` / `day` / `persistent_task` / `plan` | `work_category` |
+| filter | `source=…` `work_category=…` `spawn_origin=…` `revived_by=…` `debate_role=defender\|challenger\|judge` `model=…` `lane=…` `persistent_task=N` `plan=…` | none |
 | revivals | switches to revival-cost-summary mode (revived vs original spend) | off |
 | originals | restricts results to non-revival sessions (`only_originals=true`) | off |
 | rollup | when grouped by work_category, attribute `compaction-subagent` to parent's category (`roll_up_compaction=true`) | off |
+| debate | restricts results to adversarial-debate sub-agents and groups by `debate_role` (`only_debate=true`, `group_by=debate_role`) | off |
 | top    | switches to top-sessions mode (returns hottest sessions) | off |
 | health | switches to attribution health diagnostic | off |
 
@@ -31,6 +32,8 @@ Examples:
 - `/tokens 24h revivals` — how much we spent on resurrection vs original work in the last 24h
 - `/tokens 24h originals` — exclude revivals to see the cost of new work only
 - `/tokens 24h rollup` — attribute /compact subprocess cost to the parent work_category (e.g. persistent-monitor's compactions roll up into persistent-monitor)
+- `/tokens 7d debate` — defender vs challenger vs judge spend across the adversarial-debate flow (only debate rows)
+- `/tokens 24h filter debate_role=judge` — judge-only spend
 - `/tokens 24h by lane` — group by `persistent` / `audit` / `gate` / `automated` / `standard` / `subprocess` / `subagent` / `interactive`
 - `/tokens 1h by model` — Opus vs Sonnet vs Haiku split
 - `/tokens 24h filter work_category=plan-manager` — show only plan-manager spend
@@ -44,6 +47,7 @@ Examples:
 2. **Health mode**: call `mcp__agent-tracker__token_attribution_health()`. Render: total session attributions, resolved/pending/unknown counts, oldest pending age in minutes, untagged subprocess count. Stop.
 3. **Top mode**: call `mcp__agent-tracker__top_token_sessions({ range, limit: 20 })`. Render a table: `session_id` (first 8 chars), `source`, `agent_type`, `total_tokens` (human-readable: `K`/`M`), `cost_usd`, `duration_minutes`. Stop.
 4. **Revivals mode**: call `mcp__agent-tracker__revival_cost_summary({ range })`. Render the revival-vs-original totals (tokens, cost, sessions, % of total) and a by-`revived_by` breakdown table. Stop.
+4a. **Debate mode**: call `mcp__agent-tracker__query_token_usage({ range, group_by: 'debate_role', only_debate: true, limit: 50 })`. Render the same table + bar chart as Default mode. Three expected rows: defender, challenger, judge. The header should call out "Adversarial-debate spend only" so the CTO understands this is the cost of the investigator's debate flow, separate from regular investigator usage. Stop.
 5. **Default mode**: call `mcp__agent-tracker__query_token_usage({ range, group_by, limit: 50, ...filters })`. The MCP tool returns:
    ```ts
    {
@@ -82,6 +86,7 @@ Examples:
 - **"How much are revivals costing?"** → `/tokens 24h revivals`
 - **"Where did this work come from originally?"** → `/tokens 7d by spawn_origin`
 - **"What's spending Opus tokens?"** → `/tokens 24h by work_category filter model=claude-opus-4-7`
+- **"How much is the investigator's debate flow costing?"** → `/tokens 7d debate` (defender vs challenger vs judge totals)
 
 ## Formatters
 

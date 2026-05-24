@@ -42,9 +42,9 @@ try {
  */
 function getStagedInfo() {
   try {
-    const files = execSync('git diff --cached --name-only', { encoding: 'utf8' }).trim();
-    const stat = execSync('git diff --cached --stat', { encoding: 'utf8' }).trim();
-    const diff = execSync('git diff --cached', { encoding: 'utf8' });
+    const files = execSync('git diff --cached --name-only', { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }).trim();
+    const stat = execSync('git diff --cached --stat', { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }).trim();
+    const diff = execSync('git diff --cached', { encoding: 'utf8', maxBuffer: 200 * 1024 * 1024 });
 
     // Hash the diff to ensure token matches the staged changes
     const diffHash = crypto.createHash('sha256').update(diff).digest('hex').substring(0, 16);
