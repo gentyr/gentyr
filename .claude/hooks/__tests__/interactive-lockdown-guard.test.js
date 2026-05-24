@@ -469,6 +469,44 @@ describe('interactive-lockdown-guard.js', () => {
       );
     });
 
+    it('CTO root main-tree git push deny includes rescue guidance (named-branch push, repair_main_tree_drift, lockdown orthogonality)', async () => {
+      // Regression: prior to this test, the git-mutation deny in the main
+      // tree told the agent that lockdown does NOT unblock the action but
+      // did not tell them what DOES. Agents inferred (incorrectly) that
+      // toggling /lockdown on would route work through task spawning and
+      // unblock pushes — a false causal chain that lost real CTO work.
+      // The deny must now name (a) named-branch push from any worktree,
+      // (b) repair_main_tree_drift for uncommitted work, and (c) lockdown
+      // orthogonality so the agent doesn't repeat the bad chain.
+      const result = await runHook(
+        {
+          tool_name: 'Bash',
+          tool_input: { command: 'git push -u origin fix/restore-migrations-064-067' },
+          session_id: CTO_SESSION_ID,
+        },
+        { env: { CLAUDE_PROJECT_DIR: tmpDir } }
+      );
+      const output = parseOutput(result.stdout);
+      assert.strictEqual(
+        output?.hookSpecificOutput?.permissionDecision,
+        'deny',
+        'git push in main tree must still be blocked when lockdown is off'
+      );
+      const reason = output?.hookSpecificOutput?.permissionDecisionReason || '';
+      assert.ok(
+        /git push origin <branch-name>|named-branch push/i.test(reason),
+        'deny message must name the named-branch push recovery path'
+      );
+      assert.ok(
+        /repair_main_tree_drift/.test(reason),
+        'deny message must name repair_main_tree_drift as the rescue tool'
+      );
+      assert.ok(
+        /Toggling \/lockdown does NOT|BOTH lockdown states|independent guard|orthogonal/i.test(reason),
+        'deny message must state that lockdown is orthogonal to this block (prevents the false toggle-lockdown chain)'
+      );
+    });
+
     it('CTO root pipelineReminder mentions the project-manager worktree-lock-busy refusal', async () => {
       // Regression: the guidance should tell the model that step 6 will
       // refuse (with a lock-busy error), so it knows the defensive lock

@@ -312,10 +312,27 @@ async function main() {
     //   2. Worktree path set but directory missing → recovery: re-provision
     //   3. No worktree path → recovery: provision via /lockdown cycle
     const recoveryLines = (action) => {
+      const isGitAction = action === 'git command';
+      const pushRescueHint = isGitAction
+        ? [
+            '',
+            `If you have ALREADY COMMITTED to a feature branch in this main tree and need to PUSH it:`,
+            `  git push origin <branch-name>     (named-branch push works from ANY worktree — the branch ref is shared in .git/)`,
+            `  → run that from inside any worktree cwd (cto-interactive or any .claude/worktrees/* dir).`,
+            '',
+            `If the main tree has UNCOMMITTED work you need to salvage:`,
+            `  mcp__agent-tracker__repair_main_tree_drift({ dry_run: true })  → preview the rescue plan`,
+            `  mcp__agent-tracker__repair_main_tree_drift()                    → enqueues a rescue agent that commits the orphaned work to a draft PR (never auto-merges, never force-pushes)`,
+            '',
+            `Toggling /lockdown does NOT enable or change task spawning, push, or any of the above — \`create_task\` + \`force_spawn_tasks\` work in BOTH lockdown states. Lockdown gates interactive-session edit/spawn permissions only; main-tree git block is an independent guard.`,
+          ]
+        : [];
+
       if (worktreeExists) {
         return [
           `Recovery: cd ${ctoWorktreePath} && <re-run your ${action}>`,
           `The worktree is a checkout of preview — your changes land on a feature branch.`,
+          ...pushRescueHint,
         ];
       }
       if (ctoWorktreePath) {
@@ -323,12 +340,14 @@ async function main() {
           `Recovery: the recorded CTO worktree (${ctoWorktreePath}) was deleted.`,
           `Recreate it: git -C ${PROJECT_DIR} worktree add ${ctoWorktreePath} preview`,
           `Then: cd ${ctoWorktreePath} && <re-run your ${action}>`,
+          ...pushRescueHint,
         ];
       }
       return [
         `Recovery: no CTO worktree provisioned. Two options:`,
         `  (a) Spawn a sub-agent with isolation: "worktree" via the Task tool (preferred for code changes)`,
         `  (b) Toggle lockdown to provision a worktree: /lockdown on, then /lockdown off (CTO must re-approve)`,
+        ...pushRescueHint,
       ];
     };
 
