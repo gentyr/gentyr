@@ -62,6 +62,8 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'rate_limit_cooldown_minutes',
   'usage_quota_cooldown_minutes',
   'persistent_stale_pause_resume',
+  'timed_pause_auto_resume',     // FIX-14: must run at 1m absolute, not rate-multiplied
+  'bypass_sla_enforcer',          // FIX-31: SLA defense-in-depth, must run at 1m absolute
   'persistent_heartbeat_stale_minutes',
   'plan_orphan_detection',
   'deferred_action_resume',
@@ -206,6 +208,7 @@ const DEFAULTS = {
   stale_work_detector: 2880,           // 48 hours
   demo_validation: 1440,               // daily
   timed_pause_auto_resume: 1,          // 1 minute (check frequently for expired timed pauses)
+  bypass_sla_enforcer: 1,              // 1 minute (FIX-31: SLA defense-in-depth, independent of timed_pause_auto_resume)
   persistent_stale_pause_resume: 5,    // 5 minutes
   persistent_heartbeat_stale_minutes: 5, // 5 minutes
   plan_orphan_detection: 10,             // 10 minutes

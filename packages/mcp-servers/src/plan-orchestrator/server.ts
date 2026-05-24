@@ -1649,7 +1649,16 @@ function planSessions(args: PlanSessionsArgs) {
     const historyPath = path.join(PROJECT_DIR, '.claude', 'state', 'agent-tracker-history.json');
     if (fs.existsSync(historyPath)) {
       const raw = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-      if (Array.isArray(raw)) allAgentHistory = raw;
+      // FIX-2: agent-tracker/server.ts writes this file as a dict
+      // ({ agents: [...], stats: {}, hookExecutions: [...] }), but earlier
+      // versions wrote a bare array. Accept both shapes so plan_sessions
+      // doesn't silently return "Agents must be linked via metadata.taskId"
+      // when the data IS there.
+      if (Array.isArray(raw)) {
+        allAgentHistory = raw;
+      } else if (raw && Array.isArray(raw.agents)) {
+        allAgentHistory = raw.agents;
+      }
     }
   } catch {
     // unavailable
