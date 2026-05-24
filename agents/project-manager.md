@@ -94,12 +94,92 @@ mcp__todo-db__create_task({
 
 You are the ONLY agent responsible for committing, pushing, merging, and cleaning up.
 
+### Step 0 — Acquire worktree lock (MANDATORY when cwd is inside `.claude/worktrees/`)
+
+**Why**: in lockdown-off mode the CTO may run multiple parallel pipelines in the same `cto-interactive-<sid8>` worktree (one terminal fanning out Tasks A/B/C). All such pipelines share the same cwd, and step 6 git operations (`checkout -b`, `commit`, `push`, `merge`, switch-back) will trample if two project-managers run concurrently. Step 0 prevents that by holding an exclusive lock for the duration of your work.
+
+1. Detect whether you are in a worktree and derive the resource ID:
+
+   ```bash
+   case "$(pwd)" in
+     */.claude/worktrees/*)
+       WORKTREE_PM_RESOURCE_ID="worktree-$(basename "$(pwd)")"
+       ;;
+     *)
+       # Not in a worktree (e.g., main-tree CTO operation) — skip lock entirely.
+       WORKTREE_PM_RESOURCE_ID=""
+       ;;
+   esac
+   ```
+
+   If `WORKTREE_PM_RESOURCE_ID` is empty, **skip the rest of Step 0** (proceed to Step 1 of the Commit Protocol). The lock only applies to worktree-bound project-manager runs.
+
+2. **Register the resource** (idempotent; safe to call when already registered):
+
+   ```
+   mcp__agent-tracker__register_shared_resource({
+     resource_id: "<WORKTREE_PM_RESOURCE_ID>",
+     default_ttl_minutes: 30
+   })
+   ```
+
+3. **Acquire the lock**:
+
+   ```
+   mcp__agent-tracker__acquire_shared_resource({
+     resource_id: "<WORKTREE_PM_RESOURCE_ID>",
+     title: "project-manager: <feature-branch> commit+merge"
+   })
+   ```
+
+4. **If `acquired === false`** (another project-manager is in flight in the SAME worktree):
+   - **Do NOT touch git.** Do not run `git add`, `git commit`, `git push`, `gh pr create`, or `gh pr merge`. The lock holder is mid-merge and your operations would clobber theirs.
+   - File a bypass request so the CTO sees the contention:
+
+     ```
+     mcp__agent-tracker__submit_bypass_request({
+       task_type: "todo",                    // or "persistent" if your task is linked to a persistent task
+       task_id: "<your-task-id>",
+       category: "access",
+       summary: "Worktree busy with concurrent pipeline",
+       details: "Worktree <cwd> is locked by another project-manager.\n" +
+                "Holder: <stringified acq.holder block>\n" +
+                "Queue position: <acq.position>\n" +
+                "\n" +
+                "This usually means parallel Task pipelines were fanned out in one CTO terminal " +
+                "(unsupported). Remediation: wait for the in-flight pipeline to merge, or run " +
+                "parallel work in a separate `claude` terminal so PR #709 provisions a separate " +
+                "cto-interactive-<sid8> worktree for it."
+     })
+     ```
+
+   - Call `summarize_work` with status describing the lock contention, then exit. **Do NOT retry** the lock — let the CTO unblock the situation.
+
+5. **Record the starting branch as a sentinel**:
+
+   ```bash
+   STARTED_ON_BRANCH="$(git branch --show-current)"
+   echo "Sentinel branch: $STARTED_ON_BRANCH"
+   ```
+
+   You will compare against this before every git mutation (add, push, merge) to detect branch swaps that bypassed the lock (e.g., the CTO checked out a different branch manually, or sync-recycle force-released the lock mid-run). If the branch changed, you must release the lock, file a bypass request describing the swap (`details:` "expected `$STARTED_ON_BRANCH`, found `<current>` — another process or the CTO switched branches under this worktree"), and exit. Do NOT attempt to recover by switching back.
+
+6. **Lock release is mandatory in every exit path.** Whenever you exit (success, failure, conflict, push refused, CI failure escalation, or sentinel mismatch), release before you call `summarize_work`:
+
+   ```
+   mcp__agent-tracker__release_shared_resource({ resource_id: "<WORKTREE_PM_RESOURCE_ID>" })
+   ```
+
+   The TTL (30 min) and dead-PID auto-release are the safety nets — they catch crashes — but you should release explicitly whenever you can.
+
 ### Commit Protocol
 
 1. **Verify worktree**: Run `test -f .git && echo "worktree" || echo "main-tree"`. If "main-tree": do NOT run `git add` or `git commit` -- report that you cannot commit because you are not in a worktree. The `main-tree-commit-guard.js` hook blocks spawned agents from committing in the main tree.
 2. **Review changes**: Run `git status` and `git diff` to understand what will be committed.
 3. Stage specific files: `git add <specific-files>` (never `git add .` or `git add -A`)
 4. Commit with a descriptive message: `git commit -m "descriptive message"`
+
+**Sentinel branch check** — before each `git add`, run `[ "$(git branch --show-current)" = "$STARTED_ON_BRANCH" ]` and on mismatch release the lock + file a bypass request + exit (see Step 0.5). Repeat the same check before `git push` (Step 5) and before `gh pr merge` (Step 8).
 
 **Commit early, commit often.** After completing each logical unit of work (a single phase, a related group of file changes, or after every ~5 file edits), commit with `git add <specific-files> && git commit -m "wip: <description>"`. Do NOT accumulate a large set of uncommitted changes. Uncommitted work can be destroyed by git operations, session interruptions, or context compactions.
 
@@ -198,8 +278,16 @@ After pushing but BEFORE creating the PR, run the pre-merge quality gate:
    by the branch-pruner block in hourly automation. Deleting it manually while the CTO session is still
    on it would orphan the worktree.
 
+11. **Release the worktree lock acquired in Step 0** (MANDATORY whenever Step 0 acquired one — i.e., whenever `WORKTREE_PM_RESOURCE_ID` is non-empty). This must run BEFORE `summarize_work`:
+
+   ```
+   mcp__agent-tracker__release_shared_resource({ resource_id: "<WORKTREE_PM_RESOURCE_ID>" })
+   ```
+
+   Release even on failure paths (push refused, merge conflict, CI fix-loop exhaustion, sentinel branch mismatch). The TTL and dead-PID auto-release are safety nets, but an explicit release immediately unblocks any queued waiter in the same worktree (typically the next CTO-fanned-out pipeline). Standard provisioned worktrees and cto-interactive worktrees both release the lock here.
+
 **Your session is NOT complete until the PR is merged, the branch is deleted (standard worktrees only),
-AND the worktree is removed (standard worktrees only).**
+the worktree is removed (standard worktrees only), AND the worktree lock from Step 0 is released.**
 
 Note: Commits on feature branches pass through immediately (lint + security only).
 

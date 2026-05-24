@@ -140,6 +140,18 @@ git -C <PROJECT_DIR> worktree remove <ctoWorktreePath>
 # Then in Claude Code: /lockdown on
 ```
 
+## Parallel work in lockdown-off mode
+
+There are two distinct parallelism scenarios and they behave very differently.
+
+**Scenario A (SUPPORTED) — multiple `claude` terminals.** Open several `claude` CLI sessions in separate terminals. Each turns on `/lockdown off` independently and PR #709 provisions a dedicated `cto-interactive-<sid8>` worktree per session, keyed by `session_id` in `automation-config.json#ctoWorktreePaths`. The worktrees are fully isolated — different paths, different branches, different lock IDs. Three or four parallel terminals each running their own 6-step pipeline is the supported pattern for concurrent CTO work.
+
+**Scenario B (NOT SUPPORTED) — fan out parallel Tasks in ONE terminal.** Sending a single message that spawns `Task(subagent_type=..., cwd=<cto-worktree>)` calls A, B, C in parallel collides at step 6 (project-manager). All three sub-agents share the same cwd, and each project-manager runs `git checkout -b feature/X` → commit → push → merge → switch-back. Three concurrent project-managers doing that in the same working tree will trample one another (a real failure showed five branches checked out in one hour, with one code-writer's edits wiped by another pipeline's branch swap).
+
+The project-manager agent defends against Scenario B at step 0 by acquiring an exclusive lock on the worktree (resource id `worktree-<basename>` via `mcp__agent-tracker__acquire_shared_resource`). If a second project-manager finds the lock held, it files a bypass request and exits without touching git, so the CTO sees the collision rather than a silently-corrupted PR. The lock is also a belt — the actual fix is to not fan out Tasks in one terminal.
+
+**Async parallel work (no babysitting):** if you don't need to co-pilot every step, use `/spawn-tasks` or `/persistent-task`. Each task gets its own freshly provisioned worktree (separate from any cto-interactive worktree), runs to completion in the background, and lands its merge automatically. This is the right tool for "three independent things, go do them while I think."
+
 ## Important
 
 - This does NOT require a session restart — takes effect immediately
