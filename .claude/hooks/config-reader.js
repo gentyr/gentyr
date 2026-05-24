@@ -64,6 +64,7 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'persistent_stale_pause_resume',
   'timed_pause_auto_resume',     // FIX-14: must run at 1m absolute, not rate-multiplied
   'bypass_sla_enforcer',          // FIX-31: SLA defense-in-depth, must run at 1m absolute
+  'plan_task_merge_reconciler',   // FIX-6: back-fills missed PR merges into plan_tasks
   'persistent_heartbeat_stale_minutes',
   'plan_orphan_detection',
   'deferred_action_resume',
@@ -209,6 +210,7 @@ const DEFAULTS = {
   demo_validation: 1440,               // daily
   timed_pause_auto_resume: 1,          // 1 minute (check frequently for expired timed pauses)
   bypass_sla_enforcer: 1,              // 1 minute (FIX-31: SLA defense-in-depth, independent of timed_pause_auto_resume)
+  plan_task_merge_reconciler: 5,       // 5 minutes (FIX-6: catches PR merges plan-merge-tracker missed)
   persistent_stale_pause_resume: 5,    // 5 minutes
   persistent_heartbeat_stale_minutes: 5, // 5 minutes
   plan_orphan_detection: 10,             // 10 minutes

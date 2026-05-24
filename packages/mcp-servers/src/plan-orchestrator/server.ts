@@ -1082,6 +1082,37 @@ function addPlanTask(args: AddPlanTaskArgs) {
 }
 
 /**
+ * FIX-3: Phase-start cascade. When a child task transitions out of `pending`
+ * (i.e. into `ready`, `in_progress`, or `paused`), the parent phase should
+ * advance from `pending` → `in_progress` so the plan UI reflects active work.
+ * Without this, the audited plan c0781f93 showed Phase 1 still `pending` even
+ * though 2 tasks were `completed` and 4 were `in_progress` for 5 hours.
+ */
+function runStartCascade(
+  db: Database.Database,
+  phaseId: string,
+  ts: string,
+): void {
+  try {
+    const phase = db.prepare("SELECT status, started_at FROM phases WHERE id = ?")
+      .get(phaseId) as { status: string; started_at: string | null } | undefined;
+    if (!phase) return;
+    if (phase.status === 'pending') {
+      db.prepare(
+        "UPDATE phases SET status = 'in_progress', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?"
+      ).run(ts, ts, phaseId);
+      recordStateChange(db, 'phase', phaseId, 'status', 'pending', 'in_progress', 'task-start-cascade');
+    } else if (phase.status === 'in_progress' && !phase.started_at) {
+      // Heal old phases whose started_at was never recorded.
+      db.prepare("UPDATE phases SET started_at = ?, updated_at = ? WHERE id = ?")
+        .run(ts, ts, phaseId);
+    }
+  } catch {
+    /* non-fatal: cascade is opportunistic */
+  }
+}
+
+/**
  * Run phase/plan auto-completion cascade after a task reaches completed/skipped.
  * Extracted as a shared helper so both updateTaskProgress and verificationAuditPass
  * can trigger the same cascade logic.
@@ -1166,7 +1197,7 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
       updates.push('status = ?');
       values.push('skipped');
       resolvedStatus = 'skipped';
-      recordStateChange(db, 'task', args.task_id, 'status', task.status, 'skipped', `skip:${args.skip_authorization}`);
+      recordStateChange(db, 'task', args.task_id, 'status', task.status, 'skipped', `update_task_progress:skip:${args.skip_authorization}`);
     } else if (args.status === 'completed') {
       // Audit gate: check for verification_strategy
       if (args.force_complete) {
@@ -1174,7 +1205,7 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
         updates.push('status = ?', 'completed_at = ?');
         values.push('completed', ts);
         resolvedStatus = 'completed';
-        recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed', 'cto-force-complete');
+        recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed', 'update_task_progress:cto-force-complete');
       } else {
         const taskFull = db.prepare('SELECT verification_strategy FROM plan_tasks WHERE id = ?')
           .get(args.task_id) as { verification_strategy: string | null };
@@ -1184,7 +1215,7 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
           updates.push('status = ?');
           values.push('pending_audit');
           resolvedStatus = 'pending_audit';
-          recordStateChange(db, 'task', args.task_id, 'status', task.status, 'pending_audit');
+          recordStateChange(db, 'task', args.task_id, 'status', task.status, 'pending_audit', 'update_task_progress:audit-routing');
 
           // Create audit record
           const auditId = randomUUID();
@@ -1198,7 +1229,7 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
           updates.push('status = ?', 'completed_at = ?');
           values.push('completed', ts);
           resolvedStatus = 'completed';
-          recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed');
+          recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed', 'update_task_progress:no-vs');
         }
       }
     } else if (args.status === 'pending_audit') {
@@ -1211,12 +1242,18 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
       updates.push('status = ?');
       values.push(args.status);
       resolvedStatus = args.status;
-      recordStateChange(db, 'task', args.task_id, 'status', task.status, args.status);
+      recordStateChange(db, 'task', args.task_id, 'status', task.status, args.status, 'update_task_progress');
     }
 
     if (args.status === 'in_progress' && !task.started_at) {
       updates.push('started_at = ?');
       values.push(ts);
+    }
+
+    // FIX-3: phase-start cascade — when a task leaves `pending`, advance
+    // the parent phase to `in_progress` so plan UIs reflect active work.
+    if (args.status === 'ready' || args.status === 'in_progress' || args.status === 'paused') {
+      runStartCascade(db, task.phase_id, ts);
     }
   }
 
@@ -1241,28 +1278,47 @@ function updateTaskProgress(args: UpdateTaskProgressArgs) {
 
     // Auto-complete on PR merge (only if no explicit status was provided)
     if (args.pr_merged && !args.status && task.status !== 'completed' && task.status !== 'pending_audit') {
-      const taskFull = db.prepare('SELECT verification_strategy FROM plan_tasks WHERE id = ?')
-        .get(args.task_id) as { verification_strategy: string | null };
+      // FIX-5: Skip re-audit when a passed audit already exists. In the audited
+      // plan c0781f93 a recovery agent called update_task_progress({pr_merged:true})
+      // on a task that had already passed its audit. The old code unconditionally
+      // re-routed to pending_audit and burned a second Sonnet-tier audit cycle
+      // (~10 min, redundant since the artifact hadn't changed). Defense: if any
+      // passed audit exists for this task, complete directly. The audit gate's
+      // job is to verify the deliverable; once verified, additional PR merges
+      // for the same task don't change the deliverable.
+      const passedAudit = db.prepare(
+        "SELECT id FROM plan_audits WHERE task_id = ? AND verdict = 'pass' LIMIT 1"
+      ).get(args.task_id) as { id: string } | undefined;
 
-      if (taskFull.verification_strategy) {
-        updates.push('status = ?');
-        values.push('pending_audit');
-        resolvedStatus = 'pending_audit';
-        recordStateChange(db, 'task', args.task_id, 'status', task.status, 'pending_audit');
-
-        const auditId = randomUUID();
-        const attemptNum = ((db.prepare('SELECT COUNT(*) as c FROM plan_audits WHERE task_id = ?')
-          .get(args.task_id) as { c: number }).c) + 1;
-        db.prepare(
-          'INSERT INTO plan_audits (id, task_id, plan_id, verification_strategy, requested_at, attempt_number) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(auditId, args.task_id, task.plan_id, taskFull.verification_strategy, ts, attemptNum);
-      } else {
-        updates.push('status = ?');
-        values.push('completed');
-        updates.push('completed_at = ?');
-        values.push(ts);
+      if (passedAudit) {
+        updates.push('status = ?', 'completed_at = ?');
+        values.push('completed', ts);
         resolvedStatus = 'completed';
-        recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed');
+        recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed', 'update_task_progress:pr-merged-post-audit');
+      } else {
+        const taskFull = db.prepare('SELECT verification_strategy FROM plan_tasks WHERE id = ?')
+          .get(args.task_id) as { verification_strategy: string | null };
+
+        if (taskFull.verification_strategy) {
+          updates.push('status = ?');
+          values.push('pending_audit');
+          resolvedStatus = 'pending_audit';
+          recordStateChange(db, 'task', args.task_id, 'status', task.status, 'pending_audit', 'update_task_progress:pr-merged-audit-route');
+
+          const auditId = randomUUID();
+          const attemptNum = ((db.prepare('SELECT COUNT(*) as c FROM plan_audits WHERE task_id = ?')
+            .get(args.task_id) as { c: number }).c) + 1;
+          db.prepare(
+            'INSERT INTO plan_audits (id, task_id, plan_id, verification_strategy, requested_at, attempt_number) VALUES (?, ?, ?, ?, ?, ?)'
+          ).run(auditId, args.task_id, task.plan_id, taskFull.verification_strategy, ts, attemptNum);
+        } else {
+          updates.push('status = ?');
+          values.push('completed');
+          updates.push('completed_at = ?');
+          values.push(ts);
+          resolvedStatus = 'completed';
+          recordStateChange(db, 'task', args.task_id, 'status', task.status, 'completed', 'update_task_progress:pr-merged-no-vs');
+        }
       }
     }
   }
