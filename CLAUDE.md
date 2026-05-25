@@ -637,6 +637,18 @@ Non-exempt task completions are independently audited to verify that work was ge
 
 **Gate-exempt categories**: Triage & Delegation, Project Management, and Workstream Management categories complete directly without audit (their work is coordination, not deliverable artifacts).
 
+**Resetting a stuck or wrong audit**: Three MCP tools restart an audit fresh — one per task DB. Use these when (a) the auditor session is wedged in `pending_audit` >30 min with no progress, (b) a verdict was obviously wrong (false-pass or false-fail), or (c) the audit must be redone from scratch with a fresh auditor. All three kill any live auditor session for the task, mark the prior audit row failed with `failure_reason="Audit reset: <reason>"`, insert a new audit row (`attempt_number+1`), revert the task to `pending_audit`, and respawn a fresh auditor immediately via `buildAuditorSessionSpec` + `enqueueSession`.
+
+- `mcp__todo-db__reset_task_audit({ task_id, reason })` — todo-db task audit
+- `mcp__persistent-task__reset_pt_audit({ id, reason })` — persistent task audit (also cascade-reverts parent todo task if it had been completed by a prior audit-pass)
+- `mcp__plan-orchestrator__reset_plan_audit({ plan_task_id, reason })` — plan task audit (also writes a state_change row to the plan timeline)
+
+**Authorization**: CTO/interactive sessions, deputy-cto, persistent-monitor, and plan-manager are allowed. Auditor agents (universal-auditor / plan-auditor / authorization-auditor) and task-runners are explicitly denied — auditors cannot reset their own audit; task-runners cannot escape verdicts on their own work. Identity is verified via `CLAUDE_QUEUE_ID` lookup in `session-queue.db` (same pattern as `verifyUserAlignmentIdentity()`). Shared logic lives in `.claude/hooks/lib/audit-reset.js`.
+
+**What reset is NOT**: It does NOT redo the work — only the audit. If the work product itself is broken, use the standard task flow (drive a new task) or `retry_plan_task` (for plan tasks) instead. The session-reaper's Step 1b.5 already handles ROUTINE auditor death by auto-respawning after 10 min of `verdict IS NULL`; `reset_*_audit` is the manual override for cases that auto-recovery cannot solve (wedged-but-not-stale, post-verdict false-pass/fail, or repeated auditor failures on the same task).
+
+**Authorization-audits are out of scope**: CTO authorization audits are interactive and short-lived; if a CTO authorization decision goes wrong, the existing `record_cto_decision` flow re-runs naturally.
+
 **Signal compliance gate**: The `signal-compliance-gate.js` PreToolUse hook validates all inter-agent signals via `send_session_signal` against a registered schema before delivery. Directive signals (requiring acknowledgment) MUST be acknowledged before the receiving agent can complete its task — enforced by `signal-reader.js` tracking.
 
 ## Global Deputy-CTO Monitor

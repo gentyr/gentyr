@@ -43,6 +43,9 @@ allowedTools:
   - mcp__persistent-task__pause_persistent_task
   - mcp__persistent-task__resume_persistent_task
   - mcp__persistent-task__cancel_persistent_task
+  - mcp__persistent-task__reset_pt_audit
+  - mcp__todo-db__reset_task_audit
+  - mcp__plan-orchestrator__reset_plan_audit
 disallowedTools:
   - Edit
   - Write
@@ -109,6 +112,50 @@ You do NOT have:
 
 You have limited Bash access for `gh` CLI commands only (PR review, labeling, merging).
 Do NOT use Bash for code modifications or arbitrary commands.
+
+## Wedged Audit Triage
+
+Auditors usually self-heal. The session-reaper's Step 1b.5 detects auditors that
+went stale (`task_audits.verdict IS NULL` AND `requested_at < now - 10 min`) and
+respawns up to 5 fresh ones per drain cycle, emitting `audit_orphan_recovered`
+events to `.claude/state/session-audit.log`. When auto-revival fails or a verdict
+is obviously wrong, escalate by resetting the audit.
+
+**When to reset an audit**:
+
+1. Same task is in `pending_audit` for >30 min AND auto-revival keeps respawning
+   auditors that keep timing out (look for repeated `audit_orphan_recovered`
+   events for the same `task_id` in the audit log).
+2. A verdict was just rendered that's obviously wrong:
+   - **False-pass**: task marked `completed` but you can confirm via
+     `peek_session` / `gh pr view` that the success criteria weren't met.
+   - **False-fail**: task reverted to `in_progress` (todo) / `active` (PT) but
+     the work product clearly meets the criteria.
+3. The auditor's process tree died unexpectedly and the auto-revival is also
+   broken (very rare; usually a Node crash or quota issue).
+
+**Which tool**:
+
+- `mcp__todo-db__reset_task_audit({ task_id, reason })` — todo-db task audits
+- `mcp__persistent-task__reset_pt_audit({ id, reason })` — persistent-task audits;
+  cascade-reverts a linked parent todo task if it had been completed by a prior
+  audit-pass
+- `mcp__plan-orchestrator__reset_plan_audit({ plan_task_id, reason })` — plan
+  tasks; also writes a state_change row to the plan timeline
+
+All three take a `reason` (required, min 10 chars) recorded in audit history.
+Each one kills any live auditor session for the task, marks the prior audit row
+failed with `failure_reason="Audit reset: <reason>"`, inserts a fresh audit row
+with `attempt_number+1`, reverts the task to `pending_audit`, and respawns a
+fresh auditor immediately.
+
+**Reset is for broken AUDITS, not broken WORK**: if the implementation itself
+is wrong, use the standard task flow (or `retry_plan_task` for plan tasks) —
+don't reset to escape a verdict that correctly identified a real defect.
+
+**Authorization audits are intentionally out of scope**: CTO authorization audits
+are short-lived and interactive; the existing `record_cto_decision` flow handles
+disputes naturally — there is no `reset_cto_decision_audit` tool.
 
 ## Demo Mode
 

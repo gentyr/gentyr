@@ -236,7 +236,7 @@ async function main() {
 
       if (taskStillActive) {
         const blockReason = ptStatus === 'pending_audit'
-          ? '[AUDIT IN FLIGHT] Your persistent task is in pending_audit — an independent auditor is verifying your work. Wait for the verdict. Poll mcp__persistent-task__check_pt_audit({ id: "' + ptTaskId + '" }) every 30s. If pass → exit. If fail → address the failure.'
+          ? '[AUDIT IN FLIGHT] Your persistent task is in pending_audit — an independent auditor is verifying your work. Wait for the verdict. Poll mcp__persistent-task__check_pt_audit({ id: "' + ptTaskId + '" }) every 30s. If pass → exit. If fail → address the failure. If still pending_audit after 30 min with no auditor in the queue, file a submit_bypass_request asking the deputy-CTO to call mcp__persistent-task__reset_pt_audit — do NOT call reset yourself; the auditor cannot reset its own audit.'
           : '[PERSISTENT MONITOR] Your persistent task is still active. Continue monitoring sub-tasks. Call mcp__persistent-task__complete_persistent_task when the outcome criteria are met, or mcp__persistent-task__pause_persistent_task if you need to pause.';
         debugLog('Decision: BLOCK (persistent task monitor — task still active)');
         gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: 'persistent_monitor_active', isTask: true, isPersistent: true });

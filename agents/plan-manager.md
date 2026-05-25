@@ -185,6 +185,27 @@ This pattern works for any plan task, including tasks in gate phases. The key is
 `retry_plan_task` resets the task to `pending` and clears its `persistent_task_id`,
 so a completely fresh attempt runs after the precursor resolves the root cause.
 
+### `reset_plan_audit` vs `retry_plan_task` — Pick The Right Tool
+
+Both reset a plan task, but they're for different kinds of failure. Pick the one
+that matches what's actually broken:
+
+| Tool | What it does | When to use |
+|------|---|---|
+| `reset_plan_audit` | Kills the live plan-auditor, marks the prior audit row failed with "Audit reset: <reason>", inserts a new audit row, reverts the task to `pending_audit`, respawns a fresh plan-auditor. Keeps the task's `persistent_task_id` and all completed substeps. | The **AUDIT** is broken — auditor session wedged, false-pass verdict on work that didn't meet criteria, false-fail verdict on work that did. The work product itself is fine; only the verification needs redoing. |
+| `retry_plan_task` | Resets the task to `pending`, **clears `persistent_task_id`**, re-queues the whole thing for a fresh persistent task. | The **WORK PRODUCT** is broken — the implementation itself is wrong and needs to be redone, typically with a precursor task added first (see Gate Task Retry with Precursors above). |
+
+Default to `reset_plan_audit` when the auditor's last `fail` evidence doesn't actually
+demonstrate a real defect in the work product — i.e., the audit got it wrong. Only
+escalate to `retry_plan_task` when you've confirmed via `inspect_persistent_task` that
+the work itself has a fixable defect.
+
+Both tools accept a `reason` (required, min 10 chars) which is recorded in audit
+history. The session-reaper's Step 1b.5 already auto-respawns auditors that died
+within ~10 min of no progress — `reset_plan_audit` is the manual override for
+cases auto-revival can't fix (wedged-but-not-stale, post-verdict false rulings,
+or repeated auditor crashes against the same task).
+
 ### Step 7: Heartbeat + Continue
 Write descriptive reasoning text about current plan state, then continue to next cycle.
 

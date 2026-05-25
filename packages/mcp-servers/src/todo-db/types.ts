@@ -134,6 +134,15 @@ export const TaskAuditFailArgsSchema = z.object({
   evidence: z.string().describe('What was actually found vs what was expected'),
 });
 
+export const ResetTaskAuditArgsSchema = z.object({
+  task_id: z.string().describe('Task UUID'),
+  reason: z.string().min(10).describe(
+    'Why this audit is being reset (min 10 chars). Stored in the superseded audit row failure_reason. ' +
+    'Use when the auditor session is wedged, when a verdict is obviously wrong, or when the audit must be ' +
+    'redone from scratch with a fresh auditor.'
+  ),
+});
+
 export const GetSummaryArgsSchema = z.object({});
 
 export const CleanupArgsSchema = z.object({});
@@ -278,6 +287,7 @@ export type ConfirmTaskGateArgs = z.infer<typeof ConfirmTaskGateArgsSchema>;
 export type CheckTaskAuditArgs = z.infer<typeof CheckTaskAuditArgsSchema>;
 export type TaskAuditPassArgs = z.infer<typeof TaskAuditPassArgsSchema>;
 export type TaskAuditFailArgs = z.infer<typeof TaskAuditFailArgsSchema>;
+export type ResetTaskAuditArgs = z.infer<typeof ResetTaskAuditArgsSchema>;
 
 export interface TaskRecord {
   id: string;

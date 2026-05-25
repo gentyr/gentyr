@@ -42,6 +42,7 @@ import {
   VerificationAuditFailArgsSchema,
   GetPlanBlockingStatusArgsSchema,
   RetryPlanTaskArgsSchema,
+  ResetPlanAuditArgsSchema,
   UpdatePlanTaskGateArgsSchema,
   type CreatePlanArgs,
   type GetPlanArgs,
@@ -66,6 +67,7 @@ import {
   type VerificationAuditFailArgs,
   type GetPlanBlockingStatusArgs,
   type RetryPlanTaskArgs,
+  type ResetPlanAuditArgs,
   type UpdatePlanTaskGateArgs,
   type PlanRecord,
   type PhaseRecord,
@@ -2118,6 +2120,20 @@ function verificationAuditFail(args: VerificationAuditFailArgs) {
   };
 }
 
+async function resetPlanAuditHandler(args: ResetPlanAuditArgs): Promise<object> {
+  const db = getDb();
+  const projectDir = PROJECT_DIR;
+  const { resetPlanAudit } = await import(
+    path.resolve(projectDir, '.claude', 'hooks', 'lib', 'audit-reset.js')
+  );
+  return await resetPlanAudit({
+    db,
+    planTaskId: args.plan_task_id,
+    reason: args.reason,
+    projectDir,
+  });
+}
+
 function retryPlanTask(args: RetryPlanTaskArgs): object {
   const db = getDb();
   const ts = now();
@@ -2495,9 +2511,16 @@ const tools: AnyToolHandler[] = [
   },
   {
     name: 'retry_plan_task',
-    description: 'Reset a completed, pending_audit, skipped, or paused plan task back to pending for re-attempt. Clears persistent_task_id so a fresh persistent task can be spawned. Use after adding precursor tasks via add_plan_task + add_dependency to address the root cause before retrying.',
+    description: 'Reset a completed, pending_audit, skipped, or paused plan task back to pending for re-attempt. Clears persistent_task_id so a fresh persistent task can be spawned. Use after adding precursor tasks via add_plan_task + add_dependency to address the root cause before retrying. Heavier than reset_plan_audit — this re-does the WORK, not just the audit.',
     schema: RetryPlanTaskArgsSchema,
     handler: retryPlanTask,
+  },
+  {
+    name: 'reset_plan_audit',
+    description:
+      'Reset a wedged or wrong-verdict plan-task audit WITHOUT redoing the work. Kills any live plan-auditor for this task, marks the current audit row failed with reason="Audit reset: <reason>", inserts a fresh audit row (attempt_number+1), reverts the task to pending_audit, writes a state_change row to the plan timeline, and respawns a fresh plan-auditor immediately. Works on tasks in pending_audit/completed/in_progress/ready. Authorized for cto/deputy-cto/plan-manager only. Use this when the AUDIT is broken (stuck auditor, false-pass, false-fail); use retry_plan_task when the WORK PRODUCT is broken.',
+    schema: ResetPlanAuditArgsSchema,
+    handler: resetPlanAuditHandler,
   },
   {
     name: 'update_plan_task_gate',

@@ -52,11 +52,13 @@ import {
   CheckPtAuditArgsSchema,
   PtAuditPassArgsSchema,
   PtAuditFailArgsSchema,
+  ResetPtAuditArgsSchema,
   type UpdatePtGateArgs,
   type ConfirmPtGateArgs,
   type CheckPtAuditArgs,
   type PtAuditPassArgs,
   type PtAuditFailArgs,
+  type ResetPtAuditArgs,
 } from './types.js';
 
 // ============================================================================
@@ -1161,6 +1163,21 @@ function ptAuditPass(args: PtAuditPassArgs): object {
   return { id: args.id, status: 'completed', verdict: 'pass', evidence: args.evidence, completed_at: ts };
 }
 
+async function resetPtAuditHandler(args: ResetPtAuditArgs): Promise<object> {
+  const db = getDb();
+  const projectDir = PROJECT_DIR;
+  const { resetPtAudit } = await import(
+    path.resolve(projectDir, '.claude', 'hooks', 'lib', 'audit-reset.js')
+  );
+  return await resetPtAudit({
+    db,
+    taskId: args.id,
+    reason: args.reason,
+    projectDir,
+    todoDbPath: TODO_DB_PATH,
+  });
+}
+
 function ptAuditFail(args: PtAuditFailArgs): object {
   const db = getDb();
   const task = db.prepare('SELECT id, status FROM persistent_tasks WHERE id = ?').get(args.id) as { id: string; status: string } | undefined;
@@ -1280,6 +1297,13 @@ const tools: AnyToolHandler[] = [
     description: 'Mark persistent task audit as failed. Returns task to active status so the monitor can address the failure. The failure reason is injected into the next monitor cycle.',
     schema: PtAuditFailArgsSchema,
     handler: ptAuditFail,
+  },
+  {
+    name: 'reset_pt_audit',
+    description:
+      'Reset a wedged or wrong-verdict persistent-task audit. Kills any live auditor session for this task, marks the current audit row failed with reason="Audit reset: <reason>", inserts a fresh audit row (attempt_number+1), reverts the task to pending_audit, cascades-revert the parent todo task if it had been completed by a prior audit-pass, and respawns a fresh auditor immediately. Works on tasks in pending_audit/completed/active. Authorized for cto/deputy-cto/persistent-monitor only — auditors and task-runners are denied. Use this when the AUDIT itself is broken; use the standard task flow when the WORK needs redoing.',
+    schema: ResetPtAuditArgsSchema,
+    handler: resetPtAuditHandler,
   },
 ];
 
