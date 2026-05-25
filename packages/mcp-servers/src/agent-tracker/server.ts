@@ -2249,10 +2249,17 @@ function listUserPrompts(args: import('./types.js').ListUserPromptsArgs): import
 // ============================================================================
 
 /**
- * Get real-time concurrency status: running agents, max allowed, available slots
+ * Get real-time concurrency status.
+ *
+ * DEPRECATED diagnostic — pgrep's `running` count includes every claude
+ * process (monitors, auditors, automated rescues, etc.) but the enforced
+ * cap only applies to the `standard` lane in session-queue.db. We keep
+ * this tool for backward-compat but add an `authoritative` block populated
+ * from session-queue.db so callers see the real numbers. Use
+ * `get_session_queue_status` going forward.
  */
 function getConcurrencyStatus(_args: GetConcurrencyStatusArgs): ConcurrencyStatusResult {
-  // Count running agents via pgrep (same pattern as force-spawn-tasks.js)
+  // Legacy pgrep count — includes ALL claude processes regardless of lane.
   let running = 0;
   try {
     const result = execSync(
@@ -2264,7 +2271,8 @@ function getConcurrencyStatus(_args: GetConcurrencyStatusArgs): ConcurrencyStatu
     // pgrep returns exit code 1 when no processes match
   }
 
-  // Read max concurrent from automation-config.json
+  // Legacy maxConcurrent — reads a field that nothing currently writes.
+  // Falls back to 10. Kept only to preserve response shape.
   let maxConcurrent = 10;
   const automationConfigPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
   try {
@@ -2276,7 +2284,6 @@ function getConcurrencyStatus(_args: GetConcurrencyStatusArgs): ConcurrencyStatu
     // Fall back to default
   }
 
-  // Read agent-tracker-history.json, count agents with status === 'running' by type
   const history = readHistory();
   const trackedByType: Record<string, number> = {};
   for (const agent of history.agents ?? []) {
@@ -2285,16 +2292,137 @@ function getConcurrencyStatus(_args: GetConcurrencyStatusArgs): ConcurrencyStatu
     }
   }
 
-  return {
+  const result: ConcurrencyStatusResult = {
     running,
     maxConcurrent,
     available: Math.max(0, maxConcurrent - running),
     trackedRunning: { byType: trackedByType },
+    _deprecated: {
+      message:
+        'get_concurrency_status is a legacy pgrep-based diagnostic and does NOT reflect ' +
+        'the enforced session-queue cap. The "running" count includes monitors, auditors, ' +
+        'and automated-lane agents that do NOT consume standard concurrency slots.',
+      use_instead: 'get_session_queue_status',
+    },
   };
+
+  // Populate the authoritative block from session-queue.db when reachable.
+  try {
+    const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+    if (fs.existsSync(queueDbPath)) {
+      const db = new Database(queueDbPath, { readonly: true });
+      db.pragma('busy_timeout = 3000');
+
+      const cfgRow = (key: string): number => {
+        const row = db.prepare('SELECT value FROM queue_config WHERE key = ?').get(key) as
+          | { value: string }
+          | undefined;
+        return row?.value ? parseInt(row.value, 10) || 0 : 0;
+      };
+      const laneCount = (lane: string): number => {
+        const row = db
+          .prepare("SELECT COUNT(*) as c FROM queue_items WHERE status = 'running' AND lane = ?")
+          .get(lane) as { c: number };
+        return row.c;
+      };
+      const standardCount = db
+        .prepare(
+          "SELECT COUNT(*) as c FROM queue_items WHERE status = 'running' AND " +
+            "lane NOT IN ('gate', 'persistent', 'audit', 'automated', 'alignment', 'revival')"
+        )
+        .get() as { c: number };
+
+      const queueMax = cfgRow('max_concurrent_sessions') || 10;
+      const reserved = cfgRow('reserved_slots') || 0;
+      const standardRunning = standardCount.c;
+
+      result.authoritative = {
+        queueMaxConcurrent: queueMax,
+        reservedSlots: reserved,
+        standardRunning,
+        standardAvailable: Math.max(0, queueMax - reserved - standardRunning),
+        automatedRunning: laneCount('automated'),
+        persistentRunning: laneCount('persistent'),
+        auditRunning: laneCount('audit'),
+        gateRunning: laneCount('gate'),
+      };
+      db.close();
+    }
+  } catch {
+    // Non-fatal — return without authoritative block if DB unreachable.
+  }
+
+  return result;
 }
 
 /**
- * Force-spawn pending tasks by wrapping the existing force-spawn-tasks.js script
+ * Quick system-load snapshot for diagnosing force-spawn timeouts.
+ * Returns null if it can't read OS stats — never throws.
+ */
+function snapshotSystemLoad(): { freeMB: number; nodeProcesses: number; nodeRssMB: number } | null {
+  try {
+    const totalBytes = os.totalmem();
+    const freeBytes = os.freemem();
+    let freeMB = Math.round(freeBytes / 1024 / 1024);
+    // On macOS, os.freemem() reports only pure-free pages — vm_stat gives a more useful number.
+    try {
+      const vm = execSync('vm_stat', { encoding: 'utf8', timeout: 1500, stdio: 'pipe' });
+      const pageSizeM = vm.match(/page size of (\d+)/);
+      const pageSize = pageSizeM ? parseInt(pageSizeM[1], 10) : 4096;
+      const pickPages = (label: string): number => {
+        const m = vm.match(new RegExp(`${label}:\\s+(\\d+)`));
+        return m ? parseInt(m[1], 10) : 0;
+      };
+      const available =
+        pickPages('Pages free') +
+        pickPages('Pages inactive') +
+        pickPages('Pages speculative') +
+        pickPages('File-backed pages');
+      const macFreeMB = Math.round((available * pageSize) / 1024 / 1024);
+      if (macFreeMB > 0) freeMB = macFreeMB;
+    } catch {
+      /* non-macOS or vm_stat unavailable — keep os.freemem() value */
+    }
+
+    let nodeRssKB = 0;
+    let nodeProcesses = 0;
+    try {
+      const psOut = execSync("ps -axo rss=,comm= | grep -i node || true", {
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: 'pipe',
+        shell: '/bin/sh',
+      });
+      for (const line of psOut.split('\n')) {
+        const m = line.trim().match(/^(\d+)\s/);
+        if (m) {
+          nodeRssKB += parseInt(m[1], 10);
+          nodeProcesses++;
+        }
+      }
+    } catch {
+      /* ps unavailable */
+    }
+
+    return {
+      freeMB,
+      nodeProcesses,
+      nodeRssMB: Math.round(nodeRssKB / 1024),
+    };
+    // os.totalmem() reference silences unused-warning on platforms without vm_stat
+    void totalBytes;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Force-spawn pending tasks by wrapping the existing force-spawn-tasks.js script.
+ *
+ * Timeout: 240s — generous because force-spawn-tasks.js may sit inside a
+ * memory-pressure backoff loop. If we still time out, the error response
+ * includes a system-load snapshot so callers can distinguish capacity-block
+ * from real infrastructure failure.
  */
 function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | ErrorResult {
   // Derive framework path from import.meta.url
@@ -2319,14 +2447,14 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
     }
     const output = execFileSync('node', scriptArgs, {
       encoding: 'utf8',
-      timeout: 120000,
+      timeout: 240000,
       env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
     });
 
     return JSON.parse(output.trim()) as ForceSpawnTasksResult;
   } catch (err: unknown) {
     // Attempt to parse stdout from the error (script may have written partial results)
-    const execErr = err as { stdout?: string; message?: string };
+    const execErr = err as { stdout?: string; message?: string; code?: string; signal?: string };
     if (execErr.stdout) {
       try {
         return JSON.parse(execErr.stdout.trim()) as ForceSpawnTasksResult;
@@ -2334,7 +2462,31 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
         // Fall through to error return
       }
     }
-    return { error: `force-spawn-tasks.js failed: ${execErr.message ?? String(err)}` };
+
+    const msg = execErr.message ?? String(err);
+    // On timeout/abort, capture a system-load snapshot so the caller can see
+    // whether the inner script is sitting in a memory-pressure backoff loop
+    // vs an unrelated infrastructure failure.
+    const isTimeout =
+      execErr.code === 'ETIMEDOUT' ||
+      execErr.signal === 'SIGTERM' ||
+      /ETIMEDOUT|timed out/i.test(msg);
+    if (isTimeout) {
+      const load = snapshotSystemLoad();
+      if (load) {
+        const memHint =
+          load.nodeRssMB > 12288
+            ? ' (likely memory pressure HIGH — force-spawn-tasks is probably in a memory backoff loop; lower the number of running node processes or wait)'
+            : '';
+        return {
+          error:
+            `force-spawn-tasks.js timed out after 240s. ` +
+            `System: ${load.freeMB}MB free, ${load.nodeRssMB}MB node RSS across ${load.nodeProcesses} node processes${memHint}. ` +
+            `Original error: ${msg}`,
+        };
+      }
+    }
+    return { error: `force-spawn-tasks.js failed: ${msg}` };
   }
 }
 
@@ -7605,7 +7757,7 @@ const tools: AnyToolHandler[] = [
   // Concurrency & Force-Spawn Tools
   {
     name: 'get_concurrency_status',
-    description: 'Get real-time concurrency status: running agent count, max allowed, available slots, and tracked running agents by type.',
+    description: 'DEPRECATED diagnostic — prefer get_session_queue_status. The legacy running/maxConcurrent/available fields are pgrep-based and DO NOT reflect the enforced session-queue cap (pgrep counts every claude process; the cap only applies to the standard lane). An "authoritative" block is included in the response when session-queue.db is reachable.',
     schema: GetConcurrencyStatusArgsSchema,
     handler: getConcurrencyStatus,
   },

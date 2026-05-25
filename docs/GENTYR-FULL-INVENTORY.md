@@ -2802,7 +2802,7 @@ All 3 layers must pass. No other session — not even another deputy-cto sub-age
 - Env: GENTYR_PROMOTION_PIPELINE=true (only this agent gets this)
 
 ### 60.2 Six-Step Pipeline
-1. **Assess Scope** — count commits/files; abort if >3000 lines or >80 files
+1. **Assess Scope** — count commits/files for visibility only. **There is no scope gate; PRs of any size promote as long as quality, migration, test, and demo gates pass.**
 2. **Migration Safety** (BLOCKS) — static analysis for destructive SQL patterns
 3. **Quality Review** (BLOCKS) — hardcoded secrets, mass-disabled tests
 4. **Run Tests** — full suite + 100% coverage gate (self-healing loop × 3)

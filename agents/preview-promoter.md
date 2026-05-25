@@ -61,6 +61,8 @@ Get the full diff for quality review:
 git diff origin/staging..origin/preview
 ```
 
+**There is no scope gate.** Do not abort promotion based on commit count, file count, or line count. PRs of any size promote as long as the migration, quality, test, and demo gates pass below. Large diffs are simply reviewed at scale — never used as a reason to bail.
+
 ### Step 1.5: Migration Safety Check (Backward-Compatible Enforcement)
 
 This step uses `migration-safety.js` (at `.claude/hooks/lib/migration-safety.js`), which provides two analysis layers: fast static regex matching and LLM-powered per-file analysis via `analyzeMigrations()`.

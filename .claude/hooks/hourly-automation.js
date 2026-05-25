@@ -85,8 +85,9 @@ function getAgentMapping(task) {
   };
 }
 
-// Concurrency guard: max simultaneous automation agents
-const MAX_CONCURRENT_AGENTS = 5;
+// Batch limit per session-reviver pass (not a concurrency cap — the queue's
+// max_concurrent_sessions is the authoritative limit, enforced in session-queue.js).
+const SESSION_REVIVER_BATCH_LIMIT = 5;
 const MAX_TASKS_PER_CYCLE = 3;
 
 // ---------------------------------------------------------------------------
@@ -3364,7 +3365,7 @@ async function main() {
 
   if (timeSinceLastSessionReviver >= SESSION_REVIVER_COOLDOWN_MS) {
     try {
-      const reviverResult = await reviveInterruptedSessions(log, MAX_CONCURRENT_AGENTS);
+      const reviverResult = await reviveInterruptedSessions(log, SESSION_REVIVER_BATCH_LIMIT);
       if (reviverResult.revivedDead > 0) {
         log(`Session reviver: revived ${reviverResult.revivedDead} dead sessions`);
       }
@@ -3378,8 +3379,9 @@ async function main() {
     log(`Session reviver cooldown active. ${minutesLeft}m until next check.`);
   }
 
-  // Concurrency is now managed by the session queue (drainQueue called at top of main).
-  // No per-cycle guard needed — the queue enforces MAX_CONCURRENT_AGENTS on every enqueue.
+  // Concurrency is managed by the session queue (drainQueue called at top of main).
+  // No per-cycle guard needed — the queue enforces max_concurrent_sessions (stored in
+  // session-queue.db queue_config) on every enqueue.
 
   // =========================================================================
   // SESSION REAPER (after session reviver — complements revival with cleanup)
@@ -6484,6 +6486,135 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         log(`Abandoned worktree rescue: spawned ${rescued} project-manager(s) for abandoned worktrees.`);
       } else {
         log('Abandoned worktree rescue: no abandoned worktrees found.');
+      }
+    },
+  });
+
+  // =========================================================================
+  // STALE ORPHAN WORKTREE CLEANUP (60min cooldown)
+  // Removes worktrees where rescue cannot succeed: branch has no common
+  // ancestor with origin/<base> (unrelated histories), OR the worktree is a
+  // confirmed stale orphan (commits behind base + old mtimes) whose dirty
+  // diff is noise rather than rescuable work. The rescue agent's prompt
+  // bails with `git merge --abort` in this case and exits without a PR,
+  // leaving the worktree dirty forever — `cleanupMergedWorktrees` only
+  // touches MERGED branches, so without this block these worktrees
+  // accumulate indefinitely (real-world target projects have hit 100+
+  // worktrees, most of them stale orphans, before this guard existed).
+  // =========================================================================
+  await runIfDue('stale_orphan_worktree_cleanup', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastStaleOrphanWorktreeCleanup',
+    configToggle: 'staleOrphanWorktreeCleanupEnabled',
+    config,
+    label: 'Stale orphan worktree cleanup',
+    fn: async () => {
+      log('Stale orphan worktree cleanup: scanning...');
+      const worktrees = listWorktrees();
+      let removed = 0;
+
+      // Pre-load active session paths from session-queue DB — never touch
+      // worktrees that have a live session attached.
+      const activeWorktreePaths = new Set();
+      if (Database) {
+        try {
+          const queueDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+          if (fs.existsSync(queueDbPath)) {
+            const queueDb = new Database(queueDbPath, { readonly: true });
+            queueDb.pragma('busy_timeout = 3000');
+            const rows = queueDb.prepare(
+              "SELECT cwd, worktree_path FROM queue_items WHERE status IN ('running', 'queued', 'spawning', 'suspended')"
+            ).all();
+            for (const row of rows) {
+              if (row.cwd) activeWorktreePaths.add(row.cwd);
+              if (row.worktree_path) activeWorktreePaths.add(row.worktree_path);
+            }
+            queueDb.close();
+          }
+        } catch (err) {
+          log(`Stale orphan cleanup: could not read session-queue DB (non-fatal): ${err.message}`);
+        }
+      }
+
+      for (const wt of worktrees) {
+        if (!wt.path || !fs.existsSync(wt.path)) continue;
+        if (!wt.branch) continue;
+
+        // Never touch the CTO interactive worktree or the main tree itself.
+        const basename = path.basename(wt.path);
+        if (basename.startsWith('cto-interactive')) continue;
+        if (path.resolve(wt.path) === path.resolve(PROJECT_DIR)) continue;
+
+        // Skip worktrees with an active session attached.
+        const hasActiveSession = [...activeWorktreePaths].some(
+          sw => wt.path === sw || wt.path.startsWith(sw + '/') || sw.startsWith(wt.path + '/')
+        );
+        if (hasActiveSession) continue;
+
+        // Resolve the base. If neither origin/preview nor origin/main exist,
+        // bail — we can't make a safety claim about divergence.
+        let baseBranch = null;
+        try {
+          baseBranch = resolveBaseBranch(wt.path);
+        } catch { continue; }
+        if (!baseBranch) continue;
+
+        // Three signals that mark a worktree unrecoverable AND safe to delete:
+        //   (1) merge-base with origin/<base> doesn't exist (unrelated histories) → no work to integrate
+        //   (2) every local commit ahead corresponds to an already-merged PR (squash-merge case) → branch is fully redundant
+        //   (3) probableCase==='stale_orphan' AND branchAgeHours>72 AND dirty mtimes >24h old AND commitsBehind>50
+        //
+        // (1) is the strongest — those branches literally cannot be merged.
+        // (2) and (3) are only inferred from the rescue agent's reports, which
+        // we cannot reliably reread here. So this block focuses on (1) and (3),
+        // both deterministic from local git state.
+
+        let unrelatedHistories = false;
+        try {
+          execFileSync('git', ['merge-base', 'HEAD', `origin/${baseBranch}`], {
+            cwd: wt.path, encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+          });
+        } catch {
+          // git merge-base exits non-zero when no common ancestor exists.
+          unrelatedHistories = true;
+        }
+
+        let stats = null;
+        try {
+          stats = computeWorktreeDivergence(wt.path, baseBranch);
+        } catch (err) {
+          log(`Stale orphan cleanup: divergence calc failed for ${wt.path} (non-fatal): ${err.message}`);
+          continue;
+        }
+
+        const newestDirtyAgeHours = stats?.dirtyFileNewestMtimeMs
+          ? (Date.now() - stats.dirtyFileNewestMtimeMs) / 3600000
+          : Infinity;
+        const ancientStaleOrphan =
+          stats?.probableCase === 'stale_orphan' &&
+          (stats.branchAgeHours ?? 0) > 72 &&
+          newestDirtyAgeHours > 24 &&
+          (stats.commitsBehind ?? 0) > 50;
+
+        if (!unrelatedHistories && !ancientStaleOrphan) continue;
+
+        const reason = unrelatedHistories
+          ? 'unrelated_histories (no common ancestor with origin base)'
+          : `ancient_stale_orphan (age=${stats.branchAgeHours}h, behind=${stats.commitsBehind}, dirtyAge=${Math.round(newestDirtyAgeHours)}h)`;
+
+        log(`Stale orphan cleanup: removing ${wt.path} branch=${wt.branch} reason=${reason}`);
+        try {
+          removeWorktree(wt.branch, { force: true });
+          removed++;
+        } catch (err) {
+          log(`Stale orphan cleanup: removeWorktree failed for ${wt.branch} (non-fatal): ${err.message}`);
+        }
+      }
+
+      if (removed > 0) {
+        log(`Stale orphan worktree cleanup: removed ${removed} unrecoverable worktree(s).`);
+      } else {
+        log('Stale orphan worktree cleanup: no unrecoverable worktrees found.');
       }
     },
   });

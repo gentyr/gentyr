@@ -2237,6 +2237,16 @@ function spawnQueueItem(db, item) {
   // The !pid check below handles spawn failures synchronously.
   claude.on('error', () => {});
 
+  // Subscribe to 'exit' so Node calls waitpid() and the kernel reaps the
+  // child the instant it dies. Without this, detached+unref'd children
+  // become zombies under whichever parent happens to be alive (e.g. the
+  // long-running launchd-managed hourly-automation process) and only
+  // disappear when that parent finally exits. Zombies kept session-queue
+  // entries marked "running" indefinitely because process.kill(pid, 0)
+  // succeeds for zombies — see isPidAlive() in session-reaper.js for the
+  // companion fix that treats `Z`/`T` ps state as dead.
+  claude.on('exit', () => {});
+
   claude.unref();
 
   if (!claude.pid) {
