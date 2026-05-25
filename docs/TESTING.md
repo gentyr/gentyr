@@ -30,7 +30,7 @@ This plan provides a complete inventory of all node_modules/gentyr components an
 | **api-key-watcher.js** | SessionStart | Auto-rotate API keys based on usage | Per-session |
 | **cto-notification-hook.js** | UserPromptSubmit | Display CTO status at session start | None |
 | **todo-maintenance.js** | UserPromptSubmit | Auto-spawn todo-processing agent | 15 min |
-| **bypass-approval-hook.js** | UserPromptSubmit | Process "APPROVE BYPASS <code>" messages | None |
+| ~~`bypass-approval-hook.js`~~ | — | Removed. CTO bypass approval flows through `record_cto_decision` + authorization-auditor; no typed phrase, no codes. | — |
 | **antipattern-hunter-hook.js** | Post-Commit | Spawn spec violation hunters | 6 hours |
 | **compliance-checker.js** | Post-Commit | Enforce spec compliance | 7 days per file |
 | **schema-mapper-hook.js** | CLI/Programmatic | Generate schema mappings | 24h per schema |
@@ -169,17 +169,24 @@ node .claude/hooks/cto-notification-hook.js
 ```
 **Expected:** JSON with `systemMessage` showing quota, token usage, pending items
 
-#### Test 2.3: UserPromptSubmit bypass-approval-hook
-**Natural Action:** CTO approves emergency bypass
+#### Test 2.3: CTO bypass via record_cto_decision
+**Natural Action:** CTO approves a deferred action
 **Steps:**
 ```
-1. mcp__deputy-cto__request_bypass({ reason: "System error", reporting_agent: "test" })
-   → Returns code like "X7K9M2"
-2. CTO types: "APPROVE BYPASS X7K9M2"
-3. bypass-approval-hook creates .claude/bypass-approval-token.json
-4. mcp__deputy-cto__execute_bypass({ bypass_code: "X7K9M2" })
+1. Agent calls a protected MCP tool → protected-action-gate.js creates a deferred
+   action and returns deferred_action_id in the denial.
+2. Agent shows context to CTO; CTO replies in their own words
+   (e.g., "yes, approve this").
+3. Agent calls mcp__agent-tracker__record_cto_decision({
+     decision_type: "<type>", decision_id: "<deferred_action_id>",
+     verbatim_text: "yes, approve this"
+   })
+4. authorization-audit-spawner.js inline-executes (lockdown/local-mode) or
+   spawns an authorization-auditor in the audit lane.
+5. On audit pass, deferred-action-audit-executor.js runs the originally
+   blocked action.
 ```
-**Verify:** Token file created with 5-minute expiry; bypass proceeds
+**Verify:** The deferred_actions row transitions pending → approved → completed; the cto_decisions row transitions verified → audit_passed; the blocked action executes.
 
 #### Test 2.4: Post-commit antipattern-hunter
 **Natural Action:** Commit code, hunters spawn
@@ -386,7 +393,6 @@ ls -la .claude/hooks/pre-commit-review.js  # Should be root-owned
 | todo-maintenance | 15 minutes | Edit `lastSpawn` in `todo-maintenance-state.json` |
 | schema-mapper | 24h/schema | Edit `cooldowns` in `schema-mapper-state.json` |
 | hourly-automation | 55 minutes | Edit `lastRun` in `hourly-automation-state.json` |
-| bypass-approval-token | 5 minutes | Edit `expiresAt` in `.claude/bypass-approval-token.json` |
 
 ---
 
@@ -405,7 +411,6 @@ rm -f .claude/hooks/todo-maintenance-state.json
 rm -f .claude/hooks/schema-mapper-state.json
 rm -f .claude/hourly-automation-state.json
 rm -f .claude/autonomous-mode.json
-rm -f .claude/bypass-approval-token.json
 ```
 
 ---

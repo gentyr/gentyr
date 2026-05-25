@@ -1075,7 +1075,7 @@ The hook system is GENTYR's synchronous event-driven enforcement layer. Hooks in
 
 **Architecture** — Input: user message text. Output: `{ continue: true, systemMessage: "...", hookSpecificOutput: { additionalContext: "..." } }`. systemMessage = terminal only; additionalContext = reaches model.
 
-**Full list**: cto-notification-hook (status line + bypass injection), secret-leak-detector (API key patterns), bypass-approval-hook (APPROVE BYPASS detection), protected-action-approval-hook (APPROVE phrase code), slash-command-prefetch (data preload), branch-drift-check (30-min cooldown), comms-notifier (pending signals), workstream-notifier (updates), cto-prompt-detector (CTO intent broadcast), secrets-local-health (missing credentials), mcp-guidance-hook (MCP server guidance), pending-sync-notifier (pending config files)
+**Full list**: cto-notification-hook (status line + bypass injection), secret-leak-detector (API key patterns), protected-action-approval-hook (legacy phrase+code, retained for back-compat only), slash-command-prefetch (data preload), branch-drift-check (30-min cooldown), comms-notifier (pending signals), workstream-notifier (updates), cto-prompt-detector (CTO intent broadcast), secrets-local-health (missing credentials), mcp-guidance-hook (MCP server guidance), pending-sync-notifier (pending config files). (The legacy `bypass-approval-hook.js` matching `APPROVE BYPASS <code>` / `APPROVE HOTFIX <code>` has been removed; CTO approval now flows through `record_cto_decision` + `authorization-audit-spawner`.)
 
 ---
 
@@ -1327,7 +1327,7 @@ persona-feedback, product-manager, run-feedback
 
 **Architecture** — Agents call `submit_bypass_request` (agent-tracker) which pauses the linked task and writes a row to `bypass-requests.db`. The CTO sees pending requests in the next session briefing and calls `resolve_bypass_request({ decision, context })` with natural-language guidance — no 6-character code, no chat phrase. For protected MCP actions, the deferred-action + `record_cto_decision` + `authorization-auditor` chain (Unified CTO Authorization System) runs the blocked tool call autonomously after the auditor verifies the CTO's verbatim approval against the session JSONL. Spawned sessions CANNOT call `record_cto_decision` or `resolve_bypass_request` (server-side guard).
 
-> **Legacy (deprecated, Phase 2):** The earlier `APPROVE BYPASS <code>` chat pattern with `bypass-approval-hook.js` (416 lines), 6-character code, HMAC-signed token at `.claude/bypass-approval-token.json`, and 5-min expiry is retained only for the `/hotfix` slash command pending Phase 5 cleanup. Do not reference this pattern in new agent prompts.
+> **Removed:** The earlier `APPROVE BYPASS <code>` / `APPROVE HOTFIX <code>` chat patterns from `bypass-approval-hook.js`, the 6-character codes, the HMAC-signed token at `.claude/bypass-approval-token.json`, and the 5-min expiry have all been deleted. The `/hotfix` slash command has been migrated onto the unified deferred-action + `record_cto_decision` pipeline.
 
 ### 16.3 Session Briefing (at login)
 
@@ -2362,10 +2362,10 @@ Agent-tracker server tool for polling deferred action status. Returns: id, serve
 - TOCTOU defense: JSONL archived before verification
 - Three tiers: cto (HMAC), deputy (HMAC), automated (no HMAC)
 
-### 51.8 Legacy Compatibility (Transition Period)
-- Old `APPROVE BYPASS <6-char-code>` pattern still works via `bypass-approval-hook.js`
-- Will be deprecated once unified system is validated
-- Both paths coexist — old codes consume tokens directly, new path requires `record_cto_decision`
+### 51.8 Legacy Compatibility (Transition Period — completed)
+- The old `APPROVE BYPASS <6-char-code>` / `APPROVE HOTFIX <code>` patterns and `bypass-approval-hook.js` have been removed.
+- Hotfix promotion now uses `decision_type: 'hotfix_promotion'` through the same `record_cto_decision` + `authorization-auditor` chain as every other protected action.
+- Single path: deferred action → CTO verbatim → audit → executor.
 
 ### 51.9 Data Model
 - **cto_decisions** table (in bypass-requests.db): id, decision_type, reference_id, verbatim_text, session_id, session_jsonl_hash, hmac, status (verified|consumed|expired), consumed_at, created_at
@@ -2604,9 +2604,9 @@ All 3 layers must pass. No other session — not even another deputy-cto sub-age
 - approve_protected_action, deny_protected_action
 - check_deferred_action (agent-facing: poll status of deferred action pending CTO approval)
 
-### 54.6 System Operations (6 tools)
+### 54.6 System Operations (5 tools)
 - list_protections, get_merge_chain_status
-- request_hotfix_promotion, execute_hotfix_promotion
+- execute_hotfix_promotion (protected — runs via deferred-action + record_cto_decision + auditor; the deferred-action executor invokes spawnHotfixPromoter in `.claude/hooks/lib/hotfix-spawn.js`)
 - review_blocking_items, cleanup_old_records
 - get_automation_config
 
@@ -2614,7 +2614,6 @@ All 3 layers must pass. No other session — not even another deputy-cto sub-age
 - questions (main CTO queue: type, status, title, description, answer, recommendation)
 - commit_decisions (approval/rejection with rationale)
 - cleared_questions (archived)
-- hotfix_requests (time-limited emergency promotions)
 - spawned_tasks (audit trail)
 
 ---

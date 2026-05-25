@@ -256,7 +256,6 @@ function verifyGitHooksPath() {
 function verifyProtectionStatus() {
   const protectedFiles = [
     path.join(__dirname, 'pre-commit-review.js'),
-    path.join(__dirname, 'bypass-approval-hook.js'),
     path.join(PROJECT_DIR, 'eslint.config.js'),
     path.join(PROJECT_DIR, '.husky', 'pre-commit'),
     path.join(PROJECT_DIR, 'package.json'),

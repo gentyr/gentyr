@@ -556,7 +556,9 @@ describe('protected-action-approval-hook.js (UserPromptSubmit Hook)', () => {
 
   describe('Bypass exclusion', () => {
     it('should pass through APPROVE BYPASS messages', async () => {
-      // This should be handled by bypass-approval-hook.js, not this hook
+      // The legacy bypass-approval-hook.js was retired; APPROVE BYPASS is now
+      // a no-op. This hook should NOT match the bare BYPASS phrase — bypass
+      // approval flows through record_cto_decision + deferred actions now.
       const result = await runHook('APPROVE BYPASS ABC123', tempDir.path);
 
       assert.strictEqual(result.exitCode, 0);

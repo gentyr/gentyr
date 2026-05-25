@@ -641,6 +641,7 @@ export const CTO_DECISION_TYPES = [
   'deferred_action',
   'protected_action_gate',
   'audit_override',
+  'hotfix_promotion',
 ] as const;
 
 export const RecordCtoDecisionArgsSchema = z.object({

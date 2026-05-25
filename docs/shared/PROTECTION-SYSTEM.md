@@ -44,7 +44,7 @@ OS-level access control that prevents agents from modifying critical files, even
 Note: `.claude/` and `.claude/hooks/` are intentionally **not** root-owned as directories. Git requires write access to these paths for atomic file operations (`git stash`, `git checkout`, `git merge`). Root-owning `.claude/` blocked runtime file creation (databases, state files) and broke tracked git operations. Symlink target verification (described below) replaces directory ownership as the anti-tampering mechanism.
 
 **Files** (root-owned, `644`):
-- Hook scripts: `pre-commit-review.js`, `bypass-approval-hook.js`, `block-no-verify.js`, `protected-action-gate.js`, `protected-action-approval-hook.js`, `credential-file-guard.js`, `secret-leak-detector.js`
+- Hook scripts: `pre-commit-review.js`, `block-no-verify.js`, `protected-action-gate.js`, `authorization-audit-spawner.js`, `protected-action-approval-hook.js`, `credential-file-guard.js`, `secret-leak-detector.js`
 - Configuration: `protected-actions.json`, `.claude/settings.json`, `.claude/protection-key`, `.mcp.json`, `eslint.config.js`, `package.json`
 - Git hooks: `.husky/pre-commit` (`755`, executable)
 
@@ -95,9 +95,9 @@ Written to `.claude/protection-state.json`. Direct installs (framework repo):
   "modified_by": "original_user",
   "criticalHooks": [
     "pre-commit-review.js",
-    "bypass-approval-hook.js",
     "block-no-verify.js",
     "protected-action-gate.js",
+    "authorization-audit-spawner.js",
     "protected-action-approval-hook.js",
     "credential-file-guard.js",
     "secret-leak-detector.js",
@@ -149,9 +149,9 @@ Typical protected servers include Supabase (prod/staging), Render (prod/staging)
 
 **Fail-closed**: If the auditor cannot find the session file, cannot locate the verbatim quote, or detects a scope mismatch between the presented context and the deferred action, the verdict is FAIL and the action is not executed.
 
-### Legacy 6-char HMAC mechanism (deprecated)
+### Legacy 6-char HMAC mechanism (removed)
 
-The pre-Phase-2 system generated a 6-character alphanumeric code and required the CTO to type `APPROVE <PHRASE> <CODE>` in chat. Files retained for backward compatibility include `bypass-approval-hook.js`, `bypass-approval-token.js`, and `protected-action-approval-hook.js`. The only remaining live caller is the `/hotfix` slash command. **Do not depend on this path in new code, and do not write agent prompts that promise the CTO a 6-character code.**
+The pre-Phase-2 system generated a 6-character alphanumeric code and required the CTO to type `APPROVE <PHRASE> <CODE>` in chat. The files implementing it (`bypass-approval-hook.js`, `bypass-approval-token.js`) and the `APPROVE BYPASS` / `APPROVE HOTFIX` / `DENY BYPASS` / `CLEAR ALL BYPASS` patterns have been deleted. `protected-action-approval-hook.js` remains for the older code-based protected-action path (deprecated; do not rely on it in new code). The `/hotfix` slash command — the last legacy consumer — has been migrated onto `record_cto_decision({ decision_type: 'hotfix_promotion', ... })`. **Do not promise the CTO a 6-character code in new agent prompts; capture the CTO's natural-language approval and pass it to `record_cto_decision` verbatim.**
 
 ### MCP Server Allowlist
 
@@ -198,7 +198,7 @@ Pre-tool-use hook that intercepts Bash commands and blocks dangerous patterns.
 
 For legitimate emergencies the agent should call `mcp__agent-tracker__submit_bypass_request({ task_type, task_id, category, summary, details })`. The request pauses the task, appears in the CTO's session briefing under `=== CTO BYPASS REQUESTS AWAITING DECISION ===`, and is resolved by the CTO via `resolve_bypass_request({ request_id, decision, context })`. No 6-character code is generated; the CTO replies in natural language. See "CTO Bypass Request System" in `CLAUDE.md` for the full lifecycle.
 
-> The legacy `APPROVE BYPASS <CODE>` chat pattern, `request_bypass`, and `.claude/bypass-approval-token.json` are deprecated (Phase 2). They remain only for the `/hotfix` flow pending Phase 5 cleanup.
+> The legacy `APPROVE BYPASS <CODE>` chat pattern and `.claude/bypass-approval-token.json` have been removed. The `/hotfix` flow uses the same `record_cto_decision` pipeline (`decision_type: 'hotfix_promotion'`).
 
 ## Layer 4: Deputy-CTO Commit Review
 

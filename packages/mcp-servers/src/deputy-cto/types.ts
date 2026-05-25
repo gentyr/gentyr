@@ -572,16 +572,19 @@ export interface CreatePromotionBypassResult {
 }
 
 // Hotfix Promotion
-export const RequestHotfixPromotionArgsSchema = z.object({});
-export type RequestHotfixPromotionArgs = z.infer<typeof RequestHotfixPromotionArgsSchema>;
-export interface RequestHotfixPromotionResult {
-  code: string;
-  commits: string[];
-  expires_at: string;
-  message: string;
-}
-
-export const ExecuteHotfixPromotionArgsSchema = z.object({});
+//
+// The CTO-facing flow is now the Unified CTO Authorization System:
+// protected-action-gate intercepts execute_hotfix_promotion, captures
+// { commits } in a deferred_actions row, the CTO approves verbatim via
+// record_cto_decision({ decision_type: 'hotfix_promotion', ... }), the
+// authorization-auditor verifies, and deferred-action-audit-executor spawns
+// the hotfix-promotion agent via lib/hotfix-spawn.js. The handler in
+// server.ts is only reached if the gate failed to fire (defense-in-depth).
+export const ExecuteHotfixPromotionArgsSchema = z.object({
+  commits: z.array(z.string().min(1)).min(1).describe(
+    'The commit lines (e.g. "abc1234 fix(auth): patch jwt verifier") that the CTO is approving. Capture these via `git log origin/main..origin/staging --oneline` BEFORE asking the CTO for approval — the auditor will re-run git log and require set equality.'
+  ),
+});
 export type ExecuteHotfixPromotionArgs = z.infer<typeof ExecuteHotfixPromotionArgsSchema>;
 export interface ExecuteHotfixPromotionResult {
   success: boolean;

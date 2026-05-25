@@ -168,9 +168,10 @@
       "tools": [
         "request_bypass",
         "execute_bypass",
-        "force_promote_to_prod"
+        "force_promote_to_prod",
+        "execute_hotfix_promotion"
       ],
-      "description": "Deputy-CTO bypass system and force production promotion - prevents autonomous approval overrides"
+      "description": "Deputy-CTO bypass system, force production promotion, and emergency hotfix promotion - prevents autonomous approval overrides"
     },
     "elastic-logs": {
       "credentialKeys": [

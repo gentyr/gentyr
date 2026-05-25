@@ -60,7 +60,6 @@ import {
   ReviewBlockingItemsArgsSchema,
   CreatePromotionBypassArgsSchema,
   GetMergeChainStatusArgsSchema,
-  RequestHotfixPromotionArgsSchema,
   ExecuteHotfixPromotionArgsSchema,
   type AddQuestionArgs,
   type ListQuestionsArgs,
@@ -84,9 +83,7 @@ import {
   type ReviewBlockingItemsArgs,
   type CreatePromotionBypassArgs,
   type GetMergeChainStatusArgs,
-  type RequestHotfixPromotionArgs,
   type ExecuteHotfixPromotionArgs,
-  type RequestHotfixPromotionResult,
   type ExecuteHotfixPromotionResult,
   type QuestionRecord,
   type QuestionListItem,
@@ -149,7 +146,6 @@ const PROTECTED_ACTIONS_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'prote
 const PROTECTED_APPROVALS_PATH = path.join(PROJECT_DIR, '.claude', 'protected-action-approvals.json');
 const APPROVALS_LOCK_PATH = PROTECTED_APPROVALS_PATH + '.lock';
 const PROTECTION_KEY_PATH = path.join(PROJECT_DIR, '.claude', 'protection-key');
-const HOTFIX_APPROVAL_TOKEN_PATH = path.join(PROJECT_DIR, '.claude', 'hotfix-approval-token.json');
 const COOLDOWN_MINUTES = 55;
 
 // ============================================================================
@@ -201,21 +197,10 @@ CREATE TABLE IF NOT EXISTS cleared_questions (
     CONSTRAINT valid_decided_by CHECK (decided_by IS NULL OR decided_by IN ('cto', 'deputy-cto'))
 );
 
-CREATE TABLE IF NOT EXISTS hotfix_requests (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT NOT NULL,
-    commits_json TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    CONSTRAINT valid_hotfix_status CHECK (status IN ('pending', 'approved', 'executed', 'expired'))
-);
-
 CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status);
 CREATE INDEX IF NOT EXISTS idx_cleared_questions_cleared ON cleared_questions(cleared_timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_questions_type ON questions(type);
 CREATE INDEX IF NOT EXISTS idx_commit_decisions_created ON commit_decisions(created_timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_hotfix_requests_code ON hotfix_requests(code);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_type_title_dedup
   ON questions(type, title) WHERE status != 'answered';
@@ -2117,195 +2102,32 @@ function listPreapprovedBypasses(_args: ListPreapprovedBypassesArgs): ListPreapp
 }
 
 // ============================================================================
-// Hotfix Promotion Functions
+// Hotfix Promotion
 // ============================================================================
-
-function requestHotfixPromotion(_args: RequestHotfixPromotionArgs): RequestHotfixPromotionResult | ErrorResult {
-  const gitOpts = { cwd: PROJECT_DIR, encoding: 'utf8' as const, timeout: 15000, stdio: 'pipe' as const };
-
-  // Fetch latest
-  try {
-    execSync('git fetch origin staging main', gitOpts);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { error: `Failed to fetch origin: ${message}` };
-  }
-
-  // Get commits on staging ahead of main
-  let commitLines: string[];
-  try {
-    const gitLog = execSync('git log origin/main..origin/staging --oneline', gitOpts).trim();
-    commitLines = gitLog ? gitLog.split('\n') : [];
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { error: `Failed to compare staging and main: ${message}` };
-  }
-
-  if (commitLines.length === 0) {
-    return { error: 'No commits on staging ahead of main. Nothing to hotfix.' };
-  }
-
-  const db = getDb();
-
-  // Check no pending hotfix already exists
-  const pendingHotfix = db.prepare(
-    "SELECT id FROM hotfix_requests WHERE status = 'pending' AND expires_at > datetime('now')"
-  ).get() as { id: number } | undefined;
-
-  if (pendingHotfix) {
-    return { error: `A pending hotfix request already exists (ID: ${pendingHotfix.id}). Wait for it to expire or be executed before requesting another.` };
-  }
-
-  // Generate 6-char code
-  const code = crypto.randomBytes(3).toString('hex').toUpperCase();
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + 5 * 60 * 1000);
-
-  db.prepare(`
-    INSERT INTO hotfix_requests (code, commits_json, created_at, expires_at, status)
-    VALUES (?, ?, ?, ?, 'pending')
-  `).run(code, JSON.stringify(commitLines), now.toISOString(), expiresAt.toISOString());
-
-  return {
-    code,
-    commits: commitLines,
-    expires_at: expiresAt.toISOString(),
-    message: `Hotfix promotion requested. ${commitLines.length} commit(s) on staging ahead of main. To approve, the CTO must type: APPROVE HOTFIX ${code} (expires in 5 minutes)`,
-  };
-}
+//
+// CTO approval for hotfix promotion uses the Unified CTO Authorization System
+// (deferred_actions + record_cto_decision + authorization-auditor). The
+// `execute_hotfix_promotion` tool is registered in protected-actions.json so
+// PreToolUse protected-action-gate intercepts the call, creates a deferred
+// action capturing the {commits} args, and returns a denial with the
+// deferred_action_id. The /hotfix slash command then walks the CTO through
+// approving in their own words via record_cto_decision; the
+// authorization-auditor verifies commits were shown and that the approval is
+// unambiguous; and deferred-action-audit-executor.js invokes
+// spawnHotfixPromoter (lib/hotfix-spawn.js) post-audit.
+//
+// The handler body below is unreachable in practice — the gate fires first.
+// It exists for defense-in-depth: if the gate is bypassed or tampered with,
+// the tool errors out instead of silently spawning a promoter.
 
 async function executeHotfixPromotion(_args: ExecuteHotfixPromotionArgs): Promise<ExecuteHotfixPromotionResult | ErrorResult> {
-  // Check staging lock — block hotfix during active production release
-  try {
-    const stagingLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'staging-lock.js');
-    if (fs.existsSync(stagingLockPath)) {
-      const { isStagingLocked } = await import(stagingLockPath);
-      if (isStagingLocked(PROJECT_DIR)) {
-        return { error: 'Hotfix blocked: staging is locked for a production release in progress. Complete or cancel the release via /promote-to-prod before executing a hotfix.' };
-      }
-    }
-  } catch { /* non-fatal — proceed if lock check fails */ }
-
-  // Read approval token
-  if (!fs.existsSync(HOTFIX_APPROVAL_TOKEN_PATH)) {
-    return { error: 'No hotfix approval token found. The CTO must type "APPROVE HOTFIX <code>" first.' };
-  }
-
-  let token: {
-    code: string;
-    request_id: number;
-    created_at: string;
-    expires_at: string;
-    hmac: string;
+  return {
+    error: 'execute_hotfix_promotion requires CTO approval via the deferred-action flow. ' +
+      'The protected-action-gate normally intercepts this call before the handler runs. ' +
+      'If you see this message the gate did not fire — check .claude/hooks/protected-actions.json ' +
+      'and ensure execute_hotfix_promotion is listed under the deputy-cto server. ' +
+      'Use /hotfix to trigger the approval flow correctly.',
   };
-
-  try {
-    token = JSON.parse(fs.readFileSync(HOTFIX_APPROVAL_TOKEN_PATH, 'utf8'));
-  } catch {
-    return { error: 'Failed to read hotfix approval token. Ask the CTO to type the approval again.' };
-  }
-
-  // Empty object means consumed
-  if (!token.code && !token.hmac) {
-    return { error: 'No hotfix approval token found. The CTO must type "APPROVE HOTFIX <code>" first.' };
-  }
-
-  // Verify HMAC
-  const key = loadProtectionKey();
-  if (!key) {
-    return { error: 'Protection key missing. Cannot verify hotfix approval token. Restore .claude/protection-key.' };
-  }
-
-  const expectedHmac = computeHmac(key, token.code, String(token.request_id), token.expires_at, 'hotfix-approved');
-  if (token.hmac !== expectedHmac) {
-    // Consume the forged token
-    try { fs.writeFileSync(HOTFIX_APPROVAL_TOKEN_PATH, '{}'); } catch { /* ignore */ }
-    return { error: 'FORGERY DETECTED: Invalid hotfix approval token signature. Token deleted.' };
-  }
-
-  // Check not expired
-  if (new Date(token.expires_at).getTime() < Date.now()) {
-    try { fs.writeFileSync(HOTFIX_APPROVAL_TOKEN_PATH, '{}'); } catch { /* ignore */ }
-    return { error: 'Hotfix approval token has expired. Ask the CTO to approve again.' };
-  }
-
-  // Consume the token (one-time use)
-  try { fs.writeFileSync(HOTFIX_APPROVAL_TOKEN_PATH, '{}'); } catch { /* ignore */ }
-
-  // Update DB status
-  const db = getDb();
-  db.prepare("UPDATE hotfix_requests SET status = 'executed' WHERE id = ?").run(token.request_id);
-
-  // Retrieve the commits for the prompt
-  const row = db.prepare('SELECT commits_json FROM hotfix_requests WHERE id = ?').get(token.request_id) as { commits_json: string } | undefined;
-  const commits: string[] = row ? JSON.parse(row.commits_json) : [];
-
-  // Spawn the hotfix promotion agent via session queue
-  const commitList = commits.join('\n');
-
-  try {
-    const { enqueueSession } = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-queue.js'));
-
-    const result = enqueueSession({
-      title: 'Emergency hotfix: staging -> main promotion',
-      agentType: 'hotfix-promotion',
-      hookType: 'hourly-automation',
-      tagContext: 'hotfix-promotion',
-      source: 'deputy-cto-server',
-      priority: 'critical',
-      buildPrompt: (agentId: string) => `[Automation][hotfix-promotion][AGENT:${agentId}] You are the EMERGENCY HOTFIX Promotion Pipeline.
-
-## Mission
-
-Immediately merge staging into main. This is a CTO-approved emergency hotfix that bypasses:
-- The 24-hour stability requirement
-- The midnight deployment window
-
-Code review and quality checks still apply.
-
-## Commits being promoted
-
-\`\`\`
-${commitList}
-\`\`\`
-
-## Process
-
-### Step 1: Code Review
-
-Spawn a code-reviewer sub-agent (Task tool, subagent_type: code-reviewer) to review the commits:
-- Check for security issues, code quality, spec violations
-- Look for disabled tests, placeholder code, hardcoded credentials
-- Verify no spec violations (G001-G019)
-
-### Step 2: Create and Merge PR
-
-If code review passes:
-1. Run: gh pr create --base main --head staging --title "HOTFIX: Emergency promotion staging -> main" --body "CTO-approved emergency hotfix. Bypasses 24h stability and midnight window."
-2. Wait for CI: gh pr checks <number> --watch
-3. If CI passes: gh pr merge <number> --merge
-4. If CI fails: Report failure via mcp__agent-reports__report_to_deputy_cto
-
-If code review fails:
-- Report findings via mcp__agent-reports__report_to_deputy_cto with priority "critical"
-- Do NOT proceed with merge
-
-## Timeout
-
-Complete within 25 minutes. If blocked, report and exit.`,
-      extraEnv: { GENTYR_PROMOTION_PIPELINE: 'true' },
-      projectDir: PROJECT_DIR,
-      metadata: { commitCount: commits.length, isHotfix: true },
-    });
-
-    return {
-      success: true,
-      message: `Hotfix promotion agent enqueued (queue ID: ${result.queueId}, position: ${result.position}). Staging -> main promotion will start when a slot is available. The 24h stability gate and midnight window are bypassed.`,
-    };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { error: `Failed to enqueue hotfix promotion agent: ${message}` };
-  }
 }
 
 // ============================================================================
@@ -2987,14 +2809,8 @@ const tools: AnyToolHandler[] = [
     handler: getMergeChainStatus,
   },
   {
-    name: 'request_hotfix_promotion',
-    description: 'Request an emergency hotfix promotion from staging to main. Returns an approval code the CTO must type to authorize. Validates staging has commits ahead of main.',
-    schema: RequestHotfixPromotionArgsSchema,
-    handler: requestHotfixPromotion,
-  },
-  {
     name: 'execute_hotfix_promotion',
-    description: 'Execute a CTO-approved emergency hotfix promotion from staging to main. Requires prior APPROVE HOTFIX approval. Bypasses 24h stability and midnight window.',
+    description: 'Execute a CTO-approved emergency hotfix promotion from staging to main. This tool is protected — the CTO must approve via record_cto_decision (decision_type: hotfix_promotion). The authorization-auditor verifies commits and approval context, then the deferred-action executor enqueues the hotfix-promotion agent. Bypasses 24h stability and midnight window. Pass commits: string[] with the exact commit lines (sha + subject) the CTO will approve.',
     schema: ExecuteHotfixPromotionArgsSchema,
     handler: executeHotfixPromotion,
   },

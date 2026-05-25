@@ -65,7 +65,6 @@ function preCreateStateFiles(projectDir) {
     path.join(stateDir, 'usage-snapshots.json'),
     path.join(claudeDir, 'hourly-automation-state.json'),
     path.join(claudeDir, 'plan-executor-state.json'),
-    path.join(claudeDir, 'bypass-approval-token.json'),
     path.join(claudeDir, 'commit-approval-token.json'),
     path.join(claudeDir, 'protection-state.json'),
     path.join(claudeDir, 'protected-action-approvals.json'),

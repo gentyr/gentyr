@@ -121,7 +121,7 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 - **agent-tracker** - Logs all agent spawns
 - **plan-executor** - Runs approved implementation plans
 - **todo-maintenance** - Task list cleanup and updates
-- **bypass-approval-hook** - Emergency bypass authorization
+- **protected-action-gate** + **authorization-audit-spawner** - Emergency bypass authorization (deferred-action + record_cto_decision pipeline)
 - **mapping-validator** - Spec-to-code mapping verification
 - **schema-mapper-hook** - Automatic spec mapping suggestions
 - **config-reader** - Centralized configuration access

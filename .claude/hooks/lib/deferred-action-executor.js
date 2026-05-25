@@ -258,7 +258,6 @@ function loadProtectionKey() {
 
 /**
  * Constant-time HMAC comparison to prevent timing attacks.
- * Follows the pattern from bypass-approval-token.js.
  * @param {string} actual - HMAC hex string from the record
  * @param {string} expected - Freshly computed HMAC hex string
  * @returns {boolean}

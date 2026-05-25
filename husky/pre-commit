@@ -21,7 +21,7 @@ else
   else
     HOOKS_CHECK_DIR=".claude/hooks"
   fi
-  for f in pre-commit-review.js bypass-approval-hook.js block-no-verify.js \
+  for f in pre-commit-review.js block-no-verify.js \
            protected-action-gate.js protected-action-approval-hook.js \
            credential-file-guard.js secret-leak-detector.js protected-actions.json \
            branch-checkout-guard.js main-tree-commit-guard.js playwright-cli-guard.js \
