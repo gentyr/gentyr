@@ -10,6 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 libasound2 libwayland-client0 \
     # code-server: kerberos native module build dependency (fallback when prebuild-install download fails)
     libgssapi-krb5-2 \
+    # Native module build toolchain. faiss-node (used by @langchain/community FAISS
+    # vector store in packages/sdk-scenarios) compiles its native bindings from source
+    # via cmake-js when a prebuilt binary is not available for the target Node ABI/
+    # platform. It requires cmake + a C++ toolchain (build-essential) + a BLAS
+    # implementation (OpenBLAS) + LAPACK to build the bundled FAISS C++ library.
+    # Other node-gyp/cmake-js modules in the dependency tree benefit from the same
+    # toolchain when their prebuilt fetch fails.
+    build-essential cmake libopenblas-dev liblapack-dev \
     # Recording (Xvfb + ffmpeg) and utilities
     xvfb ffmpeg unclutter xdotool jq git curl \
     && rm -rf /var/lib/apt/lists/*
