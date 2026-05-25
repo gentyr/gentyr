@@ -801,7 +801,20 @@ function currentSource() {
 }
 
 async function runIfDue(key, opts) {
-  const { state, now, intervals, stateKey, configToggle, config, fn, label = key, localModeSkip, gateExempt = false } = opts;
+  // FIX-15-HOTFIX (PR follow-up): gateExempt default changed from false to true.
+  // The ORIGINAL behavior of this codebase was position-based gate enforcement:
+  // blocks ABOVE the gate-exit at ~line 5978 ran regardless of gate state, and
+  // blocks BELOW it never executed because the gate-exit calls process.exit(0).
+  // The previous FIX-15 default `gateExempt = false` silently regressed every
+  // monitoring-mode block (session_reaper, persistent_stale_pause_resume,
+  // health monitors, triage_check, etc.) — they all started getting
+  // "skipped (CTO gate closed, not gate-exempt)" once the CTO gate flipped
+  // closed (>24h since briefing), leaving paused tasks unrevived.
+  // Defaulting to true restores the original "position-based gate" semantics
+  // safely: blocks below the gate-exit never reach runIfDue anyway because
+  // process.exit fires first. Callers that genuinely want gate-required
+  // behavior must set `gateExempt: false` explicitly.
+  const { state, now, intervals, stateKey, configToggle, config, fn, label = key, localModeSkip, gateExempt = true } = opts;
 
   // Check local mode skip
   if (localModeSkip) {
@@ -815,13 +828,10 @@ async function runIfDue(key, opts) {
     return { ran: false, skipped: 'disabled' };
   }
 
-  // FIX-15: Honor gateExempt opt. Position-based gate enforcement still works
-  // because blocks below the gate-exit short-circuit (line ~5978) never execute
-  // when the gate is closed, but this also makes gateExempt MEANINGFUL — if
-  // someone moves a block past the gate check by mistake, gateExempt=true still
-  // protects it. Fail-OPEN when gate state is unknown (_gateOpen===null).
-  if (_gateOpen === false && !gateExempt) {
-    log(`${label}: skipped (CTO gate closed, not gate-exempt)`);
+  // Honor explicit gateExempt:false for blocks that opt INTO gate enforcement.
+  // Fail-OPEN when gate state is unknown (_gateOpen===null).
+  if (_gateOpen === false && gateExempt === false) {
+    log(`${label}: skipped (CTO gate closed, gate-required block)`);
     return { ran: false, skipped: 'gate_closed' };
   }
 
@@ -3827,14 +3837,29 @@ async function main() {
 
                 if (task) {
                   // Enqueue monitor revival
+                  // FIX-B-HOTFIX: pass agentType/hookType/tagContext/projectDir explicitly.
+                  // buildRevivalPrompt() returns { prompt, extraEnv, metadata, agent } —
+                  // not the full enqueueSession() spec. The previous spread pattern
+                  // silently threw "enqueueSession: agentType is required" after
+                  // auto-resolving the bypass, leaving the task stuck "active" with
+                  // no monitor spawned. Matches the canonical pattern at
+                  // persistent_monitor_health (line ~3662).
                   const revivalResult = await buildRevivalPrompt(task, `Timed pause expired after ${req.pause_duration_minutes || '?'} minutes. Resume work where you left off.`);
                   if (revivalResult) {
                     enqueueSession({
-                      ...revivalResult,
                       title: `[Revival] Timed pause expired: ${req.task_title}`,
+                      agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+                      hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+                      tagContext: 'persistent-monitor',
                       source: 'timed-pause-auto-resume',
                       priority: 'urgent',
                       lane: 'persistent',
+                      ttlMs: 0,
+                      prompt: revivalResult.prompt,
+                      projectDir: PROJECT_DIR,
+                      extraEnv: revivalResult.extraEnv,
+                      metadata: revivalResult.metadata,
+                      agent: revivalResult.agent,
                     });
                   }
                 }
@@ -3956,14 +3981,24 @@ async function main() {
                 ).get(req.task_id);
 
                 if (task) {
+                  // FIX-B-HOTFIX: pass agentType/hookType/tagContext/projectDir explicitly.
+                  // See timed_pause_auto_resume above for full reasoning.
                   const revivalResult = await buildRevivalPrompt(task, `SLA-enforced resume: your timed pause was overdue by ${overdueMinutes} minutes (primary auto-resume failed). Resume work where you left off and treat this as a normal revival.`);
                   if (revivalResult) {
                     enqueueSession({
-                      ...revivalResult,
                       title: `[Revival] SLA-enforced resume: ${req.task_title}`,
+                      agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
+                      hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
+                      tagContext: 'persistent-monitor',
                       source: 'bypass-sla-enforcer',
                       priority: 'critical',
                       lane: 'persistent',
+                      ttlMs: 0,
+                      prompt: revivalResult.prompt,
+                      projectDir: PROJECT_DIR,
+                      extraEnv: revivalResult.extraEnv,
+                      metadata: revivalResult.metadata,
+                      agent: revivalResult.agent,
                     });
                   }
                 }

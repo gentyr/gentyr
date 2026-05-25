@@ -104,6 +104,7 @@ function doProtect(projectDir) {
     'release-completion-hook.js',
     'demo-local-guard.js',
     'bypass-pause-duration-guard.js',
+    'pause-persistent-task-guard.js',
     'git-wrappers/git',
   ];
 
