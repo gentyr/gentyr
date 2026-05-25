@@ -464,8 +464,19 @@ CORRECT wait patterns:
    (`bypass-pause-duration-guard.js`) that hard-denies longer pauses without
    verbatim CTO pre-approval.
 
-If you find yourself reaching for `sleep` or `submit_bypass_request` to wait,
-the right action is `summarize_work` + exit. Period.
+6. **DO NOT** use `pause_persistent_task` to wait either. It is for CTO-directed
+   pauses only. Using it as a sleep substitute is the SAME anti-pattern as
+   misusing `submit_bypass_request` — just routed through a different MCP tool.
+   It doesn't create a `bypass_requests` row, so the SLA enforcer (FIX-31) has
+   nothing to act on; the ONLY recovery path is `persistent_stale_pause_resume`.
+   A PreToolUse hook (`pause-persistent-task-guard.js`) hard-denies spawned-agent
+   self-pauses unless the `reason` starts with the verbatim prefix `"CTO-directed:"`.
+   **Also**: `ScheduleWakeup` does NOT survive `pause_persistent_task` — once
+   your session ends, the wakeup is lost.
+
+If you find yourself reaching for `sleep`, `submit_bypass_request`, or
+`pause_persistent_task` to wait, the right action is `summarize_work` + exit.
+Period.
 
 ## Completion
 

@@ -236,6 +236,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "mcp__persistent-task__pause_persistent_task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/pause-persistent-task-guard.js",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [
