@@ -118,8 +118,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 |------|---------|
 | cto-notification-hook.js | Update CTO status line; inject pending bypass request details into model context on every prompt |
 | secret-leak-detector.js | Scan for leaked secrets |
-| bypass-approval-hook.js | Deprecated (Phase 2). Detect "APPROVE BYPASS" pattern — preserved for HOTFIX flow pending Phase 5 cleanup |
-| protected-action-approval-hook.js | Deprecated (Phase 3). Previously detected approval phrase+code tokens and executed deferred actions via MCP daemon — superseded by authorization-audit-spawner.js + deferred-action-audit-executor.js |
+| protected-action-approval-hook.js | Deprecated (Phase 3). Previously detected approval phrase+code tokens and executed deferred actions via MCP daemon — superseded by authorization-audit-spawner.js + deferred-action-audit-executor.js. (The legacy bypass-approval-hook.js has been fully removed, including its HOTFIX branch.) |
 | slash-command-prefetch.js | Pre-fetch data for slash commands |
 | branch-drift-check.js | Check for upstream branch drift |
 | comms-notifier.js | Notify about pending inter-agent communications |

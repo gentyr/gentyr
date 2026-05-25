@@ -76,10 +76,9 @@ describe('husky/pre-commit structural verification', () => {
       'Ownership check loop must include git-wrappers/git wrapper binary');
   });
 
-  it('should include all 10 critical hook files in the ownership check loop', () => {
+  it('should include all critical hook files in the ownership check loop', () => {
     const expectedHooks = [
       'pre-commit-review.js',
-      'bypass-approval-hook.js',
       'block-no-verify.js',
       'protected-action-gate.js',
       'protected-action-approval-hook.js',

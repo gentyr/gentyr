@@ -55,6 +55,44 @@ These rules exist because on 2026-05-24 a universal-auditor session spawned 5 su
 | No hidden escalation | The action should not grant broader permissions than what the CTO explicitly approved |
 | Reasonable authorization | The CTO's response should indicate understanding and intentional approval (not a casual "sure" to a buried request) |
 
+## Per-Decision-Type Verification
+
+### `hotfix_promotion`
+
+Emergency staging→main merges bypass the 24h stability gate and the midnight
+window. They are high-risk and require extra checks beyond scope alignment:
+
+1. **Commits were displayed to CTO before approval.** `peek_session({ session_id })`
+   on the CTO's interactive session. Locate the verbatim approval message. In
+   the messages BEFORE it, find the agent's display of the commit list. Every
+   commit line in `decision_context.args.commits` must appear in the
+   agent's pre-approval messages. If even one commit was added after the
+   approval, FAIL with "commits_not_displayed_to_cto".
+2. **Approval is unambiguous.** The verbatim text must clearly authorize the
+   hotfix. Examples of pass: "yes, ship it", "approved, promote", "go ahead
+   with the hotfix", "merge it now". Examples of fail: "what does this do?",
+   "let me check first", "wait", "sure" (with no antecedent), or any
+   question/hesitation. When in doubt, FAIL — the CTO can re-approve.
+3. **Commit set matches current git state.** Run:
+   ```
+   git fetch origin staging main
+   git log origin/main..origin/staging --oneline
+   ```
+   in the project root (via Bash; read-only git commands are permitted).
+   Compare the returned commit short-sha set against
+   `decision_context.args.commits` (extract the leading SHA from each entry).
+   The sets must be equal (order-insensitive). If staging moved between
+   request and audit, FAIL with "staging_moved_since_approval" — the CTO
+   must re-approve against the new set.
+4. **Staging is not locked.** Read `.claude/state/staging-lock.json`. If
+   the file exists and contains `{ "locked": true, ... }`, FAIL with
+   "staging_locked_for_release" — hotfix during an active production release
+   is not allowed.
+
+All four checks must pass. On any failure, render
+`cto_decision_audit_fail` with the specific reason from the list above and
+concrete evidence (session excerpts, git output, lock file contents).
+
 ## Rules
 
 - NEVER trust agent claims or summaries. Verify the actual session context via `peek_session`.

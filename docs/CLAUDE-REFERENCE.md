@@ -10,7 +10,7 @@ Extracted reference sections from [CLAUDE.md](../CLAUDE.md). Each section is lin
 
 | Target | Ownership | Permissions | Rationale |
 |--------|-----------|-------------|-----------|
-| Critical hook files (pre-commit-review.js, bypass-approval-hook.js, etc.) | root:wheel | 644 | Prevents agent modification; linked projects use copy-on-protect (`.claude/hooks-protected/`) to avoid root-owning framework source |
+| Critical hook files (pre-commit-review.js, protected-action-gate.js, authorization-audit-spawner.js, etc.) | root:wheel | 644 | Prevents agent modification; linked projects use copy-on-protect (`.claude/hooks-protected/`) to avoid root-owning framework source |
 | `.claude/hooks/` directory | user:staff | 755 | Git needs write access for checkout/merge/stash |
 | `.claude/` directory | user:staff | 755 | Git needs write access for stash/checkout/merge; symlink target verification replaces directory ownership |
 | `.husky/` directory | root:wheel | 1755 | Prevents deletion of the pre-commit entry point |
@@ -512,7 +512,7 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - **`BLOCKED_MCP_TOOLS`**: `mcp__agent-tracker__set_max_concurrent_sessions` — requires CTO bypass token
 - **`Agent`/`Task` sub-agent filter**: only `READONLY_SUBAGENT_TYPES` (`Explore`, `Plan`, `claude-code-guide`, `deputy-cto`, `feedback-agent`, `investigator`, `product-manager`, `repo-hygiene-expert`, `secret-manager`, `statusline-setup`, `user-alignment`) are allowed; all others are denied with a prompt to use the GENTYR task system
 - **Bash write-command filter** (`BLOCKED_BASH_PATTERNS`): blocks git write ops (`checkout`, `switch`, `clean`, `reset`, `stash`, `add`, `commit`, `push`, `merge`, `rebase`, `cherry-pick`, `pull`), build commands (`pnpm`/`npm`/`yarn`/`npx run build`/`install`/`link`/`publish`, `swift build`, `tsc`), file mutation (`rm -rf`, `mkdir`, `cp`, `mv`, `chmod`, `chown`), and process management (`kill`, `sudo`, `eval`)
-- **Bypass token** (`consumeBypassToken()`): one-time-use token at `.claude/bypass-approval-token.json` — expires by timestamp; used to allow a single blocked MCP call after CTO approval
+- **Bypass approval**: CTO approval routes through the unified deferred-action system — agent calls `record_cto_decision({ decision_type, decision_id, verbatim_text })` with the CTO's verbatim approval; `authorization-audit-spawner.js` either inline-executes (lockdown, local-mode) or spawns an `authorization-auditor` to verify; on pass, `deferred-action-audit-executor.js` runs the blocked call. The legacy `consumeBypassToken()` / `bypass-approval-token.json` mechanism has been removed.
 - **Disabled state** (`isLockdownDisabled()`): reads `interactiveLockdownDisabled` from `automation-config.json`; fail-closed (lockdown enabled) if file is absent or unparseable. When disabled, injects a `[LOCKDOWN DISABLED]` warning into the AI model's context on every tool call
 - **Fail-closed** (G001): parse errors and unexpected exceptions result in `permissionDecision: "deny"`, not `allow`
 - **Security fix (v1.1)**: `StructuredOutput` added to `ALLOWED_TOOLS` — the AI model's internal structured JSON output mechanism must never be blocked even in fully locked-down sessions

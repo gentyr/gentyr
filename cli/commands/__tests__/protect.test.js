@@ -53,16 +53,15 @@ describe('protect.js — criticalHooks array', () => {
     );
   });
 
-  it('should include all 11 critical hook entries in criticalHooks', () => {
+  it('should include all critical hook entries in criticalHooks', () => {
     const match = code.match(/const criticalHooks = \[[\s\S]*?\]/);
     assert.ok(match, 'criticalHooks array must exist');
 
     const expectedEntries = [
       'pre-commit-review.js',
-      'bypass-approval-hook.js',
       'block-no-verify.js',
       'protected-action-gate.js',
-      'protected-action-approval-hook.js',
+      'authorization-audit-spawner.js',
       'credential-file-guard.js',
       'secret-leak-detector.js',
       'protected-actions.json',

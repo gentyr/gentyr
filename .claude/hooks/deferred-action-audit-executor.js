@@ -7,10 +7,11 @@
  * approved tool call fires without requiring the original agent to retry.
  *
  * Handles four decision types:
- * 1. Default (deferred_action / protected_action_gate / command_bypass / demo_local / lockdown_toggle / local_mode_toggle):
+ * 1. Default (deferred_action / protected_action_gate / command_bypass / demo_local / lockdown_toggle / local_mode_toggle / hotfix_promotion):
  *    - Load deferred action by decision_id
  *    - Compute approved_hmac, mark approved, execute via MCP daemon (Tier 1) or Bash
- *    - Special inline execution for set_lockdown_mode and set_local_mode (Tier 2 servers)
+ *    - Special inline execution for set_lockdown_mode, set_local_mode, and
+ *      execute_hotfix_promotion (Tier 2 servers — agent-tracker and deputy-cto)
  * 2. bypass_request:
  *    - CTO-approved bypass request resolution; reuses executeDeputyBypassResolution
  *      from deputy-resolution-executor.js (reads decision_context for request details)
@@ -339,6 +340,61 @@ async function executeDefaultDeferredAction(decisionId) {
         } catch { /* non-fatal */ }
       } catch (err) {
         dbMod.markFailed(db, approvedAction.id, `Local mode state write failed: ${err.message}`);
+        execResult = { success: false, error: err.message };
+      }
+
+    } else if (approvedAction.tool === 'execute_hotfix_promotion') {
+      // Hotfix promotion: deputy-cto is Tier 2 — cannot route through the MCP
+      // daemon. Spawn the hotfix-promotion agent directly via session-queue.
+      const hmacCheck = executorMod.verifyActionHmac(approvedAction);
+      if (!hmacCheck.valid) {
+        dbMod.markFailed(db, approvedAction.id, `HMAC verification failed: ${hmacCheck.reason}`);
+        log(`HMAC verification failed for hotfix action ${decisionId}: ${hmacCheck.reason}`);
+        return;
+      }
+
+      if (!dbMod.markExecuting(db, approvedAction.id)) {
+        log(`Could not transition hotfix action ${decisionId} to executing`);
+        return;
+      }
+
+      try {
+        let hotfixArgs = approvedAction.args;
+        if (typeof hotfixArgs === 'string') {
+          try { hotfixArgs = JSON.parse(hotfixArgs); } catch { hotfixArgs = {}; }
+        }
+        const commits = Array.isArray(hotfixArgs.commits) ? hotfixArgs.commits : [];
+        if (commits.length === 0) {
+          throw new Error('hotfix args.commits missing or empty');
+        }
+
+        const { spawnHotfixPromoter } = await import('./lib/hotfix-spawn.js');
+        const spawnResult = spawnHotfixPromoter(commits, PROJECT_DIR);
+
+        if (!spawnResult || !spawnResult.queueId) {
+          throw new Error(`hotfix enqueue returned no queueId (blocked: ${spawnResult?.blocked || 'unknown'})`);
+        }
+
+        dbMod.markCompleted(db, approvedAction.id, JSON.stringify({
+          success: true,
+          queue_id: spawnResult.queueId,
+          position: spawnResult.position,
+          commit_count: commits.length,
+        }));
+        execResult = { success: true, result: `Hotfix promoter enqueued: ${spawnResult.queueId} (position ${spawnResult.position})` };
+
+        try {
+          const auditMod = await import('./lib/session-audit.js');
+          if (typeof auditMod.auditEvent === 'function') {
+            auditMod.auditEvent('hotfix_promotion_executed', {
+              queue_id: spawnResult.queueId,
+              commit_count: commits.length,
+              via: 'deferred-action-audit-executor',
+            });
+          }
+        } catch { /* non-fatal */ }
+      } catch (err) {
+        dbMod.markFailed(db, approvedAction.id, `Hotfix enqueue failed: ${err.message}`);
         execResult = { success: false, error: err.message };
       }
 

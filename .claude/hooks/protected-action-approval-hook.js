@@ -353,10 +353,13 @@ async function main() {
   // Normalize the provided phrase for comparison
   const normalizedPhrase = phrase.toUpperCase();
 
-  // Check if this looks like a protected action approval
-  // (vs. the bypass approval which uses "APPROVE BYPASS")
+  // Check if this looks like a protected action approval. The legacy
+  // "APPROVE BYPASS" pattern was removed when bypass-approval-hook.js was
+  // retired; the unified deferred-action + record_cto_decision flow handles
+  // bypass approvals now. We still fast-exit on the bare BYPASS phrase so
+  // existing automation that types it gets a no-op rather than a stray hit
+  // here.
   if (normalizedPhrase === 'BYPASS') {
-    // Let bypass-approval-hook.js handle this
     process.exit(0);
   }
 

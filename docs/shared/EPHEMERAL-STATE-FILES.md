@@ -22,7 +22,6 @@ All ephemeral state files in `.claude/` follow this lifecycle:
 
 ```bash
 for state_file in \
-    "$PROJECT_DIR/.claude/bypass-approval-token.json" \
     "$PROJECT_DIR/.claude/protection-state.json" \
     "$PROJECT_DIR/.claude/protected-action-approvals.json"; do
     [ -f "$state_file" ] || echo '{}' > "$state_file"
@@ -70,11 +69,12 @@ if (!token.code && !token.request_id) {
 
 | File | Written By | Consumed By |
 |------|-----------|-------------|
-| `bypass-approval-token.json` | bypass-approval hook | block-no-verify hook, deputy-cto server |
 | `protected-action-approvals.json` | protected-action-gate hook | protected-action-gate hook |
 | `protection-state.json` | npx gentyr init | various hooks |
 | `hourly-automation-state.json` | hourly automation | hourly automation |
 | `plan-executor-state.json` | plan executor | plan executor |
+
+> The legacy `bypass-approval-token.json` (HMAC-signed approval token written by `bypass-approval-hook.js` and consumed by `block-no-verify.js` / `deputy-cto` server's hotfix path) has been removed along with the bypass-approval hook.
 
 ## Adding a New State File
 

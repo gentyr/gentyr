@@ -83,33 +83,7 @@ Hooks that run when the user submits a message in the chat.
 #### `cto-notification-hook.js`
 **Purpose**: Display CTO status report at session start
 
-#### `bypass-approval-hook.js`
-**Purpose**: Process CTO bypass approvals
-
-**Trigger Pattern**: Message matches `APPROVE BYPASS <6-char-code>`
-
-**Behavior**:
-1. Parse user message for approval pattern
-2. Validate code exists in pending bypass requests (deputy-cto.db)
-3. Write approval token to `.claude/bypass-approval-token.json`
-4. Token expires after 5 minutes
-
-**Security Model**:
-- Agents cannot trigger UserPromptSubmit hooks (only real user input triggers them)
-- Agents cannot forge approval tokens without user typing the approval phrase
-- Each bypass code is unique and tied to a specific request
-
-**Token Format**:
-```json
-{
-  "code": "X7K9M2",
-  "request_id": "uuid",
-  "user_message": "APPROVE BYPASS X7K9M2",
-  "created_at": "2024-01-22T10:00:00Z",
-  "expires_at": "2024-01-22T10:05:00Z",
-  "expires_timestamp": 1705920300000
-}
-```
+> **Note**: The legacy `bypass-approval-hook.js` (which matched typed `APPROVE BYPASS <code>` / `APPROVE HOTFIX <code>` patterns and wrote HMAC-signed token files) has been removed. CTO bypass approval now flows entirely through the Unified CTO Authorization System — agents call `mcp__agent-tracker__record_cto_decision` with the CTO's verbatim approval text, and `authorization-audit-spawner.js` + `deferred-action-audit-executor.js` handle the rest. See `CLAUDE.md` "Unified CTO Authorization System" for details.
 
 **Output Format** (cto-notification-hook):
 ```
@@ -176,16 +150,16 @@ APPROVE (exit 0) or REJECT (exit 1)
 
 **Emergency Bypass** (requires CTO approval):
 
-The `SKIP_DEPUTY_CTO_REVIEW` env var bypass has been removed. To bypass commit blocking:
+The `SKIP_DEPUTY_CTO_REVIEW` env var bypass has been removed. To bypass commit blocking, agents use the Unified CTO Authorization System:
 
-1. Agent calls `mcp__deputy-cto__request_bypass()` → Gets code like `X7K9M2`
-2. Agent asks CTO: "Please type: APPROVE BYPASS X7K9M2"
-3. **CTO types in chat**: `APPROVE BYPASS X7K9M2`
-4. `bypass-approval-hook.js` creates approval token
-5. Agent calls `mcp__deputy-cto__execute_bypass({ bypass_code: "X7K9M2" })`
-6. Commit proceeds
+1. Agent hits the blocked tool — `protected-action-gate.js` creates a deferred action and returns the `deferred_action_id`
+2. Agent presents context to the CTO and asks for verbatim approval in the CTO's own words (no codes, no fixed phrase)
+3. **CTO replies in chat** (e.g., "yes, approve this bypass" / "go ahead and merge")
+4. Agent calls `mcp__agent-tracker__record_cto_decision({ decision_type, decision_id, verbatim_text })` — the verbatim text must exist in this session's JSONL or the call is rejected
+5. `authorization-audit-spawner.js` spawns an `authorization-auditor` (or inline-executes for lockdown/local-mode)
+6. On audit pass, `deferred-action-audit-executor.js` runs the originally blocked action
 
-This ensures only the CTO (human user) can approve bypasses - agents cannot trigger UserPromptSubmit hooks.
+Only the CTO (human user) can supply the verbatim text — agents cannot inject messages into a session's JSONL.
 
 ---
 
@@ -642,7 +616,8 @@ To prevent agents from bypassing security mechanisms, critical files can be made
 | File | Purpose |
 |------|---------|
 | `pre-commit-review.js` | Enforces lint + deputy-cto review |
-| `bypass-approval-hook.js` | Processes CTO approval phrases |
+| `protected-action-gate.js` | Creates deferred actions for blocked tool calls |
+| `authorization-audit-spawner.js` | Spawns auditor / inline-executes verified decisions |
 | `eslint.config.js` | Lint rules (can't be weakened) |
 | `.husky/pre-commit` | Git hook entry point |
 

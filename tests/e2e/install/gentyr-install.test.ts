@@ -249,7 +249,6 @@ describe('Init - State Files', () => {
     ['.claude', 'state', 'automation-config.json'],
     ['.claude', 'hourly-automation-state.json'],
     ['.claude', 'plan-executor-state.json'],
-    ['.claude', 'bypass-approval-token.json'],
     ['.claude', 'commit-approval-token.json'],
     ['.claude', 'protection-state.json'],
     ['.claude', 'protected-action-approvals.json'],

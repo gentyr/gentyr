@@ -5493,7 +5493,7 @@ function getBypassDb(): InstanceType<typeof Database> {
       audit_evidence TEXT,
       audit_completed_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'local_mode_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
+      CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'local_mode_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override', 'hotfix_promotion')),
       CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed', 'audit_pending', 'audit_passed', 'audit_failed', 'audit_overridden'))
     );
     CREATE INDEX IF NOT EXISTS idx_cto_decisions_lookup ON cto_decisions(decision_type, decision_id, status);
@@ -5576,7 +5576,7 @@ function getBypassDb(): InstanceType<typeof Database> {
             status TEXT NOT NULL DEFAULT 'verified',
             consumed_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'local_mode_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override')),
+            CHECK (decision_type IN ('bypass_request', 'protected_action', 'lockdown_toggle', 'local_mode_toggle', 'release_signoff', 'staging_override', 'deputy_bypass_resolution', 'deputy_deferred_approval', 'command_bypass', 'demo_local', 'deferred_action', 'protected_action_gate', 'audit_override', 'hotfix_promotion')),
             CHECK (status IN ('pending_verification', 'verified', 'rejected', 'consumed', 'audit_pending', 'audit_passed', 'audit_failed', 'audit_overridden'))
           );
           INSERT INTO cto_decisions_new (id, decision_type, decision_id, verbatim_text, session_id, session_file_hash, hmac, decision_context, audit_session_id, audit_verdict, audit_evidence, audit_completed_at, status, consumed_at, created_at)

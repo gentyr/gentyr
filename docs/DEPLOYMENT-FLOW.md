@@ -187,9 +187,21 @@ When production is broken and a fix has already landed on staging, the CTO can t
 
 **When to use:** Production incidents where the full `/promote-to-prod` quality pipeline cannot complete in time. Not for routine promotion.
 
-### Legacy `/hotfix` command (deprecated)
+### `/hotfix` — emergency staging→main promotion
 
-A separate `/hotfix` command using the legacy `APPROVE HOTFIX <code>` HMAC pattern is preserved pending Phase 5 cleanup. It is the **only** remaining caller of the 6-character approval code system; all other protected actions have migrated to the deferred-action flow described above. New code paths must not depend on the legacy pattern. See `.claude/commands/hotfix.md`.
+The `/hotfix` slash command is the path for emergency promotions when production is broken and the fix has landed on staging. It now uses the same deferred-action flow as every other protected action:
+
+1. The agent runs `git fetch origin staging main && git log origin/main..origin/staging --oneline` via Bash and verifies staging is not locked (`.claude/state/staging-lock.json`)
+2. The agent shows the commit list to the CTO and asks for verbatim approval
+3. The agent calls `mcp__deputy-cto__execute_hotfix_promotion({ commits: [...] })` — `protected-action-gate.js` intercepts, captures `{commits}` in a deferred action (SHA256-hashed to freeze the commit set), returns a denial with the `deferred_action_id`
+4. The agent calls `mcp__agent-tracker__record_cto_decision({ decision_type: 'hotfix_promotion', decision_id, verbatim_text })` with the CTO's exact words
+5. `authorization-audit-spawner.js` enqueues an `authorization-auditor` in the `audit` lane
+6. The auditor uses `peek_session({ session_id })` to verify (a) the commits were shown verbatim BEFORE the approval, (b) the approval is unambiguous, (c) re-runs `git log origin/main..origin/staging` and confirms the commit set still matches (rejects on drift — the CTO must re-approve against the new set), (d) confirms staging is not locked
+7. On pass, `deferred-action-audit-executor.js` invokes `spawnHotfixPromoter()` (`.claude/hooks/lib/hotfix-spawn.js`) which enqueues the `hotfix-promotion` agent at `critical` priority with `GENTYR_PROMOTION_PIPELINE=true`. The agent runs a code-reviewer sub-agent, then opens and merges the staging→main PR
+
+The 24-hour stability gate and midnight deployment window are bypassed; code review still runs. See `.claude/commands/hotfix.md` for the operator-facing details.
+
+The previous typed-code system (`APPROVE HOTFIX <6-char-code>` matched by a `UserPromptSubmit` hook with an HMAC token file) has been removed.
 
 ## Promotion Pipelines
 
