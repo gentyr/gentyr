@@ -65,21 +65,12 @@ const TERMINAL_TOOL_BYTES = 16384;
 // ============================================================================
 
 /**
- * Check if a process is alive.
- * @param {number} pid
- * @returns {boolean}
- */
-function isPidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (_) { /* cleanup - failure expected */
-    return false;
-  }
-}
-
-/**
  * Check if a process is a zombie or stopped.
+ *
+ * macOS prefixes the state letter with status chars (e.g. "Z+", "T+"); match
+ * on the leading character. Empty/missing state output means `ps` couldn't
+ * find the PID, which is handled by isPidAlive's kill(0) probe.
+ *
  * @param {number} pid
  * @returns {boolean}
  */
@@ -90,10 +81,33 @@ function isProcessZombieOrStopped(pid) {
       timeout: 3000,
       stdio: 'pipe',
     }).trim();
-    return state === 'Z' || state === 'T';
+    return state.startsWith('Z') || state.startsWith('T');
   } catch (_) { /* cleanup - failure expected */
     return false; // Can't determine state — assume healthy
   }
+}
+
+/**
+ * Check if a process is alive AND not a zombie.
+ *
+ * `process.kill(pid, 0)` succeeds for zombies (<defunct>) because the PID
+ * remains in the proc table until the parent calls `wait()`. Treating zombies
+ * as alive keeps the session-queue marked `running` indefinitely when the
+ * parent daemon (e.g. KeepAlive launchd hourly-automation) never reaps. So
+ * we additionally consult `ps`: state `Z` (zombie) or `T` (stopped) means
+ * dead for queue-accounting purposes.
+ *
+ * @param {number} pid
+ * @returns {boolean}
+ */
+function isPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (_) { /* cleanup - failure expected */
+    return false;
+  }
+  // PID exists — confirm it's not a zombie/stopped.
+  return !isProcessZombieOrStopped(pid);
 }
 
 /**

@@ -203,6 +203,7 @@ const DEFAULTS = {
   pr_sweep: 60,                        // 1h
   worktree_cleanup: 5,                 // 5 minutes
   abandoned_worktree_rescue: 15,       // 15 minutes
+  stale_orphan_worktree_cleanup: 60,   // 60 minutes (delete unrecoverable worktrees: unrelated histories or ancient stale orphans)
   stale_worktree_reaper: 20,           // 20 minutes
   interactive_session_reaper: 5,       // 5 minutes (clean up dead CTO sessions' worktrees)
   branch_pruner: 30,                   // 30 minutes (prune merged/dead local + remote branches)

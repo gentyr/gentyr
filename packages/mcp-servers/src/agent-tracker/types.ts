@@ -1005,6 +1005,30 @@ export interface ConcurrencyStatusResult {
   trackedRunning: {
     byType: Record<string, number>;
   };
+  /**
+   * Deprecated diagnostic — use get_session_queue_status for the
+   * authoritative view. This tool counts every `claude` process via
+   * pgrep, including monitors/auditors/automated lanes that are NOT
+   * subject to the standard concurrency cap.
+   */
+  _deprecated?: {
+    message: string;
+    use_instead: string;
+  };
+  /**
+   * Authoritative numbers from session-queue.db (the cap that is actually
+   * enforced). Populated when the DB is reachable.
+   */
+  authoritative?: {
+    queueMaxConcurrent: number;
+    reservedSlots: number;
+    standardRunning: number;
+    standardAvailable: number;
+    automatedRunning: number;
+    persistentRunning: number;
+    auditRunning: number;
+    gateRunning: number;
+  };
 }
 
 export interface ForceSpawnTasksResult {
