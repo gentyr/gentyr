@@ -10099,22 +10099,25 @@ const tools: AnyToolHandler[] = [
         });
       }
 
-      // 2. Check if image already deployed (skip unless force)
-      if (!args.force) {
-        let apiToken: string | null = null;
-        try {
-          const { resolved, failedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flySection.apiToken });
-          if (failedKeys.length === 0) apiToken = resolved['FLY_API_TOKEN'];
-        } catch { /* continue — can't check, just deploy */ }
+      // 2. Resolve FLY_API_TOKEN unconditionally — needed for both the registry check and the spawn env.
+      // Previously this was inside the if (!args.force) block, so the resolved token was never
+      // injected into provision-app.sh's environment, causing flyctl auth failures.
+      let resolvedFlyToken: string | null = null;
+      try {
+        const { resolved, failedKeys } = resolveOpReferencesStrict({ FLY_API_TOKEN: flySection.apiToken });
+        if (failedKeys.length === 0) resolvedFlyToken = resolved['FLY_API_TOKEN'];
+      } catch { /* continue — can't check, just deploy */ }
 
-        if (apiToken) {
+      // 2b. Check if image already deployed (skip unless force)
+      if (!args.force) {
+        if (resolvedFlyToken) {
           try {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), 5000);
             const resp = await fetch(
               `https://registry.fly.io/v2/${flySection.appName}/tags/list`,
               {
-                headers: { Authorization: `FlyV1 ${apiToken}` },
+                headers: { Authorization: `FlyV1 ${resolvedFlyToken}` },
                 signal: controller.signal,
               },
             );
@@ -10168,7 +10171,11 @@ const tools: AnyToolHandler[] = [
         '--region', flySection.region || 'iad',
       ], {
         cwd: PROJECT_DIR,
-        env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+        env: {
+          ...process.env,
+          CLAUDE_PROJECT_DIR: PROJECT_DIR,
+          ...(resolvedFlyToken ? { FLY_API_TOKEN: resolvedFlyToken } : {}),
+        },
         detached: true,
         stdio: ['ignore', logFd, logFd],
       });
@@ -10479,7 +10486,11 @@ const tools: AnyToolHandler[] = [
       const logFd = fs.openSync(logFile, 'w');
       const child = spawn('flyctl', buildArgs, {
         cwd: path.dirname(dockerfilePath),
-        env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+        env: {
+          ...process.env,
+          CLAUDE_PROJECT_DIR: PROJECT_DIR,
+          FLY_API_TOKEN: apiToken,
+        },
         detached: true,
         stdio: ['ignore', logFd, logFd],
       });
