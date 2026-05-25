@@ -128,6 +128,16 @@ export const PtAuditFailArgsSchema = z.object({
   evidence: z.string().describe('What was actually found vs what was expected'),
 });
 
+export const ResetPtAuditArgsSchema = z.object({
+  id: z.string().describe('Persistent task UUID'),
+  reason: z.string().min(10).describe(
+    'Why this audit is being reset (min 10 chars). Stored on the superseded audit row. ' +
+    'Use when the auditor session is wedged, when a verdict is obviously wrong, or when ' +
+    'the audit must be redone from scratch with a fresh auditor. Does NOT redo the work — ' +
+    'use the standard task flow for that.'
+  ),
+});
+
 // ============================================================================
 // Inferred Types
 // ============================================================================
@@ -149,6 +159,7 @@ export type ConfirmPtGateArgs = z.infer<typeof ConfirmPtGateArgsSchema>;
 export type CheckPtAuditArgs = z.infer<typeof CheckPtAuditArgsSchema>;
 export type PtAuditPassArgs = z.infer<typeof PtAuditPassArgsSchema>;
 export type PtAuditFailArgs = z.infer<typeof PtAuditFailArgsSchema>;
+export type ResetPtAuditArgs = z.infer<typeof ResetPtAuditArgsSchema>;
 
 // ============================================================================
 // Record Types (SQLite rows)

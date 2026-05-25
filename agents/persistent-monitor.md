@@ -40,6 +40,8 @@ allowedTools:
   - mcp__persistent-task__cancel_persistent_task
   - mcp__persistent-task__pause_persistent_task
   - mcp__persistent-task__link_subtask
+  - mcp__persistent-task__reset_pt_audit
+  - mcp__todo-db__reset_task_audit
   - mcp__agent-tracker__force_spawn_tasks
   - mcp__agent-tracker__kill_session
   - mcp__agent-tracker__submit_bypass_request
@@ -346,6 +348,22 @@ The infrastructure handles all transient blockers autonomously:
    The system retries after each fix attempt with increasing backoff.
 4. **Child task failures**: Create diagnostic sub-tasks using `deep-investigation`
    category with investigation context. Include what was tried and what failed.
+5. **Wedged audits**: a child task or this persistent task stuck in `pending_audit`
+   for >30 min with no progress event, OR a verdict that's obviously wrong (e.g.,
+   audit failed for a task whose work clearly meets criteria — verify by
+   `inspect_persistent_task` + `peek_session` first):
+
+   - For the child todo task: `mcp__todo-db__reset_task_audit({ task_id, reason })`.
+   - For THIS persistent task: `mcp__persistent-task__reset_pt_audit({ id, reason })`.
+
+   Both kill any live auditor, mark the prior audit row failed with
+   "Audit reset: <reason>", insert a fresh audit row, and respawn a fresh
+   auditor immediately. The auto-revival in session-reaper Step 1b.5 already
+   handles routine auditor death after 10 min; reset is the manual override
+   for cases auto-revival can't fix.
+
+   Reset is for when the AUDIT is broken. If the WORK is broken, spawn a fix
+   task instead — don't reset to escape a verdict.
 
 **The infrastructure will NEVER auto-pause your task.** Only YOU can pause by
 calling `submit_bypass_request` when you genuinely need CTO input (scope ambiguity,

@@ -49,6 +49,7 @@ import {
   CheckTaskAuditArgsSchema,
   TaskAuditPassArgsSchema,
   TaskAuditFailArgsSchema,
+  ResetTaskAuditArgsSchema,
   type ListTasksArgs,
   type GetTaskArgs,
   type CreateTaskArgs,
@@ -97,6 +98,7 @@ import {
   type CheckTaskAuditArgs,
   type TaskAuditPassArgs,
   type TaskAuditFailArgs,
+  type ResetTaskAuditArgs,
 } from './types.js';
 import { GATE_EXEMPT_CATEGORIES } from '../shared/constants.js';
 
@@ -2356,6 +2358,17 @@ function taskAuditFail(args: TaskAuditFailArgs): object {
   return { task_id: args.task_id, status: 'in_progress', verdict: 'fail', failure_reason: args.failure_reason, evidence: args.evidence };
 }
 
+async function resetTaskAuditHandler(args: ResetTaskAuditArgs): Promise<object> {
+  const db = getDb();
+  // Resolve project dir up front so the auditor respawn path and identity
+  // check both see a consistent location.
+  const projectDir = process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const { resetTaskAudit } = await import(
+    path.resolve(projectDir, '.claude', 'hooks', 'lib', 'audit-reset.js')
+  );
+  return await resetTaskAudit({ db, taskId: args.task_id, reason: args.reason, projectDir });
+}
+
 const tools: AnyToolHandler[] = [
   {
     name: 'list_tasks',
@@ -2518,6 +2531,13 @@ const tools: AnyToolHandler[] = [
     description: 'Mark a task audit as failed. Transitions task from pending_audit back to in_progress with failure reason. The agent must address the failure and re-attempt completion.',
     schema: TaskAuditFailArgsSchema,
     handler: taskAuditFail,
+  },
+  {
+    name: 'reset_task_audit',
+    description:
+      'Reset a wedged or wrong-verdict task audit. Kills any live auditor session for this task, marks the current audit row failed with reason="Audit reset: <reason>", inserts a fresh audit row (attempt_number+1), reverts the task to pending_audit, and respawns a fresh auditor immediately. Works on tasks in pending_audit (stuck), completed (false-pass), or in_progress (false-fail). Authorized for cto/deputy-cto/persistent-monitor only — auditors and task-runners are denied. Use this instead of task_audit_fail when the AUDIT itself is broken; use retry_plan_task or address the failure normally when the WORK needs redoing.',
+    schema: ResetTaskAuditArgsSchema,
+    handler: resetTaskAuditHandler,
   },
 ];
 

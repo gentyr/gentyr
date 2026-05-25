@@ -348,6 +348,17 @@ export const RetryPlanTaskArgsSchema = z.object({
 });
 export type RetryPlanTaskArgs = z.infer<typeof RetryPlanTaskArgsSchema>;
 
+// Reset plan task audit (kill auditor + respawn fresh; does NOT redo the work)
+export const ResetPlanAuditArgsSchema = z.object({
+  plan_task_id: z.string().describe('Plan task UUID to reset audit for'),
+  reason: z.string().min(10).describe(
+    'Why this audit is being reset (min 10 chars). Stored on the superseded audit row. ' +
+    'Use when the auditor session is wedged, when a verdict is obviously wrong, or when the audit ' +
+    'must be redone from scratch with a fresh auditor. Does NOT redo the work — use retry_plan_task for that.'
+  ),
+});
+export type ResetPlanAuditArgs = z.infer<typeof ResetPlanAuditArgsSchema>;
+
 // Update plan task gate
 export const UpdatePlanTaskGateArgsSchema = z.object({
   task_id: z.string().describe('Plan task ID'),
