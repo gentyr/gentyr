@@ -105,6 +105,7 @@ function doProtect(projectDir) {
     'demo-local-guard.js',
     'bypass-pause-duration-guard.js',
     'pause-persistent-task-guard.js',
+    'audit-lane-guard.js',
     'git-wrappers/git',
   ];
 

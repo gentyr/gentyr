@@ -1806,6 +1806,38 @@ export function drainQueue() {
     auditEvent('session_ttl_expired', { count: ttlResult.changes });
   }
 
+  // Step 2.1: Kill RUNNING sessions past their TTL.
+  // Closes the gap that allowed a universal-auditor with ttlMs=8min to run
+  // 10+ hours on 2026-05-24. Previously TTL was only enforced on queued
+  // items; once a session was spawned, expires_at was never checked again.
+  // Persistent monitors (ttlMs=0 → expires_at=NULL) are immune by construction.
+  const runningExpired = db.prepare(
+    "SELECT id, agent_id, pid, agent_type, lane, title FROM queue_items "
+    + "WHERE status = 'running' AND expires_at IS NOT NULL AND expires_at < datetime('now')"
+  ).all();
+  for (const row of runningExpired) {
+    log(`TTL: killing running session ${row.id} (${row.agent_type}, lane=${row.lane}, "${row.title}") — past expires_at`);
+    if (row.pid) {
+      try { process.kill(row.pid, 'SIGTERM'); } catch { /* already dead */ }
+      // Escalate to SIGKILL after 5s grace
+      setTimeout(() => {
+        try { process.kill(row.pid, 'SIGKILL'); } catch { /* gone */ }
+      }, 5000).unref();
+    }
+    db.prepare(
+      "UPDATE queue_items SET status = 'failed', error = 'TTL expired (running)', completed_at = datetime('now') WHERE id = ?"
+    ).run(row.id);
+    try {
+      auditEvent('session_ttl_expired_running', {
+        id: row.id,
+        agent_id: row.agent_id,
+        lane: row.lane,
+        agent_type: row.agent_type,
+        title: row.title,
+      });
+    } catch { /* non-fatal */ }
+  }
+
   // Step 2.5: Check for reserved_slots auto-restore
   try {
     const restoreRow = db.prepare('SELECT value FROM queue_config WHERE key = ?').get('reserved_slots_restore');
@@ -2177,6 +2209,13 @@ function spawnQueueItem(db, item) {
 
   // Inject CLAUDE_QUEUE_ID so hooks can identify the current session's queue entry
   spawnEnv.CLAUDE_QUEUE_ID = item.id;
+
+  // Inject GENTYR_SESSION_LANE so PreToolUse hooks (e.g. audit-lane-guard.js)
+  // can fast-detect lane-specific restrictions without an O(N) DB lookup.
+  // Used by audit-lane-guard to hard-block code-modifying tools for auditors.
+  if (item.lane) {
+    spawnEnv.GENTYR_SESSION_LANE = item.lane;
+  }
 
   // Spawn — validate CWD exists, fall back to project dir if worktree was cleaned up
   let effectiveCwd = item.cwd || item.worktree_path || item.project_dir;
