@@ -383,6 +383,15 @@ function statBasedSync(frameworkDir) {
 
   if (mcpStale) {
     const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
+    // Persistent log so silent build failures leave a forensic trail. Previously
+    // build errors went to the changes array only — invisible if SessionStart
+    // briefing was scrolled past, leaving dist permanently stale.
+    const buildLogPath = path.join(projectDir, '.claude', 'state', 'mcp-build.log');
+    const appendLog = (line) => {
+      try {
+        fs.appendFileSync(buildLogPath, `[${new Date().toISOString()}] ${line}\n`);
+      } catch (_) { /* best-effort */ }
+    };
     try {
       // Install deps if node_modules is missing or incomplete (e.g. after git clean).
       // Check multiple @types packages — @types/better-sqlite3 is needed alongside @types/node.
@@ -391,9 +400,33 @@ function statBasedSync(frameworkDir) {
         fs.existsSync(path.join(mcpNodeModules, '@types', 'node')) &&
         fs.existsSync(path.join(mcpNodeModules, '@types', 'better-sqlite3'));
       if (!hasDeps) {
-        execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
+        appendLog('npm install starting');
+        execFileSync('npm', ['install', '--no-fund', '--no-audit'], { cwd: mcpDir, stdio: 'pipe', timeout: 180000 });
+        appendLog('npm install complete');
       }
-      execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 30000 });
+      appendLog('tsc build starting');
+      // Capture stdio so we can persist the actual error on failure. Pipe is fine
+      // — output is small. Timeout raised from 30s → 180s: under memory pressure
+      // tsc can easily exceed 30s and would otherwise be SIGTERM'd mid-build,
+      // leaving dist partially-stale with no signal to the operator.
+      try {
+        const stdout = execFileSync('npm', ['run', 'build'], {
+          cwd: mcpDir,
+          encoding: 'utf8',
+          timeout: 180000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        appendLog(`tsc build complete: ${(stdout || '').slice(-500) || 'no output'}`);
+      } catch (execErr) {
+        // Persist the actual tsc error before re-throwing.
+        const stderr = (execErr && execErr.stderr) ? execErr.stderr.toString() : '';
+        const stdout = (execErr && execErr.stdout) ? execErr.stdout.toString() : '';
+        const reason = execErr.signal === 'SIGTERM' || /ETIMEDOUT|timed out/i.test(execErr.message || '')
+          ? `TIMEOUT after 180s — tsc was killed`
+          : (execErr.message || 'unknown');
+        appendLog(`tsc build FAILED: ${reason}\n--- stderr ---\n${stderr}\n--- stdout ---\n${stdout}`);
+        throw execErr;
+      }
       changes.push('MCP servers rebuilt');
 
       // Generate tool changelog after successful rebuild
@@ -423,7 +456,12 @@ function statBasedSync(frameworkDir) {
         // Non-fatal — tool manifest generation is best-effort
       }
     } catch (buildErr) {
-      changes.push(`MCP server build FAILED: ${buildErr.message}. Run: cd ${mcpDir} && npm install && npm run build`);
+      // Surface the build failure prominently — this is the exact path where
+      // PR #737 silently rotted in target projects: their per-session stdio
+      // servers loaded stale dist for hours. The persisted log at mcp-build.log
+      // holds the actual tsc error; this message points there.
+      const hint = `Build failure logged at ${buildLogPath}. Recover with: cd ${mcpDir} && npm install && npm run build`;
+      changes.push(`MCP server build FAILED: ${buildErr.message}. ${hint}`);
     }
   }
 
