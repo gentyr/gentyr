@@ -23,6 +23,7 @@ import { getCooldown } from '../config-reader.js';
 import { debugLog } from './debug-log.js';
 import { releaseAllResources, removeFromAllQueues } from './resource-lock.js';
 import { removeWorktree as removeWorktreeCleanup } from './worktree-manager.js';
+import { detectQuotaCrashInJsonl, handleQuotaCrashOnReap } from './quota-detector.js';
 
 /**
  * Rename progress file to .retired instead of deleting immediately.
@@ -649,6 +650,35 @@ export function reapSyncPass(db) {
             todoDb.close();
           }
         } catch (_) { /* non-fatal */ }
+      }
+
+      // Quota-crash detection: inspect the dead session's JSONL for an
+      // Anthropic "You've hit your limit" message. When found, pause the
+      // linked persistent task (do_not_auto_resume) and file a bypass request
+      // so the CTO sees it instead of the system silently re-spawning into
+      // the same wall. Best-effort — failures here never block the reap.
+      if ((metadata.taskId || metadata.persistentTaskId) && sessionDir && item.agent_id) {
+        try {
+          const sessFileForQuota = findSessionFileByAgentId(sessionDir, item.agent_id);
+          if (sessFileForQuota) {
+            const detection = detectQuotaCrashInJsonl(sessFileForQuota);
+            if (detection && detection.detected) {
+              debugLog('session-reaper', 'quota_crash_detected', {
+                agent_id: item.agent_id, task_id: metadata.taskId || metadata.persistentTaskId, reset_hint: detection.resetHint,
+              });
+              try { auditEvent('quota_crash_detected', { queue_id: item.id, agent_id: item.agent_id, task_id: metadata.taskId || metadata.persistentTaskId, reset_hint: detection.resetHint }); } catch (_) { /* non-fatal */ }
+              handleQuotaCrashOnReap({
+                detection,
+                metadata,
+                agentId: item.agent_id,
+                projectDir,
+                log: (msg) => { try { process.stderr.write(`[session-reaper] ${msg}\n`); } catch { /* ignore */ } },
+              });
+            }
+          }
+        } catch (err) {
+          try { process.stderr.write(`[session-reaper] quota detection error: ${err.message}\n`); } catch { /* ignore */ }
+        }
       }
 
       // Retire progress file for dead agent (deferred cleanup in reapAsyncPass)
