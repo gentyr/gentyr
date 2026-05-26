@@ -10365,8 +10365,14 @@ const tools: AnyToolHandler[] = [
         }
       }
 
-      // 6. Resolve GIT_AUTH_TOKEN from secrets if available
+      // 6. Resolve GIT_AUTH_TOKEN from secrets if available.
+      // We surface the resolution error explicitly: when this token is empty
+      // and the repo is on github.com (likely private), flyctl reaches the
+      // Docker build, runs `git clone` with no auth, and dies with a useless
+      // "could not read Username for 'https://github.com'" error. We have
+      // burned hours diagnosing that empty-token failure mode.
       let gitAuthToken = '';
+      let gitTokenResolveError: string | null = null;
       try {
         const services = loadServicesConfig(path.join(PROJECT_DIR, '.claude', 'config', 'services.json'));
         if (services?.secrets?.local) {
@@ -10375,10 +10381,27 @@ const tools: AnyToolHandler[] = [
             gitAuthToken = opRead(tokenRef);
           }
         }
-      } catch { /* non-fatal — public repos work without token */ }
+      } catch (err: unknown) {
+        gitTokenResolveError = err instanceof Error ? err.message : String(err);
+      }
       // Fallback: check process.env (set by mcp-launcher or CI environment)
       if (!gitAuthToken) {
         gitAuthToken = process.env.GITHUB_TOKEN || process.env.GIT_AUTH_TOKEN || '';
+      }
+      // Precondition: any github.com remote needs a token to clone via HTTPS.
+      // Fail fast with an actionable message instead of letting flyctl die
+      // mid-Docker-build with an opaque git error.
+      if (!gitAuthToken && /github\.com/i.test(gitRemote)) {
+        return JSON.stringify({
+          success: false,
+          message:
+            `Failed to resolve GIT_AUTH_TOKEN for ${gitRemote}. ` +
+            `Checked services.json secrets.local.GITHUB_TOKEN (and GIT_AUTH_TOKEN) and process.env.GITHUB_TOKEN. ` +
+            (gitTokenResolveError ? `opRead error: ${gitTokenResolveError}. ` : '') +
+            `If the repo is private, verify OP_SERVICE_ACCOUNT_TOKEN is set in the MCP daemon environment ` +
+            `and that secrets.local.GITHUB_TOKEN points to a valid op:// reference. Without GIT_TOKEN the ` +
+            `Docker build will fail at \`git clone\` with "could not read Username for 'https://github.com'".`,
+        });
       }
 
       // 7. Find Dockerfile.project
@@ -10518,10 +10541,18 @@ const tools: AnyToolHandler[] = [
       // 15. Set up a background watcher to update metadata when deploy completes
       if (child.pid) {
         const escapedServicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json').replace(/'/g, "\\'");
+        // The watcher can't use \`wait $pid\` here because flyctl is detached
+        // and unref'd above — it's not a child of this bash. \`wait\` on a
+        // non-child PID returns immediately non-zero, which used to leave
+        // metadata stuck \`deploying: true\` even on successful deploys.
+        // Detect success via log-grep, matching the same regex as
+        // recoverStuckProjectDeploy() below.
+        const escapedLogFile = logFile.replace(/'/g, "\\'");
         const watcherScript = `
           while kill -0 ${child.pid} 2>/dev/null; do sleep 5; done
-          EXIT_CODE=$(wait ${child.pid} 2>/dev/null; echo $?)
-          if [ "$EXIT_CODE" = "0" ] 2>/dev/null; then
+          if grep -qi 'Release command' '${escapedLogFile}' 2>/dev/null && \\
+             ! grep -qm1 '^Error:' '${escapedLogFile}' 2>/dev/null && \\
+             ! grep -qim1 'failed to' '${escapedLogFile}' 2>/dev/null; then
             node -e "
               const fs = require('fs');
               const p = '${metaPath.replace(/'/g, "\\'")}';
