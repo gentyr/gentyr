@@ -1,0 +1,13 @@
+packages:
+  - 'packages/*'
+  - 'plugins/*'
+
+# Allow these dependencies to run install scripts. Without this, pnpm v10+
+# blocks all install scripts by default, leaving better-sqlite3 and sharp
+# without native binaries — breaking every Tier 2 MCP server that opens a
+# SQLite DB. Repro: fresh `git clone gentyr && pnpm install -r` → at next
+# session start, hooks fail with "Could not locate the bindings file".
+onlyBuiltDependencies:
+  - better-sqlite3
+  - sharp
+  - esbuild
