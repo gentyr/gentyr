@@ -111,15 +111,30 @@ async function main() {
   // Self-heal by deleting the state file + counter so subsequent tool calls
   // fast-exit at the top of this hook instead of repeatedly checking staleness
   // for the rest of the project's lifetime.
+  //
+  // Two staleness signals:
+  //   1. state.lastRoundAt > 20 min ago (normal path — /monitor ran ≥1 round)
+  //   2. state.lastRoundAt absent AND file mtime > 20 min ago (the session
+  //      died before update_monitor_state ever wrote lastRoundAt, otherwise
+  //      leaking the state file forever)
   const STALE_MS = 20 * 60 * 1000;
+  let isStale = false;
   if (state.lastRoundAt) {
     const lastRoundMs = Date.parse(state.lastRoundAt);
     if (Number.isFinite(lastRoundMs) && Date.now() - lastRoundMs > STALE_MS) {
-      try { fs.unlinkSync(STATE_FILE); } catch (_) { /* non-fatal */ }
-      try { fs.unlinkSync(COUNTER_FILE); } catch (_) { /* non-fatal */ }
-      console.log(JSON.stringify({}));
-      process.exit(0);
+      isStale = true;
     }
+  } else {
+    try {
+      const mtime = fs.statSync(STATE_FILE).mtimeMs;
+      if (Date.now() - mtime > STALE_MS) isStale = true;
+    } catch (_) { /* non-fatal */ }
+  }
+  if (isStale) {
+    try { fs.unlinkSync(STATE_FILE); } catch (_) { /* non-fatal */ }
+    try { fs.unlinkSync(COUNTER_FILE); } catch (_) { /* non-fatal */ }
+    console.log(JSON.stringify({}));
+    process.exit(0);
   }
 
   // Increment counter
