@@ -291,10 +291,20 @@ function recoverStuckProjectDeploy(): { recovered: boolean; success: boolean; re
         .reverse();
       if (logFiles.length > 0) {
         const logContent = fs.readFileSync(path.join(logDir, logFiles[0]), 'utf-8');
-        // Success: log contains "Release command" and no "Error:" or "failed to"
-        deploySuccess = /Release command/i.test(logContent) &&
-          !/^Error:/m.test(logContent) &&
-          !/failed to/i.test(logContent);
+        // Primary signal: the wrapped spawn appends "FLYCTL_EXIT_CODE: N" to
+        // the log after flyctl exits. Authoritative when present.
+        const exitMatch = logContent.match(/^FLYCTL_EXIT_CODE: (\d+)/m);
+        if (exitMatch) {
+          deploySuccess = exitMatch[1] === '0';
+        } else {
+          // Legacy fallback (pre-marker logs, or bash killed before the echo):
+          // log-grep heuristic. The "failed to" probe is broad and prone to
+          // false positives against benign rolling-deploy retry lines, so it
+          // is only consulted when no exit-code marker exists.
+          deploySuccess = /Release command/i.test(logContent) &&
+            !/^Error:/m.test(logContent) &&
+            !/failed to/i.test(logContent);
+        }
       }
     } catch { /* log read failed, assume failure */ }
 
@@ -10515,7 +10525,15 @@ const tools: AnyToolHandler[] = [
       fs.mkdirSync(path.dirname(logFile), { recursive: true });
 
       const logFd = fs.openSync(logFile, 'w');
-      const child = spawn('flyctl', buildArgs, {
+      // Wrap flyctl in a bash command so the real exit code is captured in the
+      // log file via a "FLYCTL_EXIT_CODE: N" marker. The watcher and the
+      // recover-stuck path prefer this marker over log-grep heuristics, which
+      // false-positive on flyctl's benign "failed to ..." retry messages
+      // during rolling deploys.
+      const shQuote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
+      const flyctlArgsQuoted = buildArgs.map(shQuote).join(' ');
+      const wrappedCommand = `flyctl ${flyctlArgsQuoted}; echo "FLYCTL_EXIT_CODE: $?"`;
+      const child = spawn('bash', ['-c', wrappedCommand], {
         cwd: path.dirname(dockerfilePath),
         env: {
           ...process.env,
@@ -10558,9 +10576,22 @@ const tools: AnyToolHandler[] = [
         const escapedLogFile = logFile.replace(/'/g, "\\'");
         const watcherScript = `
           while kill -0 ${child.pid} 2>/dev/null; do sleep 5; done
-          if grep -qi 'Release command' '${escapedLogFile}' 2>/dev/null && \\
-             ! grep -qm1 '^Error:' '${escapedLogFile}' 2>/dev/null && \\
-             ! grep -qim1 'failed to' '${escapedLogFile}' 2>/dev/null; then
+          # Primary signal: FLYCTL_EXIT_CODE marker appended by the wrapped
+          # spawn. Authoritative when present. Falls back to log-grep when
+          # absent (e.g. bash killed before reaching the echo).
+          EXIT_LINE=$(grep -E '^FLYCTL_EXIT_CODE: [0-9]+' '${escapedLogFile}' 2>/dev/null | tail -1)
+          SUCCESS=0
+          if [ -n "$EXIT_LINE" ]; then
+            EXIT_CODE=$(echo "$EXIT_LINE" | awk '{print $2}')
+            if [ "$EXIT_CODE" = "0" ]; then SUCCESS=1; fi
+          else
+            if grep -qi 'Release command' '${escapedLogFile}' 2>/dev/null && \\
+               ! grep -qm1 '^Error:' '${escapedLogFile}' 2>/dev/null && \\
+               ! grep -qim1 'failed to' '${escapedLogFile}' 2>/dev/null; then
+              SUCCESS=1
+            fi
+          fi
+          if [ "$SUCCESS" = "1" ]; then
             node -e "
               const fs = require('fs');
               const p = '${metaPath.replace(/'/g, "\\'")}';
