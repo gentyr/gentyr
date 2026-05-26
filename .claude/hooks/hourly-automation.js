@@ -2373,6 +2373,21 @@ function rescueAbandonedWorktrees() {
   const worktrees = listWorktrees();
   let rescued = 0;
 
+  // Bound the per-cycle blast radius. Without these guards a single cycle can
+  // spawn N project-manager agents for N stale worktrees, which we have seen
+  // saturate the box (800+ node processes, force_spawn_tasks ETIMEDOUT).
+  const MAX_RESCUE_PER_CYCLE = 3;
+  try {
+    const nodeCount = parseInt(
+      execSync('pgrep -c node || echo 0', { encoding: 'utf8', timeout: 2000 }).trim(),
+      10,
+    );
+    if (Number.isFinite(nodeCount) && nodeCount > 500) {
+      log(`Rescue: skipped entire cycle — process saturation (${nodeCount} node processes)`);
+      return 0;
+    }
+  } catch { /* non-fatal — proceed without gate */ }
+
   // Pre-load session-queue DB to check for active sessions using worktree paths
   const activeWorktreePaths = new Set();
   if (Database) {
@@ -2553,6 +2568,12 @@ function rescueAbandonedWorktrees() {
     }
 
     const probableCase = divergenceStats?.probableCase ?? 'unknown';
+
+    if (rescued >= MAX_RESCUE_PER_CYCLE) {
+      log(`Rescue: hit per-cycle cap (${MAX_RESCUE_PER_CYCLE}); deferring ${wt.path} to next cycle`);
+      break;
+    }
+
     log(`Rescue: spawning project-manager for ${wt.path} (branch: ${wt.branch}, base: ${baseBranch ?? 'unknown'}, case: ${probableCase}, behind: ${divergenceStats?.commitsBehind ?? '?'})`);
 
     ensureCredentials();
