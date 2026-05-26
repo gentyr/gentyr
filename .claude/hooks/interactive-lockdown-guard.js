@@ -89,6 +89,13 @@ const READONLY_SUBAGENT_TYPES = new Set([
  * MCP tool prefixes allowed in interactive mode.
  * Only monitoring, reading, and task-management tools — no write/mutate operations
  * on infrastructure (secret-sync, cloudflare, supabase, render, vercel, etc.).
+ *
+ * NOTE: `mcp__playwright__` and `mcp__chrome-bridge__` are deliberately NOT in this
+ * list — they were previously prefix-allowed but the deputy-CTO used that surface
+ * to "take over" demo execution (running run_demo_batch, run_auth_setup directly)
+ * instead of delegating via tasks. Read-only inspection tools from those servers
+ * are whitelisted individually below; write/work tools fall through to the
+ * `MCP_DELEGATION_GUIDANCE` deny path.
  */
 const ALLOWED_MCP_PREFIXES = [
   'mcp__deputy-cto__',         // Triage, questions, approvals
@@ -101,12 +108,10 @@ const ALLOWED_MCP_PREFIXES = [
   'mcp__plan-orchestrator__',  // Plan management
   'mcp__user-feedback__',      // Feedback/persona data (read)
   'mcp__product-manager__',    // PMF analysis (approve, status)
-  'mcp__playwright__',         // Demo/test launching
   'mcp__specs-browser__',      // Read specs
   'mcp__feedback-explorer__',  // Browse feedback
   'mcp__setup-helper__',       // Setup guidance
   'mcp__workstream__',         // Workstream management
-  'mcp__chrome-bridge__',      // Chrome automation
   'mcp__release-ledger__',     // Production release management (sign-off, listing)
   'mcp__claude-sessions__',    // Session search/read (read-only introspection)
 ];
@@ -125,7 +130,117 @@ const ALLOWED_MCP_INDIVIDUAL = new Set([
   'mcp__onepassword__create_item',                // Create items — values go direct to op CLI
   'mcp__onepassword__add_item_fields',            // Add fields — values go direct to op CLI
   'mcp__secret-sync__populate_secrets_local',     // Writes op:// refs only — no secret values in context
+  // Playwright — read-only inspection tools (the CTO needs these to monitor demo state)
+  'mcp__playwright__check_demo_result',
+  'mcp__playwright__check_demo_batch_result',
+  'mcp__playwright__get_fly_status',
+  'mcp__playwright__get_fly_logs',
+  'mcp__playwright__get_fly_machine_ram',
+  'mcp__playwright__get_demo_screenshot',
+  'mcp__playwright__get_report',
+  'mcp__playwright__get_coverage_status',
+  'mcp__playwright__get_display_queue_status',
+  'mcp__playwright__preflight_check',
+  'mcp__playwright__tail_running_fly_demo',
+  'mcp__playwright__infrastructure_readiness',
+  'mcp__playwright__worktree_freshness',
+  'mcp__playwright__test_files_exist',
+  'mcp__playwright__steel_health_check',
+  'mcp__playwright__list_extension_tabs',
+  'mcp__playwright__open_video',
+  'mcp__playwright__extract_video_frames',
+  'mcp__playwright__stop_demo',          // intervention, not work
+  'mcp__playwright__stop_demo_batch',    // intervention, not work
+  'mcp__playwright__release_display_lock', // CTO can release stuck locks
+  // Chrome-bridge — read-only inspection tools
+  'mcp__chrome-bridge__health_check',
+  'mcp__chrome-bridge__page_diagnostic',
+  'mcp__chrome-bridge__inspect_input',
+  'mcp__chrome-bridge__find_elements',
+  'mcp__chrome-bridge__wait_for_element',
+  'mcp__chrome-bridge__get_page_text',
+  'mcp__chrome-bridge__read_console_messages',
+  'mcp__chrome-bridge__read_network_requests',
+  'mcp__chrome-bridge__read_page',
+  'mcp__chrome-bridge__list_chrome_extensions',
+  'mcp__chrome-bridge__shortcuts_list',
+  'mcp__chrome-bridge__tabs_context_mcp',
 ]);
+
+/**
+ * Per-tool delegation guidance for tools that are NOT in ALLOWED_MCP_INDIVIDUAL
+ * and NOT covered by an ALLOWED_MCP_PREFIXES entry. When the catch-all deny path
+ * fires, it looks up the tool name here and includes the specific delegation hint
+ * in the deny message — telling the deputy exactly how to delegate the work
+ * instead of taking it over.
+ *
+ * Keep entries focused on the high-value "I'll take over" failure modes. The
+ * generic deny message is reasonable as a fallback for everything else.
+ */
+const MCP_DELEGATION_GUIDANCE = {
+  // Playwright write/work tools — the failure mode this PR addresses
+  'mcp__playwright__run_demo':
+    'Create a `Demo Execution` category task with the scenario_id(s) in the description and force-spawn it. The spawned demo-manager runs the demo in its own worktree.',
+  'mcp__playwright__run_demo_batch':
+    'Create a `Demo Execution` category task with the scenario_id list and force-spawn it. The spawned demo-manager will call run_demo_batch from inside its worktree.',
+  'mcp__playwright__run_auth_setup':
+    'Create a `Demo Execution` category task — auth setup runs as part of the spawned demo-manager pipeline. The deputy-CTO does not run auth directly.',
+  'mcp__playwright__run_tests':
+    'Create a `Test Suite Work` category task and force-spawn it. The spawned test-writer runs the test suite in its own worktree.',
+  'mcp__playwright__run_prerequisites':
+    'Create a `Demo Execution` category task — prerequisites run automatically before the demo. The deputy-CTO does not run prerequisites directly.',
+  'mcp__playwright__deploy_fly_image':
+    'Create a `Standard Development` category task titled "Deploy Fly base image" — a spawned agent handles the deploy.',
+  'mcp__playwright__deploy_project_image':
+    'Create a `Standard Development` category task titled "Deploy Fly project image" — a spawned agent handles the deploy. Project image redeploys happen automatically on lockfile/SHA drift; manual redeploy is rarely needed.',
+  'mcp__playwright__set_fly_machine_ram':
+    'Create a `Standard Development` task to adjust Fly machine RAM. Configuration changes belong in `services.json` via update_services_config, not ad-hoc tool calls.',
+  'mcp__playwright__launch_ui_mode':
+    'Run Playwright UI mode via `/demo` slash command or by creating a task — do not launch it directly from the deputy console.',
+  'mcp__playwright__acquire_display_lock':
+    'Display locks should be acquired by agents that need them, not by the deputy. If you need to free a stuck lock, use release_display_lock; if you need to force-take it, use mcp__agent-tracker__force_release_shared_resource.',
+  'mcp__playwright__seed_data':
+    'Create a `Standard Development` task — data seeding is work, not management.',
+  'mcp__playwright__cleanup_data':
+    'Create a `Standard Development` task — data cleanup is work, not management.',
+  'mcp__playwright__upload_steel_extension':
+    'Create a `Standard Development` task — extension uploads are work, not management.',
+  // Chrome-bridge interaction tools
+  'mcp__chrome-bridge__navigate':
+    'Browser navigation is agent work. Create a task — the spawned agent controls Chrome from its worktree.',
+  'mcp__chrome-bridge__click_by_text':
+    'Browser clicks are agent work. Create a task — the spawned agent controls Chrome from its worktree.',
+  'mcp__chrome-bridge__click_and_wait':
+    'Browser clicks are agent work. Create a task — the spawned agent controls Chrome from its worktree.',
+  'mcp__chrome-bridge__fill_input':
+    'Form fills are agent work. Create a task — the spawned agent controls Chrome from its worktree.',
+  'mcp__chrome-bridge__react_fill_input':
+    'Form fills are agent work. Create a task — the spawned agent controls Chrome from its worktree.',
+  'mcp__chrome-bridge__form_input':
+    'Form input is agent work. Create a task — the spawned agent controls Chrome from its worktree.',
+  'mcp__chrome-bridge__computer':
+    'Direct keyboard/mouse control is agent work. Create a task — the spawned agent controls Chrome from its worktree.',
+  'mcp__chrome-bridge__javascript_tool':
+    'Arbitrary browser JS execution is agent work. Create a task — the spawned agent runs JS from its worktree.',
+  'mcp__chrome-bridge__reload_chrome_extension':
+    'Extension reload is agent work. Create a task — the spawned agent handles it.',
+  'mcp__chrome-bridge__wake_extension':
+    'Extension wake is agent work. Create a task — the spawned agent handles it.',
+  'mcp__chrome-bridge__resize_window':
+    'Window resize is agent work. Create a task — the spawned agent handles it.',
+  'mcp__chrome-bridge__switch_browser':
+    'Browser switching is agent work. Create a task — the spawned agent handles it.',
+  'mcp__chrome-bridge__shortcuts_execute':
+    'Keyboard shortcuts are agent work. Create a task — the spawned agent handles it.',
+  'mcp__chrome-bridge__tabs_create_mcp':
+    'Tab creation is agent work. Create a task — the spawned agent handles it.',
+  'mcp__chrome-bridge__update_plan':
+    'Plan updates via chrome-bridge are agent work. Create a task — the spawned agent handles it.',
+  'mcp__chrome-bridge__upload_image':
+    'Image uploads are agent work. Create a task — the spawned agent handles it.',
+  'mcp__chrome-bridge__gif_creator':
+    'GIF creation is agent work. Create a task — the spawned agent handles it.',
+};
 
 /**
  * Specific MCP tools blocked even within allowed prefixes.
@@ -543,13 +658,19 @@ async function main() {
     {
       const deferred = createLockdownDeferredAction(toolName, event?.tool_input);
       const deferredMsg = deferred
-        ? `\n\nDeferred action created: ${deferred.id}\nPresent this to the CTO, then call record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${deferred.id}", verbatim_text: "<CTO exact words>" }). The action will auto-execute after approval + audit.`
+        ? `\n\nIf the CTO explicitly authorizes you to run this directly: Deferred action ${deferred.id} — call record_cto_decision({ decision_type: "lockdown_toggle", decision_id: "${deferred.id}", verbatim_text: "<CTO exact words>" }). The action will auto-execute after approval. **Do not request this casually — the default is to delegate.**`
         : '';
+
+      const guidance = MCP_DELEGATION_GUIDANCE[toolName];
+      const reasonBody = guidance
+        ? `Deputy-CTO console: \`${toolName}\` is agent work, not management.\n\n${guidance}`
+        : `Deputy-CTO console: \`${toolName}\` is not available in interactive mode.\n\nThis MCP tool is for infrastructure management. Create a task to delegate this work to an agent.`;
+
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
-          permissionDecisionReason: `Deputy-CTO console: \`${toolName}\` is not available in interactive mode.\n\nThis MCP tool is for infrastructure management. Create a task to delegate this work to an agent.${deferredMsg}`,
+          permissionDecisionReason: `${reasonBody}${deferredMsg}`,
         },
       }));
     }

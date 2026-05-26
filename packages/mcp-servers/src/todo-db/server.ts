@@ -621,7 +621,7 @@ function seedCategories(db: Database.Database): void {
     {
       id: 'demo-design',
       name: 'Demo Design',
-      description: 'Investigation, demo implementation, review, and merge.',
+      description: 'Investigation, demo implementation, review, and merge. Use this when DESIGNING new demos or modifying .demo.ts files. For RUNNING existing demos, use Demo Execution instead.',
       sequence: JSON.stringify([
         { agent_type: 'investigator', label: 'Investigation', optional: false },
         { agent_type: 'demo-manager', label: 'Demo Implementation', optional: false },
@@ -635,6 +635,21 @@ function seedCategories(db: Database.Database): void {
       urgency_authorized: 1,
       is_default: 0,
       deprecated_section: 'DEMO-MANAGER',
+    },
+    {
+      id: 'demo-execution',
+      name: 'Demo Execution',
+      description: 'Run existing demo scenarios as a batch. No investigation, no implementation, no code review, no merge. Task description must include scenario_id(s) or persona name(s). The demo-manager invokes run_auth_setup + run_demo_batch directly.',
+      sequence: JSON.stringify([
+        { agent_type: 'demo-manager', label: 'Demo Execution', optional: false },
+      ]),
+      prompt_template: null,
+      model: 'sonnet',
+      creator_restrictions: null,
+      force_followup: 0,
+      urgency_authorized: 1,
+      is_default: 0,
+      deprecated_section: null,
     },
     {
       id: 'project-management',
