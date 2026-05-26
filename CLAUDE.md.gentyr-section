@@ -230,130 +230,42 @@ Telemetry files: `.claude/recordings/demos/{scenarioId}/telemetry/*.jsonl`
 
 ### Application Logging & Observability
 
-GENTYR provides a framework-level logging observability system that ensures all project components ship structured logs to Elastic Cloud for centralized querying and alerting.
+Use `createLogger({ service, module })` for stdout-only logging; `createElasticLogger({ service, module })` for dual stdout + Elastic Cloud shipping. Both produce ECS-compatible JSON. `createElasticLogger` silently no-ops when Elastic credentials are missing. Index naming: `logs-{service}-{YYYY-MM-DD}`. Full Elastic credentials setup, deployment env configuration, run ID correlation, and log query reference: `node_modules/gentyr/docs/DEMO-OBSERVABILITY.md`.
 
-**Structured logging setup:**
-- Use `createLogger({ service: 'my-api', module: 'billing' })` for stdout/stderr-only logging (local dev)
-- Use `createElasticLogger({ service: 'my-api', module: 'billing' })` for dual-output (stdout/stderr + Elastic Cloud shipping)
-- Both produce ECS-compatible JSON. `createElasticLogger` silently no-ops when Elastic credentials are missing (graceful degradation)
-- Index naming convention: `logs-{service}-{YYYY-MM-DD}` (e.g., `logs-my-api-2026-04-30`)
-
-**Elastic credentials configuration** (via GENTYR MCP tools):
-1. Configure the `elastic` section in services.json:
-   `mcp__secret-sync__update_services_config({ updates: { elastic: { apiKey: "op://Production/Elastic/api-key", cloudId: "op://Production/Elastic/cloud-id", enabled: true } } })`
-2. Add credentials to secrets.local for local dev and demo execution:
-   `mcp__secret-sync__populate_secrets_local({ entries: { ELASTIC_API_KEY: "op://Production/Elastic/api-key", ELASTIC_CLOUD_ID: "op://Production/Elastic/cloud-id" } })`
-3. Verify setup: `mcp__elastic-logs__verify_logging_config` returns a health report with credential status, cluster connectivity, and deployment environment coverage
-
-**Deployment environment credentials:**
-Elastic credentials must be configured in ALL deployment environments. Add `ELASTIC_API_KEY` and `ELASTIC_CLOUD_ID` to:
-- `secrets.renderProduction` and `secrets.renderStaging` (for backend API)
-- `secrets.vercel` (for Next.js SSR)
-- GitHub Actions secrets (for CI log shipping and Playwright reporter)
-
-Then run `/push-secrets` to sync. Without this, production/staging apps log to stdout only (Elastic shipping silently no-ops).
-
-**Run ID correlation:**
-Every demo run generates a `DEMO_RUN_ID` (format: `dr-{scenarioId}-{ts}-{hex}`). When the dev server is started by `run_demo`, this ID is injected into the server environment. Application code can read `process.env.DEMO_RUN_ID` and include it in log context for end-to-end tracing across browser telemetry, API logs, and background jobs.
-
-**Querying logs** (via `mcp__elastic-logs__query_logs`):
-- App runtime errors: `service:"my-api" AND level:error`
-- Slow requests: `service:"my-api" AND duration:>1000`
-- User-specific: `service:"my-api" AND userId:"usr_123"`
+**Key log queries** (`mcp__elastic-logs__query_logs`):
+- App errors: `service:"my-api" AND level:error`
 - Demo telemetry: `demo.run_id:"dr-xxx" AND telemetry_type:console AND level:error`
-- CI failures: `event.module:"github-ci" AND event.outcome:failure`
-- Deploy events: `event.module:"render" AND deploy.state:"live"`
-- Log stats: `mcp__elastic-logs__get_log_stats({ groupBy: "service" })` for volume overview
+- Log stats: `mcp__elastic-logs__get_log_stats({ groupBy: "service" })`
 
-**Logging health verification:**
-- Session briefing shows Elastic connectivity status at login
-- `mcp__elastic-logs__verify_logging_config` checks: elastic config presence, credential coverage across all environments (local, render-prod, render-staging, vercel, GitHub), cluster reachability, and returns actionable recommendations
-
-**Demo Dev Server Management (AUTOMATED -- No Manual Steps):**
-
-`run_demo`, `run_demo_batch`, and `preflight_check` automatically handle dev server lifecycle:
-1. Execute registered prerequisites (starts dev server if registered as background prereq)
-2. Verify dev server health on the correct port
-3. Auto-start from `services.json` `devServices` config if no prerequisite started it
-4. Auto-set `PLAYWRIGHT_BASE_URL` once healthy
-
-**You MUST NOT manually start dev servers for demos.** Do not call `secret_dev_server_start` before `run_demo` -- it handles this automatically. If the auto-start fails, register a prerequisite rather than adding manual steps:
-```
-register_prerequisite({
-  command: "pnpm dev",
-  scope: "global",
-  run_as_background: true,
-  health_check: "curl -sf http://localhost:${PORT:-3000}",
-  description: "Start dev server"
-})
-```
-Port-aware health checks (`${PORT:-3000}`) are mandatory -- they resolve correctly in both main tree (port 3000) and worktree (port 3100+) contexts. Never hardcode port numbers.
-
-Project-level env overrides (e.g., skip rebuilds) can be declared in `.claude/config/services.json` under `demoDevModeEnv`. Foreground prerequisites are killed if no output for 60s.
+Verify setup: `mcp__elastic-logs__verify_logging_config` — checks credentials, cluster reachability, all environment coverage.
 
 **Use `/demo` for interactive demos** — runs preflight automatically.
 
 ### Remote Playwright Execution (Fly.io)
 
-When Fly.io is configured (`fly` section in `services.json`), headless demos automatically run on ephemeral Fly.io machines instead of locally. This eliminates display lock contention — the #1 cause of demo agent deadlock.
+When Fly.io is configured (`fly` section in `services.json`), demos automatically run on ephemeral Fly.io machines — eliminating display lock contention. Setup: `/setup-fly`. Full details on image management, cost control, compute sizes, background services, and credential injection: `node_modules/gentyr/docs/FLY-REMOTE-EXECUTION.md`.
 
-**Setup**: `/setup-fly` slash command guides through Fly.io account creation, credential registration via 1Password, and app provisioning.
-
-**Routing rules**: `run_demo` uses a simple 3-rule decision tree:
+**Routing rules** (`run_demo` decision tree):
 - `remote_eligible=false` or chrome-bridge detected → local (structural; no flag needed)
 - `local: true` → local (CTO-gated for spawned agents); conflicts with `stealth: true`
 - `stealth: true` or `stealth_required=true` (DB) → Steel.dev (fail-closed)
 - default (no flags) → Fly.io (fail-closed)
 
-**Same interface**: Progress reporting, `check_demo_result`, `stop_demo`, and artifact retrieval work identically across local, Fly.io, and Steel runs. The `execution_target` field in the response is one of `'local'` | `'fly'` | `'steel'`. Fly.io and Steel runs return synthetic negative PIDs.
+`check_demo_result`, `stop_demo`, and artifacts work identically across local/Fly.io/Steel. The `execution_target` field is `'local'` | `'fly'` | `'steel'`.
 
-**Not available for**: chrome-bridge scenarios (require real Chrome with extension socket), extension demos (require loaded extension). Headed demos are fully supported on Fly.io via Xvfb + ffmpeg recording.
-
-**Batch parallelization**: `run_demo_batch` runs multiple scenarios simultaneously across Fly.io machines (or Steel.dev sessions for stealth batches), limited by `fly.maxConcurrentMachines` (default 10) or `steel.maxConcurrentSessions`.
-
-**Cost control**: Machines auto-stop on completion, have a 30-minute hard kill safety net, and `maxConcurrentMachines` caps concurrent usage. `get_fly_status` tool shows current machine count and health. `get_fly_status` also returns `imageDeployed` — if `false`, no Docker image has been deployed to the Fly app. When Fly.io is the routed target and execution fails (e.g., image not deployed), `run_demo` returns an error rather than silently falling back to local. Fix: call `deploy_fly_image()` to build and push the image.
-
-**Image deployment requirement**: After `/setup-fly`, the Fly.io provisioning script must run to build and push the Docker image to `registry.fly.io/<appName>:latest`. Without this, `spawnRemoteMachine` fails and `run_demo` returns a fail-closed error (the routing is fail-closed at the Fly.io tier).
-
-**Image freshness**: The Fly.io Docker image contains `remote-runner.sh`, system dependencies, and Playwright. Target project code is cloned fresh from git on each run, but if GENTYR's `infra/fly-playwright/Dockerfile` or `remote-runner.sh` changes (e.g., after `npx gentyr sync` or framework updates), the image must be rebuilt with `deploy_fly_image({ force: true })`. `get_fly_status()` returns `imageStale: true` when the deployed image is outdated. Session briefing shows image age and staleness warnings at login. Do NOT ignore `imageStale` warnings — stale images cause systematic demo failures.
-
-**Remote execution resources**: Each scenario has a `compute_size` field: `"standard"` (4GB, default) or `"large"` (8GB). If a demo fails with OOM (exit code 137, `oom_detected: true` in check_demo_result), increase to large: `update_demo_scenario({ id: "...", compute_size: "large" })`. `check_demo_result` automatically detects OOM and includes a `compute_size_suggestion` field with the exact fix command.
-
-**Background services on remote machines**: Demos that need additional services (code-server, ttyd, LiveCodes, etc.) should register a background prerequisite — these run on remote machines automatically via the prerequisite system:
-```
-register_prerequisite({
-  scope: 'scenario',
-  scenario_id: "...",
-  command: "npx code-server --port 7682 --auth none",
-  health_check: "curl -sf http://localhost:7682",
-  run_as_background: true,
-})
-```
-Prerequisites with `run_as_background: true` are started before the test and health-checked. The remote execution environment supports any Node.js-based service.
-
-**What requires `remote_eligible: false`** (local-only execution):
-- Chrome-bridge scenarios (require Unix domain socket to local Chrome extension)
-- Extension demos that load unpacked Chrome extensions
-- Scenarios requiring macOS-specific system interactions (Finder, native dialogs)
-
-Everything else — including headed demos, dev servers, code-server, and custom background services — runs on remote machines.
-
-**Remote-First Execution Rule (MANDATORY for spawned agents)**:
-Spawned agents MUST use Fly.io (the default routing) or Steel.dev (`stealth: true`) for all demo runs. Passing `local: true` requires CTO approval via the deferred-action chain. Sequential `run_demo` calls for multiple scenarios are an anti-pattern. For 2+ scenarios, use `run_demo_batch({ scenario_ids: [...] })` — this runs scenarios CONCURRENTLY across multiple Fly.io machines. Do NOT pass `local: true` "to debug" — Fly.io produces identical output and structural local scenarios (`remote_eligible=false`, chrome-bridge) are skipped automatically without bypass.
+**Remote-First Execution Rule (MANDATORY for spawned agents)**: Spawned agents MUST use Fly.io (default) or Steel.dev (`stealth: true`). Passing `local: true` requires CTO approval. Sequential `run_demo` calls for multiple scenarios are an anti-pattern — use `run_demo_batch({ scenario_ids: [...] })` for 2+ scenarios (runs CONCURRENTLY on Fly.io machines).
 
 **Agent decision tree**:
-- 2+ scenarios to validate? → `run_demo_batch({ recorded: true })` → concurrent Fly.io (default)
-- Single validation/repair run? → `run_demo` with defaults → Fly.io
-- Scenario needs anti-bot stealth? → `run_demo({ stealth: true })` → Steel.dev
-- Scenario uses chrome-bridge or `remote_eligible=false`? → routed to local automatically (no flag needed)
-- CTO watching live? → only the CTO interactive session may pass `local: true`
-- Never: sequential `run_demo` calls for multiple scenarios when a batch will do
+- 2+ scenarios? → `run_demo_batch({ recorded: true })` → concurrent Fly.io
+- Single run? → `run_demo` defaults → Fly.io
+- Anti-bot stealth? → `run_demo({ stealth: true })` → Steel.dev
+- chrome-bridge / `remote_eligible=false`? → auto-routed local (no flag needed)
+- CTO watching live? → only interactive CTO session may pass `local: true`
 
-**Agent troubleshooting tree**:
-- Demo failed with `oom_detected: true`? → `update_demo_scenario({ id, compute_size: "large" })`
-- Demo needs a background service? → `register_prerequisite({ run_as_background: true, ... })`
-- Demo needs real Chrome extension socket? → `update_demo_scenario({ id, remote_eligible: false })`
-- All other demos → remote execution (headed or headless)
+**Agent troubleshooting**:
+- OOM (`oom_detected: true`)? → `update_demo_scenario({ id, compute_size: "large" })`
+- Need background service? → `register_prerequisite({ run_as_background: true, ... })`
+- Need real Chrome? → `update_demo_scenario({ id, remote_eligible: false })`
 
 ### Shared Resource Registry (Headed Mode and Infrastructure Coordination)
 

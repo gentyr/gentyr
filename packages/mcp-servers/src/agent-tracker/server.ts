@@ -4153,6 +4153,9 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     }
 
     if (!agentId) {
+      if (args.subagent_id) {
+        return { error: `subagent_id is a modifier that selects a child of a parent session — it requires a parent identifier alongside it. Provide one of agent_id, queue_id, or session_id (the parent's UUID) together with subagent_id: '${args.subagent_id}'.` };
+      }
       return { error: 'Must provide agent_id, queue_id, or session_id' };
     }
 
@@ -4458,7 +4461,12 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
   // Fall back to agent_id resolution
   if (!sessionFile) {
     const agentId = args.agent_id;
-    if (!agentId) return { error: 'Must provide agent_id or session_id' };
+    if (!agentId) {
+      if (args.subagent_id) {
+        return { error: `subagent_id is a modifier that selects a child of a parent session — it requires a parent identifier alongside it. Provide agent_id or session_id (the parent's UUID) together with subagent_id: '${args.subagent_id}'.` };
+      }
+      return { error: 'Must provide agent_id or session_id' };
+    }
 
     // Find session file (same pattern as peekSession)
     const history = readHistory();

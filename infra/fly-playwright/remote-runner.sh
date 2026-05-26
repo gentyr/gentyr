@@ -25,6 +25,11 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   exit 1
 fi
 
+# Normalize: accept GIT_TOKEN as alias for GIT_AUTH_TOKEN (set via Fly app secrets)
+if [[ -z "${GIT_AUTH_TOKEN:-}" && -n "${GIT_TOKEN:-}" ]]; then
+  GIT_AUTH_TOKEN="$GIT_TOKEN"
+fi
+
 # ---------------------------------------------------------------------------
 # Recording configuration
 # ---------------------------------------------------------------------------

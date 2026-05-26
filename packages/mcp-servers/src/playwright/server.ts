@@ -319,7 +319,6 @@ function recoverStuckProjectDeploy(): { recovered: boolean; success: boolean; re
     } else {
       meta.deployFailed = true;
       meta.deployFailedAt = new Date().toISOString();
-      meta.deployRecoveredAt = new Date().toISOString();
     }
     fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
 
@@ -3216,10 +3215,13 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
       }
 
       if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
-      // Also map GITHUB_TOKEN from resolved secrets.local to GIT_AUTH_TOKEN
+      // Also map GITHUB_TOKEN/GIT_TOKEN from resolved secrets.local to GIT_AUTH_TOKEN
       // (remote-runner.sh expects GIT_AUTH_TOKEN for git credential helper)
       if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GITHUB_TOKEN) {
         remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GITHUB_TOKEN;
+      }
+      if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GIT_TOKEN) {
+        remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GIT_TOKEN;
       }
 
       let gitRemote = '';
@@ -7908,10 +7910,13 @@ async function runRemoteBatchSequence(
         } catch { /* non-fatal */ }
 
         if (process.env.GITHUB_TOKEN) remoteEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
-        // Also map GITHUB_TOKEN from resolved secrets.local to GIT_AUTH_TOKEN
+        // Also map GITHUB_TOKEN/GIT_TOKEN from resolved secrets.local to GIT_AUTH_TOKEN
         // (remote-runner.sh expects GIT_AUTH_TOKEN for git credential helper)
         if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GITHUB_TOKEN) {
           remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GITHUB_TOKEN;
+        }
+        if (!remoteEnv.GIT_AUTH_TOKEN && remoteEnv.GIT_TOKEN) {
+          remoteEnv.GIT_AUTH_TOKEN = remoteEnv.GIT_TOKEN;
         }
 
         // Git info
@@ -8316,6 +8321,9 @@ async function runRemoteBatchSequence(
           if (process.env.GITHUB_TOKEN) retryEnv.GIT_AUTH_TOKEN = process.env.GITHUB_TOKEN;
           if (!retryEnv.GIT_AUTH_TOKEN && retryEnv.GITHUB_TOKEN) {
             retryEnv.GIT_AUTH_TOKEN = retryEnv.GITHUB_TOKEN;
+          }
+          if (!retryEnv.GIT_AUTH_TOKEN && retryEnv.GIT_TOKEN) {
+            retryEnv.GIT_AUTH_TOKEN = retryEnv.GIT_TOKEN;
           }
 
           // Git info
@@ -10374,7 +10382,7 @@ const tools: AnyToolHandler[] = [
       let gitAuthToken = '';
       let gitTokenResolveError: string | null = null;
       try {
-        const services = loadServicesConfig(path.join(PROJECT_DIR, '.claude', 'config', 'services.json'));
+        const services = loadServicesConfig(PROJECT_DIR);
         if (services?.secrets?.local) {
           const tokenRef = services.secrets.local['GITHUB_TOKEN'] || services.secrets.local['GIT_AUTH_TOKEN'];
           if (tokenRef && typeof tokenRef === 'string' && tokenRef.startsWith('op://')) {
@@ -10494,7 +10502,7 @@ const tools: AnyToolHandler[] = [
       }
       const effectiveBuildCmd = args.build_cmd || (() => {
         try {
-          const services = loadServicesConfig(path.join(PROJECT_DIR, '.claude', 'config', 'services.json'));
+          const services = loadServicesConfig(PROJECT_DIR);
           return services?.worktreeBuildCommand || null;
         } catch { return null; }
       })();
