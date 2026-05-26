@@ -6,7 +6,7 @@ interactive Claude Code sessions operate as the deputy-CTO console: only read/ob
 tools are available. File-editing tools (Edit, Write, NotebookEdit) and code-modifying
 sub-agents are blocked.
 
-**Disabling lockdown requires CTO authorization via the Unified CTO Authorization System — verbatim approval + independent auditor verification.**
+**Disabling lockdown requires CTO authorization via the Unified CTO Authorization System — verbatim approval recorded in the session JSONL. `lockdown_toggle` decisions execute inline via the `authorization-audit-spawner.js` PostToolUse hook — no auditor is spawned (interactive sessions have no `agent_id`/`queue_id` for `peek_session` to look up, and the JSONL quote verification in `record_cto_decision` is sufficient proof on its own).**
 
 ## Framework Path Resolution
 
@@ -72,19 +72,25 @@ mcp__agent-tracker__record_cto_decision({
 ```
 
 The system will:
-1. Verify the CTO's text exists in the session JSONL (tamper-proof)
-2. Spawn an independent authorization auditor to verify intent
-3. Auto-execute the lockdown disable after audit pass
+1. Verify the CTO's verbatim text exists in the session JSONL (tamper-proof, HMAC-bound to the session file)
+2. The `record_cto_decision` server marks the decision `verified` and returns to you
+3. The `authorization-audit-spawner.js` PostToolUse hook fires *immediately* on that return
+4. Because `decision_type === "lockdown_toggle"`, the hook hits the `INLINE_EXECUTE_TYPES` branch — it does NOT spawn an auditor
+5. The hook directly writes `automation-config.json` (`interactiveLockdownDisabled: true`), provisions a per-session `cto-interactive-<sid8>` worktree, marks the deferred action `completed`, and marks the CTO decision `audit_passed`
+
+This whole chain takes under a second. There is no auditor session, no polling cycle, no audit queue.
+
+**Do NOT** call `ScheduleWakeup`, sleep loops, or repeated `check_cto_decision` polls. The next tool call after `record_cto_decision` returns will see the new lockdown state — just retry whatever the user originally asked for.
 
 Display confirmation once the decision is recorded:
 
-    Deputy-CTO Console Lockdown: DISABLE PENDING
+    Deputy-CTO Console Lockdown: DISABLED
 
-    Your approval has been recorded and an independent auditor is verifying.
-    Lockdown will be disabled automatically after audit pass (usually seconds).
-    Check status with /lockdown.
+    Your approval has been recorded and the lockdown is now off.
+    A CTO worktree has been provisioned at <ctoWorktreePath> for safe editing.
+    Proceeding with the original request.
 
-Do NOT retry `set_lockdown_mode` -- the deferred action system handles execution autonomously.
+Then immediately retry the user's original blocked action (Edit, Write, Task spawn, etc.). Do NOT wait, do NOT poll, do NOT retry `set_lockdown_mode` — the deferred action system executed it inline.
 
 ## What the Lockdown Controls
 
