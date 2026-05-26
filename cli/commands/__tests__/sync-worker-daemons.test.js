@@ -100,7 +100,15 @@ describe('sync.js — restartWorkerDaemons function', () => {
     assert.match(fn, /launchctl/);
     assert.match(fn, /kickstart/);
     assert.match(fn, /['"]-k['"]/);
-    assert.match(fn, /gui\/\$\{process\.getuid\(\)\}\/\$\{label\}|`gui\/\$\{process\.getuid\(\)\}\/\$\{label\}/);
+    // Must address launchd via `gui/<uid>/<label>` — accept either inline form
+    // or the refactored variant that hoists `gui/${process.getuid()}` into a
+    // `domain` local and uses `${domain}/${label}` thereafter.
+    const inlineForm = /gui\/\$\{process\.getuid\(\)\}\/\$\{label\}/;
+    const domainVarForm = /domain\s*=\s*`gui\/\$\{process\.getuid\(\)\}`[\s\S]*?\$\{domain\}\/\$\{label\}/;
+    assert.ok(
+      inlineForm.test(fn) || domainVarForm.test(fn),
+      'restartWorkerDaemons must address launchd via gui/<uid>/<label> (inline or via a `domain` local)',
+    );
   });
 
   it('uses systemctl --user restart on linux', () => {
@@ -125,6 +133,40 @@ describe('sync.js — restartWorkerDaemons function', () => {
   it('skips on non-darwin/linux platforms without throwing', () => {
     const fn = extractFunction(code, 'restartWorkerDaemons');
     assert.match(fn, /process\.platform !== 'darwin' && process\.platform !== 'linux'/);
+  });
+
+  it('matches launchctl "not loaded" error across macOS versions', () => {
+    const fn = extractFunction(code, 'restartWorkerDaemons');
+    // The macOS Sequoia message is `Could not find service "..." in domain
+    // for user gui: 501` — note the missing word "specified". An older
+    // variant is `Could not find specified service`. Both must be detected
+    // so the path can fall through to bootstrap-on-not-loaded recovery.
+    //
+    // Strip JS comments first so block comments containing the buggy phrase
+    // (used to document the historical regression) don't trigger a false
+    // positive against this assertion.
+    const fnNoComments = fn
+      .replace(/\/\*[\s\S]*?\*\//g, '')      // /* ... */
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');   // //  ... (preserve `https://`)
+    // The corrected detection regex makes the word `specified` optional:
+    //   /Could not find( specified)? service.../
+    const correctedForm = /Could not find\(\s*specified\)\?\s*service/;
+    assert.match(
+      fnNoComments,
+      correctedForm,
+      'restartWorkerDaemons must accept BOTH "Could not find service" (Sequoia) and "Could not find specified service" (older) by making `specified` optional: `Could not find( specified)? service`',
+    );
+  });
+
+  it('auto-bootstraps daemons whose plist exists but is not loaded', () => {
+    const fn = extractFunction(code, 'restartWorkerDaemons');
+    // Recovery path: when kickstart reports the service is not loaded but the
+    // plist is on disk, sync.js should auto-bootstrap rather than silently
+    // skipping. Otherwise daemons that fall out of launchd stay offline
+    // indefinitely across every `npx gentyr sync`.
+    assert.match(fn, /LaunchAgents/, 'must reference ~/Library/LaunchAgents to locate plist on disk');
+    assert.match(fn, /['"]bootstrap['"]/, 'must call launchctl bootstrap as the recovery action');
+    assert.match(fn, /fs\.existsSync/, 'must check plist existence before bootstrap (silent-skip when plist absent)');
   });
 });
 

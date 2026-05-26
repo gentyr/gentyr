@@ -498,19 +498,30 @@ TOKEN_USAGE_PLIST_FILE="$LAUNCHD_DIR/com.local.gentyr-token-usage-collector.plis
 LAUNCHD_UID=$(id -u)
 LAUNCHD_DOMAIN="gui/$LAUNCHD_UID"
 
-# Modern launchctl: bootstrap/bootout (macOS 10.10+), fallback to load/unload
-# Returns 0 on success, 1 on failure
+# Modern launchctl: bootstrap/bootout (macOS 10.10+), fallback to load/unload.
+# Returns 0 on success, 1 on failure. Captures stderr from bootstrap/load so
+# silent failures (already loaded, malformed plist, sandbox / permission issues)
+# are surfaced to the operator — previously both calls used `2>/dev/null`, so
+# a failed bootstrap returned 1 with no diagnostic and the daemon silently
+# stayed offline across every future `npx gentyr sync`.
 launchd_load() {
   local plist="$1"
   local label="$2"
+  local bootstrap_err load_err bootstrap_rc load_rc
   launchctl bootout "$LAUNCHD_DOMAIN/$label" 2>/dev/null || true
   sleep 1  # Allow launchd to fully deregister before re-bootstrap
-  if launchctl bootstrap "$LAUNCHD_DOMAIN" "$plist" 2>/dev/null; then
+  bootstrap_err=$(launchctl bootstrap "$LAUNCHD_DOMAIN" "$plist" 2>&1)
+  bootstrap_rc=$?
+  if [ "$bootstrap_rc" -eq 0 ]; then
     return 0
   fi
-  if launchctl load "$plist" 2>/dev/null; then
+  load_err=$(launchctl load "$plist" 2>&1)
+  load_rc=$?
+  if [ "$load_rc" -eq 0 ]; then
     return 0
   fi
+  log_warn "  launchctl bootstrap failed for $label (rc=$bootstrap_rc): ${bootstrap_err:-<no stderr>}"
+  log_warn "  launchctl load fallback also failed (rc=$load_rc): ${load_err:-<no stderr>}"
   return 1
 }
 

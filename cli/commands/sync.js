@@ -427,21 +427,44 @@ async function restartWorkerDaemons(_projectDir) {
 
   console.log(`  Restarting ${WORKER_DAEMON_LABELS.length} worker daemon(s) so they pick up fresh code...`);
   const restarted = [];
+  const bootstrapped = [];
   const failed = [];
 
   for (const label of WORKER_DAEMON_LABELS) {
     if (process.platform === 'darwin') {
+      const domain = `gui/${process.getuid()}`;
       try {
-        execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid()}/${label}`], {
+        execFileSync('launchctl', ['kickstart', '-k', `${domain}/${label}`], {
           stdio: 'pipe', timeout: 10000,
         });
         restarted.push(label);
       } catch (err) {
-        // `Could not find service` (3 / "Service is disabled") is fine — the
-        // user may not have run setup-automation-service.sh on this project.
+        // launchctl's "service not loaded" error has varied across macOS
+        // versions: "Could not find service ... in domain for user gui: 501"
+        // (Sequoia), "Could not find specified service" (older), and
+        // "3: No such process" (very old). Match all three.
         const msg = String(err.stderr || err.message || '');
-        if (/Could not find specified service|No such process|3: No such process/i.test(msg)) {
-          // Not loaded — silent skip
+        const notLoaded = /Could not find( specified)? service|No such process|3: No such process/i.test(msg);
+        if (notLoaded) {
+          // Plist on disk but never bootstrapped (or booted out and not reloaded)
+          // is the failure mode that motivated this fix: setup-automation-service.sh
+          // wrote the plists but `launchctl bootstrap` failed silently, so the
+          // user runs `npx gentyr sync` for months with these daemons offline.
+          // Auto-recover by bootstrapping the plist if it exists.
+          const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+          if (fs.existsSync(plistPath)) {
+            try {
+              execFileSync('launchctl', ['bootstrap', domain, plistPath], {
+                stdio: 'pipe', timeout: 10000,
+              });
+              bootstrapped.push(label);
+            } catch (bootErr) {
+              const bootMsg = String(bootErr.stderr || bootErr.message || '').trim().split('\n')[0] || 'unknown';
+              failed.push({ label, error: `bootstrap failed: ${bootMsg}` });
+            }
+          }
+          // No plist on disk → user hasn't run setup-automation-service.sh for
+          // this daemon. Silent skip (legitimate "not installed" case).
         } else {
           failed.push({ label, error: msg.trim().split('\n')[0] || 'unknown' });
         }
@@ -467,6 +490,12 @@ async function restartWorkerDaemons(_projectDir) {
 
   if (restarted.length > 0) {
     console.log(`  ${GREEN}Worker daemons restarted: ${restarted.length}${NC}`);
+  }
+  if (bootstrapped.length > 0) {
+    console.log(`  ${GREEN}Worker daemons bootstrapped (were not loaded): ${bootstrapped.length}${NC}`);
+    for (const label of bootstrapped) {
+      console.log(`    + ${label}`);
+    }
   }
   for (const { label, error } of failed) {
     console.log(`  ${YELLOW}Worker daemon restart failed: ${label} (${error})${NC}`);
