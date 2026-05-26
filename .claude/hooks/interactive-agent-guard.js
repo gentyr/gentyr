@@ -29,6 +29,7 @@ const ALLOWED_INTERACTIVE_TYPES = new Set([
   'claude-code-guide',
   'deputy-cto',
   'feedback-agent',
+  'gentyr-concierge',
   'investigator',
   'product-manager',
   'repo-hygiene-expert',
