@@ -957,9 +957,9 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
     try { ptDb.close(); } catch { /* best-effort */ }
   }
 
-  // ── Phase 2: Enrich sub-tasks from todo.db ────────────────────────────
+  // ── Phase 2: Enrich sub-tasks from todo.db (UNION live + archived) ────
   const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
-  interface TodoTaskRow { id: string; title: string; status: string; section: string }
+  interface TodoTaskRow { id: string; title: string; status: string; section: string; archived: boolean }
   const todoMap = new Map<string, TodoTaskRow>();
 
   if (subTaskLinks.length > 0 && fs.existsSync(todoDbPath)) {
@@ -968,11 +968,25 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
       todoDb = openReadonlyDb(todoDbPath);
       const placeholders = subTaskLinks.map(() => '?').join(',');
       const ids = subTaskLinks.map(s => s.todo_task_id);
+      // UNION across tasks + archived_tasks so completed-then-archived sub-tasks
+      // remain visible to the aggregator (see plan eager-squishing-haven).
       const rows = todoDb.prepare(
-        `SELECT id, title, status, section FROM tasks WHERE id IN (${placeholders})`
-      ).all(...ids) as TodoTaskRow[];
+        `SELECT id, title, status, section, 0 AS archived
+         FROM tasks WHERE id IN (${placeholders})
+         UNION ALL
+         SELECT id, title, COALESCE(original_status, 'completed') AS status, section, 1 AS archived
+         FROM archived_tasks
+         WHERE id IN (${placeholders})
+           AND id NOT IN (SELECT id FROM tasks WHERE id IN (${placeholders}))`
+      ).all(...ids, ...ids, ...ids) as Array<{ id: string; title: string; status: string; section: string; archived: 0 | 1 }>;
       for (const row of rows) {
-        todoMap.set(row.id, row);
+        todoMap.set(row.id, {
+          id: row.id,
+          title: row.title,
+          status: row.status,
+          section: row.section,
+          archived: row.archived === 1,
+        });
       }
     } catch { /* non-critical */ }
     finally {
@@ -1089,9 +1103,12 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
         title: todoTask?.title ?? null,
         status: tStatus,
         section: todoTask?.section ?? null,
+        archived: todoTask?.archived ?? false,
         agentId: null,
         pid: null,
-        pidAlive: false,
+        // Archived sub-tasks have no live PID by definition; use null instead of false
+        // so callers can distinguish "no agent, archived" from "agent dead".
+        pidAlive: todoTask?.archived ? null : false,
         elapsedSeconds: 0,
         progress: null,
         worktreeGit: null,
@@ -1197,6 +1214,7 @@ function inspectPersistentTask(args: InspectPersistentTaskArgs): object {
       title: todoTask?.title ?? null,
       status: tStatus,
       section: todoTask?.section ?? null,
+      archived: todoTask?.archived ?? false,
       agentId: childAgent.id,
       pid: childAgent.pid ?? null,
       pidAlive,

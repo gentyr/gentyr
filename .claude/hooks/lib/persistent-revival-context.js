@@ -18,6 +18,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { resolveSubTaskStatuses } from './sub-task-status.js';
 
 /**
  * Build revival context for a persistent monitor being revived.
@@ -67,18 +68,25 @@ export function buildRevivalContext(taskId, projectDir, options = {}) {
         if (fs.existsSync(todoDbPath)) {
           const todoDb = new Database(todoDbPath, { readonly: true });
           const ids = subtaskIds.map(r => r.todo_task_id);
-          const placeholders = ids.map(() => '?').join(',');
-          const completed = todoDb.prepare(`SELECT COUNT(*) as cnt FROM tasks WHERE id IN (${placeholders}) AND status = 'completed'`).get(...ids).cnt;
-          const inProgress = todoDb.prepare(`SELECT COUNT(*) as cnt FROM tasks WHERE id IN (${placeholders}) AND status = 'in_progress'`).get(...ids).cnt;
+          // UNION live + archived so a revived monitor sees accurate counts
+          // even after the 3h todo-maintenance archival sweep has run.
+          const statusMap = resolveSubTaskStatuses(todoDb, ids);
+          todoDb.close();
+
+          let completed = 0, inProgress = 0;
+          for (const row of statusMap.values()) {
+            if (row.status === 'completed') completed++;
+            else if (row.status === 'in_progress') inProgress++;
+          }
           const pending = ids.length - completed - inProgress;
 
-          // Last 5 tasks with status (most recently created first)
-          const recent = todoDb.prepare(`SELECT title, status, section FROM tasks WHERE id IN (${placeholders}) ORDER BY created_timestamp DESC LIMIT 5`).all(...ids);
-          todoDb.close();
+          // Last 5 known sub-tasks (most recent first by insertion order)
+          const recent = ids.slice(-5).reverse().map(id => statusMap.get(id)).filter(Boolean);
 
           const lines = [`Completed: ${completed} | In Progress: ${inProgress} | Pending: ${pending}`];
           for (const t of recent) {
-            lines.push(`- [${t.status}] "${t.title}" (${t.section})`);
+            const archivedTag = t.archived ? '·archived' : '';
+            lines.push(`- [${t.status}${archivedTag}] "${t.title ?? '(archived sub-task)'}" (${t.section ?? '-'})`);
           }
           sections.push(`### Child Agent Status\n${lines.join('\n')}`);
         }
