@@ -16,6 +16,7 @@ import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
 import { debugLog } from './lib/debug-log.js';
+import { resolveSubTaskStatuses } from './lib/sub-task-status.js';
 
 // Fast exit: if not a persistent monitor session, exit immediately
 const PERSISTENT_TASK_ID = process.env.GENTYR_PERSISTENT_TASK_ID;
@@ -131,12 +132,17 @@ async function main() {
       if (subtaskIds.length > 0) {
         totalCount = subtaskIds.length;
         const todoDb = new Database(TODO_DB_PATH, { readonly: true });
-        const placeholders = subtaskIds.map(() => '?').join(',');
         const ids = subtaskIds.map(r => r.todo_task_id);
-        completedCount = todoDb.prepare(`SELECT COUNT(*) as cnt FROM tasks WHERE id IN (${placeholders}) AND status = 'completed'`).get(...ids).cnt;
-        inProgressCount = todoDb.prepare(`SELECT COUNT(*) as cnt FROM tasks WHERE id IN (${placeholders}) AND status = 'in_progress'`).get(...ids).cnt;
-        // Last 3 active task titles for summary
-        const active = todoDb.prepare(`SELECT title FROM tasks WHERE id IN (${placeholders}) AND status = 'in_progress' LIMIT 3`).all(...ids);
+        // UNION live + archived so completed-then-archived sub-tasks remain counted
+        const statusMap = resolveSubTaskStatuses(todoDb, ids);
+        const active = [];
+        for (const row of statusMap.values()) {
+          if (row.status === 'completed') completedCount++;
+          else if (row.status === 'in_progress') {
+            inProgressCount++;
+            if (active.length < 3 && row.title) active.push({ title: row.title });
+          }
+        }
         subtaskSummary = ` Sub-tasks: ${completedCount}/${totalCount} done, ${inProgressCount} active.`;
         todoDb.close();
 
@@ -212,12 +218,15 @@ async function main() {
     if (subtaskIds.length > 0) {
       const todoDb = new Database(TODO_DB_PATH, { readonly: true });
       const details = [];
+      const ids = subtaskIds.map(r => r.todo_task_id);
+      const statusMap = resolveSubTaskStatuses(todoDb, ids);
       for (const row of subtaskIds) {
-        const t = todoDb.prepare("SELECT id, title, status, section, category_id FROM tasks WHERE id = ?").get(row.todo_task_id);
+        const t = statusMap.get(row.todo_task_id);
         if (t) {
-          details.push(`- [${t.status}] "${t.title}" (${t.category_id || t.section})`);
+          const archivedTag = t.archived ? '·archived' : '';
+          details.push(`- [${t.status}${archivedTag}] "${t.title ?? row.todo_task_id}" (${t.category_id || t.section})`);
           if (t.status === 'completed') fullCompletedCount++;
-          else if (t.status === 'in_progress') { fullInProgressCount++; if (fullActiveTitles.length < 3) fullActiveTitles.push(t.title); }
+          else if (t.status === 'in_progress') { fullInProgressCount++; if (fullActiveTitles.length < 3 && t.title) fullActiveTitles.push(t.title); }
           else fullPendingCount++;
         }
       }

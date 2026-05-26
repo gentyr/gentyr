@@ -19,6 +19,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { resolveSubTaskStatuses } from './sub-task-status.js';
 import {
   CreatePersistentTaskArgsSchema,
   ActivatePersistentTaskArgsSchema,
@@ -554,22 +555,18 @@ function getPersistentTask(args: GetPersistentTaskArgs): object | ErrorResult {
       let todoDb: Database.Database | null = null;
       try {
         todoDb = new Database(TODO_DB_PATH, { readonly: true });
-        const ids = subtaskLinks.map(s => s.todo_task_id);
-        const placeholders = ids.map(() => '?').join(',');
-        const todoTasks = todoDb.prepare(
-          `SELECT id, title, status, section FROM tasks WHERE id IN (${placeholders})`
-        ).all(...ids) as Array<{ id: string; title: string; status: string; section: string }>;
-        const todoTaskMap = new Map(todoTasks.map(t => [t.id, t]));
+        const statusMap = resolveSubTaskStatuses(todoDb, subtaskLinks.map(s => s.todo_task_id));
 
         for (const link of subtaskLinks) {
-          const todoTask = todoTaskMap.get(link.todo_task_id);
+          const row = statusMap.get(link.todo_task_id);
           subtasks.push({
             todo_task_id: link.todo_task_id,
             linked_at: link.linked_at,
             linked_by: link.linked_by,
-            title: todoTask?.title ?? null,
-            status: todoTask?.status ?? 'unknown',
-            section: todoTask?.section ?? null,
+            title: row?.title ?? null,
+            status: row?.status ?? 'unknown',
+            section: row?.section ?? null,
+            archived: row?.archived ?? false,
           });
         }
       } finally {
@@ -584,6 +581,7 @@ function getPersistentTask(args: GetPersistentTaskArgs): object | ErrorResult {
           title: null,
           status: 'unknown',
           section: null,
+          archived: false,
         });
       }
     }
@@ -634,12 +632,8 @@ function listPersistentTasks(args: ListPersistentTasksArgs): object {
       let todoDb: Database.Database | null = null;
       try {
         todoDb = new Database(TODO_DB_PATH, { readonly: true });
-        const ids = subtaskLinks.map(s => s.todo_task_id);
-        const placeholders = ids.map(() => '?').join(',');
-        const statuses = todoDb.prepare(
-          `SELECT status FROM tasks WHERE id IN (${placeholders})`
-        ).all(...ids) as Array<{ status: string }>;
-        for (const row of statuses) {
+        const statusMap = resolveSubTaskStatuses(todoDb, subtaskLinks.map(s => s.todo_task_id));
+        for (const row of statusMap.values()) {
           if (row.status === 'pending') subtaskPending++;
           else if (row.status === 'in_progress') subtaskInProgress++;
           else if (row.status === 'completed') subtaskCompleted++;
@@ -1045,12 +1039,8 @@ function getPersistentTaskSummary(args: GetPersistentTaskSummaryArgs): object | 
     let todoDb: Database.Database | null = null;
     try {
       todoDb = new Database(TODO_DB_PATH, { readonly: true });
-      const ids = subtaskLinks.map(s => s.todo_task_id);
-      const placeholders = ids.map(() => '?').join(',');
-      const statuses = todoDb.prepare(
-        `SELECT status FROM tasks WHERE id IN (${placeholders})`
-      ).all(...ids) as Array<{ status: string }>;
-      for (const row of statuses) {
+      const statusMap = resolveSubTaskStatuses(todoDb, subtaskLinks.map(s => s.todo_task_id));
+      for (const row of statusMap.values()) {
         if (row.status === 'pending') subtaskPending++;
         else if (row.status === 'in_progress') subtaskInProgress++;
         else if (row.status === 'completed') subtaskCompleted++;
