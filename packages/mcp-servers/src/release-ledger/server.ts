@@ -64,6 +64,16 @@ import {
   type ReleaseReportRecord,
   type ReleaseTaskRecord,
   type ErrorResult,
+  RecordMigrationStatusArgsSchema,
+  type RecordMigrationStatusArgs,
+  VerifySchemaDriftArgsSchema,
+  type VerifySchemaDriftArgs,
+  RecordDeployArtifactArgsSchema,
+  type RecordDeployArtifactArgs,
+  WaitForHealthProbeArgsSchema,
+  type WaitForHealthProbeArgs,
+  RecordCanaryOutcomeArgsSchema,
+  type RecordCanaryOutcomeArgs,
 } from './types.js';
 
 // ============================================================================
@@ -169,8 +179,32 @@ function initializeDatabase(): Database.Database {
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+  applyMigrations(db);
 
   return db;
+}
+
+/**
+ * Idempotent column additions for releases table.
+ * Each promotion-pipeline phase records its evidence into a structured column
+ * so the release report and the post-mortem traceability layer can rebuild
+ * the full chain without parsing free-form metadata blobs.
+ */
+function applyMigrations(db: Database.Database): void {
+  const cols = db.prepare(`PRAGMA table_info(releases)`).all() as Array<{ name: string }>;
+  const have = new Set(cols.map((c) => c.name));
+  const adds: Array<[string, string]> = [
+    ['deploy_artifacts', 'TEXT'],         // JSON: [{ platform, deploy_id, url, triggered_at, status }]
+    ['canary_status', 'TEXT'],            // 'skipped' | 'running' | 'promoted' | 'aborted'
+    ['health_probe_status', 'TEXT'],      // JSON: { startedAt, completedAt, status, samples: [...] }
+    ['schema_drift_check', 'TEXT'],       // JSON: { environment, drift: bool, missing_in_db: [], extra_in_db: [], drift_sql }
+    ['migration_status', 'TEXT'],         // JSON: { environment, applied: [], pending: [], skipped: [], failure_reason }
+  ];
+  for (const [name, type] of adds) {
+    if (!have.has(name)) {
+      db.exec(`ALTER TABLE releases ADD COLUMN ${name} ${type}`);
+    }
+  }
 }
 
 function getDb(): Database.Database {
@@ -1605,6 +1639,171 @@ function unlockStagingTool(args: UnlockStagingArgs): object {
 }
 
 // ============================================================================
+// Phase 4.5 / 4.6 / 8.5 / 8.7 evidence handlers
+// ============================================================================
+
+interface PromotionPhaseResult {
+  ok: boolean;
+  release_id?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Resolve the supabase project ref for an environment from services.json.
+ * Returns null if not configured — the caller decides whether that's fatal.
+ */
+function readEnvironmentConfig(envName: string): {
+  baseUrl?: string;
+  healthEndpoint?: string;
+  supabase?: { projectRef: string };
+  deployTarget?: { platform: 'render' | 'vercel' | 'fly'; serviceId: string };
+  healthChecks?: Array<{ path: string; expectStatus: number; expectBodyContains?: string }>;
+} | null {
+  try {
+    const configPath = path.join(PROJECT_DIR, 'services.json');
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const envs = raw?.environments;
+    if (!envs || typeof envs !== 'object') return null;
+    return envs[envName] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function recordMigrationStatus(args: RecordMigrationStatusArgs): PromotionPhaseResult | ErrorResult {
+  const db = getDb();
+  const release = releaseExists(db, args.release_id);
+  if (!release) return { error: `Release ${args.release_id} not found` };
+  const payload = JSON.stringify({
+    environment: args.environment,
+    applied: args.applied,
+    pending: args.pending,
+    skipped: args.skipped,
+    failure_reason: args.failure_reason ?? null,
+    recorded_at: now(),
+  });
+  db.prepare('UPDATE releases SET migration_status = ? WHERE id = ?').run(payload, args.release_id);
+  return {
+    ok: true,
+    release_id: args.release_id,
+    applied_count: args.applied.length,
+    pending_count: args.pending.length,
+    skipped_count: args.skipped.length,
+  };
+}
+
+function verifySchemaDrift(args: VerifySchemaDriftArgs): PromotionPhaseResult | ErrorResult {
+  const envConfig = readEnvironmentConfig(args.environment);
+  if (!envConfig) {
+    return { error: `Environment "${args.environment}" not configured in services.json. Add environments["${args.environment}"].supabase.projectRef.` };
+  }
+  const projectRef = envConfig.supabase?.projectRef;
+  if (!projectRef) {
+    return { error: `services.json environments["${args.environment}"].supabase.projectRef is required for schema-drift checks.` };
+  }
+  const migrationsDir = path.isAbsolute(args.expected_migrations_dir)
+    ? args.expected_migrations_dir
+    : path.join(PROJECT_DIR, args.expected_migrations_dir);
+  if (!fs.existsSync(migrationsDir)) {
+    return { error: `Migrations directory does not exist: ${migrationsDir}` };
+  }
+
+  // PR 1 ships the schema + tool wiring only. The actual Management-API call
+  // and diff logic lands in PR 2 alongside migration-runner.js (which owns
+  // the apply-migrations and read-schema_migrations code path). Until then,
+  // this tool returns a structured "deferred" result so callers know the
+  // wiring is in place but the check has not yet executed.
+  const result = {
+    deferred: true,
+    reason: 'verify_schema_drift is wired; the Management-API diff lands in PR 2 (migration-runner.js).',
+    environment: args.environment,
+    project_ref: projectRef,
+    migrations_dir: migrationsDir,
+  };
+
+  if (args.release_id) {
+    const db = getDb();
+    const release = releaseExists(db, args.release_id);
+    if (release) {
+      db.prepare('UPDATE releases SET schema_drift_check = ? WHERE id = ?').run(JSON.stringify({ ...result, recorded_at: now() }), args.release_id);
+    }
+  }
+
+  return { ok: true, ...result };
+}
+
+function recordDeployArtifact(args: RecordDeployArtifactArgs): PromotionPhaseResult | ErrorResult {
+  const db = getDb();
+  const release = releaseExists(db, args.release_id);
+  if (!release) return { error: `Release ${args.release_id} not found` };
+  const existingRaw = (release as ReleaseRecord & { deploy_artifacts?: string | null }).deploy_artifacts;
+  let arr: Array<Record<string, unknown>> = [];
+  if (existingRaw) {
+    try {
+      const parsed = JSON.parse(existingRaw);
+      if (Array.isArray(parsed)) arr = parsed;
+    } catch { /* malformed, overwrite */ }
+  }
+  arr.push({
+    platform: args.platform,
+    service_id: args.service_id,
+    deploy_id: args.deploy_id,
+    url: args.url ?? null,
+    triggered_at: args.triggered_at ?? now(),
+    status: args.status,
+    recorded_at: now(),
+  });
+  db.prepare('UPDATE releases SET deploy_artifacts = ? WHERE id = ?').run(JSON.stringify(arr), args.release_id);
+  return { ok: true, release_id: args.release_id, total_artifacts: arr.length };
+}
+
+function waitForHealthProbe(args: WaitForHealthProbeArgs): PromotionPhaseResult | ErrorResult {
+  const db = getDb();
+  const release = releaseExists(db, args.release_id);
+  if (!release) return { error: `Release ${args.release_id} not found` };
+  const envConfig = readEnvironmentConfig(args.environment);
+  if (!envConfig) {
+    return { error: `Environment "${args.environment}" not configured in services.json` };
+  }
+  if (!envConfig.baseUrl) {
+    return { error: `services.json environments["${args.environment}"].baseUrl is required for health probes.` };
+  }
+
+  // PR 1 records the request; the actual long-poll loop lives in PR 3 where
+  // it composes auto-rollback.js. Returning the plan here lets callers
+  // verify wiring without waiting 5 minutes during plumbing-only tests.
+  const plan = {
+    deferred: true,
+    reason: 'wait_for_health_probe is wired; the polling + auto-rollback wiring lands in PR 3.',
+    environment: args.environment,
+    base_url: envConfig.baseUrl,
+    health_checks: envConfig.healthChecks ?? [{
+      path: envConfig.healthEndpoint ?? '/health',
+      expectStatus: 200,
+    }],
+    duration_seconds: args.duration_seconds,
+    min_consecutive_passes: args.min_consecutive_passes,
+    interval_seconds: args.interval_seconds,
+    started_at: now(),
+  };
+  db.prepare('UPDATE releases SET health_probe_status = ? WHERE id = ?').run(JSON.stringify(plan), args.release_id);
+  return { ok: true, release_id: args.release_id, ...plan };
+}
+
+function recordCanaryOutcome(args: RecordCanaryOutcomeArgs): PromotionPhaseResult | ErrorResult {
+  const db = getDb();
+  const release = releaseExists(db, args.release_id);
+  if (!release) return { error: `Release ${args.release_id} not found` };
+  const payload = JSON.stringify({
+    status: args.status,
+    evidence: args.evidence ?? {},
+    recorded_at: now(),
+  });
+  db.prepare('UPDATE releases SET canary_status = ? WHERE id = ?').run(payload, args.release_id);
+  return { ok: true, release_id: args.release_id, status: args.status };
+}
+
+// ============================================================================
 // Server Setup
 // ============================================================================
 
@@ -1723,11 +1922,41 @@ const tools: AnyToolHandler[] = [
     schema: RecordCtoApprovalArgsSchema,
     handler: async (args: RecordCtoApprovalArgs) => await recordCtoApproval(args),
   },
+  {
+    name: 'record_migration_status',
+    description: 'Record /promote-to-prod Phase 4.5 evidence: which Supabase migrations were applied, skipped, or left pending for an environment. Called by the plan-manager after migration-runner.js completes (PR 2). Stores structured evidence in releases.migration_status for the release report.',
+    schema: RecordMigrationStatusArgsSchema,
+    handler: recordMigrationStatus,
+  },
+  {
+    name: 'verify_schema_drift',
+    description: 'Compare actual Supabase schema (via Management API) against expected migrations in supabase/migrations/. Used by Phase 4.5 pre-flight and by the schema_drift_check hourly automation (PR 4). PR 1 wires the schema; the actual diff lands in PR 2 alongside migration-runner.js.',
+    schema: VerifySchemaDriftArgsSchema,
+    handler: verifySchemaDrift,
+  },
+  {
+    name: 'record_deploy_artifact',
+    description: 'Record /promote-to-prod Phase 8.5 evidence: a concrete platform deploy ID (Render dep-..., Vercel dpl-..., Fly machine ID) was triggered for a release. Appends to releases.deploy_artifacts so Phase 8.7 health probes can correlate to the specific deployment. Called multiple times when a release touches multiple platforms.',
+    schema: RecordDeployArtifactArgsSchema,
+    handler: recordDeployArtifact,
+  },
+  {
+    name: 'wait_for_health_probe',
+    description: '/promote-to-prod Phase 8.7 post-deploy gate. Probes the environment\'s health endpoints every interval_seconds for duration_seconds, requires min_consecutive_passes consecutive successes before clearing the release for sign-off. PR 1 wires the request; the actual polling + auto-rollback wiring lands in PR 3.',
+    schema: WaitForHealthProbeArgsSchema,
+    handler: waitForHealthProbe,
+  },
+  {
+    name: 'record_canary_outcome',
+    description: 'Record /promote-to-prod Phase 4.6 evidence: canary skipped, running, promoted, or aborted. Stored in releases.canary_status with optional structured evidence (error rate samples, latency, rollback reason).',
+    schema: RecordCanaryOutcomeArgsSchema,
+    handler: recordCanaryOutcome,
+  },
 ];
 
 const server = new McpServer({
   name: 'release-ledger',
-  version: '1.0.0',
+  version: '1.1.0',
   tools,
 });
 
