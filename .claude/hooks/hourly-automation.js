@@ -6091,6 +6091,78 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
   });
 
   // =========================================================================
+  // SCHEMA DRIFT CHECK (daily cooldown, gate-exempt — skipped in local mode)
+  // For each services.json environment with supabase.projectRef set, diff the
+  // remote schema_migrations table against the local supabase/migrations
+  // folder. On drift, file a deputy-CTO report (preview tier) with the
+  // missing/extra migration lists so the operator can resolve manually.
+  //
+  // Lifts the intent of xy's drift-check.yml into gentyr's hourly daemon
+  // (no GitHub Actions, no DB password — Mgmt API only).
+  // =========================================================================
+  await runIfDue('schema_drift_check', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastSchemaDriftCheck',
+    label: 'Schema drift check (gate-exempt)',
+    localModeSkip: localMode,
+    fn: async () => {
+      try {
+        const servicesPath = path.join(PROJECT_DIR, 'services.json');
+        if (!fs.existsSync(servicesPath)) return;
+        const svc = JSON.parse(fs.readFileSync(servicesPath, 'utf-8'));
+        const envs = svc?.environments;
+        if (!envs || typeof envs !== 'object') return;
+
+        const targets = Object.entries(envs)
+          .filter(([, e]) => e?.supabase?.projectRef)
+          .map(([name, e]) => ({ name, projectRef: e.supabase.projectRef }));
+        if (targets.length === 0) return;
+
+        // Token resolved via secrets.local SUPABASE_ACCESS_TOKEN — we read
+        // services.json secrets.local rather than calling secret_run_command
+        // from hourly automation (which would need a full MCP roundtrip).
+        const token = svc?.secrets?.local?.SUPABASE_ACCESS_TOKEN;
+        if (!token || token.startsWith('op://')) {
+          // Token not yet resolved into local — skip silently. Operators see
+          // this as a one-time setup warning on /promote-to-prod instead.
+          return;
+        }
+
+        const migrationsDir = path.join(PROJECT_DIR, 'supabase', 'migrations');
+        if (!fs.existsSync(migrationsDir)) return;
+
+        const { diffMigrations } = await import('./lib/migration-runner.js');
+
+        for (const target of targets) {
+          try {
+            const res = await diffMigrations({
+              accessToken: token,
+              projectRef: target.projectRef,
+              migrationsDir,
+            });
+            if (!res.ok || res.in_sync) continue;
+
+            const summary = `Schema drift in ${target.name} (${target.projectRef}): ` +
+              `missing ${res.missing_in_db.length}, extra ${res.extra_in_db.length}. ` +
+              `Missing: ${res.missing_in_db.slice(0, 5).join(', ')}${res.missing_in_db.length > 5 ? '...' : ''}. ` +
+              `Extra: ${res.extra_in_db.slice(0, 5).join(', ')}${res.extra_in_db.length > 5 ? '...' : ''}`;
+            recordAlert(`schema_drift_${target.name}`, {
+              title: summary,
+              severity: res.extra_in_db.length > 0 ? 'high' : 'medium',
+              source: 'schema-drift-check',
+            });
+            log(`Schema drift: ${target.name} — missing ${res.missing_in_db.length}, extra ${res.extra_in_db.length}`);
+          } catch (err) {
+            log(`Schema drift check error for ${target.name}: ${err.message}`);
+          }
+        }
+      } catch (err) {
+        log(`Schema drift check fatal: ${err.message}`);
+      }
+    },
+  });
+
+  // =========================================================================
   // FLY.IO IMAGE FRESHNESS CHECK (60min cooldown, gate-exempt)
   // Detects when the Fly.io Docker image is stale (Dockerfile or
   // remote-runner.sh changed since last deploy) and logs a warning.
