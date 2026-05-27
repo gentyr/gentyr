@@ -2302,61 +2302,181 @@ function reapStaleWorktrees() {
 // =========================================================================
 
 /**
- * Find and kill orphaned node/esbuild processes whose CWD is a
- * non-existent worktree path. These are children that survived
- * after their parent session was killed and worktree was removed.
+ * Find and kill orphaned node/esbuild/vitest processes that the framework
+ * created and lost track of. Two execution modes:
  *
- * @returns {number} Number of orphan processes killed
+ *   default — kill processes whose CWD is in a deleted worktree directory,
+ *             OR whose argv references `.claude/`, OR whose PPID matches a
+ *             known terminated agent in session-queue.db. Conservative: never
+ *             touches the user's editor, dev servers, or unrelated commands.
+ *
+ *   { aggressive: true } — adds: processes >2h old (per ps `etime`) whose
+ *             argv references `.claude/` regardless of CWD. Used by spawn-
+ *             failure callers when the system is deadlocked; broader scope
+ *             on the assumption that anything `.claude/`-related older than
+ *             2h with no other anchor is leaked.
+ *
+ * Implementation notes:
+ *   - Uses batched `lsof -a -p PID1,PID2,...` in chunks of 50 (default 30s
+ *     total budget; 60s in aggressive mode) so a 700-process scan does not
+ *     itself time out. Without batching, `lsof` is invoked once per PID and
+ *     can take >2 minutes on a saturated box.
+ *   - Reads terminated-agent PIDs from session-queue.db (`status IN
+ *     ('failed','completed','cancelled')` with non-null pid) so we can
+ *     match orphans by parent PID. Fail-open: if the DB is unreadable, we
+ *     skip the PPID match without aborting the reap.
+ *   - NEVER kills PPID=1 alone — that hits the user's editor, dev servers,
+ *     and any nohup'd command.
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.aggressive=false] - Use broader scope + longer budget
+ * @returns {{ killed: number, scanned: number, durationMs: number, mode: string }}
  */
-function reapOrphanProcesses() {
-  let killed = 0;
+export function reapOrphanProcesses(opts = {}) {
+  const aggressive = opts.aggressive === true;
+  const startTime = Date.now();
+  const budgetMs = aggressive ? 60000 : 30000;
   const worktreesDir = path.join(PROJECT_DIR, '.claude', 'worktrees');
+  let killed = 0;
+  let scanned = 0;
 
   try {
-    // Get all node/esbuild processes and their CWDs
-    const psOutput = execFileSync('ps', ['-eo', 'pid,command'], {
+    // ps with etime (elapsed) for the >2h aggressive filter. ppid lets us
+    // match terminated-agent children. Format: PID PPID ETIME COMMAND
+    const psOutput = execFileSync('ps', ['-eo', 'pid,ppid,etime,command'], {
       encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    const candidatePids = [];
+    /** Map<pid, { ppid, etimeMin, command }> */
+    const candidates = new Map();
     for (const line of psOutput.split('\n')) {
       const trimmed = line.trim();
-      if (!trimmed) continue;
-      // Match node, esbuild, vitest processes
-      if (!/\b(node|esbuild|vitest)\b/.test(trimmed)) continue;
-      const pidMatch = trimmed.match(/^(\d+)/);
-      if (!pidMatch) continue;
-      candidatePids.push(parseInt(pidMatch[1], 10));
+      if (!trimmed || trimmed.startsWith('PID')) continue;
+      // pid ppid etime command (etime format: [DD-]HH:MM:SS or MM:SS)
+      const m = trimmed.match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
+      if (!m) continue;
+      const pid = parseInt(m[1], 10);
+      const ppid = parseInt(m[2], 10);
+      const etime = m[3];
+      const command = m[4];
+      if (pid === process.pid) continue;
+      if (!/\b(node|esbuild|vitest)\b/.test(command)) continue;
+      candidates.set(pid, { ppid, etimeMin: parseEtimeMinutes(etime), command });
+    }
+    scanned = candidates.size;
+
+    // Load terminated-agent PIDs from session-queue.db (fail-open).
+    const terminatedAgentPids = loadTerminatedAgentPids();
+
+    // First pass: kill candidates we can classify without lsof — `.claude/`
+    // in argv, terminated-agent parent, or aggressive >2h+`.claude/`. lsof
+    // is expensive so we batch the remainder.
+    const needsCwdLookup = [];
+    for (const [pid, info] of candidates) {
+      let reason = null;
+      if (info.command.includes('.claude/') || info.command.includes('claude-code')) {
+        if (aggressive && info.etimeMin > 120) {
+          reason = `.claude/ argv + ${Math.round(info.etimeMin)}min old (aggressive)`;
+        } else if (terminatedAgentPids.has(info.ppid)) {
+          reason = `.claude/ argv + parent PID ${info.ppid} is terminated agent`;
+        }
+        // Fall through to lsof check for normal cases — even `.claude/` argv
+        // alone is not sufficient evidence to kill in default mode.
+      }
+      if (reason) {
+        log(`Orphan reaper: killing PID ${pid} (${reason})`);
+        try { killProcessGroup(pid); killed++; } catch { /* already gone */ }
+      } else {
+        needsCwdLookup.push(pid);
+      }
     }
 
-    for (const pid of candidatePids) {
-      if (pid === process.pid) continue; // Never kill ourselves
+    // Second pass: batched lsof for CWD-based classification. Chunks of 50,
+    // bounded by remaining budget. `-a -p pid1,pid2,...` is dramatically
+    // faster than one invocation per PID on saturated systems.
+    const chunkSize = 50;
+    for (let i = 0; i < needsCwdLookup.length; i += chunkSize) {
+      if (Date.now() - startTime > budgetMs) {
+        log(`Orphan reaper: budget exhausted (${budgetMs}ms) at ${i}/${needsCwdLookup.length} candidates`);
+        break;
+      }
+      const chunk = needsCwdLookup.slice(i, i + chunkSize);
+      let lsofOutput;
       try {
-        // Get the process's CWD via lsof
-        const lsofOutput = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
-          encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'],
+        lsofOutput = execFileSync('lsof', ['-a', '-p', chunk.join(','), '-d', 'cwd', '-Fpn'], {
+          encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'],
         });
-
-        // Parse lsof output: lines starting with 'n' contain the path
-        const cwdLine = lsofOutput.split('\n').find(l => l.startsWith('n'));
-        if (!cwdLine) continue;
-        const cwd = cwdLine.slice(1); // Remove 'n' prefix
-
-        // Check if the CWD is inside a worktree directory that no longer exists
-        if (cwd.startsWith(worktreesDir) && !fs.existsSync(cwd)) {
-          log(`Orphan reaper: killing PID ${pid} (CWD: ${cwd} no longer exists)`);
-          killProcessGroup(pid);
-          killed++;
+      } catch {
+        // Some PIDs may have exited during the gap; lsof returns non-zero in
+        // that case. Continue with the next chunk.
+        continue;
+      }
+      // -Fpn format: alternating `p<pid>` and `n<path>` lines.
+      let currentPid = null;
+      for (const line of lsofOutput.split('\n')) {
+        if (line.startsWith('p')) {
+          currentPid = parseInt(line.slice(1), 10);
+        } else if (line.startsWith('n') && currentPid != null) {
+          const cwd = line.slice(1);
+          const info = candidates.get(currentPid);
+          if (!info) continue;
+          if (cwd.startsWith(worktreesDir) && !fs.existsSync(cwd)) {
+            log(`Orphan reaper: killing PID ${currentPid} (CWD ${cwd} no longer exists)`);
+            try { killProcessGroup(currentPid); killed++; } catch { /* gone */ }
+          } else if (aggressive && info.etimeMin > 120 && (info.command.includes('.claude/') || cwd.includes('.claude/'))) {
+            log(`Orphan reaper: killing PID ${currentPid} (.claude/ context + ${Math.round(info.etimeMin)}min old, aggressive)`);
+            try { killProcessGroup(currentPid); killed++; } catch { /* gone */ }
+          }
         }
-      } catch (_) {
-        // lsof or kill failed — process may have already exited
       }
     }
   } catch (err) {
     log(`Orphan reaper: scan failed (non-fatal): ${err.message}`);
   }
 
-  return killed;
+  const durationMs = Date.now() - startTime;
+  return { killed, scanned, durationMs, mode: aggressive ? 'aggressive' : 'default' };
+}
+
+/**
+ * Parse `ps -o etime` format to minutes. Accepts `MM:SS`, `HH:MM:SS`, or
+ * `DD-HH:MM:SS`. Returns 0 on unparseable input.
+ */
+function parseEtimeMinutes(etime) {
+  if (!etime) return 0;
+  const m = etime.match(/^(?:(\d+)-)?(?:(\d{1,2}):)?(\d{1,2}):(\d{2})$/);
+  if (!m) return 0;
+  const days = parseInt(m[1] || '0', 10);
+  const hours = parseInt(m[2] || '0', 10);
+  const mins = parseInt(m[3] || '0', 10);
+  return days * 1440 + hours * 60 + mins;
+}
+
+/**
+ * Read terminated agent PIDs from session-queue.db. Used by the reaper to
+ * match orphans by their parent process ID — a node child whose parent was
+ * a session-queue agent that has since died is almost certainly an orphan.
+ * Fail-open: returns an empty set on any error so the reaper still runs its
+ * other classification paths.
+ */
+function loadTerminatedAgentPids() {
+  const pids = new Set();
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+  if (!fs.existsSync(dbPath) || !Database) return pids;
+  let db;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    const rows = db.prepare(
+      "SELECT pid FROM queue_items WHERE pid IS NOT NULL AND status IN ('failed','completed','cancelled') AND completed_at > datetime('now', '-2 hours')"
+    ).all();
+    for (const r of rows) if (typeof r.pid === 'number') pids.add(r.pid);
+    return pids;
+  } catch {
+    return pids;
+  } finally {
+    try { db && db.close(); } catch { /* best-effort */ }
+  }
 }
 
 // =========================================================================
@@ -7129,8 +7249,10 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
   });
 
   // =========================================================================
-  // ORPHAN PROCESS REAPER (60min cooldown)
-  // Kills node/esbuild processes whose CWD is a non-existent worktree path
+  // ORPHAN PROCESS REAPER (15min cooldown, was 60min)
+  // Broader scope per 2026-05-27 incident: argv-based detection + terminated-
+  // agent parent matching catch orphans whose CWD is still a valid path. Also
+  // batched lsof calls keep the scan under 30s on saturated systems.
   // =========================================================================
   await runIfDue('orphan_process_reaper', {
     state, now, intervals: config.intervals,
@@ -7140,7 +7262,8 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
     label: 'Orphan process reaper',
     fn: async () => {
       log('Orphan process reaper: scanning for orphaned processes...');
-      const killed = reapOrphanProcesses();
+      const { killed, scanned, durationMs, mode } = reapOrphanProcesses();
+      log(`Orphan reaper: mode=${mode}, scanned=${scanned}, killed=${killed}, duration=${durationMs}ms`);
       if (killed > 0) {
         log(`Orphan process reaper: killed ${killed} orphan process(es).`);
       } else {
@@ -7914,6 +8037,18 @@ Then exit.`,
     durationMs: cycleDurationMs,
     metadata: { fullRun: true }
   });
+}
+
+// CLI flag handler for on-demand reaper invocation from spawn-failure callers
+// (force_spawn_tasks ETIMEDOUT). Runs the aggressive variant synchronously,
+// prints JSON result to stdout, and exits without running the full automation
+// cycle. Wired into agent-tracker's force_spawn_tasks error path so a deadlock
+// triggers cleanup before the next retry, instead of waiting up to 15 minutes
+// for the next hourly cycle.
+if (process.argv.includes('--reap-orphans-aggressive')) {
+  const result = reapOrphanProcesses({ aggressive: true });
+  process.stdout.write(JSON.stringify(result) + '\n');
+  process.exit(0);
 }
 
 main();

@@ -207,6 +207,7 @@ const DEFAULTS = {
   abandoned_worktree_rescue: 15,       // 15 minutes
   stale_orphan_worktree_cleanup: 60,   // 60 minutes (delete unrecoverable worktrees: unrelated histories or ancient stale orphans)
   stale_worktree_reaper: 20,           // 20 minutes
+  orphan_process_reaper: 15,           // 15 minutes (was 60min before 2026-05-27 spawn deadlock incident)
   interactive_session_reaper: 5,       // 5 minutes (clean up dead CTO sessions' worktrees)
   branch_pruner: 30,                   // 30 minutes (prune merged/dead local + remote branches)
   stale_work_detector: 2880,           // 48 hours
