@@ -1266,6 +1266,11 @@ export default async function sync(args) {
     }
   }
 
+  // Hoisted before try/finally so step 10 (after re-protect, outside the try)
+  // can read it. Default `true` keeps the recycler in safe "needs recycle" mode
+  // if the MCP build never runs or throws.
+  let mcpServersChanged = true;
+
   // Wrap sync body in try/finally to guarantee re-protect on any failure
   try {
 
@@ -1787,7 +1792,8 @@ export default async function sync(args) {
   // change — preserves in-flight pipelines from collateral damage on no-op
   // syncs (e.g., SessionStart-triggered sync after pulling a docs-only commit).
   const mcpDistHashBefore = hashMcpServerDist(mcpDir);
-  let mcpServersChanged = true; // Default to "changed" (safe) on build failure or first-run
+  // `mcpServersChanged` is hoisted above the try/finally — reassign, don't redeclare.
+  mcpServersChanged = true; // Default to "changed" (safe) on build failure or first-run
   try {
     const mcpNodeModules = path.join(mcpDir, 'node_modules');
     const hasDeps = fs.existsSync(mcpNodeModules) &&
