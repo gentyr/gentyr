@@ -1748,10 +1748,34 @@ export function drainQueue() {
               `Continue from where the previous agent left off. Check the task status and any existing work before starting.`,
             ].filter(Boolean).join('\n');
 
+            // Worktree carry-forward — preserve the prior worktree so the revival
+            // doesn't accidentally land in the main tree (which would let the
+            // agent's file edits pollute the CTO's currently-checked-out branch).
+            // We look up the most recent queue row for this taskId and copy its
+            // worktree_path IF the directory still exists on disk. If it was
+            // reaped (common after agent death), leave it NULL — the Layer 1
+            // PreToolUse guard `spawned-main-tree-edit-guard.js` will block any
+            // file edits and force the agent to file a bypass request, which the
+            // CTO can resolve by re-spawning via urgent-task-spawner.js (which
+            // re-provisions a fresh worktree).
+            let carriedWorktreePath = null;
+            let carriedCwd = null;
+            try {
+              const priorRow = db.prepare(
+                "SELECT worktree_path, cwd FROM queue_items "
+                + "WHERE json_extract(metadata, '$.taskId') = ? AND worktree_path IS NOT NULL "
+                + "ORDER BY enqueued_at DESC LIMIT 1"
+              ).get(taskId);
+              if (priorRow?.worktree_path && fs.existsSync(priorRow.worktree_path)) {
+                carriedWorktreePath = priorRow.worktree_path;
+                carriedCwd = priorRow.cwd || priorRow.worktree_path;
+              }
+            } catch (_) { /* non-fatal — proceed without carry-forward */ }
+
             db.prepare(`
               INSERT INTO queue_items (id, status, priority, lane, spawn_type, title, agent_type, hook_type,
-                tag_context, prompt, resume_session_id, project_dir, metadata, source, expires_at)
-              VALUES (?, 'queued', ?, 'revival', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'session-queue-reaper', datetime('now', '+30 minutes'))
+                tag_context, prompt, cwd, resume_session_id, project_dir, worktree_path, metadata, source, expires_at)
+              VALUES (?, 'queued', ?, 'revival', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'session-queue-reaper', datetime('now', '+30 minutes'))
             `).run(
               revivalId,
               revivalPriority,
@@ -1761,14 +1785,18 @@ export function drainQueue() {
               'session-reviver',
               `revival-${taskId.slice(0, 8)}`,
               revivalPrompt,
+              carriedCwd,
               resumeSessionId,
               PROJECT_DIR,
+              carriedWorktreePath,
               JSON.stringify({
                 taskId,
                 revivalReason: candidateIsAuditor ? 'auditor_exit_task_needs_rework' : 'dead_agent_requeue',
                 originalAgentId: candidate.agentId,
                 originalAgentType: candidate.agentType,
                 respawnedAsType: revivalAgentType,
+                worktreePath: carriedWorktreePath,
+                worktreeCarriedForward: !!carriedWorktreePath,
               })
             );
 
@@ -2259,8 +2287,50 @@ function spawnQueueItem(db, item) {
     spawnEnv.GENTYR_SESSION_LANE = item.lane;
   }
 
-  // Spawn — validate CWD exists, fall back to project dir if worktree was cleaned up
+  // Spawn — validate CWD exists. When a worktree_path was explicitly set on
+  // this queue row, REFUSE to silently fall back to the main tree — that
+  // would land file edits in the CTO's currently-checked-out branch. Mark
+  // the row failed and reset the linked todo task so Step 1d can re-attempt
+  // on the next drain cycle. Closes the 2026-05-27 incident where T0's
+  // code-writer wrote 948 lines into the CTO's feature branch after the
+  // worktree was reaped between revivals.
   let effectiveCwd = item.cwd || item.worktree_path || item.project_dir;
+  if (item.worktree_path && !fs.existsSync(item.worktree_path)) {
+    const reason = `worktree_missing_at_spawn: ${item.worktree_path}`;
+    log(`REFUSING to spawn ${item.id}: ${reason}. Marking failed; revival path will retry.`);
+    db.prepare(
+      "UPDATE queue_items SET status = 'failed', error = ?, completed_at = datetime('now') WHERE id = ?"
+    ).run(reason, item.id);
+    try {
+      auditEvent('session_failed', {
+        id: item.id,
+        agent_id: agentId,
+        reason: 'worktree_missing_at_spawn',
+        worktree_path: item.worktree_path,
+        agent_type: item.agent_type,
+      });
+    } catch { /* non-fatal */ }
+    // Reset linked todo task to pending so revival paths can re-spawn it.
+    try {
+      let metadata = null;
+      try { metadata = item.metadata ? JSON.parse(item.metadata) : null; } catch { metadata = null; }
+      const linkedTaskId = metadata && metadata.taskId;
+      if (linkedTaskId) {
+        const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+        if (fs.existsSync(todoDbPath)) {
+          const todoDb = new Database(todoDbPath);
+          todoDb.pragma('busy_timeout = 3000');
+          todoDb.prepare(
+            "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
+          ).run(linkedTaskId);
+          todoDb.close();
+        }
+      }
+    } catch (err) {
+      log(`Failed to reset linked todo task after worktree-missing refusal: ${err.message}`);
+    }
+    throw new Error(reason);
+  }
   if (effectiveCwd && !fs.existsSync(effectiveCwd)) {
     log(`Warning: CWD ${effectiveCwd} does not exist, falling back to project dir`);
     effectiveCwd = item.project_dir;

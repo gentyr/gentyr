@@ -26,6 +26,7 @@ import { enqueueSession, preemptForCtoTask } from './lib/session-queue.js';
 import { debugLog } from './lib/debug-log.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
 import { resolveCategory, buildPromptFromCategory, enrichTaskWithAuditFailure } from './lib/task-category.js';
+import { isCodeModifyingAgent } from './lib/agent-classification.js';
 import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 
 // Try to import better-sqlite3 for DB access
@@ -425,7 +426,10 @@ async function spawnTaskAgent(task) {
     log(`CTO task detected (assigned_by: ${task.assigned_by}) — using cto priority for task ${task.id}`);
   }
 
-  // Worktree setup (best-effort)
+  // Worktree setup. For code-modifying agents, this is mandatory — if we
+  // fall back to PROJECT_DIR the agent's writes would land in the CTO's main
+  // tree on whatever branch is checked out. Defense-in-depth on top of
+  // .claude/hooks/spawned-main-tree-edit-guard.js (which blocks at tool time).
   let worktreePath = null;
 
   try {
@@ -435,7 +439,23 @@ async function spawnTaskAgent(task) {
     worktreePath = worktree.path;
     log(`Worktree ready at ${worktree.path} (branch ${branchName})`);
   } catch (err) {
-    log(`Worktree creation failed, falling back to PROJECT_DIR: ${err.message}`);
+    if (isCodeModifyingAgent(mapping.agent)) {
+      log(`Worktree creation failed for code-modifying agent '${mapping.agent}': ${err.message}. REFUSING to enqueue in main tree. Resetting task ${task.id} to pending for retry.`);
+      if (Database) {
+        try {
+          const todoDb = new Database(TODO_DB_PATH);
+          todoDb.pragma('busy_timeout = 3000');
+          todoDb.prepare(
+            "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
+          ).run(task.id);
+          todoDb.close();
+        } catch (resetErr) {
+          log(`Failed to reset task ${task.id} to pending after worktree refusal: ${resetErr.message}`);
+        }
+      }
+      return false;
+    }
+    log(`Worktree creation failed, falling back to PROJECT_DIR (agent '${mapping.agent}' is read-only): ${err.message}`);
   }
 
   // Enrich task with prior audit failure context (if any)
