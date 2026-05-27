@@ -240,21 +240,24 @@ To check the approval tier, read services.json via `mcp__secret-sync__get_servic
 
 ## Deploy Trigger + Post-Deploy Health (Phases 8.5 and 8.7)
 
-When the release plan includes "Deploy Trigger" (Phase 8.5) and "Post-Deploy Health Gate" (Phase 8.7) phases — added by `/promote-to-prod` when `services.json.environments.production.deployTarget` is configured — drive them as follows:
+When the release plan includes "Deploy Trigger" (Phase 8.5) and "Post-Deploy Health Gate" (Phase 8.7) phases — added by `/promote-to-prod` when `services.json.environments.production.deployTarget` (singular) or `deployTargets` (plural array) is configured — drive them as follows:
 
-**Phase 8.5 (Deploy Trigger)**:
+**Phase 8.5 (Deploy Trigger)** — multi-target aware:
 1. Phase 8 must complete first (staging is merged to main; release report generated).
-2. The Phase 8.5 task agent calls the platform-specific deploy tool (`mcp__render__render_trigger_deploy`, `mcp__vercel__vercel_promote_deployment`, or `mcp__fly__deploy_machine`) using the serviceId from services.json.
-3. Records the resulting deploy ID via `mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, status: 'triggered' })`.
-4. Polls the platform until the deploy reaches `live` (typically 2-5 minutes). Calls `record_deploy_artifact` again with `status: 'live'` once confirmed.
-5. On `failed`: agent files a bypass request and exits. Do NOT cancel the release — the CTO may want to retry the deploy.
+2. Read `services.json#environments.production.deployTargets` (preferred) or wrap `deployTarget` singular into `[{...}]`.
+3. The Phase 8.5 task agent fires platform-specific deploy tools IN PARALLEL for every target — `mcp__render__render_trigger_deploy({ service_id })` for Render targets, `mcp__vercel__vercel_promote_deployment` for Vercel, `mcp__fly__deploy_machine` for Fly.
+4. For each target: record the resulting deploy ID via `mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, target_label: <label from services.json>, status: 'triggered' })`. The `target_label` is critical when a release deploys to multiple instances of the same platform (e.g., two Vercel projects for web + marketing).
+5. Poll EACH target's platform until it reaches `live` (typically 2-5 minutes each). Call `record_deploy_artifact` again per target with `status: 'live'` once confirmed.
+6. Phase 8.5 only completes when ALL targets are `live`. On ANY target's `failed`: file a bypass request and exit. Do NOT cancel the release — the CTO may want to retry that specific target.
 
-**Phase 8.7 (Post-Deploy Health Gate)**:
-1. Phase 8.5 must complete first.
-2. The Phase 8.7 task agent calls `mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 })`.
-3. On `ok: true` (6 consecutive healthy probes): release proceeds to terminal state.
-4. On `ok: false` (probes never reach the threshold within duration_seconds): the agent calls `triggerInBandRollback` from `.claude/hooks/lib/auto-rollback.js`, then `mcp__release-ledger__cancel_release({ release_id, reason: 'Post-deploy health gate failed; auto-rolled back to last known good deploy' })`. The deputy-CTO is notified via `report_to_deputy_cto` (staging tier).
-5. If `triggerInBandRollback` returns `rolledBack: false` (no known-good deploy on file): file a bypass request to the CTO — the production environment may be down without an automatic recovery path.
+**Phase 8.7 (Post-Deploy Health Gate)** — multi-target aware:
+1. Phase 8.5 must complete first (all targets live).
+2. Call `mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 })`. The tool returns `probe_specs[]` — one entry per `deployTarget`, with the target's resolved `base_url` (target.baseUrlOverride OR env.baseUrl) and `health_checks` (target.healthChecks OR env.healthChecks OR default).
+3. For each `probe_spec`: poll `{base_url}{health_check.path}` every `interval_seconds`; require `min_consecutive_passes` consecutive successes (status matches `expectStatus`, body contains `expectBodyContains` if set).
+4. On every spec reaching its threshold within `duration_seconds`: release proceeds to terminal state.
+5. On ANY `probe_spec` failing: call `triggerInBandRollback({ release_id, environment, platform: <failing spec's platform>, reason })` from `.claude/hooks/lib/auto-rollback.js` for THAT specific target, then `mcp__release-ledger__cancel_release({ release_id, reason: 'Post-deploy health gate failed for <target_label>; auto-rolled back to last known good deploy' })`. The deputy-CTO is notified via `report_to_deputy_cto` (staging tier).
+6. If `triggerInBandRollback` returns `rolledBack: false` (no known-good deploy on file): file a bypass request to the CTO — that target may be down without an automatic recovery path.
+7. Multi-target partial rollback: only failing targets are rolled back. A release that deploys backend (Render) + web (Vercel) where Vercel's probes fail rolls back only the Vercel target; the Render deploy stays live. This leaves production in a partially-degraded state which the CTO must resolve via the bypass-request flow.
 
 These are the only phases in the release plan that can auto-cancel a signed-off release. The intent is that bad deploys never stay broken: gentyr rolls back to the last known good deploy within 6-7 minutes (5 minute probe window + ~30s rollback API call).
 

@@ -47,10 +47,31 @@ All sections are optional. Add only what you need.
       "baseUrl": "https://myapp.example.com",
       "branch": "main",
       "supabase": { "projectRef": "abcdefghijklmnopqrst" },
-      "deployTarget": { "platform": "render", "serviceId": "srv-..." },
+      "deployTargets": [
+        {
+          "platform": "render",
+          "serviceId": "srv-...",
+          "label": "backend",
+          "baseUrlOverride": "https://api.myapp.example.com",
+          "healthChecks": [{ "path": "/health", "expectStatus": 200 }]
+        },
+        {
+          "platform": "vercel",
+          "serviceId": "prj_...",
+          "label": "web",
+          "baseUrlOverride": "https://myapp.example.com",
+          "healthChecks": [{ "path": "/api/health", "expectStatus": 200 }]
+        },
+        {
+          "platform": "vercel",
+          "serviceId": "prj_...",
+          "label": "marketing",
+          "baseUrlOverride": "https://www.myapp.example.com",
+          "healthChecks": [{ "path": "/", "expectStatus": 200 }]
+        }
+      ],
       "healthChecks": [
-        { "path": "/api/health", "expectStatus": 200 },
-        { "path": "/api/auth/session", "expectStatus": 200 }
+        { "path": "/api/health", "expectStatus": 200 }
       ]
     },
     "staging": {
@@ -103,6 +124,17 @@ Destructive migrations (`DROP COLUMN`, `RENAME`, `ALTER TYPE`, `SET NOT NULL`, `
 2. **Emergency** — File a bypass request via `submit_bypass_request` and have the CTO approve via `record_cto_decision`. Used when the engineer cannot retrofit the annotation (e.g. external migration delivered through CI from a vendor).
 
 Both routes are recorded on the release ledger.
+
+## Multi-target deploys
+
+A single production release can deploy to multiple platforms in parallel:
+
+- **`deployTarget`** (singular) — backward-compat shorthand for single-platform releases. Gentyr auto-wraps it into a one-element `deployTargets[]` at runtime.
+- **`deployTargets[]`** (canonical) — explicit array. Each entry gets its own `label`, optional `baseUrlOverride` (when the target lives at a different origin than `env.baseUrl`), and optional `healthChecks[]` override.
+
+The promotion plan fires platform deploys in parallel during Phase 8.5 (one `record_deploy_artifact` per target with the `target_label` set). Phase 8.7 probes every target's health endpoints and requires all to pass before clearing release sign-off. If a single target's probe fails, only that target is rolled back — the rest stay live. The CTO is notified of the partial state.
+
+**Known limitation**: `auto-rollback.js` keeps `deploy-tracking.json` state keyed by `${environment}:${target_label}` for multi-target releases but `executeRollback()` itself still rolls back by env name. In practice this works because the env-keyed entry IS the most-recent deploy across all targets — the rollback API call for that platform reverts that target. A full per-target executor refactor is tracked as a follow-up.
 
 ## Auto-rollback model
 
