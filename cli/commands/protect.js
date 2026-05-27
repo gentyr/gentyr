@@ -81,6 +81,7 @@ function doProtect(projectDir) {
   const criticalHooks = [
     'pre-commit-review.js',
     'protected-actions.json',
+    'spawned-main-tree-edit-guard.js',
     'interactive-heartbeat.js',
     'plan-briefing.js',
     'plan-work-tracker.js',
@@ -125,6 +126,7 @@ function doProtect(projectDir) {
   const files = [
     path.join(protectedHooksDir, 'pre-commit-review.js'),
     path.join(protectedHooksDir, 'protected-actions.json'),
+    path.join(protectedHooksDir, 'spawned-main-tree-edit-guard.js'),
     path.join(protectedHooksDir, 'interactive-heartbeat.js'),
     path.join(protectedHooksDir, 'plan-briefing.js'),
     path.join(protectedHooksDir, 'plan-work-tracker.js'),

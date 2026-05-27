@@ -325,6 +325,7 @@ When adding a new "should always happen" behavior:
 
 | File | Role | Root-owned? |
 |------|------|:-----------:|
+| `.claude/hooks/spawned-main-tree-edit-guard.js` | Block Write/Edit/NotebookEdit into main tree by spawned agents (catches CWD fallback to PROJECT_DIR) | Yes |
 | `.claude/hooks/gate-confirmation-enforcer.js` | Block task completion during audit | Yes |
 | `.claude/hooks/signal-compliance-gate.js` | Block malformed inter-agent signals | Yes |
 | `.claude/hooks/block-no-verify.js` | Block hook bypass and lint-weakening commands (--no-verify, --no-gpg-sign, core.hooksPath writes, ESLint weakening) | Yes |
