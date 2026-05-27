@@ -2491,16 +2491,45 @@ function forceSpawnTasks(args: ForceSpawnTasksArgs): ForceSpawnTasksResult | Err
       /ETIMEDOUT|timed out/i.test(msg);
     if (isTimeout) {
       const load = snapshotSystemLoad();
+      // On spawn timeout, run the aggressive orphan reaper synchronously
+      // before returning the error. This is the 2026-05-27 deadlock fix:
+      // when force_spawn_tasks ETIMEDOUTs we know the system is saturated,
+      // so reaping known-orphaned `.claude/`-related processes can unstick
+      // the next retry without waiting up to 15 minutes for the hourly cycle.
+      // Bounded to 65s (60s reaper budget + 5s margin). Failures are reported
+      // but never block the error return.
+      let reapResult: { killed?: number; scanned?: number; mode?: string; error?: string } | null = null;
+      try {
+        const thisFile = fileURLToPath(import.meta.url);
+        const frameworkRoot = path.resolve(path.dirname(thisFile), '..', '..', '..', '..');
+        const reaperPath = path.join(frameworkRoot, '.claude', 'hooks', 'hourly-automation.js');
+        if (fs.existsSync(reaperPath)) {
+          const out = execFileSync('node', [reaperPath, '--reap-orphans-aggressive'], {
+            encoding: 'utf8', timeout: 65000, stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env, CLAUDE_PROJECT_DIR: PROJECT_DIR },
+          }).trim();
+          reapResult = JSON.parse(out);
+        }
+      } catch (reapErr) {
+        reapResult = { error: (reapErr as Error).message };
+      }
+
       if (load) {
         const memHint =
           load.nodeRssMB > 12288
             ? ' (likely memory pressure HIGH — force-spawn-tasks is probably in a memory backoff loop; lower the number of running node processes or wait)'
             : '';
+        const reapHint = reapResult && typeof reapResult.killed === 'number'
+          ? ` Aggressive orphan reaper killed ${reapResult.killed}/${reapResult.scanned ?? '?'} orphans (mode=${reapResult.mode}); retry should now succeed if the deadlock was orphan-driven.`
+          : reapResult?.error
+            ? ` Aggressive orphan reaper failed: ${reapResult.error}.`
+            : '';
         return {
           error:
             `force-spawn-tasks.js timed out after 240s. ` +
-            `System: ${load.freeMB}MB free, ${load.nodeRssMB}MB node RSS across ${load.nodeProcesses} node processes${memHint}. ` +
-            `Original error: ${msg}`,
+            `System: ${load.freeMB}MB free, ${load.nodeRssMB}MB node RSS across ${load.nodeProcesses} node processes${memHint}.` +
+            reapHint +
+            ` Original error: ${msg}`,
         };
       }
     }

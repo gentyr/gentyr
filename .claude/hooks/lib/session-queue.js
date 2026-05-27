@@ -22,6 +22,7 @@ import Database from 'better-sqlite3';
 import { registerSpawn, updateAgent, AGENT_TYPES, HOOK_TYPES } from '../agent-tracker.js';
 import { buildSpawnEnv } from './spawn-env.js';
 import { shouldAllowSpawn } from './memory-pressure.js';
+import { shouldAllowSpawn as shouldAllowSpawnProc } from './process-pressure.js';
 import { reapSyncPass, diagnoseSessionFailure } from './session-reaper.js';
 import { getCooldown, getAutomationRate, setAutomationRate as _setAutomationRate, getAutomationRateState, getQuotaExhaustion } from '../config-reader.js';
 import { killProcessGroup, isClaudeProcess } from './process-tree.js';
@@ -2018,6 +2019,20 @@ export function drainQueue() {
           continue;
         }
       }
+      // Process pressure check for Tier 1 — orthogonal to memory pressure.
+      // Catches the 2026-05-27 incident pattern: free RAM healthy but 700+
+      // node processes saturate the box and spawnSync ETIMEDOUTs every retry.
+      // Tier 1 (gate/audit/alignment) gets `urgent`-equivalent priority so it
+      // still spawns at moderate/high pressure; only `critical` blocks it.
+      const procCheck = shouldAllowSpawnProc({
+        priority: item.priority === 'cto' || item.priority === 'critical' ? item.priority : 'urgent',
+        context: `session-queue:${item.lane}`,
+      });
+      if (!procCheck.allowed) {
+        result.memoryBlocked++; // Reuse counter — saturation is saturation
+        log(`Process pressure blocked Tier 1 ${item.id} (${item.lane}): ${procCheck.reason}`);
+        continue;
+      }
     } else {
       // Tier 2: standard capacity limits apply
       const effectiveMax = isPriorityEligible(item) ? maxConcurrent : maxConcurrent - reservedSlots;
@@ -2045,6 +2060,19 @@ export function drainQueue() {
         result.memoryBlocked++;
         log(`Memory pressure blocked ${item.id}: ${memCheck.reason}`);
         debugLog('session-queue', 'drain_memory_blocked', { queueId: item.id, priority: item.priority, pressure: memCheck.pressure });
+        continue;
+      }
+      // Process pressure check for Tier 2 — see Tier 1 comment above. Normal-
+      // priority items defer at high process pressure; urgent/cto/critical
+      // pass through up to the critical threshold.
+      const procCheck = shouldAllowSpawnProc({
+        priority: item.priority,
+        context: `session-queue:${item.source}`,
+      });
+      if (!procCheck.allowed) {
+        result.memoryBlocked++;
+        log(`Process pressure blocked ${item.id}: ${procCheck.reason}`);
+        debugLog('session-queue', 'drain_process_blocked', { queueId: item.id, priority: item.priority, pressure: procCheck.pressure });
         continue;
       }
     }
