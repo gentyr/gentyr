@@ -118,6 +118,15 @@ export const AddPlanTaskArgsSchema = z.object({
   create_todo: z.coerce.boolean().optional().default(false).describe('Also create a linked todo-db task'),
   todo_section: z.string().optional().default('GENERAL').describe('Section for todo-db task'),
   substeps: z.array(InlineSubstepSchema).optional().describe('Inline substeps'),
+  depends_on: z.array(z.object({
+    entity_type: z.enum(['todo', 'persistent', 'plan_task', 'plan']).describe(
+      'Blocker entity kind for cross-DB dependencies (beyond plan-internal blocked_by). \'plan\' depends on the entire plan reaching signed_off/completed.'
+    ),
+    entity_id: z.string().min(1).describe('Blocker entity ID'),
+    reasoning: z.string().optional().describe('Why this plan task is blocked (auto-generated if omitted)'),
+  })).optional().describe(
+    'Cross-entity dependencies recorded in workstream.db. Use blocked_by for plan-internal task→task deps; use depends_on for cross-DB blockers (e.g., a plan task blocked by a persistent task or todo).'
+  ),
 });
 
 export const UpdateTaskProgressArgsSchema = z.object({

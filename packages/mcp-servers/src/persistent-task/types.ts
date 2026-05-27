@@ -6,6 +6,20 @@
  */
 
 import { z } from 'zod';
+import { DEPENDS_ON_ENTITY_TYPES } from '../shared/cross-deps.js';
+
+/**
+ * Cross-entity dependency declaration. Used by all three creator schemas
+ * (todo-db, persistent-task, plan-orchestrator) for inline declaration of
+ * "this entity is blocked by X" relationships at create time.
+ */
+export const DependsOnEntrySchema = z.object({
+  entity_type: z.enum(DEPENDS_ON_ENTITY_TYPES).describe(
+    "Blocker entity kind. 'plan' depends on the entire plan reaching signed_off/completed."
+  ),
+  entity_id: z.string().min(1).describe('Blocker entity ID'),
+  reasoning: z.string().optional().describe('Why this entity is blocked by the blocker (auto-generated if omitted)'),
+});
 
 // ============================================================================
 // Constants
@@ -38,6 +52,9 @@ export const CreatePersistentTaskArgsSchema = z.object({
     .describe('EXECUTABLE verification steps for the auditor. Example: "Call verify_demo_completeness and assert complete: true"'),
   verification_strategy: z.string().optional()
     .describe('Alias for gate_success_criteria (unified naming across todo-db, persistent-task, and plan-orchestrator). If both verification_strategy and gate_success_criteria are provided, gate_success_criteria wins.'),
+  depends_on: z.array(DependsOnEntrySchema).optional().describe(
+    'Cross-entity dependencies. When provided, the task is created in draft and will NOT auto-activate via activate_persistent_task until all declared blockers reach a satisfying terminal state. Then the cross-dep satisfier auto-activates it.'
+  ),
 });
 
 export const ActivatePersistentTaskArgsSchema = z.object({

@@ -64,6 +64,15 @@ export const CreateTaskArgsSchema = z.object({
     .describe('EXECUTABLE verification steps. Must cite specific MCP tool calls, file paths, or commands with expected output. Example: "Call run_demo_batch({headless:true}) and verify every result.status === passed"'),
   verification_strategy: z.string().optional()
     .describe('Alias for gate_success_criteria (unified naming across todo-db, persistent-task, and plan-orchestrator). If both verification_strategy and gate_success_criteria are provided, gate_success_criteria wins.'),
+  depends_on: z.array(z.object({
+    entity_type: z.enum(['todo', 'persistent', 'plan_task', 'plan']).describe(
+      'Blocker entity kind. \'plan\' means "wait until the entire plan reaches signed_off/completed".'
+    ),
+    entity_id: z.string().min(1).describe('Blocker entity ID'),
+    reasoning: z.string().optional().describe('Why this task is blocked (auto-generated if omitted)'),
+  })).optional().describe(
+    'Cross-entity dependencies. The task is created in \'pending\' status but the session-queue gate withholds spawning until all declared blockers reach a satisfying terminal state. The cross-dep satisfier auto-cascades on blocker completion.'
+  ),
 });
 
 export const StartTaskArgsSchema = z.object({

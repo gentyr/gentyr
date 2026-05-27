@@ -709,6 +709,10 @@
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/release-completion-hook.js",
           "timeout": 30
+        }, {
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/persistent-completion-dep-satisfier.js",
+          "timeout": 15
         }]
       },
       {
@@ -717,6 +721,10 @@
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-activation-spawner.js",
           "timeout": 15
+        }, {
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-completion-dep-satisfier.js",
+          "timeout": 15
         }]
       },
       {
@@ -724,6 +732,10 @@
         "hooks": [{
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-audit-spawner.js",
+          "timeout": 15
+        }, {
+          "type": "command",
+          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/plan-task-completion-dep-satisfier.js",
           "timeout": 15
         }]
       },

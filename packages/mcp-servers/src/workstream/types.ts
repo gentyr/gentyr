@@ -14,8 +14,15 @@ import { z } from 'zod';
 export const DEP_STATUS = ['active', 'satisfied', 'removed', 'all'] as const;
 export type DepStatus = (typeof DEP_STATUS)[number];
 
-export const ENTITY_TYPES = ['todo', 'persistent', 'plan_task'] as const;
+export const ENTITY_TYPES = ['todo', 'persistent', 'plan_task', 'plan'] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
+
+/**
+ * Entity types that can be on the BLOCKED side of a dependency. `'plan'`
+ * is intentionally excluded — block at plan_task granularity instead.
+ */
+export const BLOCKED_ENTITY_TYPES = ['todo', 'persistent', 'plan_task'] as const;
+export type BlockedEntityType = (typeof BLOCKED_ENTITY_TYPES)[number];
 
 export const PRIORITY_LEVELS = ['critical', 'urgent', 'normal', 'low'] as const;
 export type PriorityLevel = (typeof PRIORITY_LEVELS)[number];
@@ -34,51 +41,57 @@ export type ChangeType = (typeof CHANGE_TYPES)[number];
 // ============================================================================
 
 /**
- * EntityRef — describes one side of a cross-entity dependency edge.
- * `entity_type` is one of 'todo' | 'persistent' | 'plan_task'.
+ * EntityRef — describes one side of a cross-entity dependency edge. `'plan'`
+ * is permitted as a blocker; only todo / persistent / plan_task can be blocked.
  */
-const EntityRefSchema = z.object({
-  entity_type: z.enum(ENTITY_TYPES).describe('Entity kind: todo | persistent | plan_task'),
-  entity_id: z.string().min(1).describe('Entity ID (todo task id, persistent task id, or plan task id)'),
+const BlockerRefSchema = z.object({
+  entity_type: z.enum(ENTITY_TYPES).describe('Blocker entity kind: todo | persistent | plan_task | plan'),
+  entity_id: z.string().min(1).describe('Blocker entity ID'),
+});
+
+const BlockedRefSchema = z.object({
+  entity_type: z
+    .enum(BLOCKED_ENTITY_TYPES)
+    .describe('Blocked entity kind: todo | persistent | plan_task (plan cannot be blocked — use plan_task)'),
+  entity_id: z.string().min(1).describe('Blocked entity ID'),
 });
 
 /**
- * Legacy shape (todo→todo only): {blocker_task_id, blocked_task_id, reasoning}.
- * Both ids are treated as entity_type='todo'.
+ * Flat schema accepting EITHER the new entity-aware shape
+ * `{ blocker: {entity_type, entity_id}, blocked: {entity_type, entity_id}, reasoning }`
+ * OR the legacy todo→todo shape `{ blocker_task_id, blocked_task_id, reasoning }`.
+ *
+ * Single flat object (no z.union) so Claude's tool-caller sees clearly declared
+ * nested object properties. `.refine()` enforces that one of the two shapes is provided.
  */
-const AddDependencyLegacyArgsSchema = z.object({
-  blocked_task_id: z.string().min(1).describe('Task ID (from todo.db) that must wait'),
-  blocker_task_id: z.string().min(1).describe('Task ID (from todo.db) that must complete first'),
-  reasoning: z
-    .string()
-    .min(10)
-    .describe('Explanation for this dependency (mandatory, min 10 chars)'),
-});
-
-/**
- * New entity-aware shape: {blocker, blocked, reasoning} where each side is an
- * EntityRef. Supports cross-entity dependencies (e.g., persistent blocked by todo).
- */
-const AddDependencyEntityArgsSchema = z.object({
-  blocker: EntityRefSchema.describe('Entity that must complete first'),
-  blocked: EntityRefSchema.describe('Entity that must wait'),
-  reasoning: z
-    .string()
-    .min(10)
-    .describe('Explanation for this dependency (mandatory, min 10 chars)'),
-});
-
-/**
- * Union — accept either the legacy todo→todo shape or the new entity-aware shape.
- * Server normalizes the legacy shape into EntityRef form (entity_type='todo').
- */
-export const AddDependencyArgsSchema = z.union([
-  AddDependencyEntityArgsSchema,
-  AddDependencyLegacyArgsSchema,
-]);
-
-export type AddDependencyEntityArgs = z.infer<typeof AddDependencyEntityArgsSchema>;
-export type AddDependencyLegacyArgs = z.infer<typeof AddDependencyLegacyArgsSchema>;
+export const AddDependencyArgsSchema = z
+  .object({
+    blocker: BlockerRefSchema.optional().describe('Entity that must complete first (preferred shape)'),
+    blocked: BlockedRefSchema.optional().describe('Entity that must wait (preferred shape)'),
+    blocker_task_id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('LEGACY: todo task ID that must complete first (used when blocker/blocked are not provided)'),
+    blocked_task_id: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('LEGACY: todo task ID that must wait (used when blocker/blocked are not provided)'),
+    reasoning: z
+      .string()
+      .min(10)
+      .describe('Explanation for this dependency (mandatory, min 10 chars)'),
+  })
+  .refine(
+    (args) =>
+      (args.blocker !== undefined && args.blocked !== undefined) ||
+      (args.blocker_task_id !== undefined && args.blocked_task_id !== undefined),
+    {
+      message:
+        'Provide EITHER (blocker + blocked) entity refs OR legacy (blocker_task_id + blocked_task_id).',
+    }
+  );
 
 export const RemoveDependencyArgsSchema = z.object({
   dependency_id: z.string().min(1).describe('Dependency ID to remove (dep-xxxx)'),

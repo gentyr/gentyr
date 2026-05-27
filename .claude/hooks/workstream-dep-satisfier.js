@@ -275,11 +275,27 @@ process.stdin.on('end', async () => {
 
     wsDb.close();
 
+    // === Cross-entity cascade ===
+    // The legacy block above handled todo→todo deps directly. Now also delegate
+    // to the shared satisfier so non-todo blocked entities (persistent in
+    // 'draft', plan_tasks paused/blocked) are unblocked when the completed
+    // todo was THEIR blocker.
+    try {
+      const { satisfyAndCascade } = await import('./lib/cross-dep-satisfier.js');
+      await satisfyAndCascade({
+        entity_type: 'todo',
+        entity_id: completedTaskId,
+        completedBy: 'workstream-dep-satisfier',
+      });
+    } catch (err) {
+      log(`Warning: cross-entity cascade failed: ${err.message}`);
+    }
+
     if (unblockedTaskIds.length === 0) {
       process.exit(0);
     }
 
-    // Check if any now-unblocked task has CTO priority in the queue
+    // Check if any now-unblocked todo task has CTO priority in the queue
     const ctoPriorityQueueId = findCtoPriorityUnblocked(unblockedTaskIds);
 
     // Import session-queue module and trigger appropriate action

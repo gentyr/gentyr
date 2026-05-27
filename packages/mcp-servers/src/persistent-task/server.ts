@@ -21,6 +21,11 @@ import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
 import { resolveSubTaskStatuses } from './sub-task-status.js';
 import {
+  addDependenciesForNewEntity,
+  areCrossEntityDepsMet,
+  type DependsOnEntry,
+} from '../shared/cross-deps.js';
+import {
   CreatePersistentTaskArgsSchema,
   ActivatePersistentTaskArgsSchema,
   GetPersistentTaskArgsSchema,
@@ -442,6 +447,22 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     parent_todo_task_id: parentTodoTaskId,
   });
 
+  // Inline cross-entity dependency declarations (depends_on).
+  let dependsOnSummary: ReturnType<typeof addDependenciesForNewEntity> | null = null;
+  if (args.depends_on && args.depends_on.length > 0) {
+    dependsOnSummary = addDependenciesForNewEntity({
+      blocked_entity_type: 'persistent',
+      blocked_entity_id: taskId,
+      dependsOn: args.depends_on as DependsOnEntry[],
+      createdBy: 'create_persistent_task',
+    });
+    recordEvent(db, taskId, 'dependencies_declared', {
+      requested: args.depends_on.length,
+      added: dependsOnSummary.added.length,
+      errors: dependsOnSummary.errors,
+    });
+  }
+
   const result: Record<string, unknown> = {
     id: taskId,
     title: args.title,
@@ -449,6 +470,17 @@ function createPersistentTask(args: CreatePersistentTaskArgs): object | ErrorRes
     parent_todo_task_id: parentTodoTaskId,
     created_at: ts,
   };
+  if (dependsOnSummary) {
+    result.depends_on = {
+      added: dependsOnSummary.added,
+      errors: dependsOnSummary.errors,
+    };
+    if (dependsOnSummary.added.some((d) => d.status === 'active')) {
+      result.activation_blocked = true;
+      result.activation_hint =
+        'Call activate_persistent_task — it will refuse activation until all blockers complete, then the cross-dep satisfier will auto-activate this task.';
+    }
+  }
   if (gateStatus) {
     result.gate_status = gateStatus;
     result.gate_success_criteria = gateSuccessCriteria;
@@ -472,6 +504,19 @@ function activatePersistentTask(args: ActivatePersistentTaskArgs): object | Erro
   }
   if (task.status !== 'draft') {
     return { error: `Cannot activate task in status '${task.status}' — task must be in 'draft' status` } as ErrorResult;
+  }
+
+  // Cross-entity dependency refusal gate. When any blocker for this persistent
+  // task is still in flight, refuse activation; the satisfier will auto-activate
+  // the task when the last blocker completes.
+  const depCheck = areCrossEntityDepsMet('persistent', args.id);
+  if (!depCheck.metAll) {
+    const blockerSummary = depCheck.blockers
+      .map((b) => `${b.entity_type}:${b.entity_id}${b.status ? ` (${b.status})` : ''}`)
+      .join(', ');
+    return {
+      error: `Cannot activate: ${depCheck.blockers.length} unmet dependency(ies). Task will auto-activate when blockers complete. Blockers: ${blockerSummary}`,
+    } as ErrorResult;
   }
 
   const ts = now();

@@ -18,6 +18,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { addDependenciesForNewEntity, type DependsOnEntry } from '../shared/cross-deps.js';
 import {
   CreatePlanArgsSchema,
   GetPlanArgsSchema,
@@ -1070,7 +1071,27 @@ function addPlanTask(args: AddPlanTaskArgs) {
     }
   }
 
-  return {
+  // Inline cross-entity dependency declarations (depends_on).
+  // Plan-internal blocked_by is handled above via plans.dependencies table.
+  // depends_on writes to workstream.db so cross-DB blockers (todo, persistent,
+  // other plan_tasks across plans, whole plans) are honored.
+  let dependsOnResult: ReturnType<typeof addDependenciesForNewEntity> | null = null;
+  if (args.depends_on && args.depends_on.length > 0) {
+    dependsOnResult = addDependenciesForNewEntity({
+      blocked_entity_type: 'plan_task',
+      blocked_entity_id: taskId,
+      dependsOn: args.depends_on as DependsOnEntry[],
+      createdBy: 'add_plan_task',
+    });
+    // When any blocker is still active, hold the plan task out of 'pending'
+    // so the plan-manager does not spawn it. The cross-dep satisfier will
+    // promote it to 'pending' once blockers complete.
+    if (dependsOnResult.added.some((d) => d.status === 'active')) {
+      db.prepare("UPDATE plan_tasks SET status = 'blocked' WHERE id = ?").run(taskId);
+    }
+  }
+
+  const result: Record<string, unknown> = {
     task_id: taskId,
     phase_id: args.phase_id,
     plan_id: phase.plan_id,
@@ -1081,6 +1102,10 @@ function addPlanTask(args: AddPlanTaskArgs) {
     substeps_created: args.substeps?.length ?? 0,
     created_at: ts,
   };
+  if (dependsOnResult) {
+    result.depends_on = { added: dependsOnResult.added, errors: dependsOnResult.errors };
+  }
+  return result;
 }
 
 /**
