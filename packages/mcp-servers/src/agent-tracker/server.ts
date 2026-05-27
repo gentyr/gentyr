@@ -79,6 +79,9 @@ import {
   ListBlockingItemsArgsSchema,
   ResolveBlockingItemArgsSchema,
   GetBlockingSummaryArgsSchema,
+  ListDeputyReportsArgsSchema,
+  AcknowledgeDeputyReportArgsSchema,
+  ResolveDeputyReportArgsSchema,
   StageMcpServerArgsSchema,
   RepairMainTreeDriftArgsSchema,
   AcquireSharedResourceArgsSchema,
@@ -142,6 +145,9 @@ import {
   type ListBlockingItemsArgs,
   type ResolveBlockingItemArgs,
   type GetBlockingSummaryArgs,
+  type ListDeputyReportsArgs,
+  type AcknowledgeDeputyReportArgs,
+  type ResolveDeputyReportArgs,
   type StageMcpServerArgs,
   type RepairMainTreeDriftArgs,
   type CheckDeferredActionArgs,
@@ -5681,6 +5687,27 @@ function getBypassDb(): InstanceType<typeof Database> {
       CHECK (status IN ('active', 'resolved', 'superseded'))
     );
     CREATE INDEX IF NOT EXISTS idx_blocking_queue_status ON blocking_queue(status);
+    -- Deputy reports table (PR 4 / Fix 3): wedged-audit escalation surface.
+    -- When the session-reaper's Step 1b.5 detects an audit that has been
+    -- respawned 3+ times OR sat in pending_audit for 45+ minutes, it stops
+    -- respawning, resets the audit, and INSERTs into deputy_reports so the
+    -- deputy-cto can triage without involving the CTO. Independent inbox
+    -- from bypass_requests because the action chain is different — these
+    -- are NOT awaiting CTO approval; they need investigative triage.
+    CREATE TABLE IF NOT EXISTS deputy_reports (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      task_type TEXT,
+      task_id TEXT,
+      payload TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'acknowledged', 'resolved')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      acknowledged_at TEXT,
+      resolved_at TEXT,
+      resolution TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_deputy_reports_open ON deputy_reports(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_deputy_reports_task ON deputy_reports(task_type, task_id, kind);
   `);
   // CTO decisions table (unified approval system)
   db.exec(`
@@ -7688,6 +7715,113 @@ async function getBlockingSummary(_args: GetBlockingSummaryArgs): Promise<object
 }
 
 // ============================================================================
+// Deputy Reports (PR 4 / Fix 3) — wedged-audit escalation inbox
+// ============================================================================
+
+async function listDeputyReports(args: ListDeputyReportsArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    if (args.status !== 'all') {
+      conditions.push('status = ?');
+      params.push(args.status);
+    }
+    if (args.kind) {
+      conditions.push('kind = ?');
+      params.push(args.kind);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    let rows: Array<{
+      id: string; kind: string; task_type: string | null; task_id: string | null;
+      payload: string; status: string; created_at: string;
+      acknowledged_at: string | null; resolved_at: string | null; resolution: string | null;
+    }>;
+    try {
+      rows = db.prepare(
+        `SELECT id, kind, task_type, task_id, payload, status, created_at, acknowledged_at, resolved_at, resolution
+           FROM deputy_reports ${where}
+          ORDER BY created_at DESC LIMIT ?`
+      ).all(...params, args.limit) as typeof rows;
+    } catch (err) {
+      // Table may not exist yet on a stale DB. Return empty list rather than error.
+      const msg = (err as Error).message || '';
+      if (/no such table/i.test(msg)) return { reports: [], total: 0 };
+      throw err;
+    }
+
+    const parsed = rows.map(r => {
+      let payload: unknown = null;
+      try { payload = JSON.parse(r.payload); } catch { payload = r.payload; }
+      return { ...r, payload };
+    });
+    return { reports: parsed, total: parsed.length };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function acknowledgeDeputyReport(args: AcknowledgeDeputyReportArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+    const existing = db.prepare('SELECT id, status FROM deputy_reports WHERE id = ?').get(args.id) as
+      { id: string; status: string } | undefined;
+    if (!existing) return { error: `Deputy report not found: ${args.id}` };
+    if (existing.status !== 'open') {
+      return { error: `Cannot acknowledge — report is already ${existing.status}` };
+    }
+    // The `notes` parameter is appended to the existing payload (best-effort).
+    // We do NOT rewrite the payload from scratch — preserves the original
+    // wedged-audit context for later forensic review.
+    if (args.notes) {
+      try {
+        const row = db.prepare('SELECT payload FROM deputy_reports WHERE id = ?').get(args.id) as { payload: string };
+        const payload = JSON.parse(row.payload);
+        payload.acknowledge_notes = args.notes;
+        db.prepare(
+          `UPDATE deputy_reports SET status = 'acknowledged', acknowledged_at = datetime('now'), payload = ? WHERE id = ?`
+        ).run(JSON.stringify(payload), args.id);
+      } catch {
+        db.prepare(
+          `UPDATE deputy_reports SET status = 'acknowledged', acknowledged_at = datetime('now') WHERE id = ?`
+        ).run(args.id);
+      }
+    } else {
+      db.prepare(
+        `UPDATE deputy_reports SET status = 'acknowledged', acknowledged_at = datetime('now') WHERE id = ?`
+      ).run(args.id);
+    }
+    return { id: args.id, status: 'acknowledged' };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+async function resolveDeputyReport(args: ResolveDeputyReportArgs): Promise<object | ErrorResult> {
+  let db: InstanceType<typeof Database> | undefined;
+  try {
+    db = getBypassDb();
+    const existing = db.prepare('SELECT id, status FROM deputy_reports WHERE id = ?').get(args.id) as
+      { id: string; status: string } | undefined;
+    if (!existing) return { error: `Deputy report not found: ${args.id}` };
+    if (existing.status === 'resolved') {
+      return { error: 'Report is already resolved' };
+    }
+    db.prepare(
+      `UPDATE deputy_reports
+         SET status = 'resolved', resolved_at = datetime('now'), resolution = ?
+       WHERE id = ?`
+    ).run(args.resolution, args.id);
+    return { id: args.id, status: 'resolved' };
+  } finally {
+    try { db?.close(); } catch { /* best-effort */ }
+  }
+}
+
+// ============================================================================
 // Self-Compaction
 // ============================================================================
 
@@ -8265,6 +8399,28 @@ const tools: AnyToolHandler[] = [
     description: 'Get a compact summary of active blocking queue items: total count, counts by blocking_level (plan/persistent_task/task), and age of the oldest active item. Fast — suitable for notification hooks.',
     schema: GetBlockingSummaryArgsSchema,
     handler: getBlockingSummary,
+  },
+  // Deputy Reports tools (PR 4 / Fix 3) — wedged-audit escalation inbox.
+  // Written by session-reaper Step 1b.5 when an audit has been respawned 3+
+  // times or has sat in pending_audit for 45+ min. These are NOT awaiting CTO
+  // approval; they are deputy-cto triage items.
+  {
+    name: 'list_deputy_reports',
+    description: 'List deputy-cto triage reports. Defaults to "open" status — reports the deputy has not yet acknowledged. Use kind="wedged_audit" to filter to the audit-escalation surface. Reports are written by session-reaper Step 1b.5 when an audit fails to make progress after 3+ revivals or 45+ minutes; the audit has already been reset to in_progress, so the task is unstuck and ready for normal flow — the deputy just needs to investigate root cause (e.g. missing baseRef, audit-lane-guard denial, unrecoverable code state).',
+    schema: ListDeputyReportsArgsSchema,
+    handler: listDeputyReports,
+  },
+  {
+    name: 'acknowledge_deputy_report',
+    description: 'Mark a deputy-cto report as acknowledged (you have seen it and are investigating). Optionally attach notes that get appended to the payload for later forensic review. Use resolve_deputy_report when you have actually fixed the underlying issue.',
+    schema: AcknowledgeDeputyReportArgsSchema,
+    handler: acknowledgeDeputyReport,
+  },
+  {
+    name: 'resolve_deputy_report',
+    description: 'Mark a deputy-cto report as resolved with a brief description of what was done. Use when the root cause has been addressed (e.g. baseRef bug fixed, agent prompt updated, audit reset with explicit override). Triage notes from acknowledge are preserved on the row.',
+    schema: ResolveDeputyReportArgsSchema,
+    handler: resolveDeputyReport,
   },
   // Deferred protected action polling
   {

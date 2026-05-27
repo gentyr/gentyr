@@ -1102,12 +1102,34 @@ async function main() {
     bypassBlock = bypassLines.join('\n');
   }
 
+  // PR 4 / Fix 3: count open deputy_reports (wedged-audit escalations).
+  // These are not awaiting CTO approval — the deputy-cto triages them — but
+  // they belong in the CTO's status line so the CTO knows the deputy has
+  // pending forensic work. Defensive: table may not exist on stale DBs.
+  let deputyReportCount = 0;
+  try {
+    if (Database) {
+      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+      if (fs.existsSync(bypassDbPath)) {
+        const drDb = new Database(bypassDbPath, { readonly: true });
+        drDb.pragma('busy_timeout = 500');
+        try {
+          const row = drDb.prepare("SELECT COUNT(*) AS cnt FROM deputy_reports WHERE status = 'open'").get();
+          deputyReportCount = (row && row.cnt) || 0;
+        } catch { /* table missing on stale DB — silent */ }
+        drDb.close();
+      }
+    }
+  } catch { /* non-fatal */ }
+
   // systemMessage: short status line for terminal. Real bypasses are urgent;
-  // synthesized rows are informational. Build segments and join — collapse to
-  // a compact format when the line would overflow.
+  // synthesized rows are informational; deputy reports are deputy-cto inbox.
+  // Build segments and join — collapse to a compact format when the line
+  // would overflow.
   const statusParts = [];
   if (realCount > 0)        statusParts.push(`${realCount} BYPASS`);
   if (synthesizedCount > 0) statusParts.push(`${synthesizedCount} QUOTA-AUTO`);
+  if (deputyReportCount > 0) statusParts.push(`${deputyReportCount} DEPUTY-REPORT`);
   let bypassPrefix = '';
   if (statusParts.length > 0) {
     const verbose = `${statusParts.join(' | ')} AWAITING DECISION | `;
