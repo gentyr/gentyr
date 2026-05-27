@@ -232,6 +232,49 @@ async function main() {
   }
   debugLog('persistent-task-spawner', 'task_found_active', { taskId, title: task.title });
 
+  // Idempotency guard — if a monitor session is already alive for this task,
+  // skip the enqueue. This catches races between auto-revival (e.g.,
+  // requeueDeadPersistentMonitor) and user-initiated resume/activate calls.
+  // Without it, both paths fire enqueueSession() and one loses the atomic
+  // claim race with "Item already claimed by concurrent drain" — noisy and
+  // wastes a queue slot. Fail-open: any DB read error skips the check and
+  // lets the existing TOCTOU-safe claim handle it.
+  try {
+    const sqDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+    if (fs.existsSync(sqDbPath)) {
+      const sqDb = new Database(sqDbPath, { readonly: true });
+      try {
+        const existing = sqDb.prepare(
+          `SELECT id, pid, status FROM queue_items
+           WHERE agent_type = 'persistent-task-monitor'
+             AND status IN ('running', 'spawning', 'queued')
+             AND json_extract(metadata, '$.persistentTaskId') = ?
+           ORDER BY enqueued_at DESC LIMIT 1`
+        ).get(taskId);
+        if (existing) {
+          let alive = existing.status === 'queued';
+          if (!alive && existing.pid) {
+            try { process.kill(existing.pid, 0); alive = true; } catch { alive = false; }
+          }
+          if (alive) {
+            debugLog('persistent-task-spawner', 'skip_enqueue_monitor_already_alive', {
+              taskId, existingQueueId: existing.id, existingStatus: existing.status, existingPid: existing.pid,
+            });
+            log(`[persistent-task] Skipped enqueue for ${taskId} — monitor ${existing.id} (${existing.status}, pid=${existing.pid ?? 'n/a'}) already active.`);
+            sqDb.close();
+            console.log(JSON.stringify({ }));
+            process.exit(0);
+          }
+        }
+      } finally {
+        sqDb.close();
+      }
+    }
+  } catch (err) {
+    debugLog('persistent-task-spawner', 'idempotency_check_failed_non_fatal', { error: err?.message });
+    // Fall through — TOCTOU-safe atomic claim in spawnQueueItem() is the safety net.
+  }
+
   // Read amendments
   const amendments = ptDb.prepare(
     "SELECT content, amendment_type, created_at FROM amendments WHERE persistent_task_id = ? ORDER BY created_at ASC"

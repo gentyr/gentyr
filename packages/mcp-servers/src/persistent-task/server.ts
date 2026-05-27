@@ -75,6 +75,74 @@ const PROJECT_DIR = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd()
 const DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const SIGNAL_MODULE_PATH = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-signals.js');
+const QUOTA_EXHAUSTION_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'quota-exhaustion.json');
+const SESSION_QUEUE_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.db');
+
+/**
+ * Read global quota exhaustion state. Returns { exhausted: true, ... } only
+ * when the state file says quota is currently exhausted. Fail-open on any
+ * read or parse error (never blocks resume on unrelated IO failure).
+ *
+ * Mirrors getQuotaExhaustion() in .claude/hooks/config-reader.js — kept as
+ * a small inline read so the TS MCP server doesn't depend on the .js hook
+ * module's resolution path.
+ */
+function readQuotaExhaustion(): { exhausted: boolean; resets_at: string | null; window: string | null; utilization: number | null } {
+  const empty = { exhausted: false, resets_at: null, window: null, utilization: null };
+  try {
+    if (!fs.existsSync(QUOTA_EXHAUSTION_PATH)) return empty;
+    const state = JSON.parse(fs.readFileSync(QUOTA_EXHAUSTION_PATH, 'utf8'));
+    if (!state || !state.exhausted) return empty;
+    return {
+      exhausted: true,
+      resets_at: state.resets_at ?? null,
+      window: state.window ?? null,
+      utilization: state.utilization ?? null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/**
+ * Check whether a live persistent-task-monitor session already exists for the
+ * given persistent task. Returns the matching queue row when one is alive
+ * (`running` or `spawning` with a PID that is still alive); null otherwise.
+ *
+ * Used to make resume_persistent_task idempotent — repeated resume calls
+ * during a quota outage previously caused a "concurrent drain" race storm.
+ * Fail-open: any DB read error returns null (caller proceeds with revival).
+ */
+function getLiveMonitorForTask(persistentTaskId: string): { id: string; pid: number | null; status: string } | null {
+  try {
+    if (!fs.existsSync(SESSION_QUEUE_DB_PATH)) return null;
+    const queueDb = new Database(SESSION_QUEUE_DB_PATH, { readonly: true, fileMustExist: true });
+    try {
+      const row = queueDb.prepare(
+        `SELECT id, pid, status FROM queue_items
+         WHERE agent_type = 'persistent-task-monitor'
+           AND status IN ('running', 'spawning', 'queued')
+           AND json_extract(metadata, '$.persistentTaskId') = ?
+         ORDER BY enqueued_at DESC LIMIT 1`
+      ).get(persistentTaskId) as { id: string; pid: number | null; status: string } | undefined;
+      if (!row) return null;
+      // Verify PID liveness for running/spawning rows. queued rows are
+      // about to be claimed by drainQueue() so treat them as live too.
+      if (row.status === 'queued') return row;
+      if (!row.pid) return null;
+      try {
+        process.kill(row.pid, 0);
+        return row;
+      } catch {
+        return null;
+      }
+    } finally {
+      queueDb.close();
+    }
+  } catch {
+    return null;
+  }
+}
 
 // ============================================================================
 // Database Schema
@@ -863,6 +931,47 @@ function resumePersistentTask(args: ResumePersistentTaskArgs): object | ErrorRes
   }
   if (task.status !== 'paused') {
     return { error: `Cannot resume task in status '${task.status}' — task must be in 'paused' status` } as ErrorResult;
+  }
+
+  // Quota gate: refuse to resume when the global Anthropic quota window is
+  // exhausted. A monitor spawned now would receive a "You've hit your limit"
+  // refusal from the Claude CLI, exit clean, and leave the persistent task
+  // row in active-with-dead-monitor state ("zombie active"). Better to leave
+  // the task paused and let the quota-recovery daemon auto-resume it once
+  // the window clears. The CTO sees a clear blocked response instead of
+  // churning through DOA monitor sessions.
+  const quota = readQuotaExhaustion();
+  if (quota.exhausted) {
+    return {
+      blocked: 'quota_exhausted',
+      id: args.id,
+      title: task.title,
+      status: 'paused',
+      resets_at: quota.resets_at,
+      window: quota.window,
+      utilization: quota.utilization,
+      message: `Manual resume refused — Anthropic quota exhausted on the ${quota.window ?? 'current'} window. Task remains paused. The quota-recovery daemon will auto-resume it after ${quota.resets_at ?? 'reset'}.`,
+    };
+  }
+
+  // Idempotency: if a monitor is already alive (running/spawning) or queued
+  // for this task, treat resume as a no-op rather than enqueuing a second
+  // monitor. Repeated resume calls during a quota outage previously caused
+  // an 18× "Item already claimed by concurrent drain" storm because the
+  // PostToolUse spawner hook fires on every resume and tries to claim the
+  // queued row before the prior drain finished spawning it.
+  const liveMonitor = getLiveMonitorForTask(args.id);
+  if (liveMonitor) {
+    return {
+      noop: 'monitor_already_alive',
+      id: args.id,
+      title: task.title,
+      status: task.status,
+      monitor_queue_id: liveMonitor.id,
+      monitor_status: liveMonitor.status,
+      monitor_pid: liveMonitor.pid,
+      message: `Resume is a no-op — a persistent-task-monitor session already exists for this task (${liveMonitor.id}, status=${liveMonitor.status}). The current monitor will pick up state changes on its next cycle.`,
+    };
   }
 
   let meta: Record<string, unknown> = {};
