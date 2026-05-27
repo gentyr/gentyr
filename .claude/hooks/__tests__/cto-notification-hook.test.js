@@ -644,26 +644,24 @@ describe('hookSpecificOutput - UserPromptSubmit Protocol', () => {
     );
   });
 
-  it('should set additionalContext to the same message string as systemMessage', () => {
+  it('should derive systemMessage and additionalContext from the same `message` source', () => {
     const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-    // Extract the final console.log block (last JSON.stringify call in main()).
-    // Both systemMessage and additionalContext must reference the same `message` variable
-    // so the AI model context and terminal display stay in sync.
     const mainFunction = hookCode.match(/async function main\(\) \{[\s\S]*?\n\}/)[0];
 
-    // The final output block must assign additionalContext: message
+    // The terminal status line (systemMsg) and the model context (modelContext)
+    // must both originate from the `message` variable so what the CTO sees and
+    // what the model sees stay aligned. Prefixes/blocks may be prepended for
+    // emphasis, but `message` must always be on the right-hand side of the
+    // assignment.
     assert.match(
       mainFunction,
-      /additionalContext:\s*message/,
-      'additionalContext must be set to the same `message` variable as systemMessage',
+      /const\s+systemMsg\s*=\s*[^\n]*\bmessage\b/,
+      'systemMsg must be built from the `message` variable (e.g. bypassPrefix + message)',
     );
-
-    // And systemMessage must also be set to message
     assert.match(
       mainFunction,
-      /systemMessage:\s*message/,
-      'systemMessage must be set to the same `message` variable as additionalContext',
+      /const\s+modelContext\s*=[\s\S]*?\bmessage\b/,
+      'modelContext must be built from the `message` variable',
     );
   });
 
@@ -679,9 +677,12 @@ describe('hookSpecificOutput - UserPromptSubmit Protocol', () => {
     const block = lastConsoleLog[0];
     assert.match(block, /continue:\s*true/, 'output must include continue: true');
     assert.match(block, /suppressOutput:\s*false/, 'output must include suppressOutput: false');
-    assert.match(block, /systemMessage:\s*message/, 'output must include systemMessage: message');
+    // systemMessage may bind to a derived variable (systemMsg) that prepends a
+    // status prefix to message; additionalContext may bind to modelContext
+    // that prepends the bypass block. Either binding satisfies the contract.
+    assert.match(block, /systemMessage:\s*(message|systemMsg)\b/, 'output must include systemMessage bound to message or systemMsg');
     assert.match(block, /hookSpecificOutput:/, 'output must include hookSpecificOutput');
-    assert.match(block, /additionalContext:\s*message/, 'output must include additionalContext: message');
+    assert.match(block, /additionalContext:\s*(message|modelContext)\b/, 'output must include additionalContext bound to message or modelContext');
   });
 
   it('should not include hookSpecificOutput in the spawned-session suppression path', () => {

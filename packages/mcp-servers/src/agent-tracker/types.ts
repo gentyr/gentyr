@@ -557,6 +557,10 @@ export const ListBypassRequestsArgsSchema = z.object({
     .describe('Filter by status (default: pending)'),
   limit: z.coerce.number().min(1).max(100).optional().default(20)
     .describe('Maximum number of requests to return'),
+  synthesized: z.enum(['real', 'synthesized', 'all'])
+    .optional()
+    .default('real')
+    .describe('Filter by origin (default: real): "real" = agent-authored via submit_bypass_request, "synthesized" = framework-generated quota_exhaustion rows auto-resolved by quota-recovery-daemon, "all" = both'),
 });
 export type ListBypassRequestsArgs = z.infer<typeof ListBypassRequestsArgsSchema>;
 
