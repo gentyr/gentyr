@@ -186,8 +186,32 @@ export function handleQuotaCrashOnReap({ detection, metadata, agentId, projectDi
           meta.do_not_auto_resume = true;
           meta.quota_reset_hint = detection.resetHint || null;
           meta.quota_detected_at = new Date().toISOString();
-          ptDb.prepare("UPDATE persistent_tasks SET status = 'paused', metadata = ? WHERE id = ?")
-            .run(JSON.stringify(meta), taskId);
+
+          // Update status AND insert a 'paused' event row atomically. Downstream
+          // consumers (notably hourly-automation.js `persistent_stale_pause_resume`)
+          // key auto-resume off the `events` table, not the `status` column —
+          // without an event row the task is permanently quarantined from
+          // auto-recovery after the quota window clears. INSERT mirrors
+          // `recordEvent()` in packages/mcp-servers/src/persistent-task/server.ts.
+          const tx = ptDb.transaction(() => {
+            ptDb.prepare("UPDATE persistent_tasks SET status = 'paused', metadata = ? WHERE id = ?")
+              .run(JSON.stringify(meta), taskId);
+            ptDb.prepare(
+              'INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, ?, ?, ?)'
+            ).run(
+              crypto.randomUUID(),
+              taskId,
+              'paused',
+              JSON.stringify({
+                reason: 'quota_exhaustion',
+                quota_reset_hint: detection.resetHint || null,
+                quota_detected_at: meta.quota_detected_at,
+              }),
+              new Date().toISOString(),
+            );
+          });
+          tx();
+
           out.paused_persistent = taskId;
           logger(`quota-detector: paused persistent task ${taskId} (reset hint: ${detection.resetHint || 'unknown'})`);
         }
@@ -206,8 +230,15 @@ export function handleQuotaCrashOnReap({ detection, metadata, agentId, projectDi
     bypassDb.pragma('journal_mode = WAL');
     bypassDb.pragma('busy_timeout = 3000');
 
+    // Dedup against the summary prefix rather than category. The
+    // `bypass_requests.category` CHECK constraint only allows the canonical
+    // categories (destructive_operation/scope_change/ambiguous_requirement/
+    // resource_access/general), so we tag quota-exhaustion via the `[quota_exhaustion]`
+    // summary prefix and store the row under category='general'. Prior versions
+    // inserted with category='quota_exhaustion' and were silently rejected by
+    // the CHECK constraint — leaving the CTO with no visible bypass request.
     const existing = bypassDb.prepare(
-      "SELECT id FROM bypass_requests WHERE task_type = ? AND task_id = ? AND status = 'pending' AND category = 'quota_exhaustion' LIMIT 1"
+      "SELECT id FROM bypass_requests WHERE task_type = ? AND task_id = ? AND status = 'pending' AND summary LIKE '[quota_exhaustion]%' LIMIT 1"
     ).get(taskType, taskId);
     if (existing) {
       out.bypass_request_id = existing.id;
@@ -216,8 +247,8 @@ export function handleQuotaCrashOnReap({ detection, metadata, agentId, projectDi
       const reqId = `br-${crypto.randomBytes(4).toString('hex')}`;
       const taskTitle = metadata.taskTitle || metadata.title || (taskType === 'persistent' ? 'Persistent task' : 'Todo task');
       const summary = detection.resetHint
-        ? `Spawned agent hit Anthropic quota limit — resets ${detection.resetHint}`
-        : 'Spawned agent hit Anthropic quota limit';
+        ? `[quota_exhaustion] Spawned agent hit Anthropic quota limit — resets ${detection.resetHint}`
+        : '[quota_exhaustion] Spawned agent hit Anthropic quota limit';
       const details = [
         `Detected quota-exhaustion message in dead session JSONL for agent ${agentId}.`,
         `Raw text: ${detection.rawText.slice(0, 300)}`,
@@ -232,7 +263,7 @@ export function handleQuotaCrashOnReap({ detection, metadata, agentId, projectDi
 
       bypassDb.prepare(`
         INSERT INTO bypass_requests (id, task_type, task_id, task_title, agent_id, category, summary, details)
-        VALUES (?, ?, ?, ?, ?, 'quota_exhaustion', ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'general', ?, ?)
       `).run(reqId, taskType, taskId, taskTitle, agentId || null, summary, details);
       out.bypass_request_id = reqId;
       logger(`quota-detector: filed bypass request ${reqId} for ${taskType}:${taskId}`);

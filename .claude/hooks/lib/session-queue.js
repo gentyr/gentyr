@@ -1811,8 +1811,15 @@ export function drainQueue() {
   // 10+ hours on 2026-05-24. Previously TTL was only enforced on queued
   // items; once a session was spawned, expires_at was never checked again.
   // Persistent monitors (ttlMs=0 → expires_at=NULL) are immune by construction.
+  //
+  // Also resets the linked todo task back to `pending` when the killed item
+  // had a `metadata.taskId`. Without this reset the task stayed `in_progress`
+  // forever after a TTL kill, orphaning the work — see 2026-05-27 incident.
+  // Mirrors what `session-reaper.js` does on PID-death reap (line 642).
+  // Audit-lane items are NOT reset here; their tasks live in `pending_audit`
+  // and are recovered by the audit-orphan recovery path in `session-reaper.js`.
   const runningExpired = db.prepare(
-    "SELECT id, agent_id, pid, agent_type, lane, title FROM queue_items "
+    "SELECT id, agent_id, pid, agent_type, lane, title, metadata FROM queue_items "
     + "WHERE status = 'running' AND expires_at IS NOT NULL AND expires_at < datetime('now')"
   ).all();
   for (const row of runningExpired) {
@@ -1836,6 +1843,41 @@ export function drainQueue() {
         title: row.title,
       });
     } catch { /* non-fatal */ }
+
+    // Reset linked todo task to `pending` so the next drain cycle (or the
+    // task_runner scanner in hourly-automation.js / urgent-task-spawner.js)
+    // can re-enqueue it. Skips audit-lane items — those use a separate
+    // pending_audit recovery path. Best-effort; failures are logged.
+    if (row.lane !== 'audit') {
+      let metadata = null;
+      try { metadata = row.metadata ? JSON.parse(row.metadata) : null; } catch { metadata = null; }
+      const linkedTaskId = metadata && (metadata.taskId || null);
+      if (linkedTaskId && Database) {
+        try {
+          const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
+          if (fs.existsSync(todoDbPath)) {
+            const todoDb = new Database(todoDbPath);
+            todoDb.pragma('busy_timeout = 3000');
+            const resetResult = todoDb.prepare(
+              "UPDATE tasks SET status = 'pending', started_at = NULL, started_timestamp = NULL WHERE id = ? AND status = 'in_progress'"
+            ).run(linkedTaskId);
+            todoDb.close();
+            if (resetResult.changes > 0) {
+              log(`Step 2.1: Reset todo task ${linkedTaskId} to pending after TTL kill of ${row.id}`);
+              try {
+                auditEvent('task_reset_on_ttl_kill', {
+                  queue_id: row.id,
+                  task_id: linkedTaskId,
+                  agent_id: row.agent_id,
+                });
+              } catch { /* non-fatal */ }
+            }
+          }
+        } catch (err) {
+          log(`Step 2.1: Failed to reset todo task ${linkedTaskId} after TTL kill of ${row.id}: ${err.message}`);
+        }
+      }
+    }
   }
 
   // Step 2.5: Check for reserved_slots auto-restore

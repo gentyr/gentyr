@@ -846,10 +846,17 @@ function pausePersistentTask(args: PausePersistentTaskArgs): object | ErrorResul
 
 /**
  * Resume a paused persistent task.
+ *
+ * Scrubs quota-pause metadata flags (`pause_reason`, `do_not_auto_resume`,
+ * `quota_reset_hint`, `quota_detected_at`) when present so the task is
+ * recoverable on any FUTURE pause. Without this, a task that was once
+ * quota-paused and then manually resumed would keep `do_not_auto_resume=true`
+ * forever, permanently quarantining it from `persistent_stale_pause_resume`
+ * auto-recovery.
  */
 function resumePersistentTask(args: ResumePersistentTaskArgs): object | ErrorResult {
   const db = getDb();
-  const task = db.prepare('SELECT status, title FROM persistent_tasks WHERE id = ?').get(args.id) as Pick<PersistentTaskRecord, 'status' | 'title'> | undefined;
+  const task = db.prepare('SELECT status, title, metadata FROM persistent_tasks WHERE id = ?').get(args.id) as Pick<PersistentTaskRecord, 'status' | 'title' | 'metadata'> | undefined;
 
   if (!task) {
     return { error: `Persistent task not found: ${args.id}` } as ErrorResult;
@@ -858,7 +865,20 @@ function resumePersistentTask(args: ResumePersistentTaskArgs): object | ErrorRes
     return { error: `Cannot resume task in status '${task.status}' — task must be in 'paused' status` } as ErrorResult;
   }
 
-  db.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ?").run(args.id);
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = task.metadata ? JSON.parse(task.metadata) : {};
+    if (typeof meta !== 'object' || meta === null) meta = {};
+  } catch {
+    meta = {};
+  }
+  delete meta.pause_reason;
+  delete meta.do_not_auto_resume;
+  delete meta.quota_reset_hint;
+  delete meta.quota_detected_at;
+
+  db.prepare("UPDATE persistent_tasks SET status = 'active', metadata = ? WHERE id = ?")
+    .run(JSON.stringify(meta), args.id);
 
   recordEvent(db, args.id, 'resumed', {});
 
