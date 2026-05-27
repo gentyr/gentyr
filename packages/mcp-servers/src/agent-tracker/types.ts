@@ -586,6 +586,33 @@ export type ListBlockingItemsArgs = z.infer<typeof ListBlockingItemsArgsSchema>;
 export type ResolveBlockingItemArgs = z.infer<typeof ResolveBlockingItemArgsSchema>;
 export type GetBlockingSummaryArgs = z.infer<typeof GetBlockingSummaryArgsSchema>;
 
+// ============================================================================
+// Deputy Reports (PR 4 / Fix 3) — wedged-audit escalation inbox
+// ============================================================================
+
+export const ListDeputyReportsArgsSchema = z.object({
+  status: z.enum(['open', 'acknowledged', 'resolved', 'all'])
+    .default('open')
+    .describe('Filter by status (default: open). Use "all" for full history.'),
+  kind: z.string().optional()
+    .describe('Filter by kind (e.g. "wedged_audit"). Omit to return all kinds.'),
+  limit: z.coerce.number().min(1).max(100).default(50)
+    .describe('Maximum number of reports to return'),
+});
+export type ListDeputyReportsArgs = z.infer<typeof ListDeputyReportsArgsSchema>;
+
+export const AcknowledgeDeputyReportArgsSchema = z.object({
+  id: z.string().min(1).describe('Deputy report ID (dr-...)'),
+  notes: z.string().max(2000).optional().describe('Optional notes about the acknowledgement (e.g. "investigating root cause")'),
+});
+export type AcknowledgeDeputyReportArgs = z.infer<typeof AcknowledgeDeputyReportArgsSchema>;
+
+export const ResolveDeputyReportArgsSchema = z.object({
+  id: z.string().min(1).describe('Deputy report ID (dr-...)'),
+  resolution: z.string().min(1).max(2000).describe('Brief description of what was done to resolve the wedged audit (e.g. "reset_pt_audit + spawned fresh auditor with baseRef context")'),
+});
+export type ResolveDeputyReportArgs = z.infer<typeof ResolveDeputyReportArgsSchema>;
+
 export const RepairMainTreeDriftArgsSchema = z.object({
   reason: z.string().min(1).max(500).optional()
     .describe('Why repair was requested (logged to audit + injected into the rescue prompt). E.g. "HMR broken — preview-watcher refusing to pull"'),

@@ -1429,6 +1429,13 @@ export function drainQueue() {
   // When an auditor dies and its task is still pending_audit, spawn a fresh auditor.
   // The reaper flags these in auditRevivals (task stays pending_audit, not reset to pending).
   if (reaperResult && reaperResult.auditRevivals && reaperResult.auditRevivals.length > 0) {
+    // Lazy-import audit-escalation so the module is loaded once per drain
+    // cycle, not on every revival iteration.
+    let auditEscalation = null;
+    try {
+      auditEscalation = await import('./audit-escalation.js');
+    } catch { /* module unavailable — escalation skipped */ }
+
     for (const revival of reaperResult.auditRevivals) {
       try {
         // Dedup: check if another auditor is already queued/running for this task
@@ -1438,6 +1445,55 @@ export function drainQueue() {
         if (existingAudit) {
           log(`Step 1b.5: Audit revival skipped for task ${revival.taskId} — auditor already queued (${existingAudit.id})`);
           continue;
+        }
+
+        // Escalation gate: after MAX_AUDIT_ATTEMPTS revivals OR
+        // MAX_AUDIT_WALL_MINUTES wall time, STOP respawning and instead
+        // reset the audit + file a deputy_reports row. Authorization audits
+        // are out of scope (interactive, short-lived; CTO re-runs naturally).
+        if (auditEscalation && revival.taskType !== 'authorization') {
+          const decision = auditEscalation.shouldEscalateAudit({
+            taskType: revival.taskType,
+            taskId: revival.taskId,
+            projectDir: PROJECT_DIR,
+          });
+          if (decision.escalate) {
+            const result = auditEscalation.resetAuditAndReport({
+              taskType: revival.taskType,
+              taskId: revival.taskId,
+              projectDir: PROJECT_DIR,
+              payload: {
+                task_type: revival.taskType,
+                task_id: revival.taskId,
+                task_title: revival.taskTitle || '',
+                attempts: decision.attempts,
+                age_minutes: decision.ageMin,
+                escalation_reason: decision.reason,
+                last_agent_id: revival.agentId,
+                last_queue_id: revival.queueId,
+                criteria: (revival.criteria || '').slice(0, 500),
+                method: (revival.method || '').slice(0, 500),
+                auto_action_taken: 'audit_reset_to_in_progress',
+                suggested_triage: [
+                  'check audit-lane-guard denials in the auditor JSONL',
+                  'verify baseRef is present in audit metadata',
+                  'consider manual reset_*_audit with override reason',
+                ],
+              },
+            });
+            log(`Step 1b.5: ESCALATED ${revival.taskType} audit for task ${revival.taskId} — ${decision.reason}; reset=${result.reset}, deputy_report=${result.reportId || 'none'}`);
+            try {
+              auditEvent('audit_escalated_to_deputy', {
+                task_id: revival.taskId,
+                task_type: revival.taskType,
+                attempts: decision.attempts,
+                age_minutes: decision.ageMin,
+                reason: decision.reason,
+                deputy_report_id: result.reportId,
+              });
+            } catch (_) { /* non-fatal */ }
+            continue;
+          }
         }
 
         let spec;
