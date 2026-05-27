@@ -324,6 +324,9 @@ export const ServicesConfigSchema = z.object({
       .describe('Tigris S3 endpoint URL (default: https://fly.storage.tigris.dev)'),
     projectImageEnabled: z.boolean().default(false)
       .describe('When true, spawnRemoteMachine prefers project-specific images (built via deploy_project_image) over base images. Project images include pre-installed dependencies, reducing cold start from ~90s to ~10s.'),
+    extraAptPackages: z.array(z.string().regex(/^[a-z0-9][a-z0-9.+-]*$/))
+      .optional()
+      .describe('Extra Debian apt packages to install in the PROJECT image at deploy_project_image time. Useful for project-specific runtime tools (e.g. "ttyd" for terminal-based demos, "redis-cli", "postgresql-client"). Only applied to project images, not the base image. Each package name is validated against the standard Debian package regex (^[a-z0-9][a-z0-9.+-]*$) to prevent shell injection through the Dockerfile build-arg.'),
   }).optional().describe('Fly.io remote Playwright execution configuration. When configured, headless demos auto-route to ephemeral Fly machines.'),
   steel: z.object({
     apiKey: z.string().regex(/^op:\/\//, 'Must be an op:// reference')

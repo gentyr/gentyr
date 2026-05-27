@@ -10520,6 +10520,19 @@ const tools: AnyToolHandler[] = [
         buildArgs.push('--build-arg', `BUILD_CMD=${effectiveBuildCmd}`);
       }
 
+      // Pass through services.json#fly.extraAptPackages so Dockerfile.project
+      // can `apt-get install` project-specific runtime tools before git clone.
+      // Each package name was validated by the Zod schema (Debian package regex
+      // ^[a-z0-9][a-z0-9.+-]*$) — joining with spaces is safe for unquoted
+      // shell expansion inside the Dockerfile RUN step.
+      try {
+        const services = loadServicesConfig(PROJECT_DIR);
+        const pkgs = services?.fly?.extraAptPackages;
+        if (Array.isArray(pkgs) && pkgs.length > 0) {
+          buildArgs.push('--build-arg', `EXTRA_APT_PACKAGES=${pkgs.join(' ')}`);
+        }
+      } catch { /* non-fatal — proceed without extras */ }
+
       // 13. Spawn in background (takes 5-15 minutes for remote build with install)
       const logFile = path.join(PROJECT_DIR, '.claude', 'state', `fly-project-deploy-${Date.now()}.log`);
       fs.mkdirSync(path.dirname(logFile), { recursive: true });
