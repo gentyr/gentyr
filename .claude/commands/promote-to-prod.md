@@ -185,11 +185,8 @@ Create each phase in order using `mcp__plan-orchestrator__add_phase`:
 8. **Phase 8** — "Release Report"
    - `plan_id`, `title: "Release Report"`
 
-8b. **Phase 8.5** — "Deploy Trigger" (conditional — only if `services.json.environments.production.deployTarget` is set; section 5d-deploy adds this after Phase 8)
-   - `plan_id`, `title: "Deploy Trigger"`, `gate: true`
-
-8c. **Phase 8.7** — "Post-Deploy Health Gate" (conditional — only if `deployTarget` is set; section 5d-deploy adds this after Phase 8.5; auto-rollback on failure)
-   - `plan_id`, `title: "Post-Deploy Health Gate"`, `gate: true`
+8b. **Phase 8.6** — "Deploy & Verify (per target)" (conditional — only if `services.json.environments.production.deployTarget` or `deployTargets[]` is set; section 5d-verify adds this after Phase 8; replaces the legacy split 8.5/8.7 phases. Spawns one `deployment-verifier` agent per target in parallel; each handles trigger → poll-live → probe-health → record-or-rollback for its own target.)
+   - `plan_id`, `title: "Deploy & Verify"`, `gate: true`
 
 Record each phase ID.
 
@@ -334,11 +331,11 @@ Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo
 - Description: "Merge staging to main, collect all artifacts, generate the structured release report, and persist to the release ledger. After the report is generated, a GitHub Release is automatically created with a git tag and the report as release notes (handled by release-completion-hook.js — no manual action needed)."
 - create_todo: true, todo_section: "PROJECT-MANAGER"
 
-### 5d-deploy. Conditional Deploy Trigger + Health Gate (only when `services.json.environments.production.deployTarget` OR `deployTargets[]` is set)
+### 5d-verify. Conditional Phase 8.6 "Deploy & Verify (per target)" (only when `services.json.environments.production.deployTarget` OR `deployTargets[]` is set)
 
-When the production environment has in-band deploy targets configured, insert two phases AFTER Phase 8 (so the merge has landed before we deploy). This replaces the prior "trust the platform's auto-deploy webhook" model with an explicit, audited, CTO-gated deploy that gates release sign-off on health-probe success.
+Single merged phase that replaces the legacy split Phase 8.5 + 8.7. When production has in-band deploy targets configured, insert ONE new phase AFTER Phase 8. The phase spawns N parallel `deployment-verifier` agents (one per target) — each handles trigger → poll-live → probe-health → record-or-rollback for its own target. The phase completes when all N verifiers succeed; ANY failure aborts the release.
 
-**Multi-target releases**: A single release can deploy to multiple platforms in parallel — e.g. backend on Render, web on Vercel, marketing on Vercel. Configure via `deployTargets[]` (canonical) or `deployTarget` singular (backward-compat shorthand). Both shapes are auto-resolved by `wait_for_health_probe` and the task templates below.
+**Why merged**: per-target work is structurally independent — backend's deploy + probe can run in parallel with web's deploy + probe. The legacy 8.5/8.7 split serialized "all deploys live" before "all probes start," costing ~5 min of unnecessary wall-clock on multi-target releases. Per-target verifiers overlap probe-time with sibling-deploy-time, dropping worst case from ~10 min to ~6-7 min.
 
 ```bash
 node -e "
@@ -346,47 +343,41 @@ import fs from 'fs';
 const c = JSON.parse(fs.readFileSync('./services.json', 'utf8'));
 const env = c.environments?.production ?? {};
 let targets = Array.isArray(env.deployTargets) && env.deployTargets.length > 0 ? env.deployTargets : (env.deployTarget ? [env.deployTarget] : []);
-console.log(JSON.stringify({ enabled: targets.length > 0, count: targets.length, targets: targets.map(t => ({ platform: t.platform, serviceId: t.serviceId, label: t.label ?? null })) }));
+console.log(JSON.stringify({ enabled: targets.length > 0, count: targets.length, targets: targets.map(t => ({ platform: t.platform, serviceId: t.serviceId, label: t.label ?? null, rollbackGroup: t.rollbackGroup ?? null })) }));
 " --input-type=module
 ```
 
-When `enabled: true`, add Phase 8.5:
+When `enabled: true`, add Phase 8.6 with ONE task per `deployTarget`:
 
 ```
+// For EACH target in deployTargets[]:
 mcp__plan-orchestrator__add_plan_task({
   plan_id: "<plan_id>",
-  phase_id: "<phase_8_5_id>",
-  title: "Trigger production deploy(s) via platform API",
-  description: "Read services.json#environments.production.deployTargets (or wrap deployTarget singular into a one-element array). For EACH target in parallel: (1) Call the platform-specific deploy tool — mcp__render__render_trigger_deploy({ service_id }) for Render, mcp__vercel__vercel_promote_deployment for Vercel, mcp__fly__deploy_machine for Fly. (2) Record the platform deploy ID via mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, target_label, status: 'triggered' }) — set target_label to the target.label from services.json so multi-platform releases stay distinguishable on the ledger. (3) Call trackDeployment(environment, deploy_id, platform, { target_label, serviceId }) from .claude/hooks/lib/auto-rollback.js so the per-target rollback state file knows about this deploy. (4) Poll the platform API until the deploy reaches 'live' (or 'failed'). (5) Call record_deploy_artifact again with status: 'live' once confirmed AND call recordHealthy(environment, deploy_id, platform, { target_label, serviceId }) so Phase 8.7 has a per-target lastKnownGood baseline for rollback. ALL targets must reach 'live' before the phase completes. On ANY target's 'failed' state → file a bypass request and halt; the merge has succeeded, the CTO can retry the failed target manually.",
-  verification_strategy: "For every target in deployTargets[]: release.deploy_artifacts contains a row with status === 'live' AND deploy-tracking.json has a per-target lastKnownGood entry within 10 minutes",
+  phase_id: "<phase_8_6_id>",
+  title: "Verify deploy: <target.label>",
+  description: "WORKFLOW OVERRIDE: skip the standard 6-step pipeline. This task spawns ONLY the deployment-verifier agent (agents/deployment-verifier.md) for the <target.label> target — no investigator, no code-writer, no project-manager. The spawned task-runner reads this description and invokes the deployment-verifier directly via Task(subagent_type='deployment-verifier', isolation='worktree') with these inputs in the agent prompt: { release_id: '<release_id>', environment: 'production', target: <target object from services.json>, allTargets: <full deployTargets[] from services.json for cascade resolution> }. The verifier handles: (1) trigger platform deploy, (2) record_deploy_artifact triggered, (3) trackDeployment, (4) poll until live (10-min cap), (5) record_deploy_artifact live, (6) wait_for_health_probe for 5 min (6 consecutive passes), (7) recordHealthy on success OR cascading rollback via resolveRollbackTargets + triggerInBandRollback on failure. The task-runner waits for the verifier's summarize_work and reports its outcome. On verifier failure: cancel_release.",
+  verification_strategy: "release.deploy_artifacts contains a row for <target.label> with status === 'live' AND deploy-tracking.json has lastKnownGood entry at production.<target.label> AND the verifier's summarize_work reports probe_passed: true",
   create_todo: true,
-  todo_section: "GENERAL"
+  todo_section: "GENERAL",
+  metadata: {
+    deployment_verifier: true,
+    target_label: "<target.label>",
+    target_platform: "<target.platform>",
+  }
 })
 ```
 
-And Phase 8.7:
+The plan-manager spawns the deployment-verifier persistent task per target in parallel (see `agents/plan-manager.md` "Phase 8.6 (Deploy & Verify)" for the orchestration details).
 
-```
-mcp__plan-orchestrator__add_plan_task({
-  plan_id: "<plan_id>",
-  phase_id: "<phase_8_7_id>",
-  title: "Post-deploy health gate (multi-target)",
-  description: "Call mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 }). The tool returns probe_specs[] — one entry per deployTarget, each with its resolved base_url (target.baseUrlOverride OR env.baseUrl) and health_checks (target.healthChecks OR env.healthChecks OR default). For each probe_spec: poll {base_url}{health_check.path} every interval_seconds; require min_consecutive_passes consecutive successes (status matches expectStatus AND body contains expectBodyContains if set). The phase passes when EVERY probe_spec hits its threshold within duration_seconds. On ANY probe_spec's failure: (1) Read services.json#environments.production.deployTargets[] to find the failing target's rollbackGroup. (2) Call resolveRollbackTargets(failingTarget, allTargets) from .claude/hooks/lib/auto-rollback.js to compute the cascade set — targets sharing a rollbackGroup cascade together; isolated targets do not. (3) For EACH target in the rollback set, call triggerInBandRollback({ release_id, environment, target_label, platform, serviceId, reason: 'Cascading rollback from group <group>: <failingTarget.label> failed health probe' }). (4) Call mcp__release-ledger__cancel_release with a reason listing every rolled-back target_label. (5) Notify the deputy-CTO via report_to_deputy_cto (staging tier) with the full cascading report. If any target in the rollback set has no lastKnownGood entry, escalate to CTO without auto-rollback — that target may be down without a recovery path.",
-  verification_strategy: "wait_for_health_probe.probe_specs.every(spec => 6 consecutive successful probes recorded against spec.base_url + each spec.health_checks[].path) AND release status is NOT cancelled",
-  create_todo: true,
-  todo_section: "GENERAL"
-})
-```
-
-Add dependencies: Phase 8.5 depends on Phase 8 (`add_dependency`), Phase 8.7 depends on Phase 8.5.
+Add dependencies: Phase 8.6 depends on Phase 8 (`add_dependency`). Within Phase 8.6, tasks have no inter-task dependencies — every verifier runs in parallel.
 
 **Failure handling**:
-- Phase 8.5 failure (any target's deploy never reaches live) → file bypass request, do NOT cancel the release yet — the merge has succeeded; that specific target can be retried by the CTO via the platform's deploy tool manually.
-- Phase 8.7 failure (any probe_spec never reaches min_consecutive_passes) → cascading AUTO-ROLLBACK via `resolveRollbackTargets` + `triggerInBandRollback` for every target in the failing target's rollbackGroup, then `cancel_release`. This is the only path in gentyr's promotion plan that auto-cancels a signed-off release.
+- Verifier deploy-trigger failure (platform API rejected the request) → verifier files a bypass request and exits without releasing. The CTO can retry that target's deploy manually. The release is NOT auto-cancelled — the merge succeeded; only the deploy is stuck.
+- Verifier poll-live timeout (>10 min waiting for `live` status) → same: bypass request, no auto-cancel.
+- Verifier probe failure → cascading AUTO-ROLLBACK via `resolveRollbackTargets` + `triggerInBandRollback` for every target in the failing target's `rollbackGroup`, then `cancel_release`. This is the only path in gentyr's promotion plan that auto-cancels a signed-off release.
 - Cascading rollback semantics: targets sharing a `rollbackGroup` string in services.json revert together (e.g., `backend` + `web` both tagged `'api-contract'` → backend probe fails → web also reverts). Isolated targets (no rollbackGroup, or distinct values) stay live when sibling targets fail.
-- Multi-target partial rollback (when no rollbackGroup is set): gentyr rolls back EACH failing target independently using its platform's rollback API. A mixed-platform release (Render + Vercel) where Vercel's probes fail rolls back only the Vercel target; the Render deploy stays live. CTO is notified via `report_to_deputy_cto` (staging tier).
 
-**When `enabled: false`**: Skip both phases entirely. The release falls back to the legacy webhook-trusting model — no behavior change for projects that haven't opted in.
+**When `enabled: false`**: Skip Phase 8.6 entirely. The release falls back to the legacy webhook-trusting model — no behavior change for projects that haven't opted in.
 
 ### 5e. Add phase dependencies
 
@@ -446,8 +437,7 @@ The release plan has 8 phases:
   6. Final Triage
   7. CTO Sign-off (requires your explicit approval)
   8. Release Report + Merge to Main
-  8.5. Deploy Trigger (only when services.json.environments.production.deployTarget is set)
-  8.7. Post-Deploy Health Gate (only when deployTarget is set; auto-rolls back on failure)
+  8.6. Deploy & Verify per target (only when services.json.environments.production.deployTargets[] is set; spawns one deployment-verifier per target in parallel; auto-rolls back on probe failure with cascade per rollbackGroup)
 
 A plan-manager has been spawned to drive the release through all phases.
 

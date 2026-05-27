@@ -238,37 +238,36 @@ To check the approval tier, read services.json via `mcp__secret-sync__get_servic
 3. Do NOT advance to Phase 5 (Demo Coverage Audit) or CTO sign-off until coverage is verified at 100%
 4. Record coverage verification results in `coverage-report.json` in the release artifact directory
 
-## Deploy Trigger + Post-Deploy Health (Phases 8.5 and 8.7)
+## Deploy & Verify (Phase 8.6)
 
-When the release plan includes "Deploy Trigger" (Phase 8.5) and "Post-Deploy Health Gate" (Phase 8.7) phases — added by `/promote-to-prod` when `services.json.environments.production.deployTarget` (singular) or `deployTargets` (plural array) is configured — drive them as follows:
+When the release plan includes a "Deploy & Verify" phase (added by `/promote-to-prod` section 5d-verify when `services.json.environments.production.deployTarget` singular or `deployTargets[]` plural is configured), drive it as follows. Phase 8.6 replaces the legacy split Phase 8.5 + 8.7 — per-target work runs in parallel via the `deployment-verifier` agent, cutting the worst-case ~10-min tail to ~6-7 min.
 
-**Phase 8.5 (Deploy Trigger)** — multi-target aware:
-1. Phase 8 must complete first (staging is merged to main; release report generated).
-2. Read `services.json#environments.production.deployTargets` (preferred) or wrap `deployTarget` singular into `[{...}]`.
-3. The Phase 8.5 task agent fires platform-specific deploy tools IN PARALLEL for every target — `mcp__render__render_trigger_deploy({ service_id })` for Render targets, `mcp__vercel__vercel_promote_deployment` for Vercel, `mcp__fly__deploy_machine` for Fly.
-4. For each target: record the resulting deploy ID via `mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, target_label: <label from services.json>, status: 'triggered' })`. The `target_label` is critical when a release deploys to multiple instances of the same platform (e.g., two Vercel projects for web + marketing).
-4b. **Track deployment in rollback state**: Call `trackDeployment(env, deploy_id, platform, { target_label, serviceId })` from `.claude/hooks/lib/auto-rollback.js` so `deploy-tracking.json` has a per-target row. Without this, Phase 8.7's rollback path cannot find the deploy on file.
-5. Poll EACH target's platform until it reaches `live` (typically 2-5 minutes each). Call `record_deploy_artifact` again per target with `status: 'live'` once confirmed. Then call `recordHealthy(env, deploy_id, platform, { target_label, serviceId })` so a per-target `lastKnownGood` baseline exists for the rollback path.
-6. Phase 8.5 only completes when ALL targets are `live`. On ANY target's `failed`: file a bypass request and exit. Do NOT cancel the release — the CTO may want to retry that specific target.
+**Setup**: Phase 8 must complete first (staging merged to main; release report generated). Then for Phase 8.6:
 
-**Phase 8.7 (Post-Deploy Health Gate)** — multi-target aware:
-1. Phase 8.5 must complete first (all targets live).
-2. Call `mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 })`. The tool returns `probe_specs[]` — one entry per `deployTarget`, with the target's resolved `base_url` (target.baseUrlOverride OR env.baseUrl) and `health_checks` (target.healthChecks OR env.healthChecks OR default).
-3. For each `probe_spec`: poll `{base_url}{health_check.path}` every `interval_seconds`; require `min_consecutive_passes` consecutive successes (status matches `expectStatus`, body contains `expectBodyContains` if set).
-4. On every spec reaching its threshold within `duration_seconds`: release proceeds to terminal state.
-5. On ANY `probe_spec` failing — cascading rollback:
-   - Read `services.json#environments.production.deployTargets[]` to find the failing target's `rollbackGroup`.
-   - Call `resolveRollbackTargets(failingTarget, allTargets)` from `.claude/hooks/lib/auto-rollback.js` to compute the rollback set. Targets sharing a `rollbackGroup` cascade together (e.g., `backend` + `web` tagged `'api-contract'` both revert when either fails). Targets without a group, or in distinct groups, roll back in isolation.
-   - For each target in the rollback set, call `triggerInBandRollback({ release_id, environment, target_label, platform, serviceId, reason: 'Cascading rollback from group <group>: <failingTarget.label> failed probe' })`.
-   - Call `mcp__release-ledger__cancel_release({ release_id, reason: 'Post-deploy health gate failed; rolled back <comma-separated target_labels>' })`.
-   - Notify deputy-CTO via `report_to_deputy_cto` (staging tier) with the full cascading report.
-6. If any `triggerInBandRollback` call in the rollback set returns `rolledBack: false` (no known-good deploy on file for that target): file a bypass request to the CTO — that target may be down without an automatic recovery path.
-7. Cascading vs isolated rollback configuration:
-   - Set `deployTargets[].rollbackGroup: 'api-contract'` on backend + web when they share an API contract — a backend failure reverts the web deploy too (preventing the web from talking to the rolled-back backend).
-   - Leave `rollbackGroup` unset for independent targets (marketing, mobile, etc.) so their failures don't drag siblings down.
-   - Different groups stay isolated: `'api-contract'` failures do not affect `'mobile-bundle'` targets.
+1. Read `services.json#environments.production.deployTargets` (preferred) or wrap `deployTarget` singular into `[{...}]`.
+2. For EACH target, the plan-orchestrator's `add_plan_task` has already created a Phase 8.6 task with `metadata.deployment_verifier: true` and `metadata.target_label`. These tasks spawn the `agents/deployment-verifier.md` agent via the standard task-runner pipeline.
+3. The plan-manager waits for ALL N verifier persistent tasks to complete. Spawn them in parallel — no inter-task dependencies within Phase 8.6.
 
-These are the only phases in the release plan that can auto-cancel a signed-off release. The intent is that bad deploys never stay broken: gentyr rolls back to the last known good deploy within 6-7 minutes (5 minute probe window + ~30s rollback API call).
+**Per-verifier responsibilities** (the verifier owns its own lifecycle — the plan-manager does not micromanage):
+- Trigger the platform deploy (`mcp__<platform>__<platform>_trigger_deploy`).
+- `record_deploy_artifact` with `status: 'triggered'` then `'live'`.
+- `trackDeployment` + `recordHealthy` in `deploy-tracking.json` (per-target slot).
+- 5-minute health probe loop (`wait_for_health_probe` returns the per-target probe spec).
+- On success: `recordHealthy`, `summarize_work`, exit.
+- On probe failure: cascading rollback via `resolveRollbackTargets` + `triggerInBandRollback` for every target in the failing target's `rollbackGroup` (see Cascading rollback below), then signal Phase 8.6 to abort.
+
+**Plan-manager orchestration**:
+1. Poll each verifier task via `inspect_persistent_task` and `mcp__release-ledger__get_release` (to see live `deploy_artifacts`).
+2. When all N verifiers complete successfully: Phase 8.6 passes, plan advances to terminal state.
+3. When ANY verifier fails (deploy never reaches `live`, probe never passes, or rollback completes): call `mcp__release-ledger__cancel_release` with the failure context. The verifier's own cascading rollback has already reverted the failing target's group; the plan-manager just needs to mark the release cancelled.
+4. On verifier silently dying (heartbeat stale >15 min): file a bypass request — the persistent-task revival will eventually respawn but the CTO should know.
+
+**Cascading vs isolated rollback configuration** (read from `services.json#environments.production.deployTargets[].rollbackGroup`):
+- Set `rollbackGroup: 'api-contract'` on backend + web when they share an API contract — a backend probe failure reverts the web deploy too (preventing the web from talking to a rolled-back backend).
+- Leave `rollbackGroup` unset for independent targets (marketing, mobile, etc.) so their failures don't drag siblings down.
+- Distinct groups stay isolated: `'api-contract'` failures do not affect `'mobile-bundle'` targets.
+
+Phase 8.6 is the only phase in the release plan that can auto-cancel a signed-off release. The intent is that bad deploys never stay broken: gentyr rolls back to the last known good deploy within ~6-7 minutes (per-target probe runs overlap with sibling deploys).
 
 ## Migration Pre-Flight Gate (Phase 4.5)
 
