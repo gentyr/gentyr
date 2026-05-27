@@ -170,6 +170,9 @@ Create each phase in order using `mcp__plan-orchestrator__add_phase`:
 4b. **Phase 4.5** — "Migration Pre-Flight" (conditional — only if `services.json.environments.production.supabase.projectRef` is set)
    - `plan_id`, `title: "Migration Pre-Flight"`, `gate: true`
 
+4c. **Phase 4.6** — "Canary Verification" (conditional — only if `services.json.canary.enabled` is true; section 5d-canary adds this between Phase 4.5 and Phase 5)
+   - `plan_id`, `title: "Canary Verification"`, `gate: true`
+
 5. **Phase 5** — "Demo Coverage Audit"
    - `plan_id`, `title: "Demo Coverage Audit"`, `gate: true`
 
@@ -181,6 +184,12 @@ Create each phase in order using `mcp__plan-orchestrator__add_phase`:
 
 8. **Phase 8** — "Release Report"
    - `plan_id`, `title: "Release Report"`
+
+8b. **Phase 8.5** — "Deploy Trigger" (conditional — only if `services.json.environments.production.deployTarget` is set; section 5d-deploy adds this after Phase 8)
+   - `plan_id`, `title: "Deploy Trigger"`, `gate: true`
+
+8c. **Phase 8.7** — "Post-Deploy Health Gate" (conditional — only if `deployTarget` is set; section 5d-deploy adds this after Phase 8.5; auto-rollback on failure)
+   - `plan_id`, `title: "Post-Deploy Health Gate"`, `gate: true`
 
 Record each phase ID.
 
@@ -325,6 +334,55 @@ Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo
 - Description: "Merge staging to main, collect all artifacts, generate the structured release report, and persist to the release ledger. After the report is generated, a GitHub Release is automatically created with a git tag and the report as release notes (handled by release-completion-hook.js — no manual action needed)."
 - create_todo: true, todo_section: "PROJECT-MANAGER"
 
+### 5d-deploy. Conditional Deploy Trigger + Health Gate (only when `services.json.environments.production.deployTarget` is set)
+
+When the production environment has an in-band `deployTarget` configured, insert two phases AFTER Phase 8 (so the merge has landed before we deploy). This replaces the prior "trust the platform's auto-deploy webhook" model with an explicit, audited, CTO-gated deploy that gates release sign-off on health-probe success.
+
+```bash
+node -e "
+import fs from 'fs';
+const c = JSON.parse(fs.readFileSync('./services.json', 'utf8'));
+const dt = c.environments?.production?.deployTarget;
+console.log(JSON.stringify({ enabled: !!dt, platform: dt?.platform || null, serviceId: dt?.serviceId || null }));
+" --input-type=module
+```
+
+When `enabled: true`, add Phase 8.5:
+
+```
+mcp__plan-orchestrator__add_plan_task({
+  plan_id: "<plan_id>",
+  phase_id: "<phase_8_5_id>",
+  title: "Trigger production deploy via <platform> API",
+  description: "Call mcp__<platform>__<platform>_trigger_deploy with the configured serviceId. Record the platform deploy ID (Render dep-..., Vercel dpl-...) via mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, status: 'triggered' }). Poll the platform API until the deploy reaches 'live' (or 'failed'); on failed → halt the release and file a bypass request. This replaces relying on the platform's auto-deploy webhook — the platform's webhook should be turned OFF at gentyr setup time so this is the only path that produces production deploys.",
+  verification_strategy: "release.deploy_artifacts[].status === 'live' for the production target AND the platform reports the deploy as live within 10 minutes",
+  create_todo: true,
+  todo_section: "GENERAL"
+})
+```
+
+And Phase 8.7:
+
+```
+mcp__plan-orchestrator__add_plan_task({
+  plan_id: "<plan_id>",
+  phase_id: "<phase_8_7_id>",
+  title: "Post-deploy health gate",
+  description: "Probe the production environment's healthChecks for 5 minutes (300 seconds) requiring 6 consecutive successful probes before clearing the release for sign-off. Call mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 }). On failure: call triggerInBandRollback from .claude/hooks/lib/auto-rollback.js with the release_id, environment, and a structured reason. Then call mcp__release-ledger__cancel_release. The rollback uses the most recent lastKnownGood deploy on file — if none exists, escalate to CTO immediately via report_to_deputy_cto.",
+  verification_strategy: "wait_for_health_probe returned ok: true AND 6 consecutive successful probes recorded AND release status is NOT cancelled",
+  create_todo: true,
+  todo_section: "GENERAL"
+})
+```
+
+Add dependencies: Phase 8.5 depends on Phase 8 (`add_dependency`), Phase 8.7 depends on Phase 8.5.
+
+**Failure handling**:
+- Phase 8.5 failure (deploy never reaches live) → file bypass request, do NOT cancel the release yet — the merge has succeeded; the deploy can be retried by the CTO via `mcp__<platform>__<platform>_trigger_deploy` manually.
+- Phase 8.7 failure (health probe never reaches min_consecutive_passes) → AUTO-ROLLBACK via `triggerInBandRollback`, then `cancel_release`. This is the only path in gentyr's promotion plan that auto-cancels a signed-off release.
+
+**When `enabled: false`**: Skip both phases entirely. The release falls back to the legacy webhook-trusting model — no behavior change for projects that haven't opted in.
+
 ### 5e. Add phase dependencies
 
 Each phase depends on the previous one completing. Add dependencies:
@@ -382,7 +440,9 @@ The release plan has 8 phases:
   5. Demo Coverage Audit
   6. Final Triage
   7. CTO Sign-off (requires your explicit approval)
-  8. Release Report
+  8. Release Report + Merge to Main
+  8.5. Deploy Trigger (only when services.json.environments.production.deployTarget is set)
+  8.7. Post-Deploy Health Gate (only when deployTarget is set; auto-rolls back on failure)
 
 A plan-manager has been spawned to drive the release through all phases.
 

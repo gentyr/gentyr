@@ -353,3 +353,57 @@ export async function checkAndRollback(projectDir, environment) {
     try { db.close(); } catch { /* cleanup */ }
   }
 }
+
+/**
+ * Synchronous in-band rollback entry point for promotion pipeline Phase 8.7.
+ *
+ * Unlike `checkAndRollback`, this does NOT consult the synthetic-monitor DB.
+ * The caller (Phase 8.7's health-probe loop) has already decided the deploy
+ * is unhealthy and wants to roll back NOW.
+ *
+ * Returns a structured result the caller writes to the release ledger
+ * (via `update_release` + `cancel_release` if appropriate). The release
+ * record itself is updated by the caller — this module stays free of
+ * release-ledger imports to keep the dependency graph clean.
+ *
+ * @param {Object} args
+ * @param {string} args.release_id - Release ID for log correlation
+ * @param {string} args.environment - Environment to roll back (typically 'production')
+ * @param {string} args.reason - Why the rollback was triggered (logged + returned)
+ * @param {string} [args.projectDir] - Project root (defaults to CLAUDE_PROJECT_DIR)
+ * @returns {{ok: boolean, rolledBack: boolean, platform: string, previousDeployId: string | null, error: string | null, reason: string}}
+ */
+export function triggerInBandRollback({ release_id, environment, reason, projectDir }) {
+  if (!release_id) throw new Error('triggerInBandRollback requires release_id');
+  if (!environment) throw new Error('triggerInBandRollback requires environment');
+  if (!reason) throw new Error('triggerInBandRollback requires reason');
+
+  const dir = projectDir || PROJECT_DIR;
+  logAction(`IN-BAND ROLLBACK REQUESTED: release=${release_id} env=${environment} reason="${reason}"`);
+
+  const state = getDeployState();
+  const previousGood = state.lastKnownGood[environment];
+  const previousDeployId = previousGood?.deployId ?? null;
+
+  if (!previousDeployId) {
+    logAction(`IN-BAND ROLLBACK SKIPPED: release=${release_id} env=${environment} — no known-good deploy on file`);
+    return {
+      ok: false,
+      rolledBack: false,
+      platform: 'unknown',
+      previousDeployId: null,
+      error: 'No known-good deploy on file. Cannot roll back automatically — escalate to CTO.',
+      reason,
+    };
+  }
+
+  const result = executeRollback(environment, dir);
+  return {
+    ok: result.success,
+    rolledBack: result.success,
+    platform: result.platform,
+    previousDeployId,
+    error: result.error,
+    reason,
+  };
+}

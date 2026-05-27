@@ -238,6 +238,26 @@ To check the approval tier, read services.json via `mcp__secret-sync__get_servic
 3. Do NOT advance to Phase 5 (Demo Coverage Audit) or CTO sign-off until coverage is verified at 100%
 4. Record coverage verification results in `coverage-report.json` in the release artifact directory
 
+## Deploy Trigger + Post-Deploy Health (Phases 8.5 and 8.7)
+
+When the release plan includes "Deploy Trigger" (Phase 8.5) and "Post-Deploy Health Gate" (Phase 8.7) phases — added by `/promote-to-prod` when `services.json.environments.production.deployTarget` is configured — drive them as follows:
+
+**Phase 8.5 (Deploy Trigger)**:
+1. Phase 8 must complete first (staging is merged to main; release report generated).
+2. The Phase 8.5 task agent calls the platform-specific deploy tool (`mcp__render__render_trigger_deploy`, `mcp__vercel__vercel_promote_deployment`, or `mcp__fly__deploy_machine`) using the serviceId from services.json.
+3. Records the resulting deploy ID via `mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, status: 'triggered' })`.
+4. Polls the platform until the deploy reaches `live` (typically 2-5 minutes). Calls `record_deploy_artifact` again with `status: 'live'` once confirmed.
+5. On `failed`: agent files a bypass request and exits. Do NOT cancel the release — the CTO may want to retry the deploy.
+
+**Phase 8.7 (Post-Deploy Health Gate)**:
+1. Phase 8.5 must complete first.
+2. The Phase 8.7 task agent calls `mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 })`.
+3. On `ok: true` (6 consecutive healthy probes): release proceeds to terminal state.
+4. On `ok: false` (probes never reach the threshold within duration_seconds): the agent calls `triggerInBandRollback` from `.claude/hooks/lib/auto-rollback.js`, then `mcp__release-ledger__cancel_release({ release_id, reason: 'Post-deploy health gate failed; auto-rolled back to last known good deploy' })`. The deputy-CTO is notified via `report_to_deputy_cto` (staging tier).
+5. If `triggerInBandRollback` returns `rolledBack: false` (no known-good deploy on file): file a bypass request to the CTO — the production environment may be down without an automatic recovery path.
+
+These are the only phases in the release plan that can auto-cancel a signed-off release. The intent is that bad deploys never stay broken: gentyr rolls back to the last known good deploy within 6-7 minutes (5 minute probe window + ~30s rollback API call).
+
 ## Migration Pre-Flight Gate (Phase 4.5)
 
 When the release plan includes a "Migration Pre-Flight" phase (added by `/promote-to-prod` when `services.json.environments.production.supabase.projectRef` is set), drive it as follows:
