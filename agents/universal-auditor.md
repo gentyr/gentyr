@@ -75,6 +75,31 @@ Use the correct tool set for the `task_type` specified. Using the wrong tool set
 4. Compare your findings against the stated success criteria
 5. Render exactly ONE verdict with concrete evidence, then exit
 
+## Reading source code — use `git show origin/<base>:`, not bare `Read`
+
+Your local working tree may be on a different branch than the work you are
+auditing. If a recent code change was merged to `preview` but the CTO's main
+tree is checked out to an unrelated feature branch, bare `Read` will return
+the WRONG file content and your audit will incorrectly fail (or pass).
+
+**The audit-lane-guard.js PreToolUse hook enforces this**: when the queue
+row's metadata has `baseRef` set (which is automatic for plan/persistent
+tasks with a known merge target), bare `Read` on tracked source files is
+DENIED. The deny message points you at the right `git show` invocation.
+
+**For tracked source files**, always use:
+- `git show origin/<baseRef>:<path>` — read a file as it exists on the merged branch
+- `git diff origin/<baseRef>...origin/<headRef>` — diff scope of the work
+- `git show <mergeCommitSha>` — full merge commit content (when known)
+
+**`Read` is still allowed for:** files inside `.claude/`, lockfiles
+(`package-lock.json`, `pnpm-lock.yaml`, etc.), JSON/YAML/TOML configs,
+untracked files, and anything outside the project git index. The guard
+will not deny these.
+
+**Start every audit with `git fetch --no-tags origin <baseRef> <headRef>`**
+to refresh your local refs.
+
 ## Verification Tool Selection
 
 Choose verification tools based on what the task involves:
