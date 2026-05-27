@@ -280,6 +280,43 @@ export function expireStaleActions(db) {
 }
 
 /**
+ * Promote deferred actions stuck in 'executing' state for longer than `maxMinutes`
+ * to 'failed' with `execution_error: 'executor_hung'`. The inline executor in
+ * `authorization-audit-spawner.js` and the deferred-action audit executor both
+ * transition `pending → executing` before doing potentially slow work
+ * (worktree provisioning, MCP HTTP calls, Bash). If the executor process is
+ * killed mid-execution — or hangs on a network call with no timeout — the row
+ * sits in `executing` forever and the action is never retried.
+ *
+ * This helper sweeps such rows so the next `set_lockdown_mode`/etc retry
+ * inserts a fresh deferred action instead of being deduplicated by
+ * `findDuplicatePending` (which only matches `pending`, but a hung row could
+ * still block subsequent recovery if the system tracks executor-attempts).
+ *
+ * Default cutoff: 10 minutes. Inline lockdown execution should take <1s in the
+ * happy path; even worktree provisioning with `pnpm install` is <5min.
+ *
+ * @param {object} db - better-sqlite3 instance
+ * @param {number} [maxMinutes=10] - Promote rows older than this
+ * @returns {{ promoted: number, ids: string[] }}
+ */
+export function expireStuckExecuting(db, maxMinutes = 10) {
+  const cutoff = `-${maxMinutes} minutes`;
+  // Look up IDs first so callers can log which actions were promoted.
+  const stuck = db.prepare(
+    "SELECT id FROM deferred_actions WHERE status = 'executing' AND approved_at < datetime('now', ?)"
+  ).all(cutoff);
+  if (stuck.length === 0) return { promoted: 0, ids: [] };
+
+  const ids = stuck.map((r) => r.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const result = db.prepare(
+    `UPDATE deferred_actions SET status = 'failed', execution_error = 'executor_hung', executed_at = datetime('now') WHERE id IN (${placeholders}) AND status = 'executing'`
+  ).run(...ids);
+  return { promoted: result.changes, ids };
+}
+
+/**
  * Check for an existing pending deferred action with matching server+tool+argsHash.
  * Prevents duplicate requests for the same action.
  * @param {object} db - better-sqlite3 instance
