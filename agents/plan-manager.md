@@ -256,9 +256,17 @@ When the release plan includes "Deploy Trigger" (Phase 8.5) and "Post-Deploy Hea
 2. Call `mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 })`. The tool returns `probe_specs[]` — one entry per `deployTarget`, with the target's resolved `base_url` (target.baseUrlOverride OR env.baseUrl) and `health_checks` (target.healthChecks OR env.healthChecks OR default).
 3. For each `probe_spec`: poll `{base_url}{health_check.path}` every `interval_seconds`; require `min_consecutive_passes` consecutive successes (status matches `expectStatus`, body contains `expectBodyContains` if set).
 4. On every spec reaching its threshold within `duration_seconds`: release proceeds to terminal state.
-5. On ANY `probe_spec` failing: call `triggerInBandRollback({ release_id, environment, platform: <failing spec's platform>, reason })` from `.claude/hooks/lib/auto-rollback.js` for THAT specific target, then `mcp__release-ledger__cancel_release({ release_id, reason: 'Post-deploy health gate failed for <target_label>; auto-rolled back to last known good deploy' })`. The deputy-CTO is notified via `report_to_deputy_cto` (staging tier).
-6. If `triggerInBandRollback` returns `rolledBack: false` (no known-good deploy on file): file a bypass request to the CTO — that target may be down without an automatic recovery path.
-7. Multi-target partial rollback: only failing targets are rolled back. A release that deploys backend (Render) + web (Vercel) where Vercel's probes fail rolls back only the Vercel target; the Render deploy stays live. This leaves production in a partially-degraded state which the CTO must resolve via the bypass-request flow.
+5. On ANY `probe_spec` failing — cascading rollback:
+   - Read `services.json#environments.production.deployTargets[]` to find the failing target's `rollbackGroup`.
+   - Call `resolveRollbackTargets(failingTarget, allTargets)` from `.claude/hooks/lib/auto-rollback.js` to compute the rollback set. Targets sharing a `rollbackGroup` cascade together (e.g., `backend` + `web` tagged `'api-contract'` both revert when either fails). Targets without a group, or in distinct groups, roll back in isolation.
+   - For each target in the rollback set, call `triggerInBandRollback({ release_id, environment, target_label, platform, serviceId, reason: 'Cascading rollback from group <group>: <failingTarget.label> failed probe' })`.
+   - Call `mcp__release-ledger__cancel_release({ release_id, reason: 'Post-deploy health gate failed; rolled back <comma-separated target_labels>' })`.
+   - Notify deputy-CTO via `report_to_deputy_cto` (staging tier) with the full cascading report.
+6. If any `triggerInBandRollback` call in the rollback set returns `rolledBack: false` (no known-good deploy on file for that target): file a bypass request to the CTO — that target may be down without an automatic recovery path.
+7. Cascading vs isolated rollback configuration:
+   - Set `deployTargets[].rollbackGroup: 'api-contract'` on backend + web when they share an API contract — a backend failure reverts the web deploy too (preventing the web from talking to the rolled-back backend).
+   - Leave `rollbackGroup` unset for independent targets (marketing, mobile, etc.) so their failures don't drag siblings down.
+   - Different groups stay isolated: `'api-contract'` failures do not affect `'mobile-bundle'` targets.
 
 These are the only phases in the release plan that can auto-cancel a signed-off release. The intent is that bad deploys never stay broken: gentyr rolls back to the last known good deploy within 6-7 minutes (5 minute probe window + ~30s rollback API call).
 

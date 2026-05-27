@@ -53,14 +53,16 @@ All sections are optional. Add only what you need.
           "serviceId": "srv-...",
           "label": "backend",
           "baseUrlOverride": "https://api.myapp.example.com",
-          "healthChecks": [{ "path": "/health", "expectStatus": 200 }]
+          "healthChecks": [{ "path": "/health", "expectStatus": 200 }],
+          "rollbackGroup": "api-contract"
         },
         {
           "platform": "vercel",
           "serviceId": "prj_...",
           "label": "web",
           "baseUrlOverride": "https://myapp.example.com",
-          "healthChecks": [{ "path": "/api/health", "expectStatus": 200 }]
+          "healthChecks": [{ "path": "/api/health", "expectStatus": 200 }],
+          "rollbackGroup": "api-contract"
         },
         {
           "platform": "vercel",
@@ -125,6 +127,16 @@ Destructive migrations (`DROP COLUMN`, `RENAME`, `ALTER TYPE`, `SET NOT NULL`, `
 
 Both routes are recorded on the release ledger.
 
+## Rollback groups (cascading rollback)
+
+By default, Phase 8.7 rolls back ONLY the target whose health probe failed. Other targets stay live, leaving production in a mixed-version state. This is fine for genuinely independent services (marketing site, mobile bundle, internal admin) but unsafe for tightly-coupled targets that share an API contract.
+
+Declare a `rollbackGroup: string` on coupled targets and gentyr will revert the whole group together when any one member fails. In the example above, `backend` + `web` both tag `'api-contract'`: a backend probe failure reverts the web deploy too (so the web isn't talking to a rolled-back backend). `marketing` has no group, so backend/web failures leave it untouched.
+
+Implementation: `resolveRollbackTargets(failingTarget, allTargets)` in `.claude/hooks/lib/auto-rollback.js` computes the rollback set at probe-failure time; Phase 8.7's task agent calls `triggerInBandRollback` for each member.
+
+Membership is by exact string match. Empty or missing values never cascade. Targets in distinct groups (`'api-contract'` vs `'mobile-bundle'`) stay isolated from each other.
+
 ## Multi-target deploys
 
 A single production release can deploy to multiple platforms in parallel:
@@ -132,9 +144,9 @@ A single production release can deploy to multiple platforms in parallel:
 - **`deployTarget`** (singular) — backward-compat shorthand for single-platform releases. Gentyr auto-wraps it into a one-element `deployTargets[]` at runtime.
 - **`deployTargets[]`** (canonical) — explicit array. Each entry gets its own `label`, optional `baseUrlOverride` (when the target lives at a different origin than `env.baseUrl`), and optional `healthChecks[]` override.
 
-The promotion plan fires platform deploys in parallel during Phase 8.5 (one `record_deploy_artifact` per target with the `target_label` set). Phase 8.7 probes every target's health endpoints and requires all to pass before clearing release sign-off. If a single target's probe fails, only that target is rolled back — the rest stay live. The CTO is notified of the partial state.
+The promotion plan fires platform deploys in parallel during Phase 8.5 (one `record_deploy_artifact` per target with the `target_label` set). Phase 8.7 probes every target's health endpoints and requires all to pass before clearing release sign-off. Rollback behavior depends on whether targets share a `rollbackGroup` (see above) — grouped targets cascade together, isolated targets stay live.
 
-**Known limitation**: `auto-rollback.js` keeps `deploy-tracking.json` state keyed by `${environment}:${target_label}` for multi-target releases but `executeRollback()` itself still rolls back by env name. In practice this works because the env-keyed entry IS the most-recent deploy across all targets — the rollback API call for that platform reverts that target. A full per-target executor refactor is tracked as a follow-up.
+`deploy-tracking.json` keys both `lastKnownGood` and `recentDeploys` by `${environment}.${target_label}` so a release that updates one target does not clobber sibling targets' rollback pointers. Legacy single-target releases land in the `_default` slot. `executeRollback()` consumes `opts.target_label` + `opts.serviceId` so the platform API call (Vercel scope, Render serviceId) targets the right deploy.
 
 ## Auto-rollback model
 
