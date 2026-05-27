@@ -167,6 +167,9 @@ Create each phase in order using `mcp__plan-orchestrator__add_phase`:
 4. **Phase 4** — "Test & Demo Execution"
    - `plan_id`, `title: "Test & Demo Execution"`, `gate: true`
 
+4b. **Phase 4.5** — "Migration Pre-Flight" (conditional — only if `services.json.environments.production.supabase.projectRef` is set)
+   - `plan_id`, `title: "Migration Pre-Flight"`, `gate: true`
+
 5. **Phase 5** — "Demo Coverage Audit"
    - `plan_id`, `title: "Demo Coverage Audit"`, `gate: true`
 
@@ -214,6 +217,41 @@ Add one task per phase. ALL tasks MUST include `create_todo: true` and the appro
 - Description: "Execute unit tests, integration tests, and all registered demo scenarios. COVERAGE REQUIREMENT: The test suite MUST achieve 100% coverage on all metrics (lines, statements, functions, branches). Run pnpm run test:coverage:check — if it exits non-zero, coverage is below 100% and this phase CANNOT be marked complete. Spawn test-writer agents to fill coverage gaps before proceeding.\n\nPRE-DEMO INFRASTRUCTURE VERIFICATION (mandatory before any demo runs):\n1. Call get_fly_status — verify imageDeployed: true, imageStale: false\n2. Call deploy_project_image({ git_ref: 'staging' }) — ALWAYS build from staging during a release\n3. Poll get_fly_status until projectImageDeployed: true and projectImageGitRef matches staging HEAD\n4. Call preflight_check to verify all prerequisites pass\n5. Run ONE trial scenario (simplest/fastest) via run_demo as a smoke test\n6. Verify the trial result appears in verify_demo_completeness({ since: '<release_created_at>', branch: 'staging' }) — confirms result persistence works\n7. Only proceed to full batch after trial passes\n\nDEMO BATCH EXECUTION (single-batch mandate):\n- Call list_scenarios({ enabled: true, remote_eligible: true }) to get ALL scenario IDs\n- Run ALL scenarios in a SINGLE run_demo_batch call — do NOT split into multiple calls\n- Calculate batch_timeout: Math.max(1800000, scenario_count * 720000) (12 min per scenario, minimum 30 min)\n- Do NOT spawn separate todo tasks for individual scenario subsets — the machine pool handles parallelism automatically\n- recorded: true is the default (headed + Xvfb + ffmpeg recording); routing defaults to Fly.io with no flag needed\n\nCollect test-results.json, coverage-report.json, and demo-results.json in the release artifact directory. After all demos complete, call mcp__user-feedback__verify_demo_completeness({ since: '<release_created_at>', branch: 'staging' }) and confirm complete: true before marking this task done.\n\nSELF-HEALING LOOPS (mandatory):\n- Test Failure Loop: If tests fail, parse error output, create urgent 'Test Suite Work' task targeting the failures, spawn immediately, wait for completion (max 30 min), re-run tests. Max 3 iterations before escalating to plan-manager.\n- Coverage Loop: If coverage < 100%, create urgent 'Test Suite Work' task for uncovered code, spawn, wait, re-check. Max 3 iterations.\n- Demo Failure Loop: After a demo fix lands, VERIFY BEFORE RETRY: (1) rebuild project image via deploy_project_image({ git_ref: 'staging' }), (2) run preflight_check, (3) run ONE trial scenario to smoke-test the fix, (4) only launch full batch after trial passes AND result is confirmed in verify_demo_completeness. Max 3 iterations.\n- CI Failure Loop: If CI fails on the release PR, diagnose via gh run view --log-failed, create urgent 'Standard Development' task with failure context, spawn, wait, re-check CI. Max 3 iterations."
 - verification_strategy: "All tests pass AND pnpm run test:coverage:check exits 0 (100% coverage on lines, statements, functions, branches) AND mcp__user-feedback__verify_demo_completeness({ since: '<release_created_at>', branch: 'staging' }) returns complete: true with 0 scenarios_missing_pass and 0 scenarios_missing_recording"
 - create_todo: true, todo_section: "GENERAL"
+
+### 5d-migrations. Conditional Migration Pre-Flight Phase (only when `services.json.environments.production.supabase.projectRef` is set)
+
+When the production environment has a Supabase project configured, insert Phase 4.5 between Phase 4 and Phase 5. This phase applies pending Supabase migrations to production via the Management API — replacing the old out-of-band `/push-migrations` ceremony with an in-band, gated, evidence-recorded step.
+
+```bash
+GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .claude-framework ] && echo .claude-framework || echo .; })"
+node -e "
+import fs from 'fs';
+const configPath = './services.json';
+if (fs.existsSync(configPath)) {
+  const c = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const prodSupabase = c.environments?.production?.supabase?.projectRef;
+  console.log(JSON.stringify({ enabled: !!prodSupabase, projectRef: prodSupabase || null }));
+} else { console.log(JSON.stringify({ enabled: false })); }
+" --input-type=module
+```
+
+When `enabled: true`, add the Phase 4.5 task:
+
+```
+mcp__plan-orchestrator__add_plan_task({
+  plan_id: "<plan_id>",
+  phase_id: "<phase_4_5_id>",
+  title: "Apply Supabase migrations to production",
+  description: "Run migration-runner.js against the production Supabase project. Steps: (1) Resolve SUPABASE_ACCESS_TOKEN from 1Password via mcp__secret-sync__secret_run_command with profile 'supabase-prod' (or environmentScope: 'production'). (2) Diff supabase/migrations/ against schema_migrations via diffMigrations(). (3) Run migration-safety.checkMigrationSafety on the pending set. If safe=false (BLOCKED ops without @expand-contract-verified annotation), halt and file a bypass request. (4) Call applyMigrations({ accessToken, projectRef, migrationsDir }). (5) Reload PostgREST cache. (6) Call mcp__release-ledger__record_migration_status({ release_id, environment: 'production', applied, skipped, pending, failure_reason }). On non-empty pending[], halt the release.",
+  verification_strategy: "applyMigrations() returned ok: true AND record_migration_status was called AND releases.migration_status.failure_reason is null AND len(pending) == 0",
+  create_todo: true,
+  todo_section: "GENERAL"
+})
+```
+
+Add dependency: Phase 4.5 depends on Phase 4 (`add_dependency`), and Phase 5 (Demo Coverage Audit) depends on Phase 4.5.
+
+**Safety doctrine**: the migration runner blocks destructive ops by default. Engineers must either (a) refactor the migration to expand/contract, or (b) add `-- @expand-contract-verified: <reason explaining why the contract step is safe>` to the migration file header. The annotation is recorded in the release report so future post-mortems can audit acknowledged destructive operations. There is no platform-level "approve destructive migration" button — gentyr's authorization-audit chain is the only override (file a bypass request from the migration agent).
 
 ### 5d-canary. Conditional Canary Phase (only when `canary.enabled: true` in services.json)
 
@@ -340,6 +378,7 @@ The release plan has 8 phases:
   2. Initial Triage
   3. Meta-Review
   4. Test & Demo Execution
+  4.5. Migration Pre-Flight (only when services.json.environments.production.supabase is set)
   5. Demo Coverage Audit
   6. Final Triage
   7. CTO Sign-off (requires your explicit approval)

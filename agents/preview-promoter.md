@@ -81,13 +81,34 @@ Check for database migrations in the diff:
    - Record the full results (every file, every operation, every classification) in `migration-safety.json` in the artifact directory
    - Report via `report_to_deputy_cto`: include the file path, the BLOCKED SQL, the reason, and the specific expand/contract fix steps from the `fixSuggestion` field
    - Call `summarize_work` and **EXIT without promoting** — this is a hard gate, not a warning
-5. If only warnings or no migrations: record in `migration-safety.json` and continue
+5. ACKNOWLEDGED operations (destructive SQL with the `-- @expand-contract-verified: <reason>` header annotation) do NOT block promotion. They ARE still recorded in `migration-safety.json` so the release report shows the acknowledgement and reason.
+6. If only warnings, only ACKNOWLEDGED, or no migrations: record in `migration-safety.json` and continue.
 
 The expand/contract pattern for common operations:
 - **DROP COLUMN**: Deploy code that stops using it → wait → DROP in cleanup migration
 - **RENAME**: ADD new → backfill → deploy code using new → DROP old later
 - **SET NOT NULL**: Deploy code that never inserts NULL → backfill NULLs → add constraint later
 - **ALTER TYPE**: ADD new column with target type → backfill → deploy code using new → DROP old later
+
+### Step 1.6: Migration Execution (in-band, gated)
+
+After Step 1.5 passes, apply the pending migrations to the **staging** Supabase project so the test/demo phases in Steps 3–4 exercise the new schema. This replaces the old out-of-band `/push-migrations` ceremony — migrations apply via the Supabase Management API; the postgres DB password is never required.
+
+1. Read `services.json#environments.staging.supabase.projectRef`. If unset, SKIP this step (no Supabase configured for staging) — record `{ skipped: true, reason: 'no_supabase_config' }` in `migration-execution.json`.
+2. Resolve `SUPABASE_ACCESS_TOKEN` via `mcp__secret-sync__secret_run_command` with `profile: 'supabase-staging'` (or any profile whose `environmentScope` is `'staging'` or `'any'`).
+3. Import `applyMigrations` from `.claude/hooks/lib/migration-runner.js` and call:
+   ```js
+   const { applied, skipped, pending, failure_reason, tracking_rows } = await applyMigrations({
+     accessToken: SUPABASE_ACCESS_TOKEN,
+     projectRef: <staging projectRef>,
+     migrationsDir: <repo>/supabase/migrations,
+   });
+   ```
+4. Record the full result in `migration-execution.json` in the artifact directory.
+5. **On `pending.length > 0` or `failure_reason !== null`**: report via `report_to_deputy_cto` with the failure_reason and pending filenames, call `summarize_work`, and **EXIT without promoting**.
+6. Continue to Step 2 (Quality Review).
+
+The runner is idempotent — it diffs `supabase_migrations.schema_migrations` against the migrations folder and only applies what's missing. Reruns are safe.
 
 ### Step 2: Quality Review
 
