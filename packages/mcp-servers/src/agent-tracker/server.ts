@@ -5775,6 +5775,28 @@ function getBypassDb(): InstanceType<typeof Database> {
       db.exec("ALTER TABLE bypass_requests ADD COLUMN synthesis_count INTEGER NOT NULL DEFAULT 1");
     }
     db.exec("CREATE INDEX IF NOT EXISTS idx_bypass_synth ON bypass_requests(synthesized, status)");
+
+    // Backfill: rescue stranded quota-exhaustion rows. When the synthesized /
+    // auto_resolvable columns were first added, any quota-detector inserts
+    // that happened BEFORE the migration ran fell through quota-detector's
+    // legacy-INSERT fallback path (lib/quota-detector.js, lines 318–322) and
+    // landed with synthesized=0 + auto_resolvable=0. The recovery daemon's
+    // sweep query in scripts/quota-recovery-daemon.js requires BOTH flags = 1,
+    // so those rows are permanently invisible to it and accumulate in the
+    // CTO inbox until a manual cleanup. Heal them now: any pending row whose
+    // summary carries the canonical "[quota_exhaustion]" prefix written by
+    // quota-detector is by definition synthesized and auto-resolvable.
+    // Restricted to `status='pending'` so we never reanimate or relabel
+    // already-resolved CTO decisions.
+    db.exec(`
+      UPDATE bypass_requests
+         SET synthesized = 1,
+             auto_resolvable = 1,
+             synthesizer = COALESCE(synthesizer, 'quota-detector')
+       WHERE status = 'pending'
+         AND summary LIKE '[quota_exhaustion]%'
+         AND (synthesized = 0 OR auto_resolvable = 0)
+    `);
   } catch { /* best-effort migration */ }
 
   // Migration: expand cto_decisions CHECK constraint to include all decision types and audit status values
