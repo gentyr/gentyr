@@ -35,15 +35,23 @@
  *   - Bash commands matching code-modifying or PR-mutation patterns
  *   - Bash commands using sleep/until/while/for as wait loops, especially
  *     when combined with run_in_background: true
+ *   - Read on tracked source files when the queue row's metadata has
+ *     `baseRef` set (2026-05-27 fix — auditor read CTO's dirty local tree
+ *     instead of origin/preview where the merged PR landed)
  *
  * Allowances:
- *   - All Read / Glob / Grep
+ *   - All Read / Glob / Grep on untracked files, .claude/, lockfiles, configs
  *   - Read-only Bash (gh pr view, gh pr checks, git log/diff/status/show,
- *     test, cat, find, curl, pnpm test, etc.)
+ *     `git show origin/<ref>:<path>`, test, cat, find, curl, pnpm test, etc.)
  *   - All MCP audit-verdict tools and MCP read tools
  */
 
 import fs from 'fs';
+import path from 'path';
+import { execFileSync } from 'child_process';
+import { createRequire } from 'module';
+
+const requireForHook = createRequire(import.meta.url);
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj));
@@ -167,6 +175,53 @@ if (toolName === 'Task') {
 }
 
 // --------------------------------------------------------------------
+// Read deny: tracked source files when baseRef is set
+// --------------------------------------------------------------------
+//
+// Closes the 2026-05-27 incident: an auditor verified a merged T2 task by
+// reading files from the CTO's main tree — which was checked out to an
+// unrelated feature branch. The audit failed because the merged content was
+// on origin/preview, not on the working tree the auditor saw.
+//
+// When the queue row's metadata has `baseRef` set (passed by
+// buildAuditorSessionSpec when the task has a known merge target), we deny
+// bare Read of tracked source files and point the auditor at
+// `git show origin/<baseRef>:<path>`. Allowed Reads: untracked files,
+// .claude/ paths, lockfiles, JSON/YAML/TOML configs.
+
+if (toolName === 'Read') {
+  const baseRef = resolveBaseRefFromMetadata(input);
+  if (baseRef) {
+    const filePath = args.file_path || args.filePath || '';
+    const decision = classifyAuditorRead(filePath);
+    if (decision.deny) {
+      deny(
+        [
+          `audit-lane-guard: bare Read on tracked source file is BLOCKED when baseRef is set.`,
+          '',
+          `File: ${filePath}`,
+          `Reason: ${decision.reason}`,
+          `Base ref: ${baseRef}`,
+          '',
+          `Use instead: \`git show origin/${baseRef}:${decision.gitPath || '<path-from-repo-root>'}\``,
+          '',
+          'Your local working tree may be on a different branch than the work',
+          'you are auditing (this hook closes the 2026-05-27 incident where',
+          'an auditor failed a correctly-merged task because its local tree',
+          'was on an unrelated feature branch). For tracked source content,',
+          'always read from `origin/<baseRef>` so the verification matches',
+          'what was actually merged.',
+          '',
+          'Read is still allowed for: files under .claude/, lockfiles, untracked',
+          'files, and anything outside the project git index.',
+          HARD_RULES_REMINDER,
+        ].join('\n')
+      );
+    }
+  }
+}
+
+// --------------------------------------------------------------------
 // Bash pattern enforcement
 // --------------------------------------------------------------------
 
@@ -272,3 +327,119 @@ if (toolName === 'Bash') {
 
 // All MCP tools, Read, Glob, Grep, and read-only Bash pass through.
 approve();
+
+// --------------------------------------------------------------------
+// Helpers (defined below approve() — never executed at module load)
+// --------------------------------------------------------------------
+
+/**
+ * Resolve the auditor's baseRef from the queue row metadata. Returns null
+ * when unavailable (no CLAUDE_QUEUE_ID, DB missing, no row, no metadata,
+ * no baseRef field) — caller treats null as "no deny enforcement".
+ *
+ * Read-only; opens session-queue.db readonly with a 1s busy timeout.
+ */
+function resolveBaseRefFromMetadata() {
+  const queueId = process.env.CLAUDE_QUEUE_ID;
+  if (!queueId) return null;
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const dbPath = path.join(projectDir, '.claude', 'state', 'session-queue.db');
+  if (!fs.existsSync(dbPath)) return null;
+  let Database;
+  try {
+    // Dynamic require — better-sqlite3 may not be installed on minimal hosts.
+    Database = requireForHook('better-sqlite3');
+  } catch {
+    return null;
+  }
+  let db;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    db.pragma('busy_timeout = 1000');
+    const row = db.prepare('SELECT metadata FROM queue_items WHERE id = ?').get(queueId);
+    if (!row || !row.metadata) return null;
+    let meta;
+    try { meta = JSON.parse(row.metadata); } catch { return null; }
+    return meta.baseRef || null;
+  } catch {
+    return null;
+  } finally {
+    try { db && db.close(); } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * Classify a file path for auditor Read enforcement.
+ *
+ * Returns `{ deny: true, reason, gitPath }` when the Read MUST be denied,
+ * or `{ deny: false }` when it should be allowed. Allowed cases:
+ *   - File path under `.claude/` (framework state, NOT git-tracked source)
+ *   - Lockfile (`*-lock.json`, `*-lock.yaml`, `*.lock`, `pnpm-lock.yaml`)
+ *   - Config extension (`.json`, `.yaml`, `.yml`, `.toml`)
+ *   - File is not in the project (absolute path outside PROJECT_DIR)
+ *   - File is NOT tracked by git (`git ls-files --error-unmatch` exits non-zero)
+ *
+ * Denied cases:
+ *   - Source-file extension (`.js .ts .tsx .jsx .py .rb .go .rs .md .css
+ *     .scss .html .vue .svelte`) AND file is tracked AND inside PROJECT_DIR
+ */
+function classifyAuditorRead(filePath) {
+  if (!filePath) return { deny: false };
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const abs = path.isAbsolute(filePath) ? filePath : path.resolve(projectDir, filePath);
+
+  // Outside the project — not our concern.
+  const rel = path.relative(projectDir, abs);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return { deny: false };
+
+  // Always allow .claude/ paths
+  if (rel.startsWith('.claude/') || rel === '.claude') return { deny: false };
+
+  const base = path.basename(rel);
+  const lower = base.toLowerCase();
+
+  // Lockfiles — always allow
+  if (lower.endsWith('-lock.json') || lower.endsWith('-lock.yaml') || lower.endsWith('-lock.yml')
+      || lower.endsWith('.lock') || lower === 'pnpm-lock.yaml' || lower === 'package-lock.json'
+      || lower === 'yarn.lock' || lower === 'cargo.lock' || lower === 'composer.lock'
+      || lower === 'gemfile.lock' || lower === 'poetry.lock') {
+    return { deny: false };
+  }
+
+  // Configs — always allow (auditor often needs these for context)
+  if (lower.endsWith('.json') || lower.endsWith('.yaml') || lower.endsWith('.yml')
+      || lower.endsWith('.toml')) {
+    return { deny: false };
+  }
+
+  // Source-file extensions that we DO want to enforce on
+  const SOURCE_EXTS = ['.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
+                       '.py', '.rb', '.go', '.rs', '.java', '.kt', '.swift',
+                       '.md', '.mdx',
+                       '.css', '.scss', '.sass', '.less',
+                       '.html', '.htm', '.vue', '.svelte',
+                       '.sh', '.bash', '.zsh', '.fish'];
+  const ext = path.extname(lower);
+  if (!SOURCE_EXTS.includes(ext)) return { deny: false };
+
+  // Check if file is tracked by git. Fail-open if git unavailable —
+  // we don't want a broken git to deny every Read.
+  let tracked = false;
+  try {
+    execFileSync('git', ['ls-files', '--error-unmatch', rel], {
+      cwd: projectDir,
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 1000,
+    });
+    tracked = true;
+  } catch {
+    tracked = false;
+  }
+  if (!tracked) return { deny: false };
+
+  return {
+    deny: true,
+    reason: `Tracked source file (extension ${ext}). Audit must verify against the merged ref, not the local working tree.`,
+    gitPath: rel,
+  };
+}

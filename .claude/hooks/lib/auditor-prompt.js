@@ -135,15 +135,34 @@ You have 8 minutes. Be efficient. If you cannot verify (session unavailable, com
 
 /**
  * Build the auditor session spec (everything needed for enqueueSession except source).
- * @param {{ taskId: string, taskType: 'todo'|'persistent'|'plan', taskTitle: string, criteria: string, method: string }} opts
+ * @param {object} opts
+ * @param {string} opts.taskId
+ * @param {'todo'|'persistent'|'plan'} opts.taskType
+ * @param {string} opts.taskTitle
+ * @param {string} opts.criteria
+ * @param {string} opts.method
+ * @param {string} [opts.baseRef] - Base branch (e.g. 'preview', 'main') — if set,
+ *   prompt instructs the auditor to use `git show origin/<baseRef>:<path>` for
+ *   source reads instead of bare Read. Closes the 2026-05-27 failure where a
+ *   T2 audit failed because the auditor read the CTO's main tree which was
+ *   checked out to an unrelated feature branch.
+ * @param {string} [opts.headRef] - Head branch / PR source branch
+ * @param {string} [opts.mergeCommitSha] - Merge commit SHA when known
+ * @param {string} [opts.prNumber] - PR number when known
  * @param {string} projectDir
  * @returns {object} Partial enqueueSession spec
  */
-export function buildAuditorSessionSpec({ taskId, taskType, taskTitle, criteria, method }, projectDir) {
+export function buildAuditorSessionSpec({ taskId, taskType, taskTitle, criteria, method, baseRef, headRef, mergeCommitSha, prNumber }, projectDir) {
   const { passTool, failTool, agent, idParam } = resolveAuditTools(taskType);
 
   // Plan auditors use the plan-auditor agent definition; todo/persistent use universal-auditor
   const agentType = agent;
+
+  // Build the origin-read guidance section. Three variants:
+  //   1. baseRef known + headRef/mergeCommit known (best case — full diff context)
+  //   2. baseRef known only (still solves the wrong-tree problem)
+  //   3. baseRef unknown (fall through to a warning so the auditor knows to be careful)
+  const originSection = buildOriginReadSection({ baseRef, headRef, mergeCommitSha, prNumber });
 
   return {
     agentType,
@@ -155,7 +174,11 @@ export function buildAuditorSessionSpec({ taskId, taskType, taskTitle, criteria,
     priority: 'normal',
     ttlMs: 8 * 60 * 1000,
     projectDir,
-    metadata: { taskId, taskType },
+    // metadata.baseRef is consumed by audit-lane-guard.js — when set, the
+    // guard denies bare Read on tracked source files and redirects the
+    // auditor to `git show origin/<baseRef>:<path>`. Without this metadata
+    // the deny does not fire (fail-open on baseRef unknown).
+    metadata: { taskId, taskType, baseRef: baseRef || null, headRef: headRef || null, mergeCommitSha: mergeCommitSha || null, prNumber: prNumber || null },
     buildPrompt: (agentId) => {
       return `[Automation][${agentType}][AGENT:${agentId}] Audit ${taskType} task ${taskId}.
 
@@ -178,6 +201,8 @@ export function buildAuditorSessionSpec({ taskId, taskType, taskTitle, criteria,
    The hook denies, the agent definition prohibits, and this prompt restates
    — three independent layers. If you try to violate them, the call fails.
 
+${originSection}
+
 ## Task
 "${taskTitle}"
 
@@ -195,7 +220,7 @@ Do NOT trust the agent's claims — check actual files, test results, PR status,
 1. Read the success criteria and verification method above carefully
 2. Use Read, Glob, Grep, and read-only Bash to check each claim against reality:
    - If criteria mention tests: run them or check recent test output
-   - If criteria mention files/directories: verify they exist with expected content
+   - If criteria mention files/directories: verify they exist with expected content${baseRef ? ` — but for TRACKED source files, use \`git show origin/${baseRef}:<path>\` (see CRITICAL section above)` : ''}
    - If criteria mention PRs: check PR status via \`gh pr view\` (READ-ONLY)
    - If criteria mention counts: verify actual counts match
 3. Render exactly ONE verdict with concrete evidence
@@ -207,4 +232,60 @@ Do NOT trust the agent's claims — check actual files, test results, PR status,
 You have 8 minutes. Be efficient. If you cannot verify (external system unavailable, ambiguous criteria, PR not yet ready), FAIL with reason — do NOT wait, do NOT sleep, do NOT loop. The next revival cycle will re-audit.`;
     },
   };
+}
+
+/**
+ * Build the "CRITICAL — Read from origin" prompt section. Returns the full
+ * section text including the leading `## CRITICAL` header line.
+ *
+ * Behavior:
+ *   - baseRef set → strong directive with examples using the actual ref
+ *   - baseRef unset → warning that the auditor's local tree may be wrong
+ *
+ * @param {{ baseRef?: string, headRef?: string, mergeCommitSha?: string, prNumber?: string }} opts
+ * @returns {string}
+ */
+function buildOriginReadSection({ baseRef, headRef, mergeCommitSha, prNumber }) {
+  if (!baseRef) {
+    return `## NOTE — Working tree may not match the merged artifact
+The base branch was not passed to this auditor (taskType has no PR/merge context).
+Be cautious: if you must verify file content, check whether the current branch
+matches what was actually merged. \`git status\` and \`git log --oneline -5\` will
+show you. If they do not match, FAIL the audit with that as evidence rather than
+verifying against the wrong tree.`;
+  }
+  const headLine = headRef ? `- Head ref: \`${headRef}\`` : '';
+  const mergeLine = mergeCommitSha ? `- Merge commit: \`${mergeCommitSha}\`` : '';
+  const prLine = prNumber ? `- PR: #${prNumber}` : '';
+  const refLines = [headLine, mergeLine, prLine].filter(Boolean).join('\n');
+  const diffCmd = headRef
+    ? `git diff origin/${baseRef}...origin/${headRef}`
+    : `git diff origin/${baseRef}`;
+  const showCmd = mergeCommitSha ? `git show ${mergeCommitSha}` : null;
+
+  return `## CRITICAL — Read from origin, not your local tree
+
+The work being audited was merged to \`${baseRef}\`. Your local checkout may be
+on an unrelated feature branch (the 2026-05-27 incident: an auditor failed a
+correctly-merged task because the CTO's main tree was on a stripe-feature
+branch). To verify the merged artifact:
+
+${refLines ? refLines + '\n' : ''}
+**Always start with:** \`git fetch --no-tags origin ${baseRef}${headRef ? ` ${headRef}` : ''}\` to refresh local refs.
+
+**For tracked source file contents** — NEVER use bare \`Read\`:
+- \`git show origin/${baseRef}:<path>\` — read a file as it exists on the merged branch
+
+**For diff scope:**
+- \`${diffCmd}\` — list every change in the work being audited${showCmd ? `\n- \`${showCmd}\` — full merge commit content` : ''}
+
+**For PR status:**
+${prNumber ? `- \`gh pr view ${prNumber}\` — PR metadata, merge state, checks (READ-ONLY)` : `- \`gh pr view <number>\` — PR metadata, merge state, checks (READ-ONLY)`}
+
+**\`Read\` is still allowed for:** files inside \`.claude/\`, lockfiles, JSON
+configs, untracked files, and anything outside the project's git index. The
+audit-lane-guard.js PreToolUse hook denies bare \`Read\` ONLY on tracked source
+files (\`.js\` / \`.ts\` / \`.tsx\` / \`.jsx\` / \`.py\` / \`.rb\` / \`.go\` / \`.rs\` /
+\`.md\` / \`.css\` / etc.) when baseRef is set — the deny message will redirect
+you to the right \`git show\` invocation.`;
 }

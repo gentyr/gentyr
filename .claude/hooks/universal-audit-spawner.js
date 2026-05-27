@@ -117,6 +117,114 @@ function parseResponse(response) {
 }
 
 // ============================================================================
+// Merge-context resolution
+// ============================================================================
+
+/**
+ * Resolve the merge target (baseRef, headRef, mergeCommitSha, prNumber) for
+ * a task being audited. Best-effort — returns `{ baseRef: null, ... }` on
+ * any failure so the auditor still spawns (with the fallback warning prompt).
+ *
+ * Resolution sources, by task type:
+ *   - plan       → plan_orchestrator DB: plans.base_branch + plan_tasks.pr_url
+ *   - persistent → persistent_tasks DB: metadata.pr_url + metadata.base_branch
+ *   - todo       → todo DB: pr_url field if present
+ *
+ * When a pr_url is found but no baseRef, we try `gh pr view <url> --json
+ * baseRefName,headRefName,mergeCommit` to fill in the gaps.
+ *
+ * @param {{ taskType: 'todo'|'persistent'|'plan', taskId: string, projectDir: string, log: function }} args
+ * @returns {Promise<{ baseRef: string|null, headRef: string|null, mergeCommitSha: string|null, prNumber: string|null }>}
+ */
+async function resolveMergeContext({ taskType, taskId, projectDir, log }) {
+  const empty = { baseRef: null, headRef: null, mergeCommitSha: null, prNumber: null };
+  let prUrl = null;
+  let baseRef = null;
+
+  try {
+    const Database = (await import('better-sqlite3')).default;
+
+    if (taskType === 'plan') {
+      const dbPath = path.join(projectDir, '.claude', 'state', 'plans.db');
+      if (fs.existsSync(dbPath)) {
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          // plan_tasks has pr_url (optional); join the parent plan for base_branch
+          const row = db.prepare(`
+            SELECT pt.pr_url AS pr_url, p.base_branch AS base_branch
+              FROM plan_tasks pt
+              JOIN plans p ON p.id = pt.plan_id
+             WHERE pt.id = ?
+          `).get(taskId);
+          if (row) {
+            prUrl = row.pr_url || null;
+            baseRef = row.base_branch || null;
+          }
+        } catch { /* schema may differ in future; non-fatal */ }
+        db.close();
+      }
+    } else if (taskType === 'persistent') {
+      const dbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+      if (fs.existsSync(dbPath)) {
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          const row = db.prepare('SELECT metadata FROM persistent_tasks WHERE id = ?').get(taskId);
+          if (row && row.metadata) {
+            try {
+              const meta = JSON.parse(row.metadata);
+              prUrl = meta.pr_url || meta.prUrl || null;
+              baseRef = meta.base_branch || meta.baseRef || null;
+            } catch { /* malformed metadata; non-fatal */ }
+          }
+        } catch { /* non-fatal */ }
+        db.close();
+      }
+    } else if (taskType === 'todo') {
+      const dbPath = path.join(projectDir, '.claude', 'todo.db');
+      if (fs.existsSync(dbPath)) {
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          // pr_url is an optional column; query defensively
+          const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
+          if (row) {
+            prUrl = row.pr_url || null;
+            baseRef = row.base_branch || null;
+          }
+        } catch { /* non-fatal */ }
+        db.close();
+      }
+    }
+  } catch (err) {
+    log(`merge-context: DB read failed for ${taskType}:${taskId} — ${err.message}`);
+  }
+
+  // If we have a PR URL, fill in the gaps via `gh pr view`. Bounded 5s
+  // timeout — must not block audit spawn on a slow network.
+  let headRef = null;
+  let mergeCommitSha = null;
+  let prNumber = null;
+  if (prUrl) {
+    const m = String(prUrl).match(/\/pull\/(\d+)/);
+    prNumber = m ? m[1] : null;
+    try {
+      const { execFileSync } = await import('child_process');
+      const out = execFileSync('gh', ['pr', 'view', prUrl, '--json', 'baseRefName,headRefName,mergeCommit'], {
+        encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const parsed = JSON.parse(out);
+      baseRef = baseRef || parsed.baseRefName || null;
+      headRef = parsed.headRefName || null;
+      mergeCommitSha = parsed.mergeCommit?.oid || null;
+    } catch {
+      // gh unavailable or rate-limited; we still return whatever baseRef we found.
+    }
+  }
+
+  if (!baseRef && !prUrl) return empty;
+  return { baseRef, headRef, mergeCommitSha, prNumber };
+}
+
+// ============================================================================
 // Main: Read PostToolUse stdin and process
 // ============================================================================
 
@@ -201,8 +309,22 @@ process.stdin.on('end', async () => {
 
     log(`Audit needed for ${taskType} task ${taskId}: "${resolvedTitle}"`);
 
+    // Resolve the merge-target context (baseRef / headRef / mergeCommitSha /
+    // prNumber) so the auditor can verify against origin/<baseRef> instead of
+    // the auditor's local working tree. Best-effort — when nothing resolves,
+    // the auditor prompt falls back to a warning section and audit-lane-guard
+    // does not enforce the Read deny.
+    const mergeContext = await resolveMergeContext({ taskType, taskId, projectDir: PROJECT_DIR, log });
+
     const spec = buildAuditorSessionSpec(
-      { taskId, taskType, taskTitle: resolvedTitle, criteria: resolvedCriteria, method: resolvedMethod },
+      {
+        taskId, taskType,
+        taskTitle: resolvedTitle, criteria: resolvedCriteria, method: resolvedMethod,
+        baseRef: mergeContext.baseRef,
+        headRef: mergeContext.headRef,
+        mergeCommitSha: mergeContext.mergeCommitSha,
+        prNumber: mergeContext.prNumber,
+      },
       PROJECT_DIR,
     );
     enqueueSession({
@@ -211,8 +333,13 @@ process.stdin.on('end', async () => {
       source: 'universal-audit-spawner',
     });
 
-    auditEvent('task_pending_audit', { task_type: taskType, task_id: taskId, criteria: (resolvedCriteria || '').slice(0, 200) });
-    log(`Enqueued auditor for ${taskType} task ${taskId}`);
+    auditEvent('task_pending_audit', {
+      task_type: taskType, task_id: taskId,
+      criteria: (resolvedCriteria || '').slice(0, 200),
+      base_ref: mergeContext.baseRef,
+      pr_number: mergeContext.prNumber,
+    });
+    log(`Enqueued auditor for ${taskType} task ${taskId}${mergeContext.baseRef ? ` (baseRef=${mergeContext.baseRef})` : ' (no merge context)'}`);
   } catch (err) {
     log(`Error: ${err.message}\n${err.stack}`);
   }
