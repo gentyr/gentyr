@@ -24,6 +24,19 @@ FROM ${BASE_IMAGE}
 ARG GIT_REMOTE
 ARG GIT_REF=preview
 ARG GIT_TOKEN
+ARG EXTRA_APT_PACKAGES=""
+
+# Project-specific apt packages declared via services.json#fly.extraAptPackages.
+# Installed BEFORE git clone so this layer is cached separately from the
+# project-source layer — changing project code does NOT re-run apt.
+# Each package name was validated against the Debian package regex
+# (^[a-z0-9][a-z0-9.+-]*$) in the gentyr Zod schema before reaching here,
+# so unquoted word-splitting is safe (no shell metacharacters can be present).
+RUN if [ -n "$EXTRA_APT_PACKAGES" ]; then \
+      apt-get update && \
+      apt-get install -y --no-install-recommends $EXTRA_APT_PACKAGES && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
 
 WORKDIR /app/project
 
