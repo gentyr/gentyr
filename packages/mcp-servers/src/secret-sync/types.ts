@@ -403,6 +403,13 @@ export const ServicesConfigSchema = z.object({
       })).optional().describe(
         'Per-target health probe override. When set, Phase 8.7 uses these instead of the env-level healthChecks[] for this target.'
       ),
+      rollbackGroup: z.string().optional().describe(
+        'All-or-nothing rollback semantics. Targets sharing the same rollbackGroup roll back together when ' +
+        'any one fails Phase 8.7 health probes. Use for tightly-coupled targets — e.g., a backend and a web app ' +
+        'that share an API contract should both share rollbackGroup: "api-contract" so a backend probe failure ' +
+        'reverts the web deploy too (preventing the web from talking to the rolled-back backend). Targets without ' +
+        'a group, or in distinct groups, roll back independently. Default: isolated (no cascading rollback).'
+      ),
     })).optional().describe(
       'Multi-target deploys for /promote-to-prod Phase 8.5. Each entry produces an explicit platform API ' +
       'call (mcp__render__render_trigger_deploy / mcp__vercel__vercel_promote_deployment / ' +

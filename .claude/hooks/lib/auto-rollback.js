@@ -445,6 +445,63 @@ export async function checkAndRollback(projectDir, environment) {
 }
 
 /**
+ * Resolve which deploy targets must roll back together when one fails.
+ *
+ * Targets that share the same `rollbackGroup` string roll back as a unit —
+ * a single probe failure on any group member reverts every member. Targets
+ * with no rollbackGroup (or with a unique value) roll back in isolation.
+ *
+ * Use this from Phase 8.7 (`agents/deployment-verifier.md` and the merged
+ * Phase 8.6 in PR 8) to compute the rollback set BEFORE invoking
+ * `triggerInBandRollback` on each member.
+ *
+ * @example
+ *   const targets = [
+ *     { label: 'backend',   rollbackGroup: 'api-contract', platform: 'render', serviceId: 'srv-b' },
+ *     { label: 'web',       rollbackGroup: 'api-contract', platform: 'vercel', serviceId: 'prj-w' },
+ *     { label: 'marketing',                                  platform: 'vercel', serviceId: 'prj-m' },
+ *   ];
+ *   resolveRollbackTargets(targets[0], targets);
+ *   // -> [backend, web] — marketing stays live
+ *   resolveRollbackTargets(targets[2], targets);
+ *   // -> [marketing] — isolated
+ *
+ * @param {{label?: string, rollbackGroup?: string, platform?: string, serviceId?: string}} failingTarget
+ *   The target whose health probe failed.
+ * @param {Array<{label?: string, rollbackGroup?: string, platform?: string, serviceId?: string}>} allTargets
+ *   The full deployTargets[] from services.json for the failing target's environment.
+ * @returns {Array<object>} Targets to roll back, including failingTarget itself. Order matches allTargets.
+ */
+export function resolveRollbackTargets(failingTarget, allTargets) {
+  if (!failingTarget || typeof failingTarget !== 'object') {
+    throw new Error('resolveRollbackTargets requires a failingTarget object');
+  }
+  if (!Array.isArray(allTargets)) {
+    throw new Error('resolveRollbackTargets requires allTargets to be an array');
+  }
+
+  const group = failingTarget.rollbackGroup;
+  if (!group || typeof group !== 'string') {
+    // No group declared — fail in isolation. Return only this target.
+    return [failingTarget];
+  }
+
+  // Same-group targets cascade together. Membership is by exact string match;
+  // empty/missing groups are NEVER considered group members.
+  const groupMembers = allTargets.filter(
+    (t) => t && typeof t.rollbackGroup === 'string' && t.rollbackGroup === group,
+  );
+
+  // Ensure failingTarget itself is present (in case the caller passed a
+  // copy/reference that isn't strictly === any element of allTargets).
+  if (!groupMembers.some((t) => t.label === failingTarget.label && t.serviceId === failingTarget.serviceId)) {
+    groupMembers.push(failingTarget);
+  }
+
+  return groupMembers;
+}
+
+/**
  * Synchronous in-band rollback entry point for promotion pipeline Phase 8.7.
  *
  * Unlike `checkAndRollback`, this does NOT consult the synthetic-monitor DB.
