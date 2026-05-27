@@ -384,18 +384,41 @@ export const ServicesConfigSchema = z.object({
       platform: z.enum(['render', 'vercel', 'fly']),
       serviceId: z.string().min(1).describe('Render service ID (srv-...), Vercel project ID, or Fly app name'),
     }).optional().describe(
-      'Deploy target for this environment. Drives /promote-to-prod Phase 8.5 (in-band deploy trigger via platform API) ' +
-      'instead of relying on the platform\'s auto-deploy webhook. Recommended: turn OFF the platform\'s auto-deploy ' +
-      'so this is the only path that produces production deploys.'
+      'DEPRECATED — use deployTargets[] for new configs. Single-target shorthand for /promote-to-prod ' +
+      'Phase 8.5. When set, gentyr auto-wraps this into deployTargets: [{...}] at runtime. Mutually ' +
+      'exclusive with deployTargets[] — set one or the other, not both.'
+    ),
+    deployTargets: z.array(z.object({
+      platform: z.enum(['render', 'vercel', 'fly']),
+      serviceId: z.string().min(1).describe('Render service ID (srv-...), Vercel project ID, or Fly app name'),
+      label: z.string().optional().describe('Human-readable label (e.g., "backend", "web", "marketing"). Defaults to platform:serviceId.'),
+      baseUrlOverride: z.string().url().optional().describe(
+        'Per-target base URL for health probes when the target lives at a different origin than environments[env].baseUrl. ' +
+        'Required when the environment hosts multiple apps on different domains (e.g., backend on Render, web/marketing on Vercel).'
+      ),
+      healthChecks: z.array(z.object({
+        path: z.string(),
+        expectStatus: z.number().int().min(100).max(599).default(200),
+        expectBodyContains: z.string().optional(),
+      })).optional().describe(
+        'Per-target health probe override. When set, Phase 8.7 uses these instead of the env-level healthChecks[] for this target.'
+      ),
+    })).optional().describe(
+      'Multi-target deploys for /promote-to-prod Phase 8.5. Each entry produces an explicit platform API ' +
+      'call (mcp__render__render_trigger_deploy / mcp__vercel__vercel_promote_deployment / ' +
+      'mcp__fly__deploy_machine) and an independent deploy_artifact record on the release ledger. ' +
+      'Phase 8.7 probes every target\'s healthChecks (or the env-level default if a target has no override); ' +
+      'sign-off is blocked until all targets\' probes pass. Mutually exclusive with the legacy deployTarget singular.'
     ),
     healthChecks: z.array(z.object({
       path: z.string().describe('Path to probe (e.g., "/api/health"). Combined with baseUrl.'),
       expectStatus: z.number().int().min(100).max(599).default(200).describe('Required HTTP status code'),
       expectBodyContains: z.string().optional().describe('Optional substring that must appear in the response body'),
     })).optional().describe(
-      'Multi-endpoint health probe spec for Phase 8.7 (post-deploy gate). When omitted, falls back to a single GET ' +
-      'against healthEndpoint (or "/health" if unset). Each entry is polled every 10s; release ledger sign-off is ' +
-      'blocked until N consecutive successes across all entries.'
+      'Default multi-endpoint health probe spec for Phase 8.7 (post-deploy gate). Used by every deployTarget ' +
+      'that does NOT specify its own healthChecks override. When omitted entirely, falls back to a single GET ' +
+      'against healthEndpoint (or "/health" if unset). Each entry is polled every 10s; release ledger sign-off ' +
+      'is blocked until N consecutive successes across all entries.'
     ),
   })).optional()
     .describe('Named environments for demo targeting. Keys are environment names (e.g., "staging", "production"). The CTO Dashboard uses these to run demos against deployed URLs instead of localhost.'),

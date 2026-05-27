@@ -366,44 +366,62 @@ export async function checkAndRollback(projectDir, environment) {
  * record itself is updated by the caller — this module stays free of
  * release-ledger imports to keep the dependency graph clean.
  *
+ * Multi-target releases pass `target_label` to disambiguate state-file keys
+ * when the same environment hosts multiple platforms (e.g., backend on
+ * Render plus web on Vercel). When omitted, falls back to env-keyed
+ * lookups for backward compatibility with single-target releases.
+ *
  * @param {Object} args
  * @param {string} args.release_id - Release ID for log correlation
  * @param {string} args.environment - Environment to roll back (typically 'production')
  * @param {string} args.reason - Why the rollback was triggered (logged + returned)
+ * @param {string} [args.target_label] - Multi-target disambiguator (e.g., 'backend', 'web'). Maps to `${environment}:${target_label}` in deploy-tracking.json.
+ * @param {string} [args.platform] - Optional platform override (one of 'render'/'vercel'/'fly') when state lookup is ambiguous. Default: read from deploy-tracking.json.
  * @param {string} [args.projectDir] - Project root (defaults to CLAUDE_PROJECT_DIR)
- * @returns {{ok: boolean, rolledBack: boolean, platform: string, previousDeployId: string | null, error: string | null, reason: string}}
+ * @returns {{ok: boolean, rolledBack: boolean, platform: string, previousDeployId: string | null, error: string | null, reason: string, target_key: string}}
  */
-export function triggerInBandRollback({ release_id, environment, reason, projectDir }) {
+export function triggerInBandRollback({ release_id, environment, reason, target_label, platform, projectDir }) {
   if (!release_id) throw new Error('triggerInBandRollback requires release_id');
   if (!environment) throw new Error('triggerInBandRollback requires environment');
   if (!reason) throw new Error('triggerInBandRollback requires reason');
 
   const dir = projectDir || PROJECT_DIR;
-  logAction(`IN-BAND ROLLBACK REQUESTED: release=${release_id} env=${environment} reason="${reason}"`);
+  // Multi-target deploys key state on `${environment}:${target_label}` so a
+  // release with backend+web+marketing maintains three separate lastKnownGood
+  // pointers. Single-target deploys (no target_label) use the bare env name
+  // for backward compat with the synthetic-monitor path.
+  const targetKey = target_label ? `${environment}:${target_label}` : environment;
+  logAction(`IN-BAND ROLLBACK REQUESTED: release=${release_id} target=${targetKey} reason="${reason}"`);
 
   const state = getDeployState();
-  const previousGood = state.lastKnownGood[environment];
+  const previousGood = state.lastKnownGood[targetKey] || state.lastKnownGood[environment];
   const previousDeployId = previousGood?.deployId ?? null;
 
   if (!previousDeployId) {
-    logAction(`IN-BAND ROLLBACK SKIPPED: release=${release_id} env=${environment} — no known-good deploy on file`);
+    logAction(`IN-BAND ROLLBACK SKIPPED: release=${release_id} target=${targetKey} — no known-good deploy on file`);
     return {
       ok: false,
       rolledBack: false,
-      platform: 'unknown',
+      platform: platform ?? 'unknown',
       previousDeployId: null,
       error: 'No known-good deploy on file. Cannot roll back automatically — escalate to CTO.',
       reason,
+      target_key: targetKey,
     };
   }
 
+  // executeRollback still operates on the env-keyed state file. Pass through
+  // — for multi-target this rolls back whichever deploy is recorded for the
+  // env key. Refactoring executeRollback to be target-aware is a follow-up
+  // (currently tracked as a known limitation in docs/PROMOTION-PIPELINE.md).
   const result = executeRollback(environment, dir);
   return {
     ok: result.success,
     rolledBack: result.success,
-    platform: result.platform,
+    platform: platform ?? result.platform,
     previousDeployId,
     error: result.error,
     reason,
+    target_key: targetKey,
   };
 }

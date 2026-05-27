@@ -334,16 +334,19 @@ Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo
 - Description: "Merge staging to main, collect all artifacts, generate the structured release report, and persist to the release ledger. After the report is generated, a GitHub Release is automatically created with a git tag and the report as release notes (handled by release-completion-hook.js — no manual action needed)."
 - create_todo: true, todo_section: "PROJECT-MANAGER"
 
-### 5d-deploy. Conditional Deploy Trigger + Health Gate (only when `services.json.environments.production.deployTarget` is set)
+### 5d-deploy. Conditional Deploy Trigger + Health Gate (only when `services.json.environments.production.deployTarget` OR `deployTargets[]` is set)
 
-When the production environment has an in-band `deployTarget` configured, insert two phases AFTER Phase 8 (so the merge has landed before we deploy). This replaces the prior "trust the platform's auto-deploy webhook" model with an explicit, audited, CTO-gated deploy that gates release sign-off on health-probe success.
+When the production environment has in-band deploy targets configured, insert two phases AFTER Phase 8 (so the merge has landed before we deploy). This replaces the prior "trust the platform's auto-deploy webhook" model with an explicit, audited, CTO-gated deploy that gates release sign-off on health-probe success.
+
+**Multi-target releases**: A single release can deploy to multiple platforms in parallel — e.g. backend on Render, web on Vercel, marketing on Vercel. Configure via `deployTargets[]` (canonical) or `deployTarget` singular (backward-compat shorthand). Both shapes are auto-resolved by `wait_for_health_probe` and the task templates below.
 
 ```bash
 node -e "
 import fs from 'fs';
 const c = JSON.parse(fs.readFileSync('./services.json', 'utf8'));
-const dt = c.environments?.production?.deployTarget;
-console.log(JSON.stringify({ enabled: !!dt, platform: dt?.platform || null, serviceId: dt?.serviceId || null }));
+const env = c.environments?.production ?? {};
+let targets = Array.isArray(env.deployTargets) && env.deployTargets.length > 0 ? env.deployTargets : (env.deployTarget ? [env.deployTarget] : []);
+console.log(JSON.stringify({ enabled: targets.length > 0, count: targets.length, targets: targets.map(t => ({ platform: t.platform, serviceId: t.serviceId, label: t.label ?? null })) }));
 " --input-type=module
 ```
 
@@ -353,9 +356,9 @@ When `enabled: true`, add Phase 8.5:
 mcp__plan-orchestrator__add_plan_task({
   plan_id: "<plan_id>",
   phase_id: "<phase_8_5_id>",
-  title: "Trigger production deploy via <platform> API",
-  description: "Call mcp__<platform>__<platform>_trigger_deploy with the configured serviceId. Record the platform deploy ID (Render dep-..., Vercel dpl-...) via mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, status: 'triggered' }). Poll the platform API until the deploy reaches 'live' (or 'failed'); on failed → halt the release and file a bypass request. This replaces relying on the platform's auto-deploy webhook — the platform's webhook should be turned OFF at gentyr setup time so this is the only path that produces production deploys.",
-  verification_strategy: "release.deploy_artifacts[].status === 'live' for the production target AND the platform reports the deploy as live within 10 minutes",
+  title: "Trigger production deploy(s) via platform API",
+  description: "Read services.json#environments.production.deployTargets (or wrap deployTarget singular into a one-element array). For EACH target in parallel: (1) Call the platform-specific deploy tool — mcp__render__render_trigger_deploy({ service_id }) for Render, mcp__vercel__vercel_promote_deployment for Vercel, mcp__fly__deploy_machine for Fly. (2) Record the platform deploy ID via mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, target_label, status: 'triggered' }) — set target_label to the target.label from services.json so multi-platform releases stay distinguishable on the ledger. (3) Poll the platform API until the deploy reaches 'live' (or 'failed'). (4) Call record_deploy_artifact again with status: 'live' once confirmed. ALL targets must reach 'live' before the phase completes. On ANY target's 'failed' state → file a bypass request and halt; the merge has succeeded, the CTO can retry the failed target manually.",
+  verification_strategy: "For every target in deployTargets[]: release.deploy_artifacts contains a row with status === 'live' within 10 minutes",
   create_todo: true,
   todo_section: "GENERAL"
 })
@@ -367,9 +370,9 @@ And Phase 8.7:
 mcp__plan-orchestrator__add_plan_task({
   plan_id: "<plan_id>",
   phase_id: "<phase_8_7_id>",
-  title: "Post-deploy health gate",
-  description: "Probe the production environment's healthChecks for 5 minutes (300 seconds) requiring 6 consecutive successful probes before clearing the release for sign-off. Call mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 }). On failure: call triggerInBandRollback from .claude/hooks/lib/auto-rollback.js with the release_id, environment, and a structured reason. Then call mcp__release-ledger__cancel_release. The rollback uses the most recent lastKnownGood deploy on file — if none exists, escalate to CTO immediately via report_to_deputy_cto.",
-  verification_strategy: "wait_for_health_probe returned ok: true AND 6 consecutive successful probes recorded AND release status is NOT cancelled",
+  title: "Post-deploy health gate (multi-target)",
+  description: "Call mcp__release-ledger__wait_for_health_probe({ release_id, environment: 'production', duration_seconds: 300, min_consecutive_passes: 6, interval_seconds: 10 }). The tool returns probe_specs[] — one entry per deployTarget, each with its resolved base_url (target.baseUrlOverride OR env.baseUrl) and health_checks (target.healthChecks OR env.healthChecks OR default). For each probe_spec: poll {base_url}{health_check.path} every interval_seconds; require min_consecutive_passes consecutive successes (status matches expectStatus AND body contains expectBodyContains if set). The phase passes when EVERY probe_spec hits its threshold within duration_seconds. On ANY probe_spec's failure: call triggerInBandRollback from .claude/hooks/lib/auto-rollback.js for that target's platform, then mcp__release-ledger__cancel_release. The rollback uses the most recent lastKnownGood deploy for that target — if none exists, escalate to CTO via report_to_deputy_cto.",
+  verification_strategy: "wait_for_health_probe.probe_specs.every(spec => 6 consecutive successful probes recorded against spec.base_url + each spec.health_checks[].path) AND release status is NOT cancelled",
   create_todo: true,
   todo_section: "GENERAL"
 })
@@ -378,8 +381,9 @@ mcp__plan-orchestrator__add_plan_task({
 Add dependencies: Phase 8.5 depends on Phase 8 (`add_dependency`), Phase 8.7 depends on Phase 8.5.
 
 **Failure handling**:
-- Phase 8.5 failure (deploy never reaches live) → file bypass request, do NOT cancel the release yet — the merge has succeeded; the deploy can be retried by the CTO via `mcp__<platform>__<platform>_trigger_deploy` manually.
-- Phase 8.7 failure (health probe never reaches min_consecutive_passes) → AUTO-ROLLBACK via `triggerInBandRollback`, then `cancel_release`. This is the only path in gentyr's promotion plan that auto-cancels a signed-off release.
+- Phase 8.5 failure (any target's deploy never reaches live) → file bypass request, do NOT cancel the release yet — the merge has succeeded; that specific target can be retried by the CTO via the platform's deploy tool manually.
+- Phase 8.7 failure (any probe_spec never reaches min_consecutive_passes) → AUTO-ROLLBACK via `triggerInBandRollback` for that target's platform, then `cancel_release`. This is the only path in gentyr's promotion plan that auto-cancels a signed-off release.
+- Multi-target partial rollback: gentyr rolls back EACH failing target independently using its platform's rollback API. A mixed-platform release (Render + Vercel) where Vercel's probes fail rolls back only the Vercel target; the Render deploy stays live. CTO is notified of the partial state via `report_to_deputy_cto` (staging tier).
 
 **When `enabled: false`**: Skip both phases entirely. The release falls back to the legacy webhook-trusting model — no behavior change for projects that haven't opted in.
 

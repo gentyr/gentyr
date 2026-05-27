@@ -179,6 +179,7 @@ export const RecordDeployArtifactArgsSchema = z.object({
   platform: z.enum(['render', 'vercel', 'fly']).describe('Deploy platform'),
   service_id: z.string().min(1).describe('Render service ID (srv-...), Vercel project ID, or Fly app name'),
   deploy_id: z.string().min(1).describe('Platform-specific deploy ID (Render dep-..., Vercel dpl-..., Fly machine ID)'),
+  target_label: z.string().optional().describe('Human-readable label from services.json deployTargets[].label (e.g., "backend", "web"). Lets multi-target releases distinguish artifacts on the same platform.'),
   url: z.string().url().optional().describe('Live URL the deploy produced (omit for non-URL targets)'),
   triggered_at: z.string().optional().describe('ISO timestamp of trigger (defaults to now)'),
   status: z.enum(['triggered', 'building', 'live', 'failed', 'rolled_back']).default('triggered').describe('Deploy state at recording time'),

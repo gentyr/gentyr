@@ -1652,13 +1652,24 @@ interface PromotionPhaseResult {
  * Resolve the supabase project ref for an environment from services.json.
  * Returns null if not configured — the caller decides whether that's fatal.
  */
-function readEnvironmentConfig(envName: string): {
+type DeployTarget = {
+  platform: 'render' | 'vercel' | 'fly';
+  serviceId: string;
+  label?: string;
+  baseUrlOverride?: string;
+  healthChecks?: Array<{ path: string; expectStatus: number; expectBodyContains?: string }>;
+};
+
+type EnvironmentConfig = {
   baseUrl?: string;
   healthEndpoint?: string;
   supabase?: { projectRef: string };
-  deployTarget?: { platform: 'render' | 'vercel' | 'fly'; serviceId: string };
+  deployTarget?: DeployTarget;
+  deployTargets?: DeployTarget[];
   healthChecks?: Array<{ path: string; expectStatus: number; expectBodyContains?: string }>;
-} | null {
+};
+
+function readEnvironmentConfig(envName: string): EnvironmentConfig | null {
   try {
     const configPath = path.join(PROJECT_DIR, 'services.json');
     const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -1668,6 +1679,37 @@ function readEnvironmentConfig(envName: string): {
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve the effective deploy targets for an environment, auto-wrapping the
+ * legacy `deployTarget` singular into a one-element array. Returns an empty
+ * array when neither shape is configured.
+ */
+function resolveDeployTargets(env: EnvironmentConfig): DeployTarget[] {
+  if (Array.isArray(env.deployTargets) && env.deployTargets.length > 0) {
+    return env.deployTargets;
+  }
+  if (env.deployTarget) {
+    return [{
+      platform: env.deployTarget.platform,
+      serviceId: env.deployTarget.serviceId,
+      label: `${env.deployTarget.platform}:${env.deployTarget.serviceId}`,
+    }];
+  }
+  return [];
+}
+
+/**
+ * Resolve effective health probe spec for a target. Order of precedence:
+ *   1. target.healthChecks if set
+ *   2. env-level healthChecks[] if set
+ *   3. fallback to [{ path: env.healthEndpoint || '/health', expectStatus: 200 }]
+ */
+function resolveHealthChecks(env: EnvironmentConfig, target?: DeployTarget): Array<{ path: string; expectStatus: number; expectBodyContains?: string }> {
+  if (target?.healthChecks && target.healthChecks.length > 0) return target.healthChecks;
+  if (env.healthChecks && env.healthChecks.length > 0) return env.healthChecks;
+  return [{ path: env.healthEndpoint ?? '/health', expectStatus: 200 }];
 }
 
 function recordMigrationStatus(args: RecordMigrationStatusArgs): PromotionPhaseResult | ErrorResult {
@@ -1748,6 +1790,7 @@ function recordDeployArtifact(args: RecordDeployArtifactArgs): PromotionPhaseRes
     platform: args.platform,
     service_id: args.service_id,
     deploy_id: args.deploy_id,
+    target_label: args.target_label ?? null,
     url: args.url ?? null,
     triggered_at: args.triggered_at ?? now(),
     status: args.status,
@@ -1769,18 +1812,38 @@ function waitForHealthProbe(args: WaitForHealthProbeArgs): PromotionPhaseResult 
     return { error: `services.json environments["${args.environment}"].baseUrl is required for health probes.` };
   }
 
-  // PR 1 records the request; the actual long-poll loop lives in PR 3 where
-  // it composes auto-rollback.js. Returning the plan here lets callers
-  // verify wiring without waiting 5 minutes during plumbing-only tests.
+  // Resolve per-target probe specs. When deployTargets[] is configured each
+  // target may override the env-level baseUrl (so the backend on Render and
+  // the web app on Vercel get probed at their respective origins) and may
+  // bring its own healthChecks[]. Phase 8.7 must wait for ALL targets'
+  // probes to pass before signing off — a single target's failure aborts.
+  const targets = resolveDeployTargets(envConfig);
+  const probeSpecs = targets.length > 0
+    ? targets.map(t => ({
+        label: t.label ?? `${t.platform}:${t.serviceId}`,
+        platform: t.platform,
+        service_id: t.serviceId,
+        base_url: t.baseUrlOverride ?? envConfig.baseUrl,
+        health_checks: resolveHealthChecks(envConfig, t),
+      }))
+    : [{
+        label: 'default',
+        platform: null,
+        service_id: null,
+        base_url: envConfig.baseUrl,
+        health_checks: resolveHealthChecks(envConfig),
+      }];
+
+  // The actual long-poll loop runs in the agent (the Phase 8.7 task) so
+  // the tool returns the resolved plan immediately. The agent iterates the
+  // probe specs, polls them every interval_seconds, and only reports
+  // overall success when every target hits min_consecutive_passes.
   const plan = {
     deferred: true,
-    reason: 'wait_for_health_probe is wired; the polling + auto-rollback wiring lands in PR 3.',
+    reason: 'wait_for_health_probe returns the resolved probe plan; the calling agent runs the polling loop and reports back via record_deploy_artifact + cancel_release on failure.',
     environment: args.environment,
     base_url: envConfig.baseUrl,
-    health_checks: envConfig.healthChecks ?? [{
-      path: envConfig.healthEndpoint ?? '/health',
-      expectStatus: 200,
-    }],
+    probe_specs: probeSpecs,
     duration_seconds: args.duration_seconds,
     min_consecutive_passes: args.min_consecutive_passes,
     interval_seconds: args.interval_seconds,
