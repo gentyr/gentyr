@@ -5,6 +5,7 @@
  * Usage:
  *   npx gentyr init [--op-token <token>]     # First-time project setup
  *   npx gentyr sync                          # Force sync (rebuild MCP servers + re-merge configs)
+ *   npx gentyr set-op-token                  # Rotate the 1Password service account token
  *   npx gentyr status                        # Show installation state
  *   npx gentyr protect                       # Enable root-owned protection (prompts for sudo internally)
  *   npx gentyr unprotect                     # Disable protection (prompts for sudo internally)
@@ -30,6 +31,7 @@ const COMMANDS = {
   uninstall: './commands/uninstall.js',
   migrate: './commands/migrate.js',
   scaffold: './commands/scaffold.js',
+  'set-op-token': './commands/set-op-token.js',
 };
 
 const RED = '\x1b[0;31m';
@@ -44,6 +46,7 @@ Usage: npx gentyr <command> [options]
 Commands:
   init [--op-token <token>]   First-time project setup
   sync                        Force sync (rebuild MCP servers + re-merge configs)
+  set-op-token                Rotate the 1Password service account token (reads from stdin or --token)
   status                      Show installation state
   protect                     Enable root-owned protection (prompts for sudo internally)
   unprotect                   Disable protection (prompts for sudo internally)
