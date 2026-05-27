@@ -16,6 +16,7 @@ import * as os from 'os';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { McpServer, type AnyToolHandler } from '../shared/server.js';
+import { addDependenciesForNewEntity, type DependsOnEntry } from '../shared/cross-deps.js';
 import {
   ListTasksArgsSchema,
   GetTaskArgsSchema,
@@ -1127,7 +1128,19 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
     status: taskStatus,
   });
 
-  return {
+  // Inline cross-entity dependency declarations (depends_on). Recorded in
+  // workstream.db so the session-queue gate withholds spawning until satisfied.
+  let dependsOnResult: ReturnType<typeof addDependenciesForNewEntity> | null = null;
+  if (args.depends_on && args.depends_on.length > 0) {
+    dependsOnResult = addDependenciesForNewEntity({
+      blocked_entity_type: 'todo',
+      blocked_entity_id: id,
+      dependsOn: args.depends_on as DependsOnEntry[],
+      createdBy: args.assigned_by ?? 'create_task',
+    });
+  }
+
+  const response: CreateTaskResult = {
     id,
     section: resolvedSection,
     status: taskStatus,
@@ -1152,6 +1165,15 @@ function createTask(args: CreateTaskArgs): CreateTaskResult | ErrorResult {
       ? (warning ? warning + ' | ' : '') + 'Gate is DRAFT. You MUST spawn a user-alignment sub-agent to review the gate criteria against user prompts, then call confirm_task_gate to make the task spawnable.'
       : warning,
   };
+
+  if (dependsOnResult) {
+    (response as unknown as Record<string, unknown>).depends_on = {
+      added: dependsOnResult.added,
+      errors: dependsOnResult.errors,
+    };
+  }
+
+  return response;
 }
 
 function startTask(args: StartTaskArgs): StartTaskResult | ErrorResult {

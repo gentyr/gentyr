@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS queue_dependencies (
   blocked_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocked_entity_type IN ('todo','persistent','plan_task')),
   blocker_queue_id TEXT,
   blocker_task_id TEXT NOT NULL,
-  blocker_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocker_entity_type IN ('todo','persistent','plan_task')),
+  blocker_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocker_entity_type IN ('todo','persistent','plan_task','plan')),
   status TEXT NOT NULL DEFAULT 'active',
   created_by TEXT NOT NULL,
   reasoning TEXT NOT NULL,
@@ -154,7 +154,11 @@ function migrateCrossEntityDeps(db: Database.Database): void {
     db.exec(`ALTER TABLE queue_dependencies ADD COLUMN pause_action TEXT`);
   }
 
-  // Step 2: broaden UNIQUE constraint via shadow-table swap (only if old constraint still present)
+  // Step 2: rebuild via shadow-table swap when EITHER the legacy narrow UNIQUE
+  // is still present OR the blocker_entity_type CHECK constraint does not yet
+  // include 'plan'. SQLite cannot ALTER a CHECK/UNIQUE in place, so both
+  // extensions share one swap path. Idempotent — swap is skipped when the
+  // table already matches the canonical schema.
   const tableDef = db
     .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='queue_dependencies'")
     .get() as { sql: string } | undefined;
@@ -166,8 +170,14 @@ function migrateCrossEntityDeps(db: Database.Database): void {
     const hasOldUnique = /UNIQUE\s*\(\s*blocked_task_id\s*,\s*blocker_task_id\s*\)/i.test(
       tableDef.sql
     );
+    // True only when the blocker_entity_type CHECK explicitly lists 'plan'.
+    // 'plan' appears last in the new schema's IN(...) list, so we look for the
+    // distinctive `'plan_task','plan'` substring to disambiguate from 'plan_task'.
+    const hasPlanBlocker = /'plan_task'\s*,\s*'plan'/i.test(tableDef.sql);
 
-    if (hasOldUnique && !hasNewUnique) {
+    const needsRebuild = (hasOldUnique && !hasNewUnique) || !hasPlanBlocker;
+
+    if (needsRebuild) {
       const swap = db.transaction(() => {
         db.exec(`
           CREATE TABLE queue_dependencies_new (
@@ -177,7 +187,7 @@ function migrateCrossEntityDeps(db: Database.Database): void {
             blocked_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocked_entity_type IN ('todo','persistent','plan_task')),
             blocker_queue_id TEXT,
             blocker_task_id TEXT NOT NULL,
-            blocker_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocker_entity_type IN ('todo','persistent','plan_task')),
+            blocker_entity_type TEXT NOT NULL DEFAULT 'todo' CHECK (blocker_entity_type IN ('todo','persistent','plan_task','plan')),
             status TEXT NOT NULL DEFAULT 'active',
             created_by TEXT NOT NULL,
             reasoning TEXT NOT NULL,
@@ -305,6 +315,19 @@ function getEntityStatus(ref: EntityRef): { exists: boolean; status?: string; re
       } finally {
         db?.close();
       }
+    } else if (ref.entity_type === 'plan') {
+      if (!fs.existsSync(PLANS_DB_PATH)) return { exists: false, reason: 'plans.db not found' };
+      let db: Database.Database | null = null;
+      try {
+        db = openReadonlyDb(PLANS_DB_PATH);
+        const row = db.prepare('SELECT status FROM plans WHERE id = ?').get(ref.entity_id) as
+          | { status: string }
+          | undefined;
+        if (!row) return { exists: false };
+        return { exists: true, status: row.status };
+      } finally {
+        db?.close();
+      }
     }
     return { exists: false, reason: `unknown entity_type ${ref.entity_type}` };
   } catch (err) {
@@ -321,6 +344,7 @@ function isSatisfyingTerminalStatus(entity_type: EntityType, status: string): bo
   if (entity_type === 'todo') return status === 'completed';
   if (entity_type === 'persistent') return status === 'completed';
   if (entity_type === 'plan_task') return status === 'completed' || status === 'skipped';
+  if (entity_type === 'plan') return status === 'signed_off' || status === 'completed';
   return false;
 }
 
@@ -717,17 +741,17 @@ function normalizeAddDependencyArgs(args: AddDependencyArgs): {
   blocked: EntityRef;
   reasoning: string;
 } {
-  if ('blocker' in args && 'blocked' in args) {
+  if (args.blocker !== undefined && args.blocked !== undefined) {
     return {
       blocker: { entity_type: args.blocker.entity_type, entity_id: args.blocker.entity_id },
-      blocked: { entity_type: args.blocked.entity_type, entity_id: args.blocked.entity_id },
+      blocked: { entity_type: args.blocked.entity_type as EntityType, entity_id: args.blocked.entity_id },
       reasoning: args.reasoning,
     };
   }
-  // Legacy todo→todo
+  // Legacy todo→todo (refine guarantees both legacy fields are present here)
   return {
-    blocker: { entity_type: 'todo', entity_id: args.blocker_task_id },
-    blocked: { entity_type: 'todo', entity_id: args.blocked_task_id },
+    blocker: { entity_type: 'todo', entity_id: args.blocker_task_id! },
+    blocked: { entity_type: 'todo', entity_id: args.blocked_task_id! },
     reasoning: args.reasoning,
   };
 }
