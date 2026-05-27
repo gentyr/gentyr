@@ -19,8 +19,7 @@ How `/promote-to-staging` and `/promote-to-prod` work end-to-end after the produ
     Step 4   — Related demos
     Step 5   — Merge preview → staging
     Step 6   — Collect artifacts
-  Phase 8.5 (if deployTarget.staging set) — Trigger staging deploy
-  Phase 8.7 (if deployTarget.staging set) — Health probe, auto-rollback on failure
+  Phase 8.6 (if deployTargets set) — Deploy & verify staging targets (per-target deployment-verifier agents in parallel)
 
 /promote-to-prod
   Phases 1-3   — Per-PR review, triage, meta-review
@@ -30,8 +29,11 @@ How `/promote-to-staging` and `/promote-to-prod` work end-to-end after the produ
   Phase 5-6    — Demo coverage audit, final triage
   Phase 7      — CTO sign-off (record_cto_decision)
   Phase 8      — Merge staging → main, generate release report
-  Phase 8.5    — Trigger production deploy via platform API (if deployTarget set)
-  Phase 8.7    — Post-deploy health gate; auto-rollback + cancel_release on failure
+  Phase 8.6    — Deploy & Verify (per target):
+                 for each deployTargets[] entry, spawn a deployment-verifier agent that
+                 triggers the platform deploy, polls until live, runs a 5-min health probe,
+                 and either recordHealthy or triggers cascading rollback per rollbackGroup.
+                 Phase completes when all verifiers succeed; ANY failure cancels the release.
 ```
 
 Phases marked `(if X set)` are skipped entirely when the project hasn't configured the relevant `services.json` block — projects fall back to today's webhook-trusting behavior.
@@ -129,11 +131,11 @@ Both routes are recorded on the release ledger.
 
 ## Rollback groups (cascading rollback)
 
-By default, Phase 8.7 rolls back ONLY the target whose health probe failed. Other targets stay live, leaving production in a mixed-version state. This is fine for genuinely independent services (marketing site, mobile bundle, internal admin) but unsafe for tightly-coupled targets that share an API contract.
+By default, Phase 8.6 rolls back ONLY the target whose health probe failed. Other targets stay live, leaving production in a mixed-version state. This is fine for genuinely independent services (marketing site, mobile bundle, internal admin) but unsafe for tightly-coupled targets that share an API contract.
 
 Declare a `rollbackGroup: string` on coupled targets and gentyr will revert the whole group together when any one member fails. In the example above, `backend` + `web` both tag `'api-contract'`: a backend probe failure reverts the web deploy too (so the web isn't talking to a rolled-back backend). `marketing` has no group, so backend/web failures leave it untouched.
 
-Implementation: `resolveRollbackTargets(failingTarget, allTargets)` in `.claude/hooks/lib/auto-rollback.js` computes the rollback set at probe-failure time; Phase 8.7's task agent calls `triggerInBandRollback` for each member.
+Implementation: `resolveRollbackTargets(failingTarget, allTargets)` in `.claude/hooks/lib/auto-rollback.js` computes the rollback set at probe-failure time; Phase 8.6's task agent calls `triggerInBandRollback` for each member.
 
 Membership is by exact string match. Empty or missing values never cascade. Targets in distinct groups (`'api-contract'` vs `'mobile-bundle'`) stay isolated from each other.
 
@@ -144,7 +146,7 @@ A single production release can deploy to multiple platforms in parallel:
 - **`deployTarget`** (singular) — backward-compat shorthand for single-platform releases. Gentyr auto-wraps it into a one-element `deployTargets[]` at runtime.
 - **`deployTargets[]`** (canonical) — explicit array. Each entry gets its own `label`, optional `baseUrlOverride` (when the target lives at a different origin than `env.baseUrl`), and optional `healthChecks[]` override.
 
-The promotion plan fires platform deploys in parallel during Phase 8.5 (one `record_deploy_artifact` per target with the `target_label` set). Phase 8.7 probes every target's health endpoints and requires all to pass before clearing release sign-off. Rollback behavior depends on whether targets share a `rollbackGroup` (see above) — grouped targets cascade together, isolated targets stay live.
+The promotion plan fires platform deploys in parallel during Phase 8.6 (one `record_deploy_artifact` per target with the `target_label` set). Phase 8.6 probes every target's health endpoints and requires all to pass before clearing release sign-off. Rollback behavior depends on whether targets share a `rollbackGroup` (see above) — grouped targets cascade together, isolated targets stay live.
 
 `deploy-tracking.json` keys both `lastKnownGood` and `recentDeploys` by `${environment}.${target_label}` so a release that updates one target does not clobber sibling targets' rollback pointers. Legacy single-target releases land in the `_default` slot. `executeRollback()` consumes `opts.target_label` + `opts.serviceId` so the platform API call (Vercel scope, Render serviceId) targets the right deploy.
 
@@ -155,7 +157,7 @@ The promotion plan fires platform deploys in parallel during Phase 8.5 (one `rec
 | Trigger | Latency | What happens |
 |---|---|---|
 | Hourly synthetic-monitor `consecutive_failures` alert | 1-2 min from deploy | Existing `checkAndRollback()` path. Rolls back to `lastKnownGood` if deploy <5 min old, 3+ failures. |
-| Phase 8.7 health probe never reaches `min_consecutive_passes` | 5 min from deploy trigger | New `triggerInBandRollback()` path. Rolls back immediately + cancels the release. |
+| Phase 8.6 health probe never reaches `min_consecutive_passes` | 5 min from deploy trigger | New `triggerInBandRollback()` path. Rolls back immediately + cancels the release. |
 
 The two paths use the same `executeRollback()` underneath. The in-band path is stricter: it cancels the release ledger on failure (the synthetic path just rolls back code; the release record stays signed-off).
 
