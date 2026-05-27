@@ -424,6 +424,7 @@ When adding a new "must always happen" behavior:
 |------|------|:-----------:|
 | `.claude/hooks/staging-lock-guard.js` | Block staging merges | Yes |
 | `.claude/hooks/main-tree-commit-guard.js` | Block main tree commits by spawned agents | Yes |
+| `.claude/hooks/spawned-main-tree-edit-guard.js` | Block Write/Edit/NotebookEdit into main tree by spawned agents (catches CWD fallback to PROJECT_DIR) | Yes |
 | `.claude/hooks/interactive-lockdown-guard.js` | Block file edits in CTO sessions | Yes |
 | `.claude/hooks/credential-file-guard.js` | Block access to credential files | Yes |
 | `.claude/hooks/branch-checkout-guard.js` | Block branch switching in main tree | Yes |
