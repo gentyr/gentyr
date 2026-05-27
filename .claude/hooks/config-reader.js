@@ -89,6 +89,7 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'jsonl_stale_kill_minutes',
   'screenshot_cleanup',
   'auto_rollback_check',
+  'schema_drift_check',
   'fly_image_freshness',
   'fly_project_image_freshness',
   'global_monitor_health',
@@ -247,6 +248,7 @@ const DEFAULTS = {
   vulnerability_scan: 1440,                    // daily (24 hours)
   load_test: 360,                              // 6 hours (only runs during promotion)
   auto_rollback_check: 2,                      // 2 minutes
+  schema_drift_check: 1440,                    // daily — compares each configured environments[*].supabase.projectRef to migrations folder
   fly_image_freshness: 60,                     // 1 hour
   fly_project_image_freshness: 30,             // 30 minutes
   global_monitor_health: 5,                    // 5 minutes
