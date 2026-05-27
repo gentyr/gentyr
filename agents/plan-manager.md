@@ -247,7 +247,8 @@ When the release plan includes "Deploy Trigger" (Phase 8.5) and "Post-Deploy Hea
 2. Read `services.json#environments.production.deployTargets` (preferred) or wrap `deployTarget` singular into `[{...}]`.
 3. The Phase 8.5 task agent fires platform-specific deploy tools IN PARALLEL for every target — `mcp__render__render_trigger_deploy({ service_id })` for Render targets, `mcp__vercel__vercel_promote_deployment` for Vercel, `mcp__fly__deploy_machine` for Fly.
 4. For each target: record the resulting deploy ID via `mcp__release-ledger__record_deploy_artifact({ release_id, platform, service_id, deploy_id, target_label: <label from services.json>, status: 'triggered' })`. The `target_label` is critical when a release deploys to multiple instances of the same platform (e.g., two Vercel projects for web + marketing).
-5. Poll EACH target's platform until it reaches `live` (typically 2-5 minutes each). Call `record_deploy_artifact` again per target with `status: 'live'` once confirmed.
+4b. **Track deployment in rollback state**: Call `trackDeployment(env, deploy_id, platform, { target_label, serviceId })` from `.claude/hooks/lib/auto-rollback.js` so `deploy-tracking.json` has a per-target row. Without this, Phase 8.7's rollback path cannot find the deploy on file.
+5. Poll EACH target's platform until it reaches `live` (typically 2-5 minutes each). Call `record_deploy_artifact` again per target with `status: 'live'` once confirmed. Then call `recordHealthy(env, deploy_id, platform, { target_label, serviceId })` so a per-target `lastKnownGood` baseline exists for the rollback path.
 6. Phase 8.5 only completes when ALL targets are `live`. On ANY target's `failed`: file a bypass request and exit. Do NOT cancel the release — the CTO may want to retry that specific target.
 
 **Phase 8.7 (Post-Deploy Health Gate)** — multi-target aware:

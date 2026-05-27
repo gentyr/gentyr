@@ -38,6 +38,37 @@ function logAction(msg) {
   } catch { /* best-effort */ }
 }
 
+const DEFAULT_TARGET_LABEL = '_default';
+
+/**
+ * Auto-migrate the legacy per-env single-slot shape to the per-target shape.
+ * Old: { production: { deployId, platform, ... } }
+ * New: { production: { _default: { deployId, platform, ... } } }
+ *
+ * Idempotent — if the env's value already looks like a per-target map (any
+ * value is an object that itself contains a deployId or similar), return as-is.
+ */
+function migrateBucket(bucket) {
+  if (!bucket || typeof bucket !== 'object') return {};
+  const out = {};
+  for (const [env, val] of Object.entries(bucket)) {
+    if (!val || typeof val !== 'object') continue;
+    // New shape: env → { label: {...}, label2: {...} }. Recognized when every
+    // value inside is itself an object (and the env-level object itself does
+    // NOT have a top-level deployId field).
+    const looksLikeTargetMap = Object.values(val).every(
+      (v) => v && typeof v === 'object' && !Array.isArray(v),
+    ) && !('deployId' in val) && !('firstSeenAt' in val) && !('verifiedAt' in val);
+    if (looksLikeTargetMap) {
+      out[env] = val;
+    } else {
+      // Old shape — wrap into a one-element per-target map under _default
+      out[env] = { [DEFAULT_TARGET_LABEL]: val };
+    }
+  }
+  return out;
+}
+
 /**
  * Read the deploy state from disk.
  * @returns {{lastKnownGood: Object, recentDeploys: Object, rollbackHistory: Array}}
@@ -52,8 +83,8 @@ export function getDeployState() {
         throw new Error('Invalid deploy state shape');
       }
       return {
-        lastKnownGood: state.lastKnownGood || {},
-        recentDeploys: state.recentDeploys || {},
+        lastKnownGood: migrateBucket(state.lastKnownGood),
+        recentDeploys: migrateBucket(state.recentDeploys),
         rollbackHistory: Array.isArray(state.rollbackHistory) ? state.rollbackHistory : [],
       };
     }
@@ -61,6 +92,17 @@ export function getDeployState() {
     // Corrupt or missing — return fresh state
   }
   return { lastKnownGood: {}, recentDeploys: {}, rollbackHistory: [] };
+}
+
+/**
+ * Internal: resolve the target_label from an opts argument or fall back to _default.
+ * @param {{target_label?: string}|undefined} opts
+ */
+function resolveTargetLabel(opts) {
+  if (opts && typeof opts.target_label === 'string' && opts.target_label.length > 0) {
+    return opts.target_label;
+  }
+  return DEFAULT_TARGET_LABEL;
 }
 
 /**
@@ -85,88 +127,112 @@ export function saveDeployState(state) {
 /**
  * Track a new deployment. Called when a new deploy is detected.
  *
+ * Multi-target releases pass `opts.target_label` so each target keeps its own
+ * `recentDeploys[env][label]` slot. Single-target callers can omit opts and
+ * land in `_default`.
+ *
  * @param {string} environment - Environment name (e.g., 'staging', 'production')
  * @param {string} deployId - Deployment identifier
- * @param {string} platform - Deployment platform ('vercel' | 'render')
+ * @param {string} platform - Deployment platform ('vercel' | 'render' | 'fly')
+ * @param {{target_label?: string, serviceId?: string}} [opts]
  */
-export function trackDeployment(environment, deployId, platform) {
+export function trackDeployment(environment, deployId, platform, opts) {
   if (!environment || !deployId || !platform) {
     throw new Error('trackDeployment requires environment, deployId, and platform');
   }
 
+  const label = resolveTargetLabel(opts);
   const state = getDeployState();
-  state.recentDeploys[environment] = {
+  if (!state.recentDeploys[environment] || typeof state.recentDeploys[environment] !== 'object') {
+    state.recentDeploys[environment] = {};
+  }
+  state.recentDeploys[environment][label] = {
     deployId,
     platform,
+    serviceId: opts?.serviceId ?? null,
     firstSeenAt: new Date().toISOString(),
     consecutiveFailures: 0,
   };
   saveDeployState(state);
-  logAction(`TRACK: ${environment} deploy=${deployId} platform=${platform}`);
+  logAction(`TRACK: ${environment}/${label} deploy=${deployId} platform=${platform}`);
 }
 
 /**
- * Record a healthy check for a deployment. Updates lastKnownGood.
+ * Record a healthy check for a deployment. Updates lastKnownGood for the
+ * specific target (or _default when no label).
  *
  * @param {string} environment - Environment name
  * @param {string} deployId - Deployment identifier
  * @param {string} platform - Deployment platform
+ * @param {{target_label?: string, serviceId?: string}} [opts]
  */
-export function recordHealthy(environment, deployId, platform) {
+export function recordHealthy(environment, deployId, platform, opts) {
   if (!environment) {
     throw new Error('recordHealthy requires environment');
   }
 
+  const label = resolveTargetLabel(opts);
   const state = getDeployState();
 
-  // Update last known good
-  state.lastKnownGood[environment] = {
+  // Update last known good for this target only — sibling targets keep their
+  // own slots so a backend-only release doesn't clobber web's pointer.
+  if (!state.lastKnownGood[environment] || typeof state.lastKnownGood[environment] !== 'object') {
+    state.lastKnownGood[environment] = {};
+  }
+  state.lastKnownGood[environment][label] = {
     deployId: deployId || 'current',
     platform: platform || 'unknown',
+    serviceId: opts?.serviceId ?? null,
     verifiedAt: new Date().toISOString(),
   };
 
-  // Reset consecutive failures for this environment
-  if (state.recentDeploys[environment]) {
-    state.recentDeploys[environment].consecutiveFailures = 0;
+  // Reset consecutive failures for this target
+  if (state.recentDeploys[environment] && state.recentDeploys[environment][label]) {
+    state.recentDeploys[environment][label].consecutiveFailures = 0;
   }
 
   saveDeployState(state);
 }
 
 /**
- * Record a health check failure. Increments consecutive failure counter.
- * Returns whether a rollback should be triggered.
+ * Record a health check failure. Increments consecutive failure counter for
+ * this target. Returns whether a rollback should be triggered.
  *
  * @param {string} environment - Environment name
- * @returns {{shouldRollback: boolean, consecutiveFailures: number, previousGoodDeploy: string|null, deployAge: number|null}}
+ * @param {{target_label?: string}} [opts]
+ * @returns {{shouldRollback: boolean, consecutiveFailures: number, previousGoodDeploy: string|null, deployAge: number|null, target_label: string}}
  */
-export function recordFailure(environment) {
+export function recordFailure(environment, opts) {
   if (!environment) {
     throw new Error('recordFailure requires environment');
   }
 
+  const label = resolveTargetLabel(opts);
   const state = getDeployState();
-  const deploy = state.recentDeploys[environment];
+  if (!state.recentDeploys[environment] || typeof state.recentDeploys[environment] !== 'object') {
+    state.recentDeploys[environment] = {};
+  }
+  const deploy = state.recentDeploys[environment][label];
 
   if (!deploy) {
-    // No tracked deploy — increment a synthetic tracker
-    state.recentDeploys[environment] = {
+    // No tracked deploy for this target — start a synthetic counter
+    state.recentDeploys[environment][label] = {
       deployId: 'unknown',
       platform: 'unknown',
+      serviceId: null,
       firstSeenAt: new Date().toISOString(),
       consecutiveFailures: 1,
     };
     saveDeployState(state);
-    return { shouldRollback: false, consecutiveFailures: 1, previousGoodDeploy: null, deployAge: null };
+    return { shouldRollback: false, consecutiveFailures: 1, previousGoodDeploy: null, deployAge: null, target_label: label };
   }
 
   deploy.consecutiveFailures = (deploy.consecutiveFailures || 0) + 1;
   saveDeployState(state);
 
-  // Check rollback conditions
+  // Check rollback conditions per-target
   const deployAge = Date.now() - new Date(deploy.firstSeenAt).getTime();
-  const previousGood = state.lastKnownGood[environment];
+  const previousGood = state.lastKnownGood[environment]?.[label] ?? null;
 
   const shouldRollback = (
     deployAge < MAX_DEPLOY_AGE_MS &&
@@ -180,37 +246,52 @@ export function recordFailure(environment) {
     consecutiveFailures: deploy.consecutiveFailures,
     previousGoodDeploy: previousGood ? previousGood.deployId : null,
     deployAge: Math.round(deployAge / 1000),
+    target_label: label,
   };
 }
 
 /**
- * Execute a rollback for the given environment.
+ * Execute a rollback for the given environment + target.
+ *
+ * Multi-target releases pass `opts.target_label` to identify which target's
+ * deploy is being reverted. `opts.serviceId` overrides the services.json
+ * lookup for Render's project-scoped rollback (essential for multi-target
+ * releases where each Render target has its own serviceId). Without
+ * target_label, falls back to the `_default` slot for backward compatibility.
  *
  * @param {string} environment - Environment name
  * @param {string} projectDir - Project root directory
- * @returns {{success: boolean, platform: string, error: string|null}}
+ * @param {{target_label?: string, platform?: string, serviceId?: string}} [opts]
+ * @returns {{success: boolean, platform: string, error: string|null, target_label: string}}
  */
-export function executeRollback(environment, projectDir) {
+export function executeRollback(environment, projectDir, opts) {
   if (!environment || !projectDir) {
     throw new Error('executeRollback requires environment and projectDir');
   }
 
+  const label = resolveTargetLabel(opts);
   const state = getDeployState();
-  const deploy = state.recentDeploys[environment];
-  const previousGood = state.lastKnownGood[environment];
+  const deploy = state.recentDeploys[environment]?.[label] ?? null;
+  const previousGood = state.lastKnownGood[environment]?.[label] ?? null;
 
   if (!previousGood || !previousGood.deployId) {
-    logAction(`ROLLBACK SKIPPED: ${environment} — no known-good deploy to rollback to`);
-    return { success: false, platform: 'unknown', error: 'No known-good deploy to rollback to' };
+    logAction(`ROLLBACK SKIPPED: ${environment}/${label} — no known-good deploy to rollback to`);
+    return { success: false, platform: opts?.platform ?? 'unknown', error: 'No known-good deploy to rollback to', target_label: label };
   }
 
-  const platform = (deploy && deploy.platform) || previousGood.platform || 'unknown';
-  logAction(`ROLLBACK INITIATED: ${environment} platform=${platform} from=${deploy ? deploy.deployId : 'unknown'} to=${previousGood.deployId}`);
+  const platform = opts?.platform ?? (deploy && deploy.platform) ?? previousGood.platform ?? 'unknown';
+  // Per-target serviceId precedence: explicit opts > state-stored target serviceId > legacy services.json.render.serviceId
+  const targetServiceId = opts?.serviceId ?? deploy?.serviceId ?? previousGood.serviceId ?? null;
+  logAction(`ROLLBACK INITIATED: ${environment}/${label} platform=${platform} from=${deploy ? deploy.deployId : 'unknown'} to=${previousGood.deployId}`);
 
   try {
     if (platform === 'vercel') {
-      // Vercel rollback via CLI
-      execSync('npx vercel rollback --yes', {
+      // Vercel rollback via CLI. Scope to the target project when serviceId
+      // is known so multi-target releases don't roll back the wrong app.
+      const vercelCmd = targetServiceId
+        ? `npx vercel rollback --yes --scope="${targetServiceId}"`
+        : 'npx vercel rollback --yes';
+      execSync(vercelCmd, {
         cwd: projectDir,
         encoding: 'utf8',
         timeout: 60000,
@@ -220,22 +301,25 @@ export function executeRollback(environment, projectDir) {
       // Render rollback via API — requires RENDER_API_KEY in environment
       const renderApiKey = process.env.RENDER_API_KEY;
       if (!renderApiKey) {
-        return { success: false, platform, error: 'RENDER_API_KEY not set — cannot rollback via API' };
+        return { success: false, platform, error: 'RENDER_API_KEY not set — cannot rollback via API', target_label: label };
       }
 
-      // Get service ID from services.json
-      let serviceId = null;
-      try {
-        const svcConfigPath = path.join(projectDir, '.claude', 'config', 'services.json');
-        if (fs.existsSync(svcConfigPath)) {
-          const svcConfig = JSON.parse(fs.readFileSync(svcConfigPath, 'utf8'));
-          const renderConfig = svcConfig.render || {};
-          serviceId = renderConfig.serviceId || null;
-        }
-      } catch { /* non-fatal */ }
+      let serviceId = targetServiceId;
+      // Legacy fallback: read services.json.render.serviceId for single-target
+      // releases that didn't pass serviceId explicitly.
+      if (!serviceId) {
+        try {
+          const svcConfigPath = path.join(projectDir, '.claude', 'config', 'services.json');
+          if (fs.existsSync(svcConfigPath)) {
+            const svcConfig = JSON.parse(fs.readFileSync(svcConfigPath, 'utf8'));
+            const renderConfig = svcConfig.render || {};
+            serviceId = renderConfig.serviceId || null;
+          }
+        } catch { /* non-fatal */ }
+      }
 
       if (!serviceId) {
-        return { success: false, platform, error: 'Render serviceId not configured in services.json' };
+        return { success: false, platform, error: 'Render serviceId not configured (pass opts.serviceId or set services.json.render.serviceId)', target_label: label };
       }
 
       // Trigger a rollback deploy to the previous known-good deploy
@@ -247,12 +331,13 @@ export function executeRollback(environment, projectDir) {
         { cwd: projectDir, encoding: 'utf8', timeout: 30000, stdio: 'pipe' }
       );
     } else {
-      return { success: false, platform, error: `Unsupported platform for rollback: ${platform}` };
+      return { success: false, platform, error: `Unsupported platform for rollback: ${platform}`, target_label: label };
     }
 
-    // Record rollback in history
+    // Record rollback in history (target-aware)
     state.rollbackHistory.push({
       environment,
+      target_label: label,
       rolledBackDeploy: deploy ? deploy.deployId : 'unknown',
       rolledBackTo: previousGood.deployId,
       platform,
@@ -264,15 +349,20 @@ export function executeRollback(environment, projectDir) {
       state.rollbackHistory = state.rollbackHistory.slice(-50);
     }
 
-    // Clear the recent deploy entry (it's been rolled back)
-    delete state.recentDeploys[environment];
+    // Clear the recent deploy entry FOR THIS TARGET only (others stay).
+    if (state.recentDeploys[environment]) {
+      delete state.recentDeploys[environment][label];
+      if (Object.keys(state.recentDeploys[environment]).length === 0) {
+        delete state.recentDeploys[environment];
+      }
+    }
     saveDeployState(state);
 
-    logAction(`ROLLBACK SUCCESS: ${environment} platform=${platform}`);
-    return { success: true, platform, error: null };
+    logAction(`ROLLBACK SUCCESS: ${environment}/${label} platform=${platform}`);
+    return { success: true, platform, error: null, target_label: label };
   } catch (err) {
-    logAction(`ROLLBACK FAILED: ${environment} platform=${platform} error=${err.message}`);
-    return { success: false, platform, error: err.message };
+    logAction(`ROLLBACK FAILED: ${environment}/${label} platform=${platform} error=${err.message}`);
+    return { success: false, platform, error: err.message, target_label: label };
   }
 }
 
@@ -410,11 +500,13 @@ export function triggerInBandRollback({ release_id, environment, reason, target_
     };
   }
 
-  // executeRollback still operates on the env-keyed state file. Pass through
-  // — for multi-target this rolls back whichever deploy is recorded for the
-  // env key. Refactoring executeRollback to be target-aware is a follow-up
-  // (currently tracked as a known limitation in docs/PROMOTION-PIPELINE.md).
-  const result = executeRollback(environment, dir);
+  // Pass target_label + platform + serviceId through so executeRollback
+  // reads from the right per-target slot and uses the right project ID.
+  const result = executeRollback(environment, dir, {
+    target_label,
+    platform: platform ?? previousGood.platform,
+    serviceId: previousGood.serviceId ?? undefined,
+  });
   return {
     ok: result.success,
     rolledBack: result.success,
