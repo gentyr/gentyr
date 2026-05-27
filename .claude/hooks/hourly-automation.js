@@ -3911,6 +3911,45 @@ async function main() {
   });
 
   // =========================================================================
+  // STUCK DEFERRED-ACTION EXECUTOR RECOVERY (1-minute runIfDue, gate-exempt)
+  // Promotes deferred_actions stuck in 'executing' status for >10 minutes to
+  // 'failed' with execution_error='executor_hung'. The inline lockdown_toggle
+  // path in authorization-audit-spawner.js (and the deferred-action audit
+  // executor) transition pending→executing before potentially slow work
+  // (worktree provisioning, MCP HTTP, Bash). If the executor process is
+  // killed mid-execution or hangs on a network call with no timeout, the row
+  // stays in 'executing' forever and the action is never retried. This sweep
+  // unblocks retries and surfaces the failure to the CTO via the deferred
+  // action's execution_error field.
+  // =========================================================================
+  await runIfDue('stuck_executor_recovery', {
+    state, now,
+    stateKey: 'lastStuckExecutorRecoveryRun',
+    label: 'Stuck deferred-action executor recovery',
+    gateExempt: true,
+    fn: async () => {
+      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+      if (!Database || !fs.existsSync(bypassDbPath)) return;
+
+      let db;
+      try {
+        const { expireStuckExecuting } = await import('./lib/deferred-action-db.js');
+        db = new Database(bypassDbPath);
+        db.pragma('journal_mode = WAL');
+        db.pragma('busy_timeout = 3000');
+        const { promoted, ids } = expireStuckExecuting(db, 10);
+        if (promoted > 0) {
+          log(`[stuck-executor-recovery] Promoted ${promoted} stuck deferred_action(s) to 'failed': ${ids.join(', ')}`);
+        }
+      } catch (err) {
+        log(`[stuck-executor-recovery] Error: ${err.message}`);
+      } finally {
+        try { db?.close(); } catch { /* ignore */ }
+      }
+    },
+  });
+
+  // =========================================================================
   // BYPASS SLA ENFORCER (1-minute runIfDue cooldown, gate-exempt)
   // FIX-31: Hard SLA guarantee — no pending bypass with `auto_resume_at` may
   // stay pending past `auto_resume_at + 5 minutes`. This is an INDEPENDENT

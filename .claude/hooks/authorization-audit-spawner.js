@@ -224,6 +224,12 @@ process.stdin.on('end', async () => {
             try { actionArgs = JSON.parse(actionArgs); } catch { actionArgs = {}; }
           }
 
+          // skipLegacyWrite: when the disable-lockdown branch has already
+          // written state + marked the deferred action completed (the new
+          // resilient flow), bypass the legacy post-branch write/update so we
+          // don't double-write or revert the executed_at timestamp.
+          let skipLegacyWrite = false;
+
           if (action.tool === 'set_lockdown_mode') {
             // Resolve the CTO's session_id so we can provision a per-session worktree
             // (and on re-enable, remove only that session's worktree). Multiple
@@ -242,26 +248,84 @@ process.stdin.on('end', async () => {
             }
 
             if (actionArgs.enabled === false) {
+              // CRITICAL: Write the lockdown state change AND mark the deferred action
+              // completed BEFORE attempting worktree provisioning. createWorktree() can
+              // hang on `git fetch` (network), `git stash`, or other git ops. If we
+              // wait to write state until after createWorktree returns, a hang leaves
+              // the deferred_action row in 'executing' forever and the CTO sees no
+              // lockdown change despite their approval being processed. By writing
+              // state first, even if worktree provisioning hangs:
+              //   1. Lockdown is correctly disabled (the security-relevant change)
+              //   2. The deferred action shows completed (no retry loops)
+              //   3. The CTO can manually provision a worktree if needed
+              // (PR #751 history: deferred-7d8158e6f5dc has been stuck in 'executing'
+              //  for 36+ hours because the inline executor hung on createWorktree.)
               config.interactiveLockdownDisabled = true;
+              const configDir = path.dirname(configPath);
+              if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+              fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+
+              db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, executed_at = datetime('now') WHERE id = ?").run(
+                JSON.stringify({
+                  success: true,
+                  lockdown_enabled: false,
+                  ctoWorktreePath: null,
+                  ctoSessionId: ctoSessionId || null,
+                  worktree_provisioning: 'pending',
+                }),
+                action.id,
+              );
+              log(`Lockdown disabled via inline execution (session: ${ctoSessionId || '<unknown>'}) — state written, attempting worktree provisioning`);
 
               // Per-session worktree name: cto-interactive-<sid8>. Falls back to the
               // legacy hardcoded name when no session_id is available (older callers).
               const sidSuffix = ctoSessionId ? ctoSessionId.slice(0, 8) : '';
               const worktreeName = sidSuffix ? `cto-interactive-${sidSuffix}` : 'cto-interactive';
 
-              // Auto-provision a CTO worktree for safe editing
+              // Auto-provision a CTO worktree for safe editing — best-effort.
+              // Pass fetchTimeout: 10s so the most likely hang point (git fetch on
+              // a slow/down remote) is bounded. createWorktree itself is synchronous
+              // (uses execFileSync), so we can't wrap in Promise.race; the timeouts
+              // inside its child_process calls are the real defense.
               let worktreeResult = null;
               try {
                 const wtMod = await import('./lib/worktree-manager.js');
-                worktreeResult = wtMod.createWorktree(worktreeName);
+                worktreeResult = wtMod.createWorktree(worktreeName, undefined, { fetchTimeout: 10000 });
                 if (ctoSessionId) {
                   config.ctoWorktreePaths[ctoSessionId] = worktreeResult.path;
                 }
                 // Maintain legacy singular field for back-compat readers (one release)
                 config.ctoWorktreePath = worktreeResult.path;
+                // Re-write config now that we have the worktree path.
+                fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+                // Update deferred_actions result with the resolved worktree path.
+                db.prepare("UPDATE deferred_actions SET execution_result = ? WHERE id = ?").run(
+                  JSON.stringify({
+                    success: true,
+                    lockdown_enabled: false,
+                    ctoWorktreePath: worktreeResult.path,
+                    ctoSessionId: ctoSessionId || null,
+                    worktree_provisioning: 'completed',
+                  }),
+                  action.id,
+                );
                 log(`CTO worktree provisioned at ${worktreeResult.path} (branch: ${worktreeResult.branch}, session: ${ctoSessionId || '<unknown>'})`);
               } catch (err) {
-                log(`Warning: Could not provision CTO worktree: ${err.message}`);
+                log(`Warning: Could not provision CTO worktree: ${err.message} — lockdown state already disabled, CTO can provision manually`);
+                // Update deferred_actions result with the failure reason for CTO visibility.
+                try {
+                  db.prepare("UPDATE deferred_actions SET execution_result = ? WHERE id = ?").run(
+                    JSON.stringify({
+                      success: true,
+                      lockdown_enabled: false,
+                      ctoWorktreePath: null,
+                      ctoSessionId: ctoSessionId || null,
+                      worktree_provisioning: 'failed',
+                      worktree_error: err.message,
+                    }),
+                    action.id,
+                  );
+                } catch { /* non-fatal */ }
               }
 
               // Also record liveness so rescue/reaper automation can see this session
@@ -273,6 +337,14 @@ process.stdin.on('end', async () => {
                   log(`Warning: Could not record interactive liveness: ${err.message}`);
                 }
               }
+
+              auditEvent('lockdown_disabled', {
+                enabled: false, via: 'authorization-audit-spawner-inline',
+                worktree_provisioned: !!worktreeResult,
+              });
+              // State write + deferred action mark already happened above.
+              // Skip the legacy post-branch write/update by jumping out via flag.
+              skipLegacyWrite = true;
             } else {
               // Re-enabling lockdown: clean up THIS session's worktree only.
               // Resolves the session-specific path via ctoWorktreePaths[sessionId] then
@@ -327,19 +399,21 @@ process.stdin.on('end', async () => {
                 } catch { /* non-fatal */ }
               }
             }
-            const dir = path.dirname(configPath);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
-            db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, executed_at = datetime('now') WHERE id = ?").run(
-              JSON.stringify({
-                success: true,
-                lockdown_enabled: !!actionArgs.enabled,
-                ctoWorktreePath: config.ctoWorktreePath || null,
-                ctoSessionId: ctoSessionId || null,
-              }),
-              action.id,
-            );
-            log(`Lockdown ${actionArgs.enabled ? 'enabled' : 'disabled'} via inline execution (session: ${ctoSessionId || '<unknown>'})`);
+            if (!skipLegacyWrite) {
+              const dir = path.dirname(configPath);
+              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+              fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+              db.prepare("UPDATE deferred_actions SET status = 'completed', execution_result = ?, executed_at = datetime('now') WHERE id = ?").run(
+                JSON.stringify({
+                  success: true,
+                  lockdown_enabled: !!actionArgs.enabled,
+                  ctoWorktreePath: config.ctoWorktreePath || null,
+                  ctoSessionId: ctoSessionId || null,
+                }),
+                action.id,
+              );
+              log(`Lockdown ${actionArgs.enabled ? 'enabled' : 'disabled'} via inline execution (session: ${ctoSessionId || '<unknown>'})`);
+            }
           } else if (action.tool === 'set_local_mode') {
             const localStateDir = path.join(PROJECT_DIR, '.claude', 'state');
             if (!fs.existsSync(localStateDir)) fs.mkdirSync(localStateDir, { recursive: true });
@@ -351,9 +425,11 @@ process.stdin.on('end', async () => {
             log(`Local mode ${actionArgs.enabled ? 'enabled' : 'disabled'} via inline execution`);
           }
 
-          auditEvent(actionArgs.enabled === false ? `${decisionType.replace('_toggle', '')}_disabled` : `${decisionType.replace('_toggle', '')}_enabled`, {
-            enabled: actionArgs.enabled, via: 'authorization-audit-spawner-inline',
-          });
+          if (!skipLegacyWrite) {
+            auditEvent(actionArgs.enabled === false ? `${decisionType.replace('_toggle', '')}_disabled` : `${decisionType.replace('_toggle', '')}_enabled`, {
+              enabled: actionArgs.enabled, via: 'authorization-audit-spawner-inline',
+            });
+          }
         } finally {
           try { db.close(); } catch { /* best-effort */ }
         }
