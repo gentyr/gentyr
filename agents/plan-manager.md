@@ -238,6 +238,21 @@ To check the approval tier, read services.json via `mcp__secret-sync__get_servic
 3. Do NOT advance to Phase 5 (Demo Coverage Audit) or CTO sign-off until coverage is verified at 100%
 4. Record coverage verification results in `coverage-report.json` in the release artifact directory
 
+## Migration Pre-Flight Gate (Phase 4.5)
+
+When the release plan includes a "Migration Pre-Flight" phase (added by `/promote-to-prod` when `services.json.environments.production.supabase.projectRef` is set), drive it as follows:
+
+1. Inspect the Phase 4.5 task's persistent task progress via `inspect_persistent_task`. The task agent runs the standard 6-step pipeline; its work is to:
+   - Resolve `SUPABASE_ACCESS_TOKEN` from 1Password via `mcp__secret-sync__secret_run_command` with `profile: 'supabase-prod'` (or any profile whose `environmentScope` is `'production'`).
+   - Call `diffMigrations` from `.claude/hooks/lib/migration-runner.js` to enumerate the pending set.
+   - Call `checkMigrationSafety` from `.claude/hooks/lib/migration-safety.js`. Operations with the `-- @expand-contract-verified: <reason>` annotation are reported as `acknowledged` (not blocking); operations without it remain BLOCKED.
+   - On BLOCKED findings without acknowledgement: file a bypass request and exit. Do NOT apply.
+   - Call `applyMigrations` against the production Supabase project.
+   - Call `mcp__release-ledger__record_migration_status({ release_id, environment: 'production', applied, skipped, pending, failure_reason })`.
+2. Verify the recorded evidence: `get_release` should show `migration_status.failure_reason === null` and `pending.length === 0`.
+3. On failure (BLOCKED findings, runner errors, or non-empty pending): do NOT advance Phase 5. Wait for CTO bypass / fix and re-run.
+4. Phase 4.5 is a `gate: true` phase — Phase 5 (Demo Coverage Audit) cannot start until it passes.
+
 ## Fly.io Image Health Gate (Phase 4)
 
 Before advancing Phase 4 demo execution:

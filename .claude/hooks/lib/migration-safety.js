@@ -71,6 +71,32 @@ const BLOCKED_PATTERNS = [
 ];
 
 /**
+ * Recognized regex for the expand → migrate → contract override annotation.
+ * When present in a migration file's first 20 lines, destructive operations
+ * in that file are downgraded from BLOCKED to ACKNOWLEDGED — the engineer
+ * has verified the expand step landed in a prior release and the contract
+ * is now safe.
+ *
+ * Format: `-- @expand-contract-verified: <reason>` (also accepts `//` for
+ * non-SQL contexts and `#` for shell/dialect-specific scripts).
+ */
+const EXPAND_CONTRACT_ANNOTATION = /^[ \t]*(?:--|\/\/|#)[ \t]*@expand-contract-verified[ \t]*:[ \t]*([^\r\n]+?)[ \t]*$/m;
+
+/**
+ * Parse the expand-contract annotation from the first 20 lines of a file.
+ * @param {string} content - Migration file contents
+ * @returns {string | null} The reason text if present, null otherwise
+ */
+export function extractExpandContractAnnotation(content) {
+  if (!content || typeof content !== 'string') return null;
+  const header = content.split('\n').slice(0, 20).join('\n');
+  const match = header.match(EXPAND_CONTRACT_ANNOTATION);
+  if (!match) return null;
+  const reason = match[1].trim();
+  return reason.length > 0 ? reason : null;
+}
+
+/**
  * Warning patterns — informational, do NOT block.
  */
 const WARNING_PATTERNS = [
@@ -166,13 +192,17 @@ export function staticAnalysis(migrationFiles) {
   for (const file of migrationFiles) {
     if (!file || !file.content) continue;
 
+    const annotationReason = extractExpandContractAnnotation(file.content);
     const lines = file.content.split('\n');
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const lineNum = i + 1;
 
-      // Check blocked patterns
+      // Check blocked patterns. When the file has the
+      // @expand-contract-verified annotation, downgrade severity from
+      // 'critical' to 'acknowledged' and attach the reason — the operation
+      // is still recorded for the release report but no longer blocks promotion.
       for (const pattern of BLOCKED_PATTERNS) {
         if (pattern.regex.test(line)) {
           findings.push({
@@ -180,9 +210,10 @@ export function staticAnalysis(migrationFiles) {
             line: lineNum,
             pattern: pattern.pattern,
             risk: pattern.risk,
-            severity: pattern.severity,
+            severity: annotationReason ? 'acknowledged' : pattern.severity,
             description: pattern.description,
             fix: pattern.fix,
+            ...(annotationReason ? { acknowledgement_reason: annotationReason } : {}),
           });
         }
       }
@@ -286,10 +317,14 @@ Confirm or refute the static analysis findings. Are there any additional backwar
   }
 
   // Build summary
+  const acknowledgedFindings = findings.filter(f => f.severity === 'acknowledged');
   const parts = [];
   parts.push(`${migrationFiles.length} migration file${migrationFiles.length === 1 ? '' : 's'} analyzed.`);
   if (criticalFindings.length > 0) {
     parts.push(`${criticalFindings.length} BLOCKED pattern${criticalFindings.length === 1 ? '' : 's'} found: ${criticalFindings.map(f => f.pattern).join(', ')}.`);
+  }
+  if (acknowledgedFindings.length > 0) {
+    parts.push(`${acknowledgedFindings.length} destructive operation${acknowledgedFindings.length === 1 ? '' : 's'} acknowledged via @expand-contract-verified: ${acknowledgedFindings.map(f => f.pattern).join(', ')}.`);
   }
   if (warningFindings.length > 0) {
     parts.push(`${warningFindings.length} warning${warningFindings.length === 1 ? '' : 's'}: ${warningFindings.map(f => f.pattern).join(', ')}.`);
@@ -440,6 +475,8 @@ Classify every SQL operation in this file.`;
       }
     }
 
+    const annotationReason = extractExpandContractAnnotation(file.content);
+
     if (llmOperations) {
       // Use LLM results — validate classifications
       const operations = llmOperations.map(op => {
@@ -454,11 +491,19 @@ Classify every SQL operation in this file.`;
             `LLM returned invalid classification "${op.classification}" for file ${file.path}. Must be SAFE, WARNING, or BLOCKED.`
           );
         }
+        // The expand-contract annotation downgrades BLOCKED to ACKNOWLEDGED:
+        // the engineer asserts the expand step landed in a prior release.
+        const finalClassification = annotationReason && classification === 'BLOCKED'
+          ? 'ACKNOWLEDGED'
+          : classification;
         return {
           sql: op.sql,
-          classification,
+          classification: finalClassification,
           reason: op.reason,
           ...(op.fixSuggestion ? { fixSuggestion: op.fixSuggestion } : {}),
+          ...(annotationReason && classification === 'BLOCKED'
+            ? { acknowledgement_reason: annotationReason }
+            : {}),
         };
       });
 
@@ -500,12 +545,21 @@ Classify every SQL operation in this file.`;
           }],
         });
       } else {
-        const operations = fileStaticFindings.map(finding => ({
-          sql: finding.pattern,
-          classification: finding.severity === 'critical' ? 'BLOCKED' : 'WARNING',
-          reason: finding.risk,
-          fixSuggestion: finding.fix,
-        }));
+        const operations = fileStaticFindings.map(finding => {
+          let classification;
+          if (finding.severity === 'acknowledged') classification = 'ACKNOWLEDGED';
+          else if (finding.severity === 'critical') classification = 'BLOCKED';
+          else classification = 'WARNING';
+          return {
+            sql: finding.pattern,
+            classification,
+            reason: finding.risk,
+            fixSuggestion: finding.fix,
+            ...(finding.acknowledgement_reason
+              ? { acknowledgement_reason: finding.acknowledgement_reason }
+              : {}),
+          };
+        });
 
         const hasBlocked = operations.some(op => op.classification === 'BLOCKED');
         if (hasBlocked) overallSafe = false;
