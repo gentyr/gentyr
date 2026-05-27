@@ -432,28 +432,46 @@ function getPendingBypassRequests() {
     const db = new Database(BYPASS_DB_PATH, { readonly: true });
     db.pragma('busy_timeout = 1000');
 
-    // Try with deputy_escalated column; fall back if column doesn't exist yet
+    // Pull real (agent-authored) requests and count synthesized (framework-
+    // generated quota_exhaustion) requests separately. Synthesized rows are
+    // FYI-only: quota-recovery-daemon auto-resolves them when the OAuth
+    // account's quota window clears, so they must not pollute the CTO triage
+    // list. Try the synthesized-aware query first; fall back through legacy
+    // schemas so old DBs continue to work until agent-tracker has migrated.
     let requests;
+    let synthesizedCount = 0;
     try {
       requests = db.prepare(
-        "SELECT id, task_type, task_id, task_title, category, summary, created_at, deputy_escalated FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
+        "SELECT id, task_type, task_id, task_title, category, summary, created_at, deputy_escalated, synthesized FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL AND COALESCE(synthesized, 0) = 0 ORDER BY created_at ASC"
       ).all();
+      const row = db.prepare(
+        "SELECT COUNT(*) AS cnt FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL AND synthesized = 1"
+      ).get();
+      synthesizedCount = (row && row.cnt) || 0;
     } catch (_) {
-      requests = db.prepare(
-        "SELECT id, task_type, task_id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
-      ).all();
+      try {
+        requests = db.prepare(
+          "SELECT id, task_type, task_id, task_title, category, summary, created_at, deputy_escalated FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
+        ).all();
+      } catch (_) {
+        requests = db.prepare(
+          "SELECT id, task_type, task_id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
+        ).all();
+      }
     }
     db.close();
 
-    if (!requests || requests.length === 0) return null;
+    const realCount = requests ? requests.length : 0;
+    if (realCount === 0 && synthesizedCount === 0) return null;
 
-    // Grace period: if global monitor is active, hide requests < 5 min old
-    // (the monitor gets a signal and has time to handle them first)
-    // Always show: requests >= 5 min old, or explicitly escalated by the monitor
+    // Grace period: if global monitor is active, hide real requests < 5 min
+    // old (the monitor gets a signal and has time to handle them first).
+    // Always show requests >= 5 min old, or explicitly escalated by the
+    // monitor. Synthesized count is never grace-filtered — it is informational.
     const monitorState = getGlobalMonitorState();
     const monitorActive = monitorState && (monitorState.state === 'active' || monitorState.state === 'active_no_pid');
 
-    if (monitorActive) {
+    if (monitorActive && requests && requests.length > 0) {
       const GRACE_PERIOD_MS = 5 * 60 * 1000;
       const now = Date.now();
       requests = requests.filter(req => {
@@ -463,7 +481,14 @@ function getPendingBypassRequests() {
       });
     }
 
-    return requests.length > 0 ? requests : null;
+    if ((!requests || requests.length === 0) && synthesizedCount === 0) return null;
+
+    // Attach synthesizedCount to the array so the briefing renderer and the
+    // CTO notification hook can show "N quota auto-resolving" without a
+    // second DB round-trip. Falsy when zero.
+    const result = requests || [];
+    if (synthesizedCount > 0) result.synthesizedCount = synthesizedCount;
+    return result;
   } catch (_) {
     return null;
   }
@@ -1447,14 +1472,26 @@ function buildInteractiveBriefing() {
   // CTO Bypass Requests
   const bypassRequests = getPendingBypassRequests();
   if (bypassRequests) {
-    lines.push('');
-    lines.push('=== CTO BYPASS REQUESTS AWAITING DECISION ===');
-    for (let i = 0; i < bypassRequests.length; i++) {
-      const req = bypassRequests[i];
-      const ago = timeAgoStr(req.created_at);
-      lines.push(`[${i + 1}] "${truncate(req.task_title, 50)}" (${req.task_type}, ${req.category}) — ${ago}`);
-      lines.push(`    ${truncate(req.summary, 120)}`);
-      lines.push(`    → mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "approved"|"rejected", context: "..." })`);
+    const synthesizedCount = bypassRequests.synthesizedCount || 0;
+    if (bypassRequests.length > 0) {
+      lines.push('');
+      lines.push('=== CTO BYPASS REQUESTS AWAITING DECISION ===');
+      if (synthesizedCount > 0) {
+        lines.push(`(${synthesizedCount} additional quota-recovery row(s) hidden — auto-resolve when quota clears)`);
+      }
+      for (let i = 0; i < bypassRequests.length; i++) {
+        const req = bypassRequests[i];
+        const ago = timeAgoStr(req.created_at);
+        lines.push(`[${i + 1}] "${truncate(req.task_title, 50)}" (${req.task_type}, ${req.category}) — ${ago}`);
+        lines.push(`    ${truncate(req.summary, 120)}`);
+        lines.push(`    → mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "approved"|"rejected", context: "..." })`);
+      }
+    } else if (synthesizedCount > 0) {
+      // No real bypasses, but synthesized quota rows are pending. Show as FYI
+      // only — CTO does not need to act, the daemon will resolve them.
+      lines.push('');
+      lines.push(`=== ${synthesizedCount} QUOTA-RECOVERY ROW(S) PENDING (auto-resolving) ===`);
+      lines.push(`(synthesized by quota-detector — no CTO action needed)`);
     }
   }
 

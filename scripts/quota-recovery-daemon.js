@@ -19,6 +19,7 @@ import path from 'path';
 import os from 'os';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -172,9 +173,117 @@ async function checkQuotaRecovered() {
 // Recovery Actions
 // ============================================================================
 
+// Auto-resolve synthesized quota_exhaustion bypass requests on recovery.
+// quota-detector files these rows when it sees "You've hit your limit" in a
+// dead session JSONL. They are not agent-authored and need no CTO decision —
+// they exist so the linked task is paused until quota recovers. On recovery,
+// resolve them all so the CTO inbox is not polluted with stale slips.
+//
+// When `accountHint` is provided, we resolve only rows tagged with that
+// account; rows with NULL synthesis_account (legacy or unresolvable
+// credentials) are always resolved on any recovery.
+function resolveSynthesizedBypasses(accountHint) {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+  if (!fs.existsSync(dbPath)) return 0;
+  let Database;
+  try {
+    Database = createRequire(import.meta.url)('better-sqlite3');
+  } catch {
+    return 0;
+  }
+  let db;
+  try {
+    db = new Database(dbPath);
+    db.pragma('busy_timeout = 3000');
+    const cols = db.prepare("PRAGMA table_info(bypass_requests)").all();
+    if (!cols.some(c => c.name === 'synthesized')) return 0;
+    let result;
+    if (accountHint) {
+      result = db.prepare(`
+        UPDATE bypass_requests
+           SET status = 'approved',
+               resolution_context = 'Auto-resolved by quota-recovery-daemon (quota recovered for ' || ? || ')',
+               resolved_at = datetime('now'),
+               resolved_by = 'quota-recovery-daemon'
+         WHERE synthesized = 1
+           AND auto_resolvable = 1
+           AND status = 'pending'
+           AND (synthesis_account IS NULL OR synthesis_account = ?)
+      `).run(accountHint, accountHint);
+    } else {
+      result = db.prepare(`
+        UPDATE bypass_requests
+           SET status = 'approved',
+               resolution_context = 'Auto-resolved by quota-recovery-daemon (quota recovered)',
+               resolved_at = datetime('now'),
+               resolved_by = 'quota-recovery-daemon'
+         WHERE synthesized = 1
+           AND auto_resolvable = 1
+           AND status = 'pending'
+      `).run();
+    }
+    return result.changes;
+  } catch (err) {
+    log(`Failed to auto-resolve synthesized bypasses: ${err.message}`);
+    return 0;
+  } finally {
+    try { db && db.close(); } catch { /* best-effort */ }
+  }
+}
+
+// Sweep synthesized rows older than the window TTL. Catches stale rows from
+// detection events whose recovery the daemon missed (e.g. account credentials
+// not resolvable at recovery time, or daemon offline). Default TTL 24h is
+// roughly 2× the longest expected quota window. Runs idempotently on every
+// daemon idle tick — safe to call repeatedly.
+function sweepStaleSynthesizedBypasses(staleAgeHours = 24) {
+  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
+  if (!fs.existsSync(dbPath)) return 0;
+  let Database;
+  try {
+    Database = createRequire(import.meta.url)('better-sqlite3');
+  } catch {
+    return 0;
+  }
+  let db;
+  try {
+    db = new Database(dbPath);
+    db.pragma('busy_timeout = 3000');
+    const cols = db.prepare("PRAGMA table_info(bypass_requests)").all();
+    if (!cols.some(c => c.name === 'synthesized')) return 0;
+    const result = db.prepare(`
+      UPDATE bypass_requests
+         SET status = 'approved',
+             resolution_context = 'Auto-resolved by quota-recovery-daemon (stale sweep — older than ' || ? || 'h)',
+             resolved_at = datetime('now'),
+             resolved_by = 'quota-recovery-daemon-sweep'
+       WHERE synthesized = 1
+         AND auto_resolvable = 1
+         AND status = 'pending'
+         AND datetime(created_at) < datetime('now', '-' || ? || ' hours')
+    `).run(staleAgeHours, staleAgeHours);
+    return result.changes;
+  } catch (err) {
+    log(`Stale-sweep failed: ${err.message}`);
+    return 0;
+  } finally {
+    try { db && db.close(); } catch { /* best-effort */ }
+  }
+}
+
 async function executeRecovery() {
   log('QUOTA RECOVERED — clearing exhaustion state and draining queue');
+  const prevState = readQuotaState();
+  const account = (prevState && prevState.account) || null;
   clearQuotaState();
+
+  // Auto-resolve synthesized bypass requests so the CTO inbox does not retain
+  // noise after the quota window cleared. We resolve scoped to the account
+  // when we know which one recovered.
+  const resolvedCount = resolveSynthesizedBypasses(account);
+  if (resolvedCount > 0) {
+    log(`Auto-resolved ${resolvedCount} synthesized quota bypass(es)${account ? ` for ${account}` : ''}`);
+  }
 
   // Trigger drainQueue to resume sessions
   try {
@@ -188,7 +297,11 @@ async function executeRecovery() {
   // Audit event
   try {
     const { auditEvent } = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js'));
-    auditEvent('quota_exhaustion_cleared', { source: 'quota-recovery-daemon' });
+    auditEvent('quota_exhaustion_cleared', {
+      source: 'quota-recovery-daemon',
+      synthesized_resolved: resolvedCount,
+      account,
+    });
   } catch { /* non-fatal */ }
 }
 
@@ -289,8 +402,17 @@ function enterIdleMode() {
   stopActivePolling();
   stopIdleMode();
 
-  // Poll every 30s as fs.watch fallback
-  idleInterval = setInterval(checkStateAndAct, IDLE_POLL_INTERVAL_MS);
+  // Poll every 30s as fs.watch fallback. Also runs the synthesized-bypass
+  // stale sweep — this is cheap (UPDATE on a small indexed table) and catches
+  // rows the executeRecovery() path missed (e.g. daemon was offline when the
+  // quota window cleared, or credentials were unresolvable at recovery time).
+  idleInterval = setInterval(() => {
+    checkStateAndAct();
+    const swept = sweepStaleSynthesizedBypasses();
+    if (swept > 0) {
+      log(`Stale-sweep auto-resolved ${swept} synthesized bypass row(s) >24h old`);
+    }
+  }, IDLE_POLL_INTERVAL_MS);
 }
 
 // ============================================================================

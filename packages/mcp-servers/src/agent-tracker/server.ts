@@ -5697,6 +5697,28 @@ function getBypassDb(): InstanceType<typeof Database> {
     if (!cols.some(c => c.name === 'pause_duration_minutes')) {
       db.exec("ALTER TABLE bypass_requests ADD COLUMN pause_duration_minutes INTEGER");
     }
+    // Synthesized-row tracking — distinguishes framework-synthesized bypass
+    // requests (e.g. quota_exhaustion rows written by quota-detector when a
+    // dead session JSONL contains "You've hit your limit") from real
+    // agent-authored requests submitted via submit_bypass_request. Without
+    // this distinction, the CTO inbox conflates 30+ noisy quota slips with
+    // a handful of substantive requests that need actual decisions.
+    if (!cols.some(c => c.name === 'synthesized')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN synthesized INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!cols.some(c => c.name === 'synthesizer')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN synthesizer TEXT");
+    }
+    if (!cols.some(c => c.name === 'synthesis_account')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN synthesis_account TEXT");
+    }
+    if (!cols.some(c => c.name === 'auto_resolvable')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN auto_resolvable INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!cols.some(c => c.name === 'synthesis_count')) {
+      db.exec("ALTER TABLE bypass_requests ADD COLUMN synthesis_count INTEGER NOT NULL DEFAULT 1");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_bypass_synth ON bypass_requests(synthesized, status)");
   } catch { /* best-effort migration */ }
 
   // Migration: expand cto_decisions CHECK constraint to include all decision types and audit status values
@@ -7423,24 +7445,65 @@ async function listBypassRequests(args: ListBypassRequestsArgs): Promise<object 
       }
     }
 
-    // Query with filter
-    const statusFilter = args.status === 'all' ? '' : "WHERE status = ?";
-    const params: (string | number)[] = args.status === 'all' ? [] : [args.status];
-    params.push(args.limit);
+    // Build WHERE clause. `synthesized` filter defaults to 'real' so legacy
+    // callers (CTOs eyeballing the inbox) get the substantive requests by
+    // default; pass 'all' or 'synthesized' to see framework-generated rows.
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    if (args.status !== 'all') {
+      conditions.push('status = ?');
+      params.push(args.status);
+    }
+    const synthesizedMode = args.synthesized || 'real';
+    if (synthesizedMode === 'real') {
+      conditions.push('COALESCE(synthesized, 0) = 0');
+    } else if (synthesizedMode === 'synthesized') {
+      conditions.push('COALESCE(synthesized, 0) = 1');
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limitParams = [...params, args.limit];
 
     const requests = db.prepare(
-      `SELECT id, task_type, task_id, task_title, agent_id, category, summary, details, status, resolution_context, resolved_at, created_at FROM bypass_requests ${statusFilter} ORDER BY created_at DESC LIMIT ?`
-    ).all(...params) as Array<{
+      `SELECT id, task_type, task_id, task_title, agent_id, category, summary, details, status, resolution_context, resolved_at, created_at,
+              COALESCE(synthesized, 0) AS synthesized, synthesizer, synthesis_account, COALESCE(synthesis_count, 1) AS synthesis_count,
+              COALESCE(auto_resolvable, 0) AS auto_resolvable, COALESCE(deputy_escalated, 0) AS deputy_escalated
+         FROM bypass_requests ${where} ORDER BY created_at DESC LIMIT ?`
+    ).all(...limitParams) as Array<{
       id: string; task_type: string; task_id: string; task_title: string;
       agent_id: string | null; category: string; summary: string; details: string | null;
       status: string; resolution_context: string | null; resolved_at: string | null; created_at: string;
+      synthesized: number; synthesizer: string | null; synthesis_account: string | null; synthesis_count: number;
+      auto_resolvable: number; deputy_escalated: number;
     }>;
 
     const total = (db.prepare(
-      `SELECT COUNT(*) as cnt FROM bypass_requests ${statusFilter}`
-    ).get(...(args.status === 'all' ? [] : [args.status])) as { cnt: number }).cnt;
+      `SELECT COUNT(*) as cnt FROM bypass_requests ${where}`
+    ).get(...params) as { cnt: number }).cnt;
 
-    return { requests, total };
+    // summary_counts breaks down pending bypasses by origin so the CTO/deputy
+    // can triage at a glance without filtering twice. Always computed against
+    // 'pending' regardless of the status filter — these are the actionable
+    // counts. Stale schemas without the synthesized column return zeros.
+    let summary_counts: { real: number; synthesized: number; overdue: number; total: number } = {
+      real: 0, synthesized: 0, overdue: 0, total: 0,
+    };
+    try {
+      const real = (db.prepare(
+        "SELECT COUNT(*) as cnt FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL AND COALESCE(synthesized, 0) = 0"
+      ).get() as { cnt: number }).cnt;
+      const synthesized = (db.prepare(
+        "SELECT COUNT(*) as cnt FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL AND COALESCE(synthesized, 0) = 1"
+      ).get() as { cnt: number }).cnt;
+      let overdue = 0;
+      try {
+        overdue = (db.prepare(
+          "SELECT COUNT(*) as cnt FROM bypass_requests WHERE status = 'pending' AND COALESCE(deputy_escalated, 0) = 1"
+        ).get() as { cnt: number }).cnt;
+      } catch { /* column missing on stale DB */ }
+      summary_counts = { real, synthesized, overdue, total: real + synthesized };
+    } catch { /* column missing on stale DB — leave zeros */ }
+
+    return { requests, total, summary_counts };
   } finally {
     try { db?.close(); } catch { /* best-effort */ }
   }
