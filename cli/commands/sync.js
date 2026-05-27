@@ -330,6 +330,102 @@ const WORKER_DAEMON_LABELS = Object.freeze([
  *
  * @param {string} frameworkDir Absolute path to the resolved gentyr framework checkout.
  */
+
+/**
+ * Run `node --check` against critical framework files. Aborts sync (throws)
+ * when any file fails to parse, with the offending file path + Node's error
+ * surfaced so the operator can fix the regression before sync touches the
+ * project.
+ *
+ * Targets:
+ *   - Every critical hook from cli/commands/protect.js criticalHooks list
+ *     (loaded via dynamic import so the list stays single-sourced)
+ *   - lib/session-queue.js (drainQueue + enqueueSession — single point of
+ *     failure for every spawn path)
+ *   - Tier-2 MCP server dist outputs (todo-db, persistent-task,
+ *     plan-orchestrator, agent-tracker) — TypeScript can compile to a
+ *     parse-broken .js if a dev edits dist/ directly or a build is partial
+ *
+ * Synchronous: uses `node --check <file>` per file. ~25ms per file, ~700ms
+ * total worst-case. Cheap insurance.
+ *
+ * @param {string} frameworkDir Absolute path to the resolved framework checkout.
+ * @throws {Error} when any file fails to parse; message names the file.
+ */
+function runSyntaxGate(frameworkDir) {
+  console.log(`\n${YELLOW}Phase 0.5 — Node syntax check...${NC}`);
+
+  const targets = [];
+
+  // Hooks that absolutely must parse for the framework to function. Mirrors
+  // the lib/-prefixed entries that compose the per-spawn hot path.
+  const hookHotPath = [
+    '.claude/hooks/lib/session-queue.js',
+    '.claude/hooks/lib/session-reaper.js',
+    '.claude/hooks/lib/auditor-prompt.js',
+    '.claude/hooks/lib/persistent-monitor-revival-prompt.js',
+    '.claude/hooks/lib/audit-escalation.js',
+    '.claude/hooks/lib/bypass-guard.js',
+    '.claude/hooks/lib/resource-lock.js',
+    '.claude/hooks/lib/cross-dep-satisfier.js',
+    '.claude/hooks/persistent-task-spawner.js',
+    '.claude/hooks/universal-audit-spawner.js',
+    '.claude/hooks/authorization-audit-spawner.js',
+    '.claude/hooks/deferred-action-audit-executor.js',
+    '.claude/hooks/main-tree-commit-guard.js',
+    '.claude/hooks/staging-lock-guard.js',
+    '.claude/hooks/interactive-lockdown-guard.js',
+  ];
+  for (const rel of hookHotPath) {
+    targets.push({ path: path.join(frameworkDir, rel), label: rel });
+  }
+
+  // Tier-2 MCP server dist outputs (the ones with stateful per-session stdio
+  // that can't fall back to a daemon). A parse error in any of these breaks
+  // their tool surfaces for every session that tries to invoke them.
+  const tier2McpServers = ['todo-db', 'persistent-task', 'plan-orchestrator', 'agent-tracker'];
+  for (const name of tier2McpServers) {
+    const distPath = path.join(frameworkDir, 'packages', 'mcp-servers', 'dist', name, 'server.js');
+    if (fs.existsSync(distPath)) {
+      // Only check when dist exists — first-run sync builds it later.
+      targets.push({ path: distPath, label: `packages/mcp-servers/dist/${name}/server.js` });
+    }
+  }
+
+  const failures = [];
+  for (const t of targets) {
+    if (!fs.existsSync(t.path)) continue; // Missing file is not a parse error.
+    try {
+      execFileSync('node', ['--check', t.path], { stdio: 'pipe', timeout: 10000 });
+    } catch (err) {
+      // execFileSync surfaces stderr in err.stderr (Buffer) for non-zero exits.
+      const stderr = err?.stderr ? err.stderr.toString() : '';
+      const msg = stderr.split('\n').slice(0, 6).join('\n').trim() || err?.message || 'unknown parse error';
+      failures.push({ label: t.label, msg });
+      console.log(`  ${RED}✗${NC} ${t.label}`);
+      for (const line of msg.split('\n').slice(0, 4)) {
+        console.log(`      ${line}`);
+      }
+    }
+  }
+
+  const checked = targets.filter(t => fs.existsSync(t.path)).length;
+  if (failures.length === 0) {
+    console.log(`  ${GREEN}✓ Parsed ${checked} file(s)${NC}`);
+    return;
+  }
+
+  throw new Error(
+    `Parse error in ${failures.length} of ${checked} file(s): ${failures.map(f => f.label).join(', ')}`
+  );
+}
+
+/**
+ * Auto-pull origin/main into the framework checkout when its working tree is
+ * clean and the current branch matches the upstream tracking branch.
+ *
+ * @param {string} frameworkDir Absolute path to the resolved gentyr framework checkout.
+ */
 function autoPullFrameworkRepo(frameworkDir) {
   // Confirm the framework dir is a git checkout. npm-published installs are
   // not git repos (no .git directory) — bail silently in that case.
@@ -604,7 +700,73 @@ async function ensureMcpDaemonHealthy(projectDir) {
  * Non-fatal — sync succeeds even if recycling fails.
  * @param {string} projectDir
  */
-async function recycleAutomatedSessions(projectDir) {
+/**
+ * Compute a content hash over the `dist/` outputs of every MCP server. Used to
+ * detect whether a sync's MCP rebuild actually changed any bytes — if not,
+ * fresh-heartbeat persistent monitors can be left alone because the new code
+ * and tool schemas are identical to what they're already running against.
+ *
+ * Hashes every `.js` file recursively under `<mcpDir>/dist/`. Stable: same set
+ * of files in the same order produce the same digest. Missing `dist/` returns
+ * the empty-string sentinel so first-run sync forces a recycle (safe default).
+ *
+ * @param {string} mcpDir Absolute path to `packages/mcp-servers`.
+ * @returns {string} hex SHA-256 of the dist tree, or '' when dist is absent.
+ */
+function hashMcpServerDist(mcpDir) {
+  const distDir = path.join(mcpDir, 'dist');
+  if (!fs.existsSync(distDir)) return '';
+  const h = createHash('sha256');
+  function walk(dir) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const ent of entries) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        walk(p);
+      } else if (ent.isFile() && ent.name.endsWith('.js')) {
+        try {
+          h.update(`${path.relative(distDir, p)}\n`);
+          h.update(fs.readFileSync(p));
+        } catch { /* skip unreadable */ }
+      }
+    }
+  }
+  walk(distDir);
+  return h.digest('hex');
+}
+
+/**
+ * Read a persistent task's last_heartbeat (ISO timestamp) directly from
+ * persistent-tasks.db. Used by the session recycler to decide whether a
+ * persistent monitor is fresh enough to skip recycling. Returns null on any
+ * read error or when the task row is missing — the caller treats null as
+ * "recycle" (fail-closed).
+ *
+ * @param {string} projectDir
+ * @param {object} BetterSqlite Database constructor (already loaded by caller)
+ * @param {string} persistentTaskId
+ * @returns {string|null} ISO timestamp or null
+ */
+function readPersistentTaskHeartbeat(projectDir, BetterSqlite, persistentTaskId) {
+  const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
+  if (!fs.existsSync(ptDbPath)) return null;
+  let db;
+  try {
+    db = new BetterSqlite(ptDbPath, { readonly: true });
+    db.pragma('busy_timeout = 2000');
+    const row = db.prepare('SELECT last_heartbeat FROM persistent_tasks WHERE id = ?').get(persistentTaskId);
+    return row?.last_heartbeat ?? null;
+  } catch {
+    return null;
+  } finally {
+    try { db?.close(); } catch { /* noop */ }
+  }
+}
+
+async function recycleAutomatedSessions(projectDir, opts = {}) {
+  const { mcpServersChanged = true } = opts;
   const queueDbPath = path.join(projectDir, '.claude', 'state', 'session-queue.db');
   if (!fs.existsSync(queueDbPath)) return; // No queue — nothing to recycle
 
@@ -628,6 +790,55 @@ async function recycleAutomatedSessions(projectDir) {
   } catch (err) {
     console.log(`  ${YELLOW}Warning: Could not read session queue: ${err.message}${NC}`);
     return;
+  }
+
+  // ── Phase 1.5: Skip fresh-heartbeat persistent monitors on no-op syncs ────
+  // When MCP server dist content is unchanged, in-flight persistent-task
+  // monitors with a recent heartbeat (<5 min) are running against code that
+  // matches what's now on disk. Killing them just to re-spawn from the same
+  // session JSONL wastes 30-60s per pipeline and risks orphaning child
+  // agents that were mid-work. Preserve them.
+  //
+  // Fresh-heartbeat persistent monitors with mcpServersChanged=true still
+  // recycle (they need the new tool schemas). Stale-heartbeat monitors
+  // always recycle (the recycler is the right hammer for stuck sessions).
+  // All other lanes (task-runner, preview-promoter, etc.) always recycle.
+  const FRESH_HEARTBEAT_MS = 5 * 60 * 1000;
+  const preserved = [];
+  if (!mcpServersChanged) {
+    const filtered = [];
+    for (const item of items) {
+      if (item.agent_type !== 'persistent-task-monitor') {
+        filtered.push(item);
+        continue;
+      }
+      let meta;
+      try { meta = item.metadata ? JSON.parse(item.metadata) : null; } catch { meta = null; }
+      const persistentTaskId = meta?.persistentTaskId;
+      if (!persistentTaskId) {
+        filtered.push(item);
+        continue;
+      }
+      const hb = readPersistentTaskHeartbeat(projectDir, Database, persistentTaskId);
+      if (!hb) {
+        filtered.push(item);
+        continue;
+      }
+      const ageMs = Date.now() - new Date(hb).getTime();
+      if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < FRESH_HEARTBEAT_MS) {
+        preserved.push({ item, hbAgeSec: Math.round(ageMs / 1000) });
+      } else {
+        filtered.push(item);
+      }
+    }
+    items = filtered;
+  }
+
+  if (preserved.length > 0) {
+    console.log(`  ${GREEN}Preserved ${preserved.length} fresh-heartbeat persistent monitor(s) (MCP unchanged):${NC}`);
+    for (const { item, hbAgeSec } of preserved) {
+      console.log(`    • ${item.title || item.id} (heartbeat ${hbAgeSec}s ago)`);
+    }
   }
 
   if (items.length === 0) {
@@ -987,6 +1198,29 @@ export default async function sync(args) {
     autoPullFrameworkRepo(frameworkDir);
   } catch (err) {
     console.log(`  ${YELLOW}Auto-pull threw (non-fatal): ${err.message}${NC}`);
+  }
+
+  // ── Phase 0.5: Node syntax gate ────────────────────────────────────────────
+  // Run `node --check` against every critical hook file plus the session-queue
+  // and persistent-task helper libraries. A parse error in any of these blows
+  // up every spawn path at runtime — force_spawn_tasks, monitor revival,
+  // drainQueue, the lot — and the failures surface miles away from the cause.
+  // Closes the regression where commit 22bd8af added `await import()` inside
+  // a synchronous drainQueue() and broke the entire framework silently.
+  //
+  // Errors here abort sync (fail-closed). The check is fast (< 1s for ~25
+  // files) and reading every file from disk on every sync is the right
+  // trade-off — sync is rare, and a broken framework install is worse.
+  try {
+    runSyntaxGate(frameworkDir);
+  } catch (err) {
+    console.error('');
+    console.error(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
+    console.error(`${RED}  SYNTAX CHECK FAILED — sync aborted${NC}`);
+    console.error(`${RED}  ${err.message}${NC}`);
+    console.error(`${RED}  Fix the parse error above and re-run sync.${NC}`);
+    console.error(`${RED}═══════════════════════════════════════════════════════════════${NC}`);
+    process.exit(1);
   }
 
   // Auto-unprotect if needed so sync can write to root-owned files.
@@ -1547,6 +1781,13 @@ export default async function sync(args) {
   // 7. Rebuild MCP servers
   console.log(`\n${YELLOW}Rebuilding MCP servers...${NC}`);
   const mcpDir = path.join(frameworkDir, 'packages', 'mcp-servers');
+  // Snapshot dist/ content hash BEFORE rebuild so we can detect whether the
+  // build actually changed anything. Used downstream by the session recycler
+  // to skip-recycle fresh-heartbeat persistent monitors when MCP code didn't
+  // change — preserves in-flight pipelines from collateral damage on no-op
+  // syncs (e.g., SessionStart-triggered sync after pulling a docs-only commit).
+  const mcpDistHashBefore = hashMcpServerDist(mcpDir);
+  let mcpServersChanged = true; // Default to "changed" (safe) on build failure or first-run
   try {
     const mcpNodeModules = path.join(mcpDir, 'node_modules');
     const hasDeps = fs.existsSync(mcpNodeModules) &&
@@ -1560,9 +1801,17 @@ export default async function sync(args) {
     }
     execFileSync('npm', ['run', 'build'], { cwd: mcpDir, stdio: 'pipe', timeout: 120000 });
     console.log('  TypeScript built');
+    const mcpDistHashAfter = hashMcpServerDist(mcpDir);
+    mcpServersChanged = mcpDistHashBefore !== mcpDistHashAfter;
+    if (mcpServersChanged) {
+      console.log('  MCP server dist content changed since last sync.');
+    } else {
+      console.log('  MCP server dist content unchanged — no-op build.');
+    }
   } catch (err) {
     console.log(`  ${RED}MCP server build FAILED: ${err.message}${NC}`);
     console.log(`  ${RED}Repair: cd ${mcpDir} && npm install && npm run build${NC}`);
+    // mcpServersChanged stays true — failsafe, treat as "needs recycle".
   }
 
   // 7a-verify. Verify dist/ exists after build
@@ -1744,5 +1993,7 @@ export default async function sync(args) {
   // 10. Recycle running automated sessions AFTER re-protect.
   // Session recycling doesn't need unprotected files — it only kills/re-enqueues
   // processes. Running it after re-protect avoids sudo timeout/ETIMEDOUT errors.
-  await recycleAutomatedSessions(projectDir);
+  // Pass mcpServersChanged so the recycler can preserve in-flight persistent
+  // monitor pipelines when sync was a no-op build.
+  await recycleAutomatedSessions(projectDir, { mcpServersChanged });
 }

@@ -43,6 +43,14 @@ try {
   const mod = await import('./blocker-auto-heal.js');
   _handleBlocker = mod.handleBlocker;
 } catch (_) { /* non-fatal — self-healing unavailable */ }
+
+// Audit escalation module — loaded eagerly via top-level await. Hoisted here
+// (rather than lazy-loaded inside drainQueue) because drainQueue is sync and
+// `await import()` inside a sync function is a parse-time SyntaxError.
+let _auditEscalation = null;
+try {
+  _auditEscalation = await import('./audit-escalation.js');
+} catch (_) { /* non-fatal — escalation unavailable */ }
 import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
@@ -1429,12 +1437,9 @@ export function drainQueue() {
   // When an auditor dies and its task is still pending_audit, spawn a fresh auditor.
   // The reaper flags these in auditRevivals (task stays pending_audit, not reset to pending).
   if (reaperResult && reaperResult.auditRevivals && reaperResult.auditRevivals.length > 0) {
-    // Lazy-import audit-escalation so the module is loaded once per drain
-    // cycle, not on every revival iteration.
-    let auditEscalation = null;
-    try {
-      auditEscalation = await import('./audit-escalation.js');
-    } catch { /* module unavailable — escalation skipped */ }
+    // Audit-escalation module is hoisted at module top (see _auditEscalation
+    // initialization above). Alias here so existing references read cleanly.
+    const auditEscalation = _auditEscalation;
 
     for (const revival of reaperResult.auditRevivals) {
       try {
