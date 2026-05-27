@@ -156,6 +156,61 @@ export const RecordCtoApprovalArgsSchema = z.object({
 });
 
 // ============================================================================
+// Phase 4.5 / 4.6 / 8.5 / 8.7 evidence tools
+// ============================================================================
+
+export const RecordMigrationStatusArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID'),
+  environment: z.string().min(1).describe('Environment name (e.g., "production", "staging")'),
+  applied: z.array(z.string()).default([]).describe('Migration filenames newly applied this phase'),
+  pending: z.array(z.string()).default([]).describe('Migration filenames that remain pending (failure mode)'),
+  skipped: z.array(z.string()).default([]).describe('Migration filenames skipped (already present in supabase_migrations.schema_migrations)'),
+  failure_reason: z.string().optional().describe('Failure reason if Phase 4.5 halted mid-flight'),
+});
+
+export const VerifySchemaDriftArgsSchema = z.object({
+  release_id: z.string().optional().describe('Release ID to record results against (omit for ad-hoc / hourly checks)'),
+  environment: z.string().min(1).describe('Environment name (e.g., "production"). Must exist in services.json.environments and have supabase.projectRef set.'),
+  expected_migrations_dir: z.string().min(1).default('supabase/migrations').describe('Path to the migrations directory relative to project root'),
+});
+
+export const RecordDeployArtifactArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID'),
+  platform: z.enum(['render', 'vercel', 'fly']).describe('Deploy platform'),
+  service_id: z.string().min(1).describe('Render service ID (srv-...), Vercel project ID, or Fly app name'),
+  deploy_id: z.string().min(1).describe('Platform-specific deploy ID (Render dep-..., Vercel dpl-..., Fly machine ID)'),
+  url: z.string().url().optional().describe('Live URL the deploy produced (omit for non-URL targets)'),
+  triggered_at: z.string().optional().describe('ISO timestamp of trigger (defaults to now)'),
+  status: z.enum(['triggered', 'building', 'live', 'failed', 'rolled_back']).default('triggered').describe('Deploy state at recording time'),
+});
+
+export const WaitForHealthProbeArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID'),
+  environment: z.string().min(1).describe('Environment name. Resolves baseUrl and healthChecks from services.json.'),
+  duration_seconds: z.number().int().min(30).max(1800).default(300).describe('Total wall-clock to probe (default 5 min, max 30 min)'),
+  min_consecutive_passes: z.number().int().min(1).max(60).default(6).describe('How many consecutive 10-second probes must all pass before signing off (default 6 = 60s solid window)'),
+  interval_seconds: z.number().int().min(5).max(60).default(10).describe('Seconds between probes'),
+});
+
+export const RecordCanaryOutcomeArgsSchema = z.object({
+  release_id: z.string().min(1).describe('Release ID'),
+  status: z.enum(['skipped', 'running', 'promoted', 'aborted']).describe(
+    'Canary state. "skipped" = canary disabled in services.json; "running" = canary live, watch in progress; ' +
+    '"promoted" = canary verified clean and promoted to full traffic; "aborted" = canary degraded and rolled back.'
+  ),
+  evidence: z.record(z.unknown()).optional().describe(
+    'Optional structured evidence: error rate samples, latency p95, deploy IDs, rollback reason. ' +
+    'Stored verbatim as JSON in releases.canary_status.'
+  ),
+});
+
+export type RecordMigrationStatusArgs = z.infer<typeof RecordMigrationStatusArgsSchema>;
+export type VerifySchemaDriftArgs = z.infer<typeof VerifySchemaDriftArgsSchema>;
+export type RecordDeployArtifactArgs = z.infer<typeof RecordDeployArtifactArgsSchema>;
+export type WaitForHealthProbeArgs = z.infer<typeof WaitForHealthProbeArgsSchema>;
+export type RecordCanaryOutcomeArgs = z.infer<typeof RecordCanaryOutcomeArgsSchema>;
+
+// ============================================================================
 // Inferred Types
 // ============================================================================
 

@@ -129,6 +129,8 @@ export const SecretProfileSchema = z.object({
     .describe('Auto-match rules. When a secret_run_command call or run_demo scenario matches these patterns, the profile\'s secrets are resolved.'),
   localCheck: z.enum(['required', 'optional', 'skip']).optional()
     .describe('How the secrets-local-health hook treats missing keys for this profile. "required" (default): warn on every prompt when any key is missing from secrets.local. "optional": skip the noisy per-prompt warning but still surface during status checks. "skip": ignore this profile in local-health entirely — use when the profile\'s keys are satisfied by an external target (Fly app secrets, GitHub Actions secrets, CI provider env) and are never expected in local secrets.local.'),
+  environmentScope: z.enum(['staging', 'production', 'any']).default('any').optional()
+    .describe('Per-environment access control for this profile. "production" = only resolvable from promotion-pipeline sessions targeting prod (GENTYR_RELEASE_PHASE=prod). "staging" = staging promotion sessions only. "any" (default) = no env restriction. Enforced by secret-env-scope-guard.js PreToolUse hook.'),
 });
 
 export type SecretProfile = z.infer<typeof SecretProfileSchema>;
@@ -371,6 +373,29 @@ export const ServicesConfigSchema = z.object({
     healthEndpoint: z.string().optional().describe(
       'Health check endpoint path for post-deploy verification and canary monitoring (e.g., "/api/health"). ' +
       'Used by the preview-promoter agent, deploy-event-monitor, and canary rollout to verify deployments.'
+    ),
+    supabase: z.object({
+      projectRef: z.string().regex(/^[a-z0-9]{20}$/, 'Supabase project ref must be 20 lowercase alphanumeric chars'),
+    }).optional().describe(
+      'Supabase project for this environment. Drives /promote-to-prod Phase 4.5 (in-band migrations via Management API) ' +
+      'and the schema-drift hourly automation. Requires SUPABASE_ACCESS_TOKEN in secrets.local.'
+    ),
+    deployTarget: z.object({
+      platform: z.enum(['render', 'vercel', 'fly']),
+      serviceId: z.string().min(1).describe('Render service ID (srv-...), Vercel project ID, or Fly app name'),
+    }).optional().describe(
+      'Deploy target for this environment. Drives /promote-to-prod Phase 8.5 (in-band deploy trigger via platform API) ' +
+      'instead of relying on the platform\'s auto-deploy webhook. Recommended: turn OFF the platform\'s auto-deploy ' +
+      'so this is the only path that produces production deploys.'
+    ),
+    healthChecks: z.array(z.object({
+      path: z.string().describe('Path to probe (e.g., "/api/health"). Combined with baseUrl.'),
+      expectStatus: z.number().int().min(100).max(599).default(200).describe('Required HTTP status code'),
+      expectBodyContains: z.string().optional().describe('Optional substring that must appear in the response body'),
+    })).optional().describe(
+      'Multi-endpoint health probe spec for Phase 8.7 (post-deploy gate). When omitted, falls back to a single GET ' +
+      'against healthEndpoint (or "/health" if unset). Each entry is polled every 10s; release ledger sign-off is ' +
+      'blocked until N consecutive successes across all entries.'
     ),
   })).optional()
     .describe('Named environments for demo targeting. Keys are environment names (e.g., "staging", "production"). The CTO Dashboard uses these to run demos against deployed URLs instead of localhost.'),
