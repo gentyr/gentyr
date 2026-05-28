@@ -188,20 +188,54 @@ export function findSessionFileByAgentId(sessionDir, agentId) {
 
   for (const file of files) {
     const filePath = path.join(sessionDir, file);
+    let head;
     let fd;
     try {
       fd = fs.openSync(filePath, 'r');
       const buf = Buffer.alloc(65536); // 64KB — marker is always in the first message (prompt)
       const bytesRead = fs.readSync(fd, buf, 0, 65536, 0);
-      if (buf.toString('utf8', 0, bytesRead).includes(marker)) return filePath;
+      head = buf.toString('utf8', 0, bytesRead);
     } catch (err) {
       log(`Warning: ${err.message}`);
+      continue;
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
     }
+    if (!head || !head.includes(marker)) continue;
+    // Skip subprocess JSONLs (claude -p calls via llm-client.js carry
+    // CLAUDE_USAGE_TAG). Their prompts embed recent-activity snippets that
+    // contain literal [AGENT:id] strings, causing false matches in the
+    // previous loose substring check.
+    if (head.includes('"CLAUDE_USAGE_TAG":"')) continue;
+    // Require the marker to live inside one of the first 3 user-type entries —
+    // rejects matches inside assistant text or tool_result content.
+    if (!_markerInInitialUserMessage(head, marker)) continue;
+    return filePath;
   }
 
   return null;
+}
+
+function _markerInInitialUserMessage(head, marker) {
+  const lines = head.split('\n');
+  let userSeen = 0;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry?.type !== 'user') continue;
+    userSeen++;
+    if (userSeen > 3) return false;
+    const content = entry?.message?.content;
+    if (typeof content === 'string' && content.includes(marker)) return true;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (typeof block?.text === 'string' && block.text.includes(marker)) return true;
+        if (typeof block === 'string' && block.includes(marker)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**

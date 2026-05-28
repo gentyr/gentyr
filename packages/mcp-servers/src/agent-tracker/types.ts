@@ -395,6 +395,8 @@ export const PeekSessionArgsSchema = z.object({
     .describe('Scan backward for compaction summaries when session has been compacted. Adds ~50ms for compacted sessions.'),
   subagent_id: z.string().optional()
     .describe('Peek a specific sub-agent JSONL instead of the parent session. Get available sub-agent IDs from the activeSubagents array in a parent peek.'),
+  include_subprocesses: z.boolean().optional().default(false)
+    .describe('Allow reading synthetic LLM-subprocess JSONLs (broadcaster, live-feed, etc.). Default false — the tool hard-errors on subprocess JSONLs because they are auto-generated transcripts that do not reflect real agent work. Set true only when intentionally debugging the broadcaster or other callers of llm-client.js.'),
 });
 export type PeekSessionArgs = z.infer<typeof PeekSessionArgsSchema>;
 
@@ -405,6 +407,8 @@ export const BrowseSessionArgsSchema = z.object({
   before_index: z.number().min(0).optional().describe('Return messages before this index (for paging backward). Omit for latest.'),
   subagent_id: z.string().optional()
     .describe('Browse a specific sub-agent JSONL instead of the parent session. Get available sub-agent IDs from the activeSubagents array in a parent peek_session call.'),
+  include_subprocesses: z.boolean().optional().default(false)
+    .describe('Allow reading synthetic LLM-subprocess JSONLs. Default false — the tool hard-errors on subprocess JSONLs because they are auto-generated transcripts that do not reflect real agent work.'),
 });
 export type BrowseSessionArgs = z.infer<typeof BrowseSessionArgsSchema>;
 

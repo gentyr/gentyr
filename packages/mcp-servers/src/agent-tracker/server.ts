@@ -271,8 +271,118 @@ function getSessionDir(projectDir: string): string | null {
 }
 
 /**
+ * Cheap read of the first N bytes of a JSONL file. Returns '' on any failure.
+ */
+function readFileHead(filePath: string, numBytes: number): string {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(numBytes);
+    const bytesRead = fs.readSync(fd, buf, 0, numBytes, 0);
+    return buf.toString('utf8', 0, bytesRead);
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Scan the first ~16KB of a JSONL for a `CLAUDE_USAGE_TAG` marker. Subprocesses
+ * spawned by `.claude/hooks/lib/llm-client.js` always carry this tag. Returns
+ * the tag string (e.g. 'session-activity-broadcaster:per-session') when
+ * present, or null. Mirrors `findUsageTagInJsonl` in jsonl-usage-parser.js so
+ * this TypeScript module does not need to import the .js helper.
+ */
+function findUsageTagInHead(filePath: string): string | null {
+  const head = readFileHead(filePath, 16384);
+  if (!head) return null;
+  const match = head.match(/"CLAUDE_USAGE_TAG":"([^"]+)"/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Classify a session JSONL file. Returns one of:
+ *  - { kind: 'broadcaster-subprocess', subprocessTag } — synthetic, from
+ *    session-activity-broadcaster's `claude -p` calls
+ *  - { kind: 'subprocess-llm', subprocessTag } — synthetic, from any other
+ *    llm-client.js caller (report-auto-resolve, live-feed-daemon, ...)
+ *  - { kind: 'real-agent', agentId } — agent JSONL with [AGENT:id] marker
+ *  - { kind: 'subagent' } — Task tool sub-agent (no [AGENT:] marker)
+ *  - { kind: 'interactive-cto' } — anything else (default CTO session)
+ *
+ * Cheap: reads first 16KB once and consults the subprocess_calls table.
+ */
+type SessionKind = 'broadcaster-subprocess' | 'subprocess-llm' | 'real-agent' | 'subagent' | 'interactive-cto';
+
+function classifySession(sessionFile: string): { kind: SessionKind; subprocessTag?: string; agentId?: string } {
+  // Layer 1: subprocess_calls table lookup by child_session_id.
+  // After Fix 1 this table rarely matches because subprocesses use
+  // --no-session-persistence, but legacy/already-existing tombstone
+  // JSONLs from before this fix may still be linked.
+  try {
+    const sessionId = path.basename(sessionFile, '.jsonl');
+    const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'token-usage.db');
+    if (fs.existsSync(dbPath)) {
+      const sdb = openReadonlyDb(dbPath);
+      try {
+        const row = sdb.prepare('SELECT caller FROM subprocess_calls WHERE child_session_id = ? LIMIT 1').get(sessionId) as { caller: string } | undefined;
+        if (row?.caller) {
+          const kind: SessionKind = row.caller.startsWith('session-activity-broadcaster:') ? 'broadcaster-subprocess' : 'subprocess-llm';
+          return { kind, subprocessTag: row.caller };
+        }
+      } finally {
+        try { sdb.close(); } catch { /* best-effort */ }
+      }
+    }
+  } catch { /* non-fatal — fall through to head-scan */ }
+
+  // Layer 2: env-var marker scan. Subprocesses always carry CLAUDE_USAGE_TAG.
+  const tag = findUsageTagInHead(sessionFile);
+  if (tag) {
+    const kind: SessionKind = tag.startsWith('session-activity-broadcaster:') ? 'broadcaster-subprocess' : 'subprocess-llm';
+    return { kind, subprocessTag: tag };
+  }
+
+  // Layer 3: [AGENT:id] marker in first 16KB.
+  const head = readFileHead(sessionFile, 16384);
+  const agentMatch = head.match(/\[AGENT:([a-zA-Z0-9_-]+)\]/);
+  if (agentMatch) return { kind: 'real-agent', agentId: agentMatch[1] };
+
+  // Layer 4: Task sub-agent (no [AGENT:] marker but is under a subagents/ dir).
+  if (sessionFile.includes(`${path.sep}subagents${path.sep}`)) {
+    return { kind: 'subagent' };
+  }
+
+  return { kind: 'interactive-cto' };
+}
+
+/**
+ * Build a hard-error response for synthetic-session reads. Used by peek_session
+ * and browse_session when `include_subprocesses` is false (default) and the
+ * resolved file is a broadcaster/LLM subprocess tombstone.
+ */
+function syntheticSessionError(sessionFile: string, classification: { kind: SessionKind; subprocessTag?: string }): ErrorResult & { sessionKind: SessionKind; subprocessTag?: string; redirect: string } {
+  return {
+    error: 'Synthetic session — not a real agent run',
+    sessionKind: classification.kind,
+    subprocessTag: classification.subprocessTag,
+    redirect: `This file (${path.basename(sessionFile)}) is an auto-generated LLM-subprocess transcript and does not reflect agent work. To find the actual agent session, call mcp__agent-tracker__get_session_activity_summary or list_session_summaries to enumerate real running agents, then re-call peek_session/browse_session with the correct agent_id or session_id. To intentionally inspect this subprocess tombstone (e.g. debugging the broadcaster), pass include_subprocesses: true.`,
+  };
+}
+
+/**
  * Find a session JSONL file by scanning for [AGENT:id] marker in the first 16KB.
- * Ported from revival-utils.js:findSessionFileByAgentId().
+ *
+ * Tightened against broadcaster/LLM-subprocess JSONL pollution:
+ *  1. Skip files whose first 16KB contains CLAUDE_USAGE_TAG — these are
+ *     `claude -p` subprocesses from llm-client.js, not real agent sessions.
+ *  2. After matching the marker substring, parse the head as JSONL and require
+ *     the marker to appear inside one of the first 3 entries whose `type` is
+ *     `'user'` (the initial spawn prompt) — NOT inside an assistant message,
+ *     tool_use input, or tool_result content. Loose substring matching was
+ *     wrongly firing on agent IDs quoted inside broadcaster recent-activity
+ *     snippets.
  */
 function findSessionFileByAgentId(sessionDir: string, agentId: string): string | null {
   const marker = `[AGENT:${agentId}]`;
@@ -285,21 +395,45 @@ function findSessionFileByAgentId(sessionDir: string, agentId: string): string |
 
   for (const file of files) {
     const filePath = path.join(sessionDir, file);
-    let fd: number | undefined;
-    try {
-      fd = fs.openSync(filePath, 'r');
-      const buf = Buffer.alloc(16384);
-      const bytesRead = fs.readSync(fd, buf, 0, 16384, 0);
-      const head = buf.toString('utf8', 0, bytesRead);
-      if (head.includes(marker)) return filePath;
-    } catch {
-      // skip unreadable files
-    } finally {
-      if (fd !== undefined) fs.closeSync(fd);
-    }
+    const head = readFileHead(filePath, 16384);
+    if (!head) continue;
+    if (!head.includes(marker)) continue;
+
+    // Layer 1: subprocess JSONLs carry CLAUDE_USAGE_TAG — never a real agent.
+    if (head.includes('"CLAUDE_USAGE_TAG":"')) continue;
+
+    // Layer 2: marker must be inside one of the first 3 user-type messages.
+    if (markerInInitialUserMessage(head, marker)) return filePath;
   }
 
   return null;
+}
+
+/**
+ * Returns true when `marker` appears inside the text content of one of the
+ * first 3 `type: 'user'` JSONL entries in `head`. Tolerant of partial trailing
+ * entries (the last line is dropped if it does not parse).
+ */
+function markerInInitialUserMessage(head: string, marker: string): boolean {
+  const lines = head.split('\n');
+  let userSeen = 0;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let entry: any;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry?.type !== 'user') continue;
+    userSeen++;
+    if (userSeen > 3) return false;
+    const content = entry?.message?.content;
+    if (typeof content === 'string' && content.includes(marker)) return true;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (typeof block?.text === 'string' && block.text.includes(marker)) return true;
+        if (typeof block === 'string' && block.includes(marker)) return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -4261,6 +4395,18 @@ async function peekSession(args: PeekSessionArgs): Promise<object | ErrorResult>
     // Continue with normal peek logic using the sub-agent file
   }
 
+  // Hard-error on synthetic (LLM-subprocess) JSONLs unless explicitly opted in.
+  // These are tombstones from `claude -p` calls in llm-client.js (broadcaster,
+  // live-feed, etc.). Returning their content as if it were real agent work
+  // misled agents into false "hijack" diagnoses; the error redirects callers
+  // to enumerate real sessions instead.
+  if (!args.include_subprocesses) {
+    const classification = classifySession(sessionFile);
+    if (classification.kind === 'broadcaster-subprocess' || classification.kind === 'subprocess-llm') {
+      return syntheticSessionError(sessionFile, classification);
+    }
+  }
+
   const depthBytes = (args.depth ?? 24) * 1024;
   const offsetBytes = args.offset ?? 0;
   let tailResult: { content: string; fileSize: number; windowStart: number; windowEnd: number };
@@ -4549,6 +4695,15 @@ async function browseSession(args: BrowseSessionArgs): Promise<object | ErrorRes
     sessionFile = subagentFile;
   }
 
+  // Hard-error on synthetic (LLM-subprocess) JSONLs unless explicitly opted in.
+  // See peekSession for the same gate and rationale.
+  if (!args.include_subprocesses) {
+    const classification = classifySession(sessionFile);
+    if (classification.kind === 'broadcaster-subprocess' || classification.kind === 'subprocess-llm') {
+      return syntheticSessionError(sessionFile, classification);
+    }
+  }
+
   // For files > 10MB, fall back to tail-based reading
   let stat: fs.Stats;
   try {
@@ -4823,26 +4978,12 @@ function searchCtoSessions(args: SearchCtoSessionsArgs): object | ErrorResult {
     if (results.length >= limit) break;
     const filePath = path.join(sessionDir, file);
 
-    // Read first 2KB to check for automation markers
-    let head: string;
-    try {
-      let fd: number | undefined;
-      try {
-        fd = fs.openSync(filePath, 'r');
-        const buf = Buffer.alloc(2048);
-        const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
-        head = buf.toString('utf8', 0, bytesRead);
-      } finally {
-        if (fd !== undefined) fs.closeSync(fd);
-      }
-    } catch {
-      continue;
-    }
-
-    // Skip automated sessions
-    if (head.includes('[Automation]') || head.includes('[Task]') || head.includes('[AGENT:')) {
-      continue;
-    }
+    // Skip non-CTO sessions in one shot via the shared classifier — covers
+    // automation/agent JSONLs (kind: 'real-agent', 'subagent'), broadcaster +
+    // LLM subprocess tombstones (kind: 'broadcaster-subprocess',
+    // 'subprocess-llm'), and leaves only kind: 'interactive-cto' for search.
+    const classification = classifySession(filePath);
+    if (classification.kind !== 'interactive-cto') continue;
 
     // Search the full file for the query
     let content: string;

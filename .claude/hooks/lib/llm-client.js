@@ -11,7 +11,14 @@
  * - Callers that run as daemons should call `killActiveChildren()` in their
  *   SIGTERM/SIGINT handlers to prevent orphaned processes on restart
  *
- * @version 2.0.0
+ * Session persistence: always passes `--no-session-persistence` to `claude -p`.
+ * We never resume these subprocesses; the JSONL transcript would only pollute
+ * `~/.claude/projects/<encoded-cwd>/` and be misread by agents browsing
+ * sessions. Token attribution still works — `--output-format json` returns
+ * `usage` in stdout, which is persisted to `subprocess_calls.{input,output,
+ * cache_read,cache_creation}_tokens` for the token-usage collector.
+ *
+ * @version 3.0.0
  */
 
 import childProcess from 'child_process';
@@ -77,7 +84,14 @@ function resolveCallerTag(opts, callsite) {
  * Internal: spawn `claude -p` with child PID tracking and subprocess_calls
  * recording for token-usage attribution.
  *
- * @returns {Promise<string>} stdout
+ * Returns `{ stdout, data }` where `data` is the parsed `--output-format json`
+ * envelope (`{ result, usage: { input_tokens, output_tokens, cache_*_tokens } }`)
+ * so callers can hand token counts to `finishSubprocessCall` for attribution.
+ *
+ * Always appends `--no-session-persistence` so `claude -p` does not write a
+ * JSONL transcript to `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`.
+ *
+ * @returns {Promise<{stdout: string, data: object|null}>}
  */
 function execClaude(args, opts = {}, callerTag = 'untagged') {
   const timeout = opts.timeout || DEFAULT_TIMEOUT;
@@ -93,7 +107,11 @@ function execClaude(args, opts = {}, callerTag = 'untagged') {
     };
     if (parentSessionId) env.CLAUDE_USAGE_PARENT = parentSessionId;
 
-    const child = childProcess.execFile('claude', args, {
+    const fullArgs = args.includes('--no-session-persistence')
+      ? args
+      : [...args, '--no-session-persistence'];
+
+    const child = childProcess.execFile('claude', fullArgs, {
       cwd: PROJECT_DIR,
       encoding: 'utf8',
       timeout,
@@ -101,9 +119,19 @@ function execClaude(args, opts = {}, callerTag = 'untagged') {
       env,
     }, (err, stdout) => {
       activeChildPids.delete(child.pid);
-      finishSubprocessCall(rowId, { pid: child.pid || null, exitCode: err ? (err.code || 1) : 0 });
+      let data = null;
+      try { data = stdout ? JSON.parse(stdout) : null; } catch { /* non-JSON output — leave null */ }
+      const usage = data?.usage || {};
+      finishSubprocessCall(rowId, {
+        pid: child.pid || null,
+        exitCode: err ? (err.code || 1) : 0,
+        inputTokens: usage.input_tokens || 0,
+        outputTokens: usage.output_tokens || 0,
+        cacheReadTokens: usage.cache_read_input_tokens || 0,
+        cacheCreationTokens: usage.cache_creation_input_tokens || 0,
+      });
       if (err) return reject(err);
-      resolve(stdout);
+      resolve({ stdout, data });
     });
     if (child.pid) activeChildPids.add(child.pid);
   });
@@ -129,8 +157,8 @@ export async function callLLM(prompt, systemPrompt, opts = {}) {
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
 
   try {
-    const stdout = await execClaude(args, opts, tag);
-    const data = JSON.parse(stdout);
+    const { data } = await execClaude(args, opts, tag);
+    if (!data) return null;
     return {
       text: data.result || '',
       tokens: (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
@@ -161,8 +189,8 @@ export async function callLLMStructured(prompt, systemPrompt, jsonSchema, opts =
   if (systemPrompt) args.push('--system-prompt', systemPrompt);
 
   try {
-    const stdout = await execClaude(args, opts, tag);
-    const data = JSON.parse(stdout);
+    const { data } = await execClaude(args, opts, tag);
+    if (!data) return null;
     if (typeof data.result === 'string') {
       return JSON.parse(data.result);
     }
