@@ -3095,7 +3095,7 @@ describe('Secret Sync MCP Server - RunCommandArgsSchema Validation', () => {
    *
    * Security model:
    * - No shell execution (shell: false enforced)
-   * - Executable allowlist (default: pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest)
+   * - Executable allowlist (default: pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest, curl)
    * - Blocked arguments (-e, --eval, -c, --print, -p)
    * - INFRA_CRED_KEYS filtered from child env
    * - Output sanitized of secret values
@@ -3216,11 +3216,12 @@ describe('Secret Sync MCP Server - Command Validation', () => {
    * - prisma
    * - drizzle-kit
    * - vitest
+   * - curl
    *
    * Projects can extend this list via services.yaml runCommandConfig.allowedExecutables.
    *
    * Blocked executables (examples):
-   * - curl, wget (arbitrary network requests)
+   * - wget (arbitrary downloads)
    * - sh, bash, zsh (shell access)
    * - python, ruby, perl (script interpreters)
    *
@@ -3246,10 +3247,10 @@ describe('Secret Sync MCP Server - Command Validation', () => {
       'prisma',
       'drizzle-kit',
       'vitest',
+      'curl',
     ];
 
     const blockedExecutables = [
-      'curl',
       'wget',
       'sh',
       'bash',

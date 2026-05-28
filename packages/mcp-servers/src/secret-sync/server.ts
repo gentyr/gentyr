@@ -836,7 +836,7 @@ async function verifySecrets(args: VerifySecretsArgs): Promise<VerifyResult> {
 // ============================================================================
 
 const DEFAULT_ALLOWED_EXECUTABLES = new Set([
-  'pnpm', 'npx', 'node', 'tsx', 'playwright', 'prisma', 'drizzle-kit', 'vitest',
+  'pnpm', 'npx', 'node', 'tsx', 'playwright', 'prisma', 'drizzle-kit', 'vitest', 'curl',
 ]);
 
 /** Blocked arg prefixes — matches both `-e` and `--eval=<code>` forms */
@@ -2053,7 +2053,7 @@ export const tools = [
   },
   {
     name: 'secret_run_command',
-    description: 'Run a command with 1Password secrets injected into env vars. IMPORTANT: Check list_secret_profiles first — if a profile matches your command, use the profile param to ensure all required secrets are injected. Omitting a matching profile will be blocked on first attempt. Secrets resolved in MCP server memory, never returned to agent. Output sanitized. Executable must be in allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest). No shell — argv array. Do NOT use for Playwright tests/demos — use run_demo or run_demo_batch. Commands with timeout > 55s are automatically run in background to avoid MCP transport timeout — poll results with secret_run_command_poll.',
+    description: 'Run a command with 1Password secrets injected into env vars. IMPORTANT: Check list_secret_profiles first — if a profile matches your command, use the profile param to ensure all required secrets are injected. Omitting a matching profile will be blocked on first attempt. Secrets resolved in MCP server memory, never returned to agent. Output sanitized. Executable must be in allowlist (pnpm, npx, node, tsx, playwright, prisma, drizzle-kit, vitest, curl). No shell — argv array. Do NOT use for Playwright tests/demos — use run_demo or run_demo_batch. Commands with timeout > 55s are automatically run in background to avoid MCP transport timeout — poll results with secret_run_command_poll.',
     schema: RunCommandArgsSchema,
     handler: runCommand as (args: unknown) => unknown,
   },

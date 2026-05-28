@@ -184,7 +184,7 @@ Verify that secrets exist on target platform(s) without revealing values.
 Run an arbitrary command with 1Password secrets injected into environment variables. Secret values are resolved in MCP server memory, injected into the child process, and never returned to the agent. Output is sanitized to redact any accidentally leaked secret values.
 
 **Security model:**
-- Executable must be in allowlist: `pnpm`, `npx`, `node`, `tsx`, `playwright`, `prisma`, `drizzle-kit`, `vitest`
+- Executable must be in allowlist: `pnpm`, `npx`, `node`, `tsx`, `playwright`, `prisma`, `drizzle-kit`, `vitest`, `curl`
 - No shell interpretation — command is an argv array (`shell: false`)
 - Inline eval args blocked: `-e`, `--eval`, `-c`, `--print`, `-p`
 - Infrastructure credentials (`OP_SERVICE_ACCOUNT_TOKEN`, `RENDER_API_KEY`, etc.) filtered from child env
