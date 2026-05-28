@@ -78,6 +78,24 @@ function readTail(filePath, numBytes) {
 async function main() {
   debugLog('Stop hook triggered');
 
+  // Fast-exit for `claude -p` subprocess invocations (broadcaster, live-feed,
+  // migration-safety, etc. — all spawned via `.claude/hooks/lib/llm-client.js`,
+  // which sets `CLAUDE_USAGE_TAG`). These are one-shot LLM calls — prompting
+  // them with "is there more work to investigate or resolve" is meaningless
+  // and litters the debug log with "No further work. Ticker entry complete."
+  // tombstones.
+  //
+  // `CLAUDE_USAGE_TAG` is set ONLY by llm-client.js, never by Task spawns or
+  // session-queue spawns, so this gate is precise. The plan-manager /
+  // persistent-monitor / worktree completion gates further down all check env
+  // vars that are NEVER set on llm-client subprocesses, so we lose nothing by
+  // exiting before them.
+  if (process.env.CLAUDE_USAGE_TAG) {
+    debugLog('Fast-exit: subprocess invocation (CLAUDE_USAGE_TAG set)', { tag: process.env.CLAUDE_USAGE_TAG });
+    console.log(JSON.stringify({ decision: 'approve' }));
+    process.exit(0);
+  }
+
   try {
     const stdinData = await readStdin();
 

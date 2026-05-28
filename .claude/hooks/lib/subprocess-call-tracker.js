@@ -51,6 +51,14 @@ function openDb() {
       CREATE INDEX IF NOT EXISTS idx_sub_child ON subprocess_calls(child_session_id);
       CREATE INDEX IF NOT EXISTS idx_sub_started ON subprocess_calls(started_at);
     `);
+    // Idempotent ALTER TABLE — add token columns if missing (older DBs)
+    const existingCols = new Set(_db.prepare("PRAGMA table_info(subprocess_calls)").all().map((c) => c.name));
+    const TOKEN_COLS = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens'];
+    for (const col of TOKEN_COLS) {
+      if (!existingCols.has(col)) {
+        try { _db.exec(`ALTER TABLE subprocess_calls ADD COLUMN ${col} INTEGER DEFAULT 0`); } catch { /* concurrent migration race */ }
+      }
+    }
     return _db;
   } catch {
     _db = null;
@@ -85,21 +93,36 @@ export function startSubprocessCall({ caller, model = null, parentSessionId = nu
 
 /**
  * Record the end of a subprocess call previously started with
- * `startSubprocessCall()`. Updates `pid`, `ended_at`, and `exit_code`.
+ * `startSubprocessCall()`. Updates `pid`, `ended_at`, `exit_code`, and the
+ * four token columns when provided.
  *
  * @param {number|null} rowId
  * @param {object} [args]
- * @param {number} [args.pid]
- * @param {number} [args.exitCode]
+ * @param {number|null} [args.pid]
+ * @param {number|null} [args.exitCode]
+ * @param {number} [args.inputTokens]
+ * @param {number} [args.outputTokens]
+ * @param {number} [args.cacheReadTokens]
+ * @param {number} [args.cacheCreationTokens]
  */
-export function finishSubprocessCall(rowId, { pid = null, exitCode = null } = {}) {
+export function finishSubprocessCall(rowId, {
+  pid = null,
+  exitCode = null,
+  inputTokens = 0,
+  outputTokens = 0,
+  cacheReadTokens = 0,
+  cacheCreationTokens = 0,
+} = {}) {
   if (!rowId) return;
   const db = openDb();
   if (!db) return;
   try {
     db.prepare(
-      `UPDATE subprocess_calls SET pid = ?, ended_at = ?, exit_code = ? WHERE id = ?`
-    ).run(pid, Date.now(), exitCode, rowId);
+      `UPDATE subprocess_calls
+       SET pid = ?, ended_at = ?, exit_code = ?,
+           input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_creation_tokens = ?
+       WHERE id = ?`
+    ).run(pid, Date.now(), exitCode, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, rowId);
   } catch {
     // Non-fatal
   }

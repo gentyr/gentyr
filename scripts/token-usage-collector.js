@@ -217,6 +217,14 @@ export function openDb(dbPath = DB_PATH) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_spawn_origin ON session_attribution(spawn_origin)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_is_revival ON session_attribution(is_revival)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_attr_debate_role ON session_attribution(debate_role)`);
+  // Subprocess token columns — populated by lib/subprocess-call-tracker.js
+  // (finishSubprocessCall) when `claude -p` returns its --output-format json
+  // envelope. Required because subprocesses run with --no-session-persistence
+  // and therefore have no JSONL transcript for the per-message parser to read.
+  addColumnIfMissing(db, 'subprocess_calls', 'input_tokens INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'subprocess_calls', 'output_tokens INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'subprocess_calls', 'cache_read_tokens INTEGER DEFAULT 0');
+  addColumnIfMissing(db, 'subprocess_calls', 'cache_creation_tokens INTEGER DEFAULT 0');
   return db;
 }
 
@@ -878,6 +886,99 @@ export function rebuildDailyRollup(db, dateStr = isoDate(Date.now())) {
 }
 
 // ============================================================================
+// Subprocess Calls Ingestion (no JSONL — read from subprocess_calls table)
+// ============================================================================
+
+/**
+ * Synthesize a usage_events + session_attribution pair for each finalized
+ * subprocess_calls row that has non-zero tokens and no corresponding JSONL
+ * (`child_session_id IS NULL`). These rows are produced by callers of
+ * `.claude/hooks/lib/llm-client.js` (broadcaster, live-feed, migration-safety,
+ * etc.) which run `claude -p --no-session-persistence` and therefore leave no
+ * transcript file for the per-message parser to walk.
+ *
+ * Idempotent: uses a deterministic pseudo session id `subprocess-<rowId>` and
+ * `INSERT OR IGNORE` on `usage_events(session_id, message_uuid)` and `INSERT
+ * OR REPLACE` on `session_attribution(session_id)`. Safe to run every cycle.
+ */
+export function ingestOrphanedSubprocessCalls(db) {
+  let ingested = 0;
+  try {
+    const rows = db.prepare(
+      `SELECT id, caller, model, parent_session_id, pid, started_at, ended_at,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+       FROM subprocess_calls
+       WHERE child_session_id IS NULL
+         AND ended_at IS NOT NULL
+         AND (input_tokens > 0 OR output_tokens > 0
+              OR cache_read_tokens > 0 OR cache_creation_tokens > 0)`
+    ).all();
+
+    if (rows.length === 0) return 0;
+
+    const insertEvent = db.prepare(
+      `INSERT OR IGNORE INTO usage_events
+         (session_id, message_uuid, ts, model,
+          input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+          cost_micro_usd)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const upsertAttr = db.prepare(
+      `INSERT INTO session_attribution
+         (session_id, source, lane, agent_type, subprocess_tag, parent_session_id,
+          is_subagent, started_at, ended_at, attribution_status, last_attempt_at,
+          work_category)
+       VALUES (?, ?, 'subprocess', 'subprocess-llm', ?, ?, 0, ?, ?, 'resolved', ?, 'subprocess-llm')
+       ON CONFLICT(session_id) DO UPDATE SET
+         source = excluded.source,
+         lane = excluded.lane,
+         subprocess_tag = excluded.subprocess_tag,
+         parent_session_id = excluded.parent_session_id,
+         ended_at = excluded.ended_at,
+         work_category = excluded.work_category`
+    );
+
+    const tx = db.transaction(() => {
+      for (const r of rows) {
+        const sessionId = `subprocess-${r.id}`;
+        const msgUuid = `subproc-${r.id}`;
+        const cost = computeCostMicroUsd(r.model, {
+          input_tokens: r.input_tokens,
+          output_tokens: r.output_tokens,
+          cache_creation_tokens: r.cache_creation_tokens,
+          cache_read_tokens: r.cache_read_tokens,
+        }, log);
+        insertEvent.run(
+          sessionId,
+          msgUuid,
+          r.ended_at || r.started_at,
+          r.model || 'unknown',
+          r.input_tokens || 0,
+          r.output_tokens || 0,
+          r.cache_creation_tokens || 0,
+          r.cache_read_tokens || 0,
+          cost,
+        );
+        upsertAttr.run(
+          sessionId,
+          `subprocess:${r.caller}`,
+          r.caller,
+          r.parent_session_id,
+          r.started_at,
+          r.ended_at,
+          Date.now(),
+        );
+        ingested++;
+      }
+    });
+    tx();
+  } catch (err) {
+    log(`warn: orphaned subprocess ingestion failed: ${err.message}`);
+  }
+  return ingested;
+}
+
+// ============================================================================
 // Scan Cycle
 // ============================================================================
 
@@ -972,6 +1073,13 @@ export function runScanCycle({ projectDir = PROJECT_DIR, dbPath = DB_PATH } = {}
         if (attr.attribution_status === 'resolved') attributionsResolved++;
         else attributionsPending++;
       }
+    }
+
+    // Ingest finalized subprocess_calls rows that have no JSONL (because
+    // `claude -p --no-session-persistence` was used). Idempotent.
+    const subprocessIngested = ingestOrphanedSubprocessCalls(db);
+    if (subprocessIngested > 0) {
+      log(`ingested ${subprocessIngested} orphaned subprocess_calls`);
     }
 
     // Recompute today's rollup
