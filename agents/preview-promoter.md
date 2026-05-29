@@ -256,7 +256,7 @@ Demos: {verdict}"
 ```
 
 ```bash
-gh pr checks {number} --watch --fail-on-fail
+gh pr checks {number} --watch --fail-fast
 ```
 
 If CI fails after creating/finding the PR, enter the **CI Failure Self-Healing Loop:**
@@ -268,7 +268,7 @@ If CI fails after creating/finding the PR, enter the **CI Failure Self-Healing L
    - `assigned_by`: `"cto"` (gate-bypass for immediate spawning)
 3. Spawn the task immediately via `mcp__agent-tracker__force_spawn_tasks`
 4. Wait for the task to complete (poll `mcp__todo-db__get_task` every 60 seconds, max 30 minutes)
-5. After the fix lands, re-check CI: `gh pr checks <number> --watch --fail-on-fail`
+5. After the fix lands, re-check CI: `gh pr checks <number> --watch --fail-fast`
 6. If CI passes — proceed to merge
 7. If CI still fails — repeat from step 1 (max 3 iterations)
 8. After 3 failed iterations: Report to CTO and EXIT without merging
