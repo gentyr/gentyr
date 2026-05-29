@@ -205,6 +205,7 @@ const DEFAULTS = {
   pr_sweep: 60,                        // 1h
   worktree_cleanup: 5,                 // 5 minutes
   abandoned_worktree_rescue: 15,       // 15 minutes
+  cto_worktree_pollution_rescue: 15,   // 15 minutes (Fix 7 — autonomous orphan-work rescue for cto-interactive-* worktrees)
   stale_orphan_worktree_cleanup: 60,   // 60 minutes (delete unrecoverable worktrees: unrelated histories or ancient stale orphans)
   stale_worktree_reaper: 20,           // 20 minutes
   orphan_process_reaper: 15,           // 15 minutes (was 60min before 2026-05-27 spawn deadlock incident)

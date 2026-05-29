@@ -20,6 +20,7 @@ import { createInterface } from 'readline';
 import fs from 'fs';
 import path from 'path';
 import { execSync, execFileSync } from 'child_process';
+import { detectPollution as _detectPollution, enqueueRescuer as _enqueueRescuer } from './lib/cto-worktree-rescue.js';
 import { checkImageStaleness, checkProjectImageStaleness } from './lib/fly-image-freshness.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -1036,6 +1037,52 @@ function buildInteractiveBriefing() {
         lines.push('=== LOCKDOWN OFF — IN-SESSION PIPELINE ===');
         if (wtExists) {
           lines.push(`Worktree: ${wt} (exists)`);
+          // Fix 7 — autonomous pollution detection. If the CTO worktree has
+          // staged/modified work AND its HEAD is on a branch other than the
+          // one Fix 2 pinned, this is leftover from a prior session and
+          // should be surfaced prominently so the agent does not silently
+          // commit on top of it (the xy "feature/rebrand-svgs-readmes 6
+          // staged files" failure mode).
+          // Fix 7 — autonomous pollution detection + rescue.
+          //
+          // detectPollution() reads `git status` + worktree-meta.json (Fix 2)
+          // and returns a structured polluted/clean result. When polluted we
+          // also enqueue gentyr-internal-worktree-rescuer in the audit lane;
+          // it salvages the work to a draft PR (never auto-merges).
+          //
+          // The whole thing is fire-and-forget — we never block the briefing
+          // on detection or enqueue failures.
+          try {
+            const detection = _detectPollution(wt);
+            if (detection.polluted) {
+              lines.push('');
+              lines.push('=== WORKTREE NEEDS ATTENTION (Fix 7 autonomous rescue) ===');
+              if (detection.pinnedBranch) lines.push(`Pinned branch:  ${detection.pinnedBranch}`);
+              lines.push(`Current branch: ${detection.currentBranch}`);
+              lines.push(`Staged: ${detection.staged}, Modified: ${detection.modified}, Untracked: ${detection.untracked}`);
+              lines.push('');
+              lines.push('GENTYR detected orphaned work in this worktree (uncommitted/staged from a');
+              lines.push('previous session). A `gentyr-internal-worktree-rescuer` agent has been');
+              lines.push('enqueued in the audit lane — it will salvage the work to a DRAFT PR for');
+              lines.push('your later review (never auto-merges, never force-pushes).');
+              lines.push('');
+              lines.push('DO NOT commit on top of this work — it would mix two unrelated features into');
+              lines.push('one PR. Either wait for the rescuer to finish (check /persistent-tasks or');
+              lines.push('the audit lane in /session-queue) or provision a fresh worktree for this turn:');
+              lines.push(`  cd ${PROJECT_DIR}`);
+              lines.push('  git worktree add -b feature/cto-<topic> .claude/worktrees/cto-interactive-fresh-<topic> origin/main');
+              lines.push('  cd .claude/worktrees/cto-interactive-fresh-<topic>');
+              // Fire-and-forget the rescuer enqueue. Do NOT await — briefing
+              // must not block. Any failure is swallowed and the CTO still
+              // sees the WORKTREE NEEDS ATTENTION block above.
+              _enqueueRescuer({
+                projectDir: PROJECT_DIR,
+                worktreePath: wt,
+                detection,
+                source: 'session-briefing:cto_worktree_pollution_rescue',
+              }).catch(() => { /* non-fatal */ });
+            }
+          } catch { /* non-fatal — never block briefing on detection failure */ }
         } else if (wt) {
           lines.push(`Worktree MISSING: ${wt} (recorded path no longer exists)`);
           lines.push(`Recreate it: git -C ${PROJECT_DIR} worktree add ${wt} preview`);
