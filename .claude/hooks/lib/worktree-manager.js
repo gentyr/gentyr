@@ -13,6 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { isCtoInteractiveWorktree, writeWorktreeMeta, installPostCheckoutPin } from './worktree-meta.js';
 import { execSync, execFileSync } from 'child_process';
 import { detectBaseBranch as detectBaseBranchShared } from './feature-branch-helper.js';
 import { allocatePortBlock, releasePortBlock, cleanupStaleAllocations } from './port-allocator.js';
@@ -765,6 +766,23 @@ export function createWorktree(branchName, baseBranch, options = {}) {
     }
   } catch {
     // Non-fatal — freshness check failure doesn't block worktree creation
+  }
+
+  // Fix 2 — pin HEAD of cto-interactive-* worktrees against unauthorized
+  // checkouts (xy session a5b87d5f). Writes
+  // <worktree>/.claude/worktree-meta.json and installs a post-checkout git
+  // hook that reverts any HEAD change off the pinned branch unless
+  // GENTYR_CTO_WORKTREE_CHECKOUT_OK=1 is set. Non-fatal on either step.
+  try {
+    if (isCtoInteractiveWorktree(worktreePath)) {
+      writeWorktreeMeta(worktreePath, {
+        startedOnBranch: branchName,
+        ownerSessionId: options.ownerSessionId || null,
+      });
+      installPostCheckoutPin(worktreePath);
+    }
+  } catch (err) {
+    console.error('[worktree-manager] Warning: pin install failed (non-fatal):', err.message);
   }
 
   return { path: worktreePath, branch: branchName, created: true, behindBy };
