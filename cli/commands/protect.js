@@ -103,6 +103,7 @@ function doProtect(projectDir) {
     'plan-activation-spawner.js',
     'cto-alignment-spec-review.js',
     'staging-lock-guard.js',
+    'pr-base-guard.js',
     'release-completion-hook.js',
     'demo-local-guard.js',
     'bypass-pause-duration-guard.js',
