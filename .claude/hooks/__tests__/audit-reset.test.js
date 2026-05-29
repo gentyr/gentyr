@@ -54,8 +54,8 @@ const PT_SCHEMA = `
     title TEXT,
     status TEXT,
     parent_todo_task_id TEXT,
-    success_criteria TEXT,
-    verification_method TEXT,
+    gate_success_criteria TEXT,
+    gate_verification_method TEXT,
     completed_at TEXT
   );
   CREATE TABLE IF NOT EXISTS pt_audits (
@@ -357,7 +357,7 @@ describe('resetPtAudit', () => {
   });
 
   it('resets pending_audit and inserts new audit row', async () => {
-    db.prepare("INSERT INTO persistent_tasks (id, title, status, success_criteria, verification_method) VALUES ('pt1','x','pending_audit','c','m')").run();
+    db.prepare("INSERT INTO persistent_tasks (id, title, status, gate_success_criteria, gate_verification_method) VALUES ('pt1','x','pending_audit','c','m')").run();
     db.prepare("INSERT INTO pt_audits (id, persistent_task_id, success_criteria, verification_method, verdict, requested_at, attempt_number) VALUES ('a1','pt1','c','m',NULL,?,1)").run(new Date().toISOString());
     const res = await auditReset.resetPtAudit({ db, taskId: 'pt1', reason: 'wedged auditor please reset', projectDir: tmpProjectDir, respawn: false });
     assert.equal(res.error, undefined);
@@ -366,7 +366,7 @@ describe('resetPtAudit', () => {
   });
 
   it('cascade-reverts parent todo task on completed PT reset', async () => {
-    db.prepare("INSERT INTO persistent_tasks (id, title, status, parent_todo_task_id, success_criteria, verification_method) VALUES ('pt1','x','completed','todo1','c','m')").run();
+    db.prepare("INSERT INTO persistent_tasks (id, title, status, parent_todo_task_id, gate_success_criteria, gate_verification_method) VALUES ('pt1','x','completed','todo1','c','m')").run();
     db.prepare("INSERT INTO pt_audits (id, persistent_task_id, success_criteria, verification_method, verdict, requested_at, attempt_number) VALUES ('a1','pt1','c','m','pass',?,1)").run(new Date().toISOString());
     // Build a real todo.db file in the temp dir so the cascade can find it.
     const todoDbPath = path.join(tmpProjectDir, '.claude', 'todo.db');
@@ -388,7 +388,7 @@ describe('resetPtAudit', () => {
   });
 
   it('skips cascade when parent todo is not completed', async () => {
-    db.prepare("INSERT INTO persistent_tasks (id, title, status, parent_todo_task_id, success_criteria, verification_method) VALUES ('pt1','x','pending_audit','todo1','c','m')").run();
+    db.prepare("INSERT INTO persistent_tasks (id, title, status, parent_todo_task_id, gate_success_criteria, gate_verification_method) VALUES ('pt1','x','pending_audit','todo1','c','m')").run();
     db.prepare("INSERT INTO pt_audits (id, persistent_task_id, success_criteria, verification_method, verdict, requested_at, attempt_number) VALUES ('a1','pt1','c','m',NULL,?,1)").run(new Date().toISOString());
     const todoDbPath = path.join(tmpProjectDir, '.claude', 'todo.db');
     const todoDb = new Database(todoDbPath);
