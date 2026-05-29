@@ -24,7 +24,17 @@ import { computePendingHmac } from './lib/deferred-action-executor.js';
 // Patterns that indicate hook bypass attempts
 const forbiddenPatterns = [
   { pattern: /--no-verify/i, reason: 'Using --no-verify skips pre-commit hooks (lint, security checks). Fix the root cause instead — if hooks fail in a worktree, check that .claude/hooks symlink exists; if the branch is stale, create a fresh branch from the base' },
-  { pattern: /\bgit\s+(commit|push|merge|rebase|cherry-pick|revert|am)\b.*\s-n(\s|$)/, reason: 'The -n flag is shorthand for --no-verify, which skips pre-commit hooks. Fix the root cause instead of bypassing hooks' },
+  // `-n` is `--no-verify` ONLY for `git commit`. For other subcommands it means
+  // something benign and unrelated to hook bypass:
+  //   git push -n          → --dry-run
+  //   git merge -n         → --no-stat
+  //   git cherry-pick -n   → --no-commit
+  //   git revert -n        → --no-commit
+  //   git am -n            → --no-scissors
+  // The long-form /--no-verify/i pattern above still catches the actual flag
+  // on every subcommand, so push/merge/cherry-pick/revert/am --no-verify are
+  // still blocked.
+  { pattern: /\bgit\s+commit\b.*\s-n(\s|$)/, reason: 'The -n flag is shorthand for --no-verify on git commit, which skips pre-commit hooks. Fix the root cause instead of bypassing hooks' },
   { pattern: /--(no-)?gpg-sign/i, reason: 'Skipping GPG signing bypasses commit verification' },
   { pattern: /\bgit\s+config\s+(?:.*--unset.*core\.hooksPath|.*core\.hooksPath\s+\S)/i, reason: 'Changing core.hooksPath redirects or disables git hooks' },
   { pattern: /\brm\s+(-rf?|--recursive)?\s+.*\.husky/i, reason: 'Deleting .husky/ removes the git hook infrastructure' },

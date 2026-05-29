@@ -247,16 +247,38 @@ describe('block-no-verify.js (PreToolUse Hook)', () => {
       await assertAllowed('git show origin/preview:scripts/demo.sh | grep -n -A1 "DEMO"', tempDir.path);
     });
 
-    it('should block git push -n', async () => {
-      await assertBlocked('git push -n origin main', tempDir.path, '-n');
+    // Fix 4 of the toasty-skipping-penguin plan: the `-n` regex now only
+    // fires on `git commit` because that is the ONLY subcommand where `-n`
+    // means `--no-verify`. For push it means `--dry-run`, for merge it means
+    // `--no-stat`, for rebase it is not a recognized short flag. The
+    // long-form /--no-verify/i pattern still catches the actual flag on
+    // every subcommand (see "long-form" cases above).
+    it('should ALLOW git push -n (it means --dry-run, not --no-verify)', async () => {
+      await assertAllowed('git push -n origin main', tempDir.path);
     });
 
-    it('should block git merge -n', async () => {
-      await assertBlocked('git merge -n feature-branch', tempDir.path, '-n');
+    it('should ALLOW git merge -n (it means --no-stat, not --no-verify)', async () => {
+      await assertAllowed('git merge -n feature-branch', tempDir.path);
     });
 
-    it('should block git rebase -n', async () => {
-      await assertBlocked('git rebase -n main', tempDir.path, '-n');
+    it('should ALLOW git rebase -n (no -n short flag; benign)', async () => {
+      await assertAllowed('git rebase -n main', tempDir.path);
+    });
+
+    it('should ALLOW git cherry-pick -n (it means --no-commit, not --no-verify)', async () => {
+      await assertAllowed('git cherry-pick -n abc1234', tempDir.path);
+    });
+
+    it('should ALLOW git revert -n (it means --no-commit, not --no-verify)', async () => {
+      await assertAllowed('git revert -n abc1234', tempDir.path);
+    });
+
+    it('should still BLOCK git push --no-verify (long-form pattern)', async () => {
+      await assertBlocked('git push --no-verify origin main', tempDir.path);
+    });
+
+    it('should still BLOCK git merge --no-verify (long-form pattern)', async () => {
+      await assertBlocked('git merge --no-verify feature-branch', tempDir.path);
     });
   });
 
