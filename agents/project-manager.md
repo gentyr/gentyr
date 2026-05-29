@@ -162,7 +162,30 @@ You are the ONLY agent responsible for committing, pushing, merging, and cleanin
    echo "Sentinel branch: $STARTED_ON_BRANCH"
    ```
 
-   You will compare against this before every git mutation (add, push, merge) to detect branch swaps that bypassed the lock (e.g., the CTO checked out a different branch manually, or sync-recycle force-released the lock mid-run). If the branch changed, you must release the lock, file a bypass request describing the swap (`details:` "expected `$STARTED_ON_BRANCH`, found `<current>` — another process or the CTO switched branches under this worktree"), and exit. Do NOT attempt to recover by switching back.
+   You will compare against this before every git mutation (add, push, merge) to detect branch swaps that bypassed the lock (e.g., the CTO checked out a different branch manually, or sync-recycle force-released the lock mid-run).
+
+   **On sentinel mismatch — the ONLY allowed sequence is:**
+   1. `mcp__agent-tracker__release_shared_resource({ resource_id })` — release the lock.
+   2. `mcp__agent-tracker__submit_bypass_request({ category: "scope", summary: "Worktree branch swap", details: "expected <STARTED_ON_BRANCH>, found <current> — another process or the CTO switched branches under this worktree" })`.
+   3. `mcp__agent-tracker__summarize_work({ status: "worktree_swap", ... })`.
+   4. Exit.
+
+   You MUST NOT: switch branches, `git cherry-pick`, `git reset`, `git stash`, `git restore`, `git revert`, force-push, or modify any git ref in any way. Cherry-picking a "lost" commit looks reasonable but doubles the destructive-overwrite risk — the wrong-branch commits may already be visible to siblings. Recovery is the global deputy-CTO's call via the bypass-request pipeline, not yours.
+
+   **BAD example (what a rogue PM did in xy session a5b87d5f — forbidden):**
+   ```
+   # Detected swap. "Recover" by cherry-picking my commits back.
+   git checkout feature/cto-X
+   git cherry-pick <my-stale-sha>     # FORBIDDEN
+   ```
+
+   **GOOD example:**
+   ```
+   mcp__agent-tracker__release_shared_resource({ resource_id: WORKTREE_PM_RESOURCE_ID })
+   mcp__agent-tracker__submit_bypass_request({ category: "scope", summary: "Worktree branch swap mid-run", details: "Started on feature/cto-X, observed feature/cto-Y after step 4" })
+   mcp__agent-tracker__summarize_work({ status: "worktree_swap", last_summary: "..." })
+   # exit
+   ```
 
 6. **Lock release is mandatory in every exit path.** Whenever you exit (success, failure, conflict, push refused, CI failure escalation, or sentinel mismatch), release before you call `summarize_work`:
 
