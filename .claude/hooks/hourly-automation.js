@@ -6743,6 +6743,34 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
   });
 
   // =========================================================================
+  // CTO INTERACTIVE WORKTREE POLLUTION RESCUE (Fix 7 — 15min cooldown)
+  // Scans every cto-interactive-* worktree recorded in
+  // automation-config.json ctoWorktreePaths. For each one whose owner
+  // session has been quiet >30min AND whose worktree is dirty, enqueues
+  // gentyr-internal-worktree-rescuer in the audit lane to salvage the
+  // orphaned work to a draft PR. Never auto-merges. The rescue lib
+  // dedups by worktree path (30-min window) so this and the
+  // session-briefing trigger don't double-spawn.
+  // Gate-exempt: the CTO doesn't have to do anything for orphan recovery.
+  // =========================================================================
+  await runIfDue('cto_worktree_pollution_rescue', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastCtoWorktreePollutionRescue',
+    configToggle: 'ctoWorktreePollutionRescueEnabled',
+    config,
+    label: 'CTO worktree pollution rescue',
+    fn: async () => {
+      try {
+        const mod = await import('./lib/cto-worktree-rescue.js');
+        const summary = await mod.scanAndRescue({ projectDir: PROJECT_DIR });
+        log(`CTO worktree pollution rescue: scanned=${summary.scanned} enqueued=${summary.enqueued} skipped=${summary.skipped} errors=${summary.errors}`);
+      } catch (err) {
+        log(`CTO worktree pollution rescue: ${err.message}`);
+      }
+    },
+  });
+
+  // =========================================================================
   // STALE ORPHAN WORKTREE CLEANUP (60min cooldown)
   // Removes worktrees where rescue cannot succeed: branch has no common
   // ancestor with origin/<base> (unrelated histories), OR the worktree is a
