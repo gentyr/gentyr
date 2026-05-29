@@ -1020,14 +1020,14 @@ function buildInteractiveBriefing() {
       const lockdownConfig = JSON.parse(fs.readFileSync(lockdownConfigPath, 'utf-8'));
       if (lockdownConfig.interactiveLockdownDisabled) {
         // Per-session worktree lookup. Multiple concurrent CTO sessions each have their
-        // own .claude/worktrees/cto-interactive-<sid8>/ entry. Prefer the current
-        // session's path; fall back to the legacy singular field.
+        // own .claude/worktrees/cto-interactive-<sid8>/ entry. The legacy singular
+        // `ctoWorktreePath` fallback has been removed (Fix 1) because it caused
+        // cross-session leaks where one session's path was rendered for another.
         const sessionIdRaw = SESSION_EVENT?.session_id || SESSION_EVENT?.sessionId || '';
         let wt = '';
         if (sessionIdRaw && lockdownConfig.ctoWorktreePaths && typeof lockdownConfig.ctoWorktreePaths === 'object') {
           wt = lockdownConfig.ctoWorktreePaths[sessionIdRaw] || '';
         }
-        if (!wt) wt = lockdownConfig.ctoWorktreePath || '';
         const wtExists = wt && fs.existsSync(wt);
         // Note: interactive-heartbeat.js (UserPromptSubmit) records this session's
         // liveness in .claude/state/interactive-sessions.json on the next prompt.
@@ -1040,7 +1040,8 @@ function buildInteractiveBriefing() {
           lines.push(`Worktree MISSING: ${wt} (recorded path no longer exists)`);
           lines.push(`Recreate it: git -C ${PROJECT_DIR} worktree add ${wt} preview`);
         } else {
-          lines.push('No worktree path recorded — toggle /lockdown on then /lockdown off to provision.');
+          lines.push('No worktree path recorded for this session — toggle /lockdown on then /lockdown off to reprovision.');
+          lines.push('(If another concurrent terminal already has lockdown off, it has its own per-session worktree; this session needs its own.)');
         }
         lines.push('');
         lines.push('=== YOUR JOB — run the 6-step pipeline directly in THIS session ===');
