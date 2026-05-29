@@ -336,6 +336,11 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/session-briefing.js",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/session-warning-triage.js",
+            "timeout": 5
           }
         ]
       }

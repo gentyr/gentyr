@@ -104,6 +104,7 @@ function doProtect(projectDir) {
     'cto-alignment-spec-review.js',
     'staging-lock-guard.js',
     'pr-base-guard.js',
+    'session-warning-triage.js',
     'release-completion-hook.js',
     'demo-local-guard.js',
     'bypass-pause-duration-guard.js',
