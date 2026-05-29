@@ -779,6 +779,42 @@ function staleHookCheck() {
   }
 }
 
+/**
+ * One-shot autonomous migration for Fix 1: strip the legacy singular
+ * `ctoWorktreePath` from `.claude/state/automation-config.json`.
+ *
+ * Background: pre-Fix-1, every `/lockdown off` wrote both
+ * `ctoWorktreePaths[sessionId]` (per-session map, correct) AND a back-compat
+ * singular `ctoWorktreePath` field. Concurrent CTO sessions overwrote each
+ * other's value in the singular, and downstream readers (session-briefing,
+ * interactive-heartbeat, interactive-lockdown-guard) fell back to it on
+ * registry miss — leaking one session's worktree path into another session's
+ * `cd` instructions. This caused the worktree hijacks observed in xy session
+ * a5b87d5f.
+ *
+ * Fix 1 removed all writes and reads of the singular. This migration cleans
+ * up any pre-Fix-1 value still sitting on disk. Idempotent — does nothing
+ * once the field is absent. Atomic via tmp+rename. Silent — never blocks
+ * SessionStart, never writes to stderr.
+ */
+function stripLegacyCtoWorktreePath() {
+  try {
+    const configPath = path.join(projectDir, '.claude', 'state', 'automation-config.json');
+    if (!fs.existsSync(configPath)) return;
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const config = JSON.parse(raw);
+    if (!('ctoWorktreePath' in config)) return;
+    delete config.ctoWorktreePath;
+    const tmp = configPath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + '\n');
+    fs.renameSync(tmp, configPath);
+    debugLog('[gentyr-sync] Fix 1 migration: stripped legacy ctoWorktreePath from automation-config.json');
+  } catch (_) {
+    // Unreadable / malformed config — silently no-op. The next /lockdown
+    // toggle will rewrite the file with a clean per-session entry.
+  }
+}
+
 try {
   const frameworkDir = resolveFrameworkDir(projectDir);
   if (!frameworkDir) silent();
@@ -788,6 +824,10 @@ try {
 
   // Check for stale hook file references in global settings
   staleHookCheck();
+
+  // Fix 1 migration: strip the legacy singular ctoWorktreePath that caused
+  // cross-session worktree hijacks (xy session a5b87d5f). Idempotent.
+  stripLegacyCtoWorktreePath();
 
   // Try state-based sync first; fall back to legacy check.
   if (!statBasedSync(frameworkDir)) {

@@ -44,7 +44,12 @@ async function main() {
   if (!sessionId) return fastExit();
 
   // Resolve the current session's CTO worktree path from automation-config.json.
-  // Prefer per-session map (new), fall back to legacy singular field.
+  // Uses ctoWorktreePaths[sessionId] EXCLUSIVELY — the legacy singular
+  // `ctoWorktreePath` fallback was removed (Fix 1). It was a silent
+  // cross-session leak: every concurrent CTO session overwrote the same
+  // field, and this hook would then record the WRONG worktree as live
+  // for this session, which made rescue/reaper protect the wrong worktree
+  // and ultimately mis-route this session's bash commands.
   const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   let ctoWorktreePath = null;
   try {
@@ -52,9 +57,6 @@ async function main() {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     if (config?.ctoWorktreePaths && typeof config.ctoWorktreePaths === 'object') {
       ctoWorktreePath = config.ctoWorktreePaths[sessionId] || null;
-    }
-    if (!ctoWorktreePath) {
-      ctoWorktreePath = config?.ctoWorktreePath || null;
     }
   } catch { /* no config yet */ }
 

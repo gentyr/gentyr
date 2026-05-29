@@ -379,9 +379,12 @@ async function main() {
     // Read CTO worktree path from config and verify the directory still exists.
     // When the recorded worktree was deleted, deny messages must NOT suggest cd-ing into it.
     //
-    // Per-session lookup: prefer ctoWorktreePaths[event.session_id] over the legacy
-    // singular ctoWorktreePath. Multiple concurrent CTO sessions each have their own
-    // worktree under .claude/worktrees/cto-interactive-<sid8>/.
+    // Per-session lookup ONLY: read ctoWorktreePaths[event.session_id].
+    // The legacy singular `ctoWorktreePath` fallback was removed (Fix 1) —
+    // it was a cross-session leak: concurrent CTO sessions overwrote each
+    // other's value, and this hook would then render the wrong worktree
+    // path in recovery messages, leading the CTO to cd into a sibling
+    // session's worktree.
     let ctoWorktreePath = '';
     let worktreeExists = false;
     let ctoWorktreePathsRegistry = null;
@@ -394,9 +397,6 @@ async function main() {
         if (eventSessionId) {
           ctoWorktreePath = config.ctoWorktreePaths[eventSessionId] || '';
         }
-      }
-      if (!ctoWorktreePath) {
-        ctoWorktreePath = config.ctoWorktreePath || '';
       }
       worktreeExists = !!ctoWorktreePath && fs.existsSync(ctoWorktreePath);
     } catch { /* non-fatal */ }

@@ -294,8 +294,15 @@ process.stdin.on('end', async () => {
                 if (ctoSessionId) {
                   config.ctoWorktreePaths[ctoSessionId] = worktreeResult.path;
                 }
-                // Maintain legacy singular field for back-compat readers (one release)
-                config.ctoWorktreePath = worktreeResult.path;
+                // Legacy singular `ctoWorktreePath` is intentionally NOT written.
+                // It was the silent cross-session leak that caused the xy
+                // session a5b87d5f worktree hijacks: concurrent CTO sessions
+                // overwrote each other's value, and fallback readers in
+                // session-briefing / interactive-heartbeat / interactive-lockdown-guard
+                // then routed one session's commands into another session's
+                // worktree. All readers now use ctoWorktreePaths[sessionId]
+                // exclusively. Existing stale entries are cleared by the
+                // one-shot migration in gentyr-sync.js.
                 // Re-write config now that we have the worktree path.
                 fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
                 // Update deferred_actions result with the resolved worktree path.
@@ -347,14 +354,14 @@ process.stdin.on('end', async () => {
               skipLegacyWrite = true;
             } else {
               // Re-enabling lockdown: clean up THIS session's worktree only.
-              // Resolves the session-specific path via ctoWorktreePaths[sessionId] then
-              // falls back to the legacy singular field. Other concurrent CTO sessions'
-              // worktrees are preserved.
+              // Resolves the session-specific path via ctoWorktreePaths[sessionId].
+              // No legacy-singular fallback — that field has been retired (see
+              // Fix 1 in plans/toasty-skipping-penguin.md). Other concurrent
+              // CTO sessions' worktrees are preserved by virtue of not being
+              // in this session's registry entry.
               let worktreePathToRemove = '';
               if (ctoSessionId && config.ctoWorktreePaths && config.ctoWorktreePaths[ctoSessionId]) {
                 worktreePathToRemove = config.ctoWorktreePaths[ctoSessionId];
-              } else if (config.ctoWorktreePath) {
-                worktreePathToRemove = config.ctoWorktreePath;
               }
 
               if (worktreePathToRemove) {
@@ -379,17 +386,15 @@ process.stdin.on('end', async () => {
                 delete config.ctoWorktreePaths[ctoSessionId];
               }
 
-              // Clear legacy singular field only if it matched the path we just removed,
-              // OR if no per-session entries remain (so we don't clobber another session).
+              // When no per-session entries remain, clear the lockdown-disabled
+              // flag so the next session-start re-enables it cleanly.
               const remainingSessions = Object.keys(config.ctoWorktreePaths || {});
               if (remainingSessions.length === 0) {
                 delete config.interactiveLockdownDisabled;
-                delete config.ctoWorktreePath;
-              } else if (config.ctoWorktreePath === worktreePathToRemove) {
-                // Reset legacy field to point at any remaining session's worktree so the
-                // legacy reader path is at least valid until those sessions also re-enable
-                config.ctoWorktreePath = config.ctoWorktreePaths[remainingSessions[0]];
               }
+              // Legacy singular `ctoWorktreePath` is no longer touched here —
+              // the migration in gentyr-sync.js strips stale entries on next
+              // SessionStart.
 
               // Clear the liveness entry for this session
               if (ctoSessionId) {
