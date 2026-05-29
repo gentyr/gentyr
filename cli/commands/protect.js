@@ -105,6 +105,7 @@ function doProtect(projectDir) {
     'staging-lock-guard.js',
     'pr-base-guard.js',
     'session-warning-triage.js',
+    'cto-turn-worktree-postuse.js',
     'release-completion-hook.js',
     'demo-local-guard.js',
     'bypass-pause-duration-guard.js',
