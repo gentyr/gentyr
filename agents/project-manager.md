@@ -214,7 +214,7 @@ After pushing but BEFORE creating the PR, run the pre-merge quality gate:
 6. Create PR: `gh pr create --base preview --head "$(git branch --show-current)" --title "<title>" --body "<summary>"`
 7. **Wait for CI checks (CI Fix Loop)**:
    ```bash
-   gh pr checks <number> --watch --fail-on-fail
+   gh pr checks <number> --watch --fail-fast
    ```
    - If CI passes: proceed to merge (step 8)
    - If no required checks configured (command exits immediately): proceed to merge
@@ -223,7 +223,7 @@ After pushing but BEFORE creating the PR, run the pre-merge quality gate:
      1. Run `gh pr checks <number>` to identify which checks failed
      2. Diagnose each failure (read the Actions log via `gh run view <run-id> --log-failed`)
      3. Fix the failing code, stage specific files, and push a fix commit
-     4. Wait for CI to re-run: `gh pr checks <number> --watch --fail-on-fail`
+     4. Wait for CI to re-run: `gh pr checks <number> --watch --fail-fast`
      5. If CI still fails, repeat from step 1 (max 5 total iterations)
      6. After 5 failed attempts, escalate with "I'm stuck" via `mcp__agent-reports__report_to_deputy_cto`:
         - Which checks are still failing
@@ -300,7 +300,7 @@ The project-manager handles git operations (commit, push, PR, merge). For deploy
 When a staging reactive reviewer identifies an issue and a code-writer fixes it, YOU are responsible for the promotion chain:
 
 1. The code-writer commits the fix to a feature branch in a worktree
-2. You create a PR from the feature branch to `preview`, wait for CI (`gh pr checks <number> --watch --fail-on-fail`), and self-merge it
+2. You create a PR from the feature branch to `preview`, wait for CI (`gh pr checks <number> --watch --fail-fast`), and self-merge it
 3. **Immediately after**, create a second PR from `preview` to `staging`, wait for CI, and self-merge it
 4. This ensures staging fixes propagate quickly without waiting for batch promotions
 
@@ -320,7 +320,7 @@ When `gh pr checks` fails on a production release PR (staging → main):
 1. Run `gh pr checks <number>` to identify which checks failed
 2. Diagnose each failure (read the Actions log via `gh run view <run-id> --log-failed`)
 3. Push a fix commit addressing the failures
-4. Wait for CI to re-run: `gh pr checks <number> --watch --fail-on-fail`
+4. Wait for CI to re-run: `gh pr checks <number> --watch --fail-fast`
 5. If CI still fails, repeat steps 1-4 (max 5 iterations)
 6. After 5 failed attempts, report to CTO via `mcp__agent-reports__report_to_deputy_cto` with:
    - Which checks are still failing
@@ -392,7 +392,7 @@ git log --oneline origin/preview..<branch-name>
 # 2. If it has work: push it, create PR, wait for CI, self-merge
 git push -u origin <branch-name>
 gh pr create --base preview --head <branch-name> --title "Cleanup: merge stale <branch-name>"
-gh pr checks <number> --watch --fail-on-fail
+gh pr checks <number> --watch --fail-fast
 gh pr merge <number> --squash --delete-branch
 
 # 3. If it has no unique work: delete it
@@ -442,7 +442,7 @@ git rebase origin/preview
 git push --force-with-lease origin HEAD
 
 # 4. Wait for CI and retry the merge
-gh pr checks <number> --watch --fail-on-fail
+gh pr checks <number> --watch --fail-fast
 gh pr merge <number> --squash --delete-branch
 ```
 

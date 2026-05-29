@@ -484,7 +484,7 @@ git add <files>
 git commit -m "..."
 git push -u origin HEAD
 gh pr create --base preview --head <branch> --title "..."
-gh pr checks <num> --watch --fail-on-fail
+gh pr checks <num> --watch --fail-fast
 gh pr merge <num> --squash --delete-branch
 ```
 Project-manager IS safe IF invoked with `cwd:` inside `cto-interactive-*` — it self-merges without removing the worktree.
