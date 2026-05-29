@@ -6921,6 +6921,50 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
   });
 
   // =========================================================================
+  // CTO PER-TURN WORKTREE CLEANUP (Fix 9, 10min cooldown)
+  // Removes cto-interactive-*-<turn> worktrees whose PR has merged.
+  // The plan-merge-tracker.js PostToolUse hook marks pr_merged=true in
+  // the ledger; this pass actually removes the directories. Skips ROOT
+  // cto-interactive worktrees (lifetime = session, owned by lockdown
+  // state). Best-effort, fail-open.
+  // =========================================================================
+  await runIfDue('cto_turn_worktree_cleanup', {
+    state, now, intervals: config.intervals,
+    stateKey: 'lastCtoTurnWorktreeCleanup',
+    configToggle: undefined,
+    config,
+    label: 'CTO per-turn worktree cleanup',
+    fn: async () => {
+      try {
+        const { findMergedTurnWorktrees, isTurnWorktreeBasename } =
+          await import('./lib/cto-turn-worktree.js');
+        const path = (await import('path')).default;
+        const merged = findMergedTurnWorktrees();
+        if (!merged.length) {
+          log('CTO per-turn cleanup: no merged turn worktrees.');
+          return;
+        }
+        let removed = 0;
+        for (const r of merged) {
+          if (!r.worktreePath) continue;
+          if (!isTurnWorktreeBasename(path.basename(r.worktreePath))) continue;
+          if (!r.branch) continue;
+          try {
+            removeWorktree(r.branch, { force: true });
+            log(`CTO per-turn cleanup: removed ${r.worktreePath}`);
+            removed++;
+          } catch (err) {
+            log(`CTO per-turn cleanup: skip ${r.worktreePath} (${err.message})`);
+          }
+        }
+        log(`CTO per-turn cleanup: removed ${removed}/${merged.length} merged turn worktree(s).`);
+      } catch (err) {
+        log(`CTO per-turn cleanup: ${err.message}`);
+      }
+    },
+  });
+
+  // =========================================================================
   // STALE WORKTREE REAPER (60min cooldown)
   // Removes worktrees older than 4 hours with no active process
   // =========================================================================

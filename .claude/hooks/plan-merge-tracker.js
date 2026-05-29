@@ -13,6 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { markTurnWorktreePrMerged } from './lib/cto-turn-worktree.js';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
@@ -140,6 +141,17 @@ async function main() {
   }
 
   const prNumber = parseInt(prMatch[1], 10);
+
+  // Fix 9: also mark per-turn CTO worktrees as PR-merged so the cleanup
+  // automation can prune them. This fires regardless of whether the PR is
+  // plan-linked. Best-effort; failure is non-fatal.
+  try {
+    const ghOut = execFileSync('gh', ['pr', 'view', String(prNumber), '--json', 'headRefName'], {
+      cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const headRefName = JSON.parse(ghOut)?.headRefName;
+    if (headRefName) markTurnWorktreePrMerged(headRefName);
+  } catch { /* non-fatal */ }
 
   try {
     const db = new Database(PLANS_DB_PATH);

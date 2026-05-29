@@ -1091,6 +1091,15 @@ function buildInteractiveBriefing() {
           lines.push('(If another concurrent terminal already has lockdown off, it has its own per-session worktree; this session needs its own.)');
         }
         lines.push('');
+        lines.push('=== PER-TURN WORKTREE MODEL (Fix 9) ===');
+        lines.push('The worktree shown above is the SESSION-ROOT cto-interactive worktree (one per session, lifetime = the session). For each new pipeline turn, the architectural ideal is a FRESH `cto-interactive-<sid8>-<turn>` worktree off the base branch so concurrent turns can\'t collide and orphan state can\'t accumulate across turns.');
+        lines.push('');
+        lines.push('Right now: the lib at .claude/hooks/lib/cto-turn-worktree.js exposes the primitives — `computeTurnId(sessionId, seed)`, `getActiveTurnWorktree(sessionId)`, `recordTurnWorktree(...)`, `markTurnWorktreePrMerged(branch)`. The ledger lives at .claude/state/cto-turn-worktrees.jsonl. The plan-merge-tracker.js PostToolUse hook auto-marks `pr_merged=true` when it detects `gh pr merge` of a turn branch, and the `cto_turn_worktree_cleanup` automation block (10-min cooldown) auto-removes merged turn worktrees.');
+        lines.push('');
+        lines.push('Practical guidance for THIS turn: pass cwd=<session-root worktree> to all six pipeline steps so they share state. If the prior turn\'s state is still mixed in the root worktree, prefer provisioning a fresh per-turn worktree first:');
+        lines.push(`  git -C ${PROJECT_DIR} worktree add -b feature/cto-<topic> .claude/worktrees/cto-interactive-fresh-<topic> origin/preview`);
+        lines.push('and pass that path as cwd to the six steps. After PR merge, the cleanup automation prunes it autonomously.');
+        lines.push('');
         lines.push('=== YOUR JOB — run the 6-step pipeline directly in THIS session ===');
         lines.push('');
         lines.push('Run the standard sequence here, watching each step land in the worktree above. Each Task call below produces output you read in this session before launching the next:');
