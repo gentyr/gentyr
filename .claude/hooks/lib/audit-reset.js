@@ -297,7 +297,11 @@ export async function resetPtAudit({ db, taskId, reason, projectDir, todoDbPath,
   const auth = verifyResetAuditIdentity({ taskType: 'persistent', taskId, projectDir });
   if (!auth.allowed) return { error: `unauthorized: ${auth.reason}` };
 
-  const task = db.prepare('SELECT id, title, status, parent_todo_task_id, success_criteria, verification_method FROM persistent_tasks WHERE id = ?').get(taskId);
+  // NOTE: persistent_tasks stores criteria under gate_* columns (gate_success_criteria /
+  // gate_verification_method). The pt_audits table uses the bare success_criteria /
+  // verification_method column names. Selecting the bare names here threw
+  // "no such column: success_criteria" and broke reset_pt_audit entirely.
+  const task = db.prepare('SELECT id, title, status, parent_todo_task_id, gate_success_criteria, gate_verification_method FROM persistent_tasks WHERE id = ?').get(taskId);
   if (!task) return { error: `persistent task not found: ${taskId}` };
 
   const priorAudit = db.prepare('SELECT id, verdict, attempt_number FROM pt_audits WHERE persistent_task_id = ? ORDER BY attempt_number DESC LIMIT 1').get(taskId);
@@ -324,7 +328,7 @@ export async function resetPtAudit({ db, taskId, reason, projectDir, todoDbPath,
       db.prepare("UPDATE persistent_tasks SET status = 'pending_audit' WHERE id = ?").run(taskId);
     }
     db.prepare("INSERT INTO pt_audits (id, persistent_task_id, success_criteria, verification_method, requested_at, attempt_number) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(newAuditId, taskId, task.success_criteria || '', task.verification_method || '', ts, newAttempt);
+      .run(newAuditId, taskId, task.gate_success_criteria || '', task.gate_verification_method || '', ts, newAttempt);
   });
   mutate();
 
@@ -354,8 +358,8 @@ export async function resetPtAudit({ db, taskId, reason, projectDir, todoDbPath,
       taskType: 'persistent',
       taskId,
       taskTitle: task.title,
-      criteria: task.success_criteria || '',
-      method: task.verification_method || '',
+      criteria: task.gate_success_criteria || '',
+      method: task.gate_verification_method || '',
       projectDir,
     });
     if (typeof spawned === 'string') newQueueId = spawned;
