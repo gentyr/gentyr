@@ -32,13 +32,11 @@ const QUEUE_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'session-queue.
 const AUTOMATION_RATE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'automation-rate.json');
 // Legacy path kept for reference only
 const FOCUS_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'focus-mode.json');
-const LOCAL_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'local-mode.json');
 const DEBATE_MODE_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'debate-mode.json');
 const USER_PROMPTS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'user-prompts.db');
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
 const TODO_DB_PATH = path.join(PROJECT_DIR, '.claude', 'todo.db');
 const SESSION_COMMS_LOG = path.join(PROJECT_DIR, '.claude', 'state', 'session-comms.log');
-const BYPASS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
 const RELEASE_LEDGER_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'release-ledger.db');
 
 // Lazy SQLite
@@ -153,17 +151,6 @@ function getFocusModeState() {
     return { enabled: true, enabledAt: rateState.set_at, enabledBy: rateState.set_by };
   }
   return null;
-}
-
-function getLocalModeState() {
-  try {
-    if (!fs.existsSync(LOCAL_MODE_PATH)) return null;
-    const state = JSON.parse(fs.readFileSync(LOCAL_MODE_PATH, 'utf8'));
-    if (state.enabled === true) return state;
-    return null;
-  } catch (_) {
-    return null;
-  }
 }
 
 /**
@@ -400,168 +387,6 @@ function getTaskCounts() {
 }
 
 // ---------------------------------------------------------------------------
-// Data gathering: blocking queue
-// ---------------------------------------------------------------------------
-
-function getBlockingQueue() {
-  if (!Database) return null;
-  const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-  if (!fs.existsSync(dbPath)) return null;
-  try {
-    const db = new Database(dbPath, { readonly: true });
-    db.pragma('busy_timeout = 1000');
-    // Check if blocking_queue table exists
-    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocking_queue'").get();
-    if (!tableExists) { db.close(); return null; }
-    const items = db.prepare(
-      "SELECT id, blocking_level, summary, plan_id, plan_title, persistent_task_id, plan_task_id, impact_assessment, created_at, bypass_request_id FROM blocking_queue WHERE status = 'active' ORDER BY CASE blocking_level WHEN 'plan' THEN 0 WHEN 'persistent_task' THEN 1 WHEN 'task' THEN 2 END, created_at ASC"
-    ).all();
-    db.close();
-    return items.length > 0 ? items : null;
-  } catch (_) {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Data gathering: pending CTO bypass requests
-// ---------------------------------------------------------------------------
-
-function getPendingBypassRequests() {
-  if (!Database || !fs.existsSync(BYPASS_DB_PATH)) return null;
-  try {
-    const db = new Database(BYPASS_DB_PATH, { readonly: true });
-    db.pragma('busy_timeout = 1000');
-
-    // Pull real (agent-authored) requests and count synthesized (framework-
-    // generated quota_exhaustion) requests separately. Synthesized rows are
-    // FYI-only: quota-recovery-daemon auto-resolves them when the OAuth
-    // account's quota window clears, so they must not pollute the CTO triage
-    // list. Try the synthesized-aware query first; fall back through legacy
-    // schemas so old DBs continue to work until agent-tracker has migrated.
-    let requests;
-    let synthesizedCount = 0;
-    try {
-      requests = db.prepare(
-        "SELECT id, task_type, task_id, task_title, category, summary, created_at, deputy_escalated, synthesized FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL AND COALESCE(synthesized, 0) = 0 ORDER BY created_at ASC"
-      ).all();
-      const row = db.prepare(
-        "SELECT COUNT(*) AS cnt FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL AND synthesized = 1"
-      ).get();
-      synthesizedCount = (row && row.cnt) || 0;
-    } catch (_) {
-      try {
-        requests = db.prepare(
-          "SELECT id, task_type, task_id, task_title, category, summary, created_at, deputy_escalated FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
-        ).all();
-      } catch (_) {
-        requests = db.prepare(
-          "SELECT id, task_type, task_id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
-        ).all();
-      }
-    }
-    db.close();
-
-    const realCount = requests ? requests.length : 0;
-    if (realCount === 0 && synthesizedCount === 0) return null;
-
-    // Grace period: if global monitor is active, hide real requests < 5 min
-    // old (the monitor gets a signal and has time to handle them first).
-    // Always show requests >= 5 min old, or explicitly escalated by the
-    // monitor. Synthesized count is never grace-filtered — it is informational.
-    const monitorState = getGlobalMonitorState();
-    const monitorActive = monitorState && (monitorState.state === 'active' || monitorState.state === 'active_no_pid');
-
-    if (monitorActive && requests && requests.length > 0) {
-      const GRACE_PERIOD_MS = 5 * 60 * 1000;
-      const now = Date.now();
-      requests = requests.filter(req => {
-        if (req.deputy_escalated === 1) return true;
-        const age = now - new Date(req.created_at).getTime();
-        return age >= GRACE_PERIOD_MS;
-      });
-    }
-
-    if ((!requests || requests.length === 0) && synthesizedCount === 0) return null;
-
-    // Attach synthesizedCount to the array so the briefing renderer and the
-    // CTO notification hook can show "N quota auto-resolving" without a
-    // second DB round-trip. Falsy when zero.
-    const result = requests || [];
-    if (synthesizedCount > 0) result.synthesizedCount = synthesizedCount;
-    return result;
-  } catch (_) {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Data gathering: overdue bypass auto-resumes (FIX-23 / FIX-33)
-// SLA breach: pending bypass with auto_resume_at in the past. This is the
-// canonical "plan-manager stuck past CTO approval window" detection. Surfaced
-// at the absolute top of the briefing so the CTO sees it before anything else.
-// ---------------------------------------------------------------------------
-
-function getOverdueBypasses() {
-  if (!Database || !fs.existsSync(BYPASS_DB_PATH)) return null;
-  try {
-    const db = new Database(BYPASS_DB_PATH, { readonly: true });
-    db.pragma('busy_timeout = 1000');
-    let rows;
-    try {
-      // Use datetime() coercion so the same lex-comparison bug that caused
-      // FIX-1 cannot quietly hide SLA breaches from the briefing.
-      rows = db.prepare(
-        `SELECT id, task_type, task_id, task_title, summary, auto_resume_at,
-                pause_duration_minutes, created_at
-         FROM bypass_requests
-         WHERE status = 'pending'
-           AND auto_resume_at IS NOT NULL
-           AND datetime(auto_resume_at) <= datetime('now')
-         ORDER BY auto_resume_at ASC`
-      ).all();
-    } catch (_) {
-      rows = [];
-    }
-    db.close();
-    if (!rows || rows.length === 0) return null;
-    return rows.map(r => {
-      let overdueMin = 0;
-      try {
-        overdueMin = Math.round((Date.now() - new Date(r.auto_resume_at).getTime()) / 60000);
-      } catch {}
-      return { ...r, overdue_minutes: overdueMin };
-    });
-  } catch (_) {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Data gathering: SLA breach alerts written by bypass_sla_enforcer (FIX-33)
-// These are RESOLVED SLA breaches — the enforcer already auto-resumed the
-// affected task, but the CTO needs visibility that infrastructure failed.
-// ---------------------------------------------------------------------------
-
-function getSlaBreachAlerts() {
-  const alertPath = path.join(PROJECT_DIR, '.claude', 'state', 'sla-breach-alerts.json');
-  if (!fs.existsSync(alertPath)) return null;
-  try {
-    const raw = fs.readFileSync(alertPath, 'utf8');
-    const alerts = JSON.parse(raw);
-    if (!Array.isArray(alerts) || alerts.length === 0) return null;
-    // Only show alerts from the last 24h to avoid stale noise.
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const recent = alerts.filter(a => {
-      try { return new Date(a.ts).getTime() >= cutoff; } catch { return false; }
-    });
-    return recent.length > 0 ? recent : null;
-  } catch (_) {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Data gathering: focus-mode state (FIX-21)
 // Surfaces when focus mode is on so the CTO knows cooldowns are rate-multiplied
 // and plans will progress slowly.
@@ -583,28 +408,6 @@ function getFocusModeStateForBriefing() {
       enabledBy: state.enabledBy,
       ageDays,
     };
-  } catch (_) {
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Data gathering: pending deferred protected actions
-// ---------------------------------------------------------------------------
-
-function getPendingDeferredActions() {
-  if (!Database || !fs.existsSync(BYPASS_DB_PATH)) return null;
-  try {
-    const db = new Database(BYPASS_DB_PATH, { readonly: true });
-    db.pragma('busy_timeout = 1000');
-    // Check if deferred_actions table exists
-    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deferred_actions'").get();
-    if (!tableExists) { db.close(); return null; }
-    const actions = db.prepare(
-      "SELECT id, server, tool, args, code, phrase, requester_agent_id, created_at FROM deferred_actions WHERE status = 'pending' ORDER BY created_at ASC"
-    ).all();
-    db.close();
-    return actions.length > 0 ? actions : null;
   } catch (_) {
     return null;
   }
@@ -720,7 +523,6 @@ function getPersistentTaskState() {
         if (evt?.details) {
           const d = JSON.parse(evt.details);
           pauseReason = d.reason === 'crash_loop_circuit_breaker' ? 'crash-loop'
-            : d.reason === 'cto_bypass_request' ? 'bypass-request'
             : 'manual';
         }
       } catch { /* non-fatal */ }
@@ -902,57 +704,6 @@ function getGitActivity(hours = 2) {
 function buildInteractiveBriefing() {
   const lines = ['[DEPUTY-CTO SESSION BRIEFING]', ''];
 
-  // ⚠ SLA BREACH — overdue bypass auto-resumes (FIX-23/FIX-33)
-  // Surfaced at the absolute top, before everything else, so the CTO sees it
-  // on first interactive session after any plan/persistent task is stuck past
-  // its auto_resume_at deadline. This is the canonical "plan-manager paused
-  // >1h without my approval" detector.
-  const overdueBypasses = getOverdueBypasses();
-  if (overdueBypasses && overdueBypasses.length > 0) {
-    lines.push('=== ⚠ SLA BREACH — BYPASS AUTO-RESUME OVERDUE ===');
-    lines.push('');
-    lines.push('One or more pending bypass requests are past their auto_resume_at deadline.');
-    lines.push('This means a plan/persistent task is paused PAST the CTO-approval window.');
-    lines.push('');
-    for (const r of overdueBypasses) {
-      lines.push(`  • ${r.task_title}`);
-      lines.push(`    id=${r.id} type=${r.task_type} task=${r.task_id}`);
-      lines.push(`    auto_resume_at=${r.auto_resume_at} — OVERDUE by ${r.overdue_minutes}m`);
-      lines.push(`    summary: ${(r.summary || '').slice(0, 200)}`);
-      lines.push('    Likely causes:');
-      lines.push('      - timed_pause_auto_resume SQL bug (datetime() coercion) — see FIX-1');
-      lines.push('      - hourly-automation wedged (no execution watchdog) — see FIX-16');
-      lines.push('      - both auto-resume paths failed simultaneously');
-      lines.push('    Recovery:');
-      if (r.task_type === 'persistent') {
-        lines.push(`      mcp__persistent-task__resume_persistent_task({ id: "${r.task_id}" })`);
-      } else {
-        lines.push(`      mcp__agent-tracker__resolve_bypass_request({ request_id: "${r.id}", decision: "approved", context: "..." })`);
-      }
-      lines.push('    The bypass_sla_enforcer block in hourly-automation.js (FIX-31)');
-      lines.push('    should auto-resume this within 1 minute — if it has not, the entire');
-      lines.push('    hourly-automation cycle may be wedged. Check `.claude/hourly-automation.log`.');
-      lines.push('');
-    }
-    lines.push('=================================================');
-    lines.push('');
-  }
-
-  // SLA breach alert log (FIX-33): resolved breaches in the last 24h. These
-  // were already auto-resumed by bypass_sla_enforcer, but the CTO needs to
-  // know they happened so any pattern of recurring breaches is visible.
-  const slaAlerts = getSlaBreachAlerts();
-  if (slaAlerts && slaAlerts.length > 0) {
-    lines.push(`[SLA BREACH HISTORY] ${slaAlerts.length} auto-recovered breach(es) in the last 24h.`);
-    for (const a of slaAlerts.slice(0, 3)) {
-      lines.push(`  - ${a.ts}: ${a.task_title} overdue ${a.overdue_minutes}m (bypass=${a.bypass_request_id})`);
-    }
-    if (slaAlerts.length > 3) lines.push(`  ... and ${slaAlerts.length - 3} more (see .claude/state/sla-breach-alerts.json)`);
-    lines.push('  Investigate the root cause — repeated SLA breaches mean the primary');
-    lines.push('  auto-resume infrastructure (timed_pause_auto_resume) is failing.');
-    lines.push('');
-  }
-
   // Focus mode visibility (FIX-21): the user had focus mode on for 20+ days
   // without realizing cooldowns were inflated 143×. Surface this prominently.
   const focusState = getFocusModeStateForBriefing();
@@ -982,13 +733,6 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
-  // Local mode notice
-  const localMode = getLocalModeState();
-  if (localMode) {
-    lines.push('[LOCAL MODE] Remote servers excluded. Local tooling only. Run /local-mode to disable.');
-    lines.push('');
-  }
-
   // Debate mode notice — only shown when explicitly disabled (default is on,
   // so silent in the common case). When off, the investigator's adversarial-
   // debate flow is blocked by debate-mode-guard.js.
@@ -1014,175 +758,9 @@ function buildInteractiveBriefing() {
     lines.push('');
   }
 
-  // Lockdown-off worktree workflow notice
-  try {
-    const lockdownConfigPath = path.join(PROJECT_DIR, '.claude', 'state', 'automation-config.json');
-    if (fs.existsSync(lockdownConfigPath)) {
-      const lockdownConfig = JSON.parse(fs.readFileSync(lockdownConfigPath, 'utf-8'));
-      if (lockdownConfig.interactiveLockdownDisabled) {
-        // Per-session worktree lookup. Multiple concurrent CTO sessions each have their
-        // own .claude/worktrees/cto-interactive-<sid8>/ entry. The legacy singular
-        // `ctoWorktreePath` fallback has been removed (Fix 1) because it caused
-        // cross-session leaks where one session's path was rendered for another.
-        const sessionIdRaw = SESSION_EVENT?.session_id || SESSION_EVENT?.sessionId || '';
-        let wt = '';
-        if (sessionIdRaw && lockdownConfig.ctoWorktreePaths && typeof lockdownConfig.ctoWorktreePaths === 'object') {
-          wt = lockdownConfig.ctoWorktreePaths[sessionIdRaw] || '';
-        }
-        const wtExists = wt && fs.existsSync(wt);
-        // Note: interactive-heartbeat.js (UserPromptSubmit) records this session's
-        // liveness in .claude/state/interactive-sessions.json on the next prompt.
-        // Session-briefing runs at SessionStart which is sync, so we skip the write
-        // here and rely on the heartbeat (which fires within seconds of session start).
-        lines.push('=== LOCKDOWN OFF — IN-SESSION PIPELINE ===');
-        if (wtExists) {
-          lines.push(`Worktree: ${wt} (exists)`);
-          // Fix 7 — autonomous pollution detection. If the CTO worktree has
-          // staged/modified work AND its HEAD is on a branch other than the
-          // one Fix 2 pinned, this is leftover from a prior session and
-          // should be surfaced prominently so the agent does not silently
-          // commit on top of it (the xy "feature/rebrand-svgs-readmes 6
-          // staged files" failure mode).
-          // Fix 7 — autonomous pollution detection + rescue.
-          //
-          // detectPollution() reads `git status` + worktree-meta.json (Fix 2)
-          // and returns a structured polluted/clean result. When polluted we
-          // also enqueue gentyr-internal-worktree-rescuer in the audit lane;
-          // it salvages the work to a draft PR (never auto-merges).
-          //
-          // The whole thing is fire-and-forget — we never block the briefing
-          // on detection or enqueue failures.
-          try {
-            const detection = _detectPollution(wt);
-            if (detection.polluted) {
-              lines.push('');
-              lines.push('=== WORKTREE NEEDS ATTENTION (Fix 7 autonomous rescue) ===');
-              if (detection.pinnedBranch) lines.push(`Pinned branch:  ${detection.pinnedBranch}`);
-              lines.push(`Current branch: ${detection.currentBranch}`);
-              lines.push(`Staged: ${detection.staged}, Modified: ${detection.modified}, Untracked: ${detection.untracked}`);
-              lines.push('');
-              lines.push('GENTYR detected orphaned work in this worktree (uncommitted/staged from a');
-              lines.push('previous session). A `gentyr-internal-worktree-rescuer` agent has been');
-              lines.push('enqueued in the audit lane — it will salvage the work to a DRAFT PR for');
-              lines.push('your later review (never auto-merges, never force-pushes).');
-              lines.push('');
-              lines.push('DO NOT commit on top of this work — it would mix two unrelated features into');
-              lines.push('one PR. Either wait for the rescuer to finish (check /persistent-tasks or');
-              lines.push('the audit lane in /session-queue) or provision a fresh worktree for this turn:');
-              lines.push(`  cd ${PROJECT_DIR}`);
-              lines.push('  git worktree add -b feature/cto-<topic> .claude/worktrees/cto-interactive-fresh-<topic> origin/main');
-              lines.push('  cd .claude/worktrees/cto-interactive-fresh-<topic>');
-              // Fire-and-forget the rescuer enqueue. Do NOT await — briefing
-              // must not block. Any failure is swallowed and the CTO still
-              // sees the WORKTREE NEEDS ATTENTION block above.
-              _enqueueRescuer({
-                projectDir: PROJECT_DIR,
-                worktreePath: wt,
-                detection,
-                source: 'session-briefing:cto_worktree_pollution_rescue',
-              }).catch(() => { /* non-fatal */ });
-            }
-          } catch { /* non-fatal — never block briefing on detection failure */ }
-        } else if (wt) {
-          lines.push(`Worktree MISSING: ${wt} (recorded path no longer exists)`);
-          lines.push(`Recreate it: git -C ${PROJECT_DIR} worktree add ${wt} preview`);
-        } else {
-          lines.push('No worktree path recorded for this session — toggle /lockdown on then /lockdown off to reprovision.');
-          lines.push('(If another concurrent terminal already has lockdown off, it has its own per-session worktree; this session needs its own.)');
-        }
-        lines.push('');
-        lines.push('=== PER-TURN WORKTREE MODEL (Fix 9) ===');
-        lines.push('The worktree shown above is the SESSION-ROOT cto-interactive worktree (one per session, lifetime = the session). For each new pipeline turn, the architectural ideal is a FRESH `cto-interactive-<sid8>-<turn>` worktree off the base branch so concurrent turns can\'t collide and orphan state can\'t accumulate across turns.');
-        lines.push('');
-        lines.push('Right now: the lib at .claude/hooks/lib/cto-turn-worktree.js exposes the primitives — `computeTurnId(sessionId, seed)`, `getActiveTurnWorktree(sessionId)`, `recordTurnWorktree(...)`, `markTurnWorktreePrMerged(branch)`. The ledger lives at .claude/state/cto-turn-worktrees.jsonl. The plan-merge-tracker.js PostToolUse hook auto-marks `pr_merged=true` when it detects `gh pr merge` of a turn branch, and the `cto_turn_worktree_cleanup` automation block (10-min cooldown) auto-removes merged turn worktrees.');
-        lines.push('');
-        lines.push('Practical guidance for THIS turn: pass cwd=<session-root worktree> to all six pipeline steps so they share state. If the prior turn\'s state is still mixed in the root worktree, prefer provisioning a fresh per-turn worktree first:');
-        lines.push(`  git -C ${PROJECT_DIR} worktree add -b feature/cto-<topic> .claude/worktrees/cto-interactive-fresh-<topic> origin/preview`);
-        lines.push('and pass that path as cwd to the six steps. After PR merge, the cleanup automation prunes it autonomously.');
-        lines.push('');
-        lines.push('=== YOUR JOB — run the 6-step pipeline directly in THIS session ===');
-        lines.push('');
-        lines.push('Run the standard sequence here, watching each step land in the worktree above. Each Task call below produces output you read in this session before launching the next:');
-        lines.push('');
-        lines.push('  1. Task(subagent_type=\'investigator\',    cwd=<worktree>, prompt: <research question>)');
-        lines.push('  2. Task(subagent_type=\'code-writer\',     cwd=<worktree>, prompt: <implementation>)');
-        lines.push('  3. Task(subagent_type=\'test-writer\',     cwd=<worktree>, prompt: <test coverage>)');
-        lines.push('  4. Task(subagent_type=\'code-reviewer\',   cwd=<worktree>, prompt: <review focus>)');
-        lines.push('  5. Task(subagent_type=\'user-alignment\',  cwd=<worktree>, prompt: <intent check>)');
-        lines.push('  6. Task(subagent_type=\'project-manager\', cwd=<worktree>, prompt: <commit, push, PR, wait for CI, self-merge to preview>)');
-        lines.push('');
-        lines.push('ONE PIPELINE AT A TIME — concurrency model:');
-        lines.push('  - SUPPORTED: multiple terminals (separate `claude` sessions) each running their own pipeline. PR #709 gives each session its own cto-interactive-<sid8> worktree; they are fully isolated.');
-        lines.push('  - NOT SUPPORTED: fanning out parallel Tasks A/B/C in THIS session. They all share the cwd above, and step 6 (project-manager) will collide on `git checkout -b feature/X` / `merge` / branch-switch. The project-manager defensively acquires a worktree lock at step 0 and the second concurrent pipeline will refuse with a worktree-lock-busy error.');
-        lines.push('  - If you want parallel work, open another `claude` terminal. If you want async work (no babysitting), use /spawn-tasks (see below).');
-        lines.push('');
-        lines.push('Critical conventions you MUST follow:');
-        lines.push('  - DO NOT use isolation: "worktree" — that creates a fresh worktree per Task call and breaks state flow between steps.');
-        lines.push('  - Pass cwd=<the worktree path shown above> on EVERY Task call so all six steps share the same working tree.');
-        lines.push('  - Only step 6 (project-manager) commits/pushes/PRs/merges. Steps 1–5 must not commit.');
-        lines.push('  - After the merge to preview lands, pnpm demo:preview in the main tree hot-reloads automatically (preview-watcher pulls origin/preview into the main tree every 30s).');
-        lines.push('  - Skip steps when justified (e.g., investigator-only for research). The only invariant: if files changed, step 6 runs last.');
-        lines.push('');
-        lines.push('STILL BLOCKED when lockdown is off (these guards are independent of lockdown state):');
-        lines.push('  - Your own Write/Edit/NotebookEdit to main-tree files (only worktree, .claude/, ~/.claude/ allowed)');
-        lines.push('  - Your own Bash git mutations in main tree (stash, checkout, switch, merge, pull, rebase, reset, clean, add, commit, push, worktree remove)');
-        lines.push('  - --no-verify, --no-gpg-sign, core.hooksPath writes (block-no-verify guard)');
-        lines.push('  - Main-tree commits on protected branches main/staging/preview (main-tree-commit-guard)');
-        lines.push('');
-        lines.push('=== RESCUING COMMITTED WORK STUCK IN THE MAIN TREE ===');
-        lines.push('');
-        lines.push('If you (or a prior session) have committed work to a feature branch IN THE MAIN TREE and now need to ship it, the main-tree git-mutation guard will block `git push` from the main-tree cwd. This is INDEPENDENT of lockdown state — toggling /lockdown does NOT unblock it. Three correct recovery paths:');
-        lines.push('');
-        lines.push('  1. Push the named branch from inside a worktree cwd (the branch ref is shared in .git/):');
-        if (wtExists) {
-          lines.push(`       cd ${wt}`);
-        } else {
-          lines.push(`       cd <any .claude/worktrees/* dir>`);
-        }
-        lines.push('       git push origin <branch-name>');
-        lines.push('       gh pr create --base preview --head <branch-name> --title "..." --body "..."');
-        lines.push('       gh pr checks <num> --watch --fail-fast');
-        lines.push('       gh pr merge <num> --squash --delete-branch');
-        lines.push('');
-        lines.push('  2. For UNCOMMITTED main-tree work: call mcp__agent-tracker__repair_main_tree_drift({ dry_run: true }) to preview, then drop the dry_run flag to enqueue a rescue agent. It salvages orphaned work to a draft PR (never auto-merges, never force-pushes); on conflict it files a bypass request. Idempotent.');
-        lines.push('');
-        lines.push('  3. For NEW work delegated async: /spawn-tasks creates a FRESH worktree per task (does NOT touch your in-progress main-tree state). Use this when you want the agent to start from origin/preview rather than rescuing what you have already committed.');
-        lines.push('');
-        lines.push('IMPORTANT: `/lockdown on` is NEVER the right answer for a main-tree push block. Lockdown gates interactive-session edit/spawn permissions only. Task spawning (`create_task` + `force_spawn_tasks`) works in BOTH lockdown states. Toggling lockdown does NOT change git permissions, does NOT enable task spawning, and does NOT make pushes possible.');
-        lines.push('');
-        lines.push('=== MANUAL FALLBACK — direct edits in the worktree ===');
-        lines.push('');
-        lines.push('For trivial fixes (typo, one-line config) you may edit directly in the worktree yourself and ship via Bash:');
-        lines.push('');
-        if (wtExists) {
-          lines.push(`  cd ${wt}`);
-        } else {
-          lines.push(`  cd <ctoWorktreePath>     # see worktree section above`);
-        }
-        lines.push('  git status                # verify changes');
-        lines.push('  git add -A                # OR git add <specific files>');
-        lines.push('  git commit -m "feat: <description>"   # pre-commit hooks run lint');
-        lines.push('  git push -u origin HEAD   # creates remote branch');
-        lines.push('  gh pr create --base preview --title "..." --body "..."');
-        lines.push('  gh pr checks <num> --watch --fail-fast   # wait for CI');
-        lines.push('  gh pr merge <num> --squash --delete-branch');
-        lines.push('');
-        lines.push('=== ASYNC ALTERNATIVES — only when the user wants async work ===');
-        lines.push('');
-        lines.push('If the user explicitly asks for async / "go do this in the background" work, hand off to:');
-        lines.push('  /spawn-tasks <description>   — one-shot work; spawns in a fresh provisioned worktree');
-        lines.push('  /persistent-task             — multi-session objective with a monitor');
-        lines.push('  /plan                        — multi-phase plan with phases/gates');
-        lines.push('These add tracking, audit gates, and crash recovery at the cost of latency. Default to the in-session 6-step pipeline above; only switch to async when the user wants it.');
-        lines.push('');
-        lines.push('After merge: /lockdown on (re-enables standard interactive console and removes this worktree).');
-        lines.push('');
-      }
-    }
-  } catch { /* non-fatal */ }
 
   // Logging health (one-line status, cross-references .mcp.json for elastic-logs server)
-  if (!localMode) {
+  {
     try {
       const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
       if (fs.existsSync(servicesPath)) {
@@ -1216,7 +794,7 @@ function buildInteractiveBriefing() {
   }
 
   // Fly.io image health (one-line, non-fatal)
-  if (!localMode) {
+  {
     try {
       const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
       if (fs.existsSync(servicesPath)) {
@@ -1354,17 +932,6 @@ function buildInteractiveBriefing() {
       driftLine += ` (oldest: ${drift.ageHours}h ago)`;
     }
 
-    // Check staging lock
-    try {
-      const lockPath = path.join(PROJECT_DIR, '.claude', 'state', 'staging-lock.json');
-      if (fs.existsSync(lockPath)) {
-        const lockState = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-        if (lockState.locked) {
-          driftLine += ' (staging locked — promotion paused for prod release)';
-        }
-      }
-    } catch { /* non-fatal */ }
-
     // Check automation toggle
     try {
       const configPath = path.join(PROJECT_DIR, '.claude', 'autonomous-mode.json');
@@ -1496,84 +1063,6 @@ function buildInteractiveBriefing() {
     }
   } catch { /* non-fatal */ }
 
-  // Blocking Queue (work-stopping items — shown above bypass requests)
-  const blockingItems = getBlockingQueue();
-  if (blockingItems) {
-    lines.push('');
-    lines.push('=== WORK BLOCKED — CTO ACTION REQUIRED ===');
-    for (let i = 0; i < blockingItems.length; i++) {
-      const item = blockingItems[i];
-      const ago = timeAgoStr(item.created_at);
-      const levelLabel = item.blocking_level === 'plan' ? 'PLAN BLOCKED' :
-                         item.blocking_level === 'persistent_task' ? 'TASK BLOCKED' : 'BLOCKED';
-      const planCtx = item.plan_title ? ` in plan "${truncate(item.plan_title, 40)}"` : '';
-      lines.push(`[${i + 1}] ${levelLabel}${planCtx} — ${ago}`);
-      lines.push(`    ${truncate(item.summary, 120)}`);
-      // Parse impact assessment if available
-      if (item.impact_assessment) {
-        try {
-          const impact = JSON.parse(item.impact_assessment);
-          const parts = [];
-          if (impact.blocked_tasks?.length > 0) parts.push(`${impact.blocked_tasks.length} downstream task(s) blocked`);
-          if (impact.is_gate) parts.push('gate phase');
-          if (!impact.parallel_paths_available) parts.push('no parallel work');
-          if (parts.length > 0) lines.push(`    Impact: ${parts.join(', ')}`);
-        } catch (_) { /* non-fatal */ }
-      }
-      if (item.bypass_request_id) {
-        lines.push(`    → mcp__agent-tracker__resolve_bypass_request({ request_id: "${item.bypass_request_id}", decision: "approved"|"rejected", context: "..." })`);
-      }
-    }
-  }
-
-  // CTO Bypass Requests
-  const bypassRequests = getPendingBypassRequests();
-  if (bypassRequests) {
-    const synthesizedCount = bypassRequests.synthesizedCount || 0;
-    if (bypassRequests.length > 0) {
-      lines.push('');
-      lines.push('=== CTO BYPASS REQUESTS AWAITING DECISION ===');
-      if (synthesizedCount > 0) {
-        lines.push(`(${synthesizedCount} additional quota-recovery row(s) hidden — auto-resolve when quota clears)`);
-      }
-      for (let i = 0; i < bypassRequests.length; i++) {
-        const req = bypassRequests[i];
-        const ago = timeAgoStr(req.created_at);
-        lines.push(`[${i + 1}] "${truncate(req.task_title, 50)}" (${req.task_type}, ${req.category}) — ${ago}`);
-        lines.push(`    ${truncate(req.summary, 120)}`);
-        lines.push(`    → mcp__agent-tracker__resolve_bypass_request({ request_id: "${req.id}", decision: "approved"|"rejected", context: "..." })`);
-      }
-    } else if (synthesizedCount > 0) {
-      // No real bypasses, but synthesized quota rows are pending. Show as FYI
-      // only — CTO does not need to act, the daemon will resolve them.
-      lines.push('');
-      lines.push(`=== ${synthesizedCount} QUOTA-RECOVERY ROW(S) PENDING (auto-resolving) ===`);
-      lines.push(`(synthesized by quota-detector — no CTO action needed)`);
-    }
-  }
-
-  // Deferred Protected Actions
-  const deferredActions = getPendingDeferredActions();
-  if (deferredActions) {
-    lines.push('');
-    lines.push('=== DEFERRED PROTECTED ACTIONS AWAITING APPROVAL ===');
-    for (let i = 0; i < deferredActions.length; i++) {
-      const act = deferredActions[i];
-      const ago = timeAgoStr(act.created_at);
-      let argsSummary = '';
-      try {
-        const args = typeof act.args === 'string' ? JSON.parse(act.args) : act.args;
-        const keys = Object.keys(args);
-        argsSummary = keys.length > 0 ? ` (${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '...' : ''})` : '';
-      } catch { /* non-fatal */ }
-      lines.push(`[${i + 1}] ${act.server}:${act.tool}${argsSummary} — ${ago}`);
-      lines.push(`    To approve: ${act.phrase} ${act.code}`);
-      if (act.requester_agent_id) {
-        lines.push(`    Requested by: ${act.requester_agent_id}`);
-      }
-    }
-    lines.push('    Approved actions execute automatically via MCP daemon.');
-  }
 
   // Persistent tasks
   const ptState = getPersistentTaskState();
@@ -1588,9 +1077,8 @@ function buildInteractiveBriefing() {
     }
     if (ptState.pausedTasks && ptState.pausedTasks.length > 0) {
       const crashLoop = ptState.pausedTasks.filter(t => t.pauseReason === 'crash-loop').length;
-      const bypassReq = ptState.pausedTasks.filter(t => t.pauseReason === 'bypass-request').length;
-      const manual = ptState.pausedTasks.length - crashLoop - bypassReq;
-      const summary = [crashLoop > 0 && `${crashLoop} crash-loop`, bypassReq > 0 && `${bypassReq} bypass-request`, manual > 0 && `${manual} manual`].filter(Boolean).join(', ');
+      const manual = ptState.pausedTasks.length - crashLoop;
+      const summary = [crashLoop > 0 && `${crashLoop} crash-loop`, manual > 0 && `${manual} manual`].filter(Boolean).join(', ');
       lines.push(`PAUSED TASKS: ${ptState.pausedTasks.length} (${summary})`);
       for (const t of ptState.pausedTasks) {
         lines.push(`  "${truncate(t.title, 50)}" — ${t.pauseReason} paused`);
@@ -1638,13 +1126,6 @@ function buildInteractiveBriefing() {
 function buildSpawnedBriefing() {
   const lines = ['[SESSION BRIEFING \u2014 MANDATORY PRE-WORK PROTOCOL]', ''];
 
-  // Local mode notice
-  const localMode = getLocalModeState();
-  if (localMode) {
-    lines.push('[LOCAL MODE] Remote servers excluded. Local tooling only. Run /local-mode to disable.');
-    lines.push('');
-  }
-
   // Debate mode notice \u2014 important for investigator spawns so they skip
   // steps 14-16 cleanly without wasting a Task call that the
   // debate-mode-guard.js hook would deny.
@@ -1655,7 +1136,7 @@ function buildSpawnedBriefing() {
   }
 
   // Elastic log availability (one-line reminder for spawned agents)
-  if (!localMode) {
+  {
     try {
       const servicesPath = path.join(PROJECT_DIR, '.claude', 'config', 'services.json');
       if (fs.existsSync(servicesPath)) {

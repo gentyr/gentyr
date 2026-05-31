@@ -364,17 +364,10 @@ function runSyntaxGate(frameworkDir) {
     '.claude/hooks/lib/session-reaper.js',
     '.claude/hooks/lib/auditor-prompt.js',
     '.claude/hooks/lib/persistent-monitor-revival-prompt.js',
-    '.claude/hooks/lib/audit-escalation.js',
-    '.claude/hooks/lib/bypass-guard.js',
     '.claude/hooks/lib/resource-lock.js',
     '.claude/hooks/lib/cross-dep-satisfier.js',
     '.claude/hooks/persistent-task-spawner.js',
     '.claude/hooks/universal-audit-spawner.js',
-    '.claude/hooks/authorization-audit-spawner.js',
-    '.claude/hooks/deferred-action-audit-executor.js',
-    '.claude/hooks/main-tree-commit-guard.js',
-    '.claude/hooks/staging-lock-guard.js',
-    '.claude/hooks/interactive-lockdown-guard.js',
   ];
   for (const rel of hookHotPath) {
     targets.push({ path: path.join(frameworkDir, rel), label: rel });

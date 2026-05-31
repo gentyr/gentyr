@@ -9,7 +9,6 @@ import fs from 'fs';
 import path from 'path';
 import { buildRevivalContext } from './persistent-revival-context.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
-import { getBypassResolutionContext } from './bypass-guard.js';
 
 // Lazy-load Database — only needed for self-heal section
 let Database = null;
@@ -59,25 +58,6 @@ Follow the plan-manager agent instructions. Poll get_spawn_ready_tasks, create p
     process.stderr.write(`[persistent-monitor-revival-prompt] demo/strict-infra instructions failed for ${task.id}: ${err.message || err}\n`);
   }
 
-  // Check for resolved bypass request context
-  let bypassSection = '';
-  try {
-    const bypassCtx = getBypassResolutionContext('persistent', task.id);
-    if (bypassCtx) {
-      const decisionLabel = bypassCtx.decision === 'approved' ? 'APPROVED' : 'REJECTED';
-      bypassSection = `\n## CTO Bypass Resolution
-Your previous session submitted a bypass request:
-  Category: ${bypassCtx.category}
-  Summary: ${bypassCtx.summary}
-
-CTO Decision: ${decisionLabel}
-CTO Instructions: "${bypassCtx.context}"
-
-${bypassCtx.decision === 'approved' ? 'Proceed with the work, following the CTO\'s instructions above.' : 'The CTO rejected your request. Take an alternative approach or wrap up without the bypassed action.'}
-`;
-    }
-  } catch (_) { /* non-fatal */ }
-
   // Check for active self-healing fix tasks
   let selfHealSection = '';
   try {
@@ -113,7 +93,7 @@ ${bypassCtx.decision === 'approved' ? 'Proceed with the work, following the CTO\
 ${planSection}
 Your previous monitor session died. Here is your last known state:
 ${revivalContext || '(no prior state available — this may be the first revival)'}
-${bypassSection}${selfHealSection}
+${selfHealSection}
 CRITICAL: You are an ORCHESTRATOR, not an implementer. Never edit files, read source code, or execute sub-tasks directly. Spawn existing pending sub-tasks via force_spawn_tasks. Create new sub-tasks via create_task. All implementation goes through the task queue.
 
 Read full task details to fill any gaps:

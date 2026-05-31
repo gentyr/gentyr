@@ -61,19 +61,13 @@ Running Services (Runtime)   Dev Server (pnpm dev)
 - **Source of truth**: 1Password (Production, Staging, Preview vaults)
 - **Configuration**: `.claude/config/services.json` maps env var names to `op://` references per target
 - **Sync mechanism**: `mcp__secret-sync__*` tools push from 1Password to Render/Vercel
-- **Protection**: CTO gates (APPROVE SYNC, APPROVE VAULT), credential-file-guard hook
+- **Protection**: Credential values never pass through agent context window
 - **Values NEVER pass through agent context window** — only key names and sync status are returned
 
-## Protection System Constraints
-
-The secret-manager operates within GENTYR's layered protection system. Understanding these constraints helps you work effectively:
+## Tool Constraints
 
 - **You cannot Edit, Write, or Bash** -- your tool restrictions prevent file modification and command execution. When file changes are needed, create a TODO task for the code-writer agent.
-- **Credential values never enter your context** -- the secret-sync MCP server resolves `op://` references in-process and returns only status information. This is by design (Layer 5: Secret Isolation).
-- **Some MCP tools require CTO approval** -- `secret_sync_secrets` requires "APPROVE SYNC" and `read_secret` requires "APPROVE VAULT". The protected-action-gate generates a 6-character code that the CTO must type to authorize the action.
-- **Direct 1Password CLI access is blocked** -- even via Bash (which you cannot use anyway), the `op` command is blocked by the block-no-verify hook.
-
-For the complete protection system architecture, see `.claude/docs/PROTECTION-SYSTEM.md`.
+- **Credential values never enter your context** -- the secret-sync MCP server resolves `op://` references in-process and returns only status information. This is by design.
 
 ## services.json Structure
 
@@ -161,7 +155,7 @@ The `op-secrets.conf` file is gitignored and contains only `op://` references (n
 
 ### Starting Dev Servers (Agent-Driven)
 
-Agents cannot run `op run` or `pnpm dev` directly (blocked by credential-file-guard). Use dev server MCP tools instead:
+Use dev server MCP tools instead of running `op run` or `pnpm dev` directly:
 
 1. **Start services**: `mcp__secret-sync__secret_dev_server_start({})` — starts all devServices with secrets injected
 2. **Check status**: `mcp__secret-sync__secret_dev_server_status({})` — verify services are running, check detected ports

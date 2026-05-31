@@ -67,13 +67,7 @@ function preCreateStateFiles(projectDir) {
     path.join(claudeDir, 'plan-executor-state.json'),
     path.join(claudeDir, 'commit-approval-token.json'),
     path.join(claudeDir, 'protection-state.json'),
-    path.join(claudeDir, 'protected-action-approvals.json'),
   ];
-  // local-mode.json — pre-created with disabled default so setLocalMode() can overwrite if needed
-  const localModeFile = path.join(stateDir, 'local-mode.json');
-  if (!fs.existsSync(localModeFile)) {
-    fs.writeFileSync(localModeFile, JSON.stringify({ enabled: false }, null, 2) + '\n');
-  }
 
   for (const file of jsonFiles) {
     if (!fs.existsSync(file)) fs.writeFileSync(file, '{}');
@@ -112,7 +106,6 @@ function preCreateStateFiles(projectDir) {
   // SQLite database files (must exist before protection)
   const dbFiles = [
     path.join(claudeDir, 'todo.db'),
-    path.join(claudeDir, 'deputy-cto.db'),
     path.join(claudeDir, 'cto-reports.db'),
     path.join(claudeDir, 'session-events.db'),
   ];

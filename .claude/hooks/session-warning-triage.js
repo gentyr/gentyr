@@ -9,7 +9,7 @@
  *
  *   1. Independently detects every known condition (non-root critical
  *      hooks, Playwright auth staleness, OP_SERVICE_ACCOUNT_TOKEN shell
- *      vs .mcp.json mismatch, pending bypass requests, paused tasks).
+ *      vs .mcp.json mismatch, paused tasks).
  *   2. Attempts autonomous remediation for the conditions GENTYR can fix
  *      without CTO action.
  *   3. Emits a SINGLE systemMessage formatted as:
@@ -126,25 +126,6 @@ function detectOpTokenMismatch() {
 }
 
 /**
- * Detection 4: pending bypass requests (real, non-timed).
- * Read-only sqlite via execFileSync (no native dep).
- */
-function detectPendingBypassRequests() {
-  try {
-    const db = path.join(STATE_DIR, 'bypass-requests.db');
-    if (!fs.existsSync(db)) return { count: 0, oldestAgeMin: 0 };
-    const out = execFileSync('sqlite3', [
-      db,
-      "SELECT COUNT(*), CAST((strftime('%s','now') - strftime('%s', MIN(created_at))) / 60 AS INTEGER) FROM bypass_requests WHERE status='pending' AND auto_resume_at IS NULL;",
-    ], { encoding: 'utf8', timeout: 3000, stdio: 'pipe' }).trim();
-    const [countStr, ageStr] = out.split('|');
-    const count = parseInt(countStr || '0', 10) || 0;
-    const oldestAgeMin = parseInt(ageStr || '0', 10) || 0;
-    return { count, oldestAgeMin };
-  } catch { return { count: 0, oldestAgeMin: 0 }; }
-}
-
-/**
  * Detection 5: paused persistent tasks (informational only).
  */
 function detectPausedTasks() {
@@ -212,7 +193,6 @@ function main() {
   const nonRoot = detectNonRootCriticalHooks();
   const pwAuth = detectPlaywrightAuthStale();
   const opTok = detectOpTokenMismatch();
-  const bypass = detectPendingBypassRequests();
   const paused = detectPausedTasks();
   const legacy = detectLegacyCtoWorktreePath();
 
@@ -239,9 +219,6 @@ function main() {
   if (paused.count > 0) {
     info.push(`${paused.count} paused persistent task(s) — review in /persistent-tasks if any need action.`);
   }
-  if (bypass.count > 0) {
-    info.push(`${bypass.count} pending bypass request(s) (oldest ${bypass.oldestAgeMin}m) — already surfaced separately by cto-notification-hook.`);
-  }
 
   // If we have absolutely nothing to say, exit silent.
   if (!fixed.length && !info.length && !pending.length) {
@@ -263,7 +240,6 @@ function main() {
       nonRootCount: nonRoot.count,
       pwAuthStale: !!pwAuth.stale,
       opTokMismatch: !!opTok.mismatch,
-      bypassCount: bypass.count,
       pausedCount: paused.count,
       legacyPresent: !!legacy.present,
     },

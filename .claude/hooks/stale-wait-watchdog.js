@@ -161,7 +161,7 @@ async function main() {
       additionalContext: `[STALE-WAIT ESCALATION -- FINAL WARNING]\n` +
         `You have been stuck for ${Math.round(minutesSinceStageChange)} minutes without advancing.\n` +
         `${toolCallsSinceStageChange} tool calls made, all non-progress (signal reads, sleeps, polls).\n` +
-        `If you cannot proceed, call submit_bypass_request to alert the CTO.\n` +
+        `If you cannot proceed because of an external dependency, file a deputy-CTO report via mcp__agent-reports__report_to_deputy_cto (priority: 'critical'), then summarize_work and exit.\n` +
         `If your blocker was resolved, STOP POLLING and resume your primary work NOW.`,
     }));
     return;
@@ -183,7 +183,7 @@ async function main() {
         toAgentType: 'unknown',
         tier: 'instruction',
         type: 'STALE_WAIT_ESCALATION',
-        message: `You appear stuck in a wait loop for ${Math.round(minutesSinceStageChange)} minutes. Re-check your blockers immediately. If they are resolved, proceed with work. If genuinely blocked, call submit_bypass_request.`,
+        message: `You appear stuck in a wait loop for ${Math.round(minutesSinceStageChange)} minutes. Re-check your blockers immediately. If they are resolved, proceed with work. If genuinely blocked by an external dependency, file a deputy-CTO report via mcp__agent-reports__report_to_deputy_cto (priority: 'critical'), then summarize_work and exit.`,
         projectDir: PROJECT_DIR,
       });
     } catch (err) {

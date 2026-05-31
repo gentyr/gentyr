@@ -15,7 +15,6 @@ allowedTools:
   - mcp__vercel__vercel_get_deployment
   - mcp__vercel__vercel_list_deployments
   - mcp__agent-reports__report_to_deputy_cto
-  - mcp__agent-tracker__submit_bypass_request
   - mcp__agent-tracker__summarize_work
 ---
 
@@ -63,7 +62,7 @@ Call the platform-specific tool with the target's `serviceId`:
 
 Capture the returned `deploy_id` (Render `dep-...`, Vercel `dpl-...`, Fly machine ID).
 
-If the trigger call itself fails (API error, auth failure, service not found): file a bypass request via `mcp__agent-tracker__submit_bypass_request`, then call `summarize_work` and exit. Do NOT proceed.
+If the trigger call itself fails (API error, auth failure, service not found): file a deputy-CTO report via `mcp__agent-reports__report_to_deputy_cto` (priority critical) describing the failure, then call `summarize_work` and exit. Do NOT proceed.
 
 ### Step 2 — Record artifact (triggered)
 
@@ -102,9 +101,9 @@ Poll the platform every 30 seconds until the deploy reaches a terminal state. Ca
 
 On `live` (Render) / `READY` (Vercel) / equivalent: proceed to Step 5.
 
-On any failure status: call `record_deploy_artifact` again with `status: 'failed'`, file a bypass request, `summarize_work`, exit. The merge is already done — the CTO can retry the failed target manually.
+On any failure status: call `record_deploy_artifact` again with `status: 'failed'`, file a deputy-CTO report (priority critical) with the failure details, call `summarize_work`, and exit. The merge is already done — the CTO can retry the failed target manually.
 
-If the 10-minute cap is exhausted with no terminal state: same path — record `failed`, file bypass, exit.
+If the 10-minute cap is exhausted with no terminal state: same path — record `failed`, file deputy-CTO report, exit.
 
 ### Step 5 — Record artifact (live)
 
@@ -189,7 +188,7 @@ This is the only path that auto-cancels a signed-off release. Be deliberate.
    "
    ```
 
-   If any rollback returns `rolledBack: false` (no known-good for that target): record the partial state and file a bypass request — the CTO will need to resolve manually. Do NOT proceed to cancel_release in that case; let the human decide.
+   If any rollback returns `rolledBack: false` (no known-good for that target): record the partial state and file a deputy-CTO report (priority critical) describing the partial rollback — the CTO will need to resolve manually. Do NOT proceed to cancel_release in that case; let the human decide.
 
 3. **Cancel the release**:
    ```
@@ -212,7 +211,7 @@ This is the only path that auto-cancels a signed-off release. Be deliberate.
 - **DO NOT** spawn other agents.
 - **DO NOT** call `record_cto_approval`, `sign_off_release`, or any other release-completion tool. Your job is verification, not approval.
 - **DO NOT** touch sibling targets' state. Read `allTargets` only to compute the rollback group; never call `recordHealthy` / `recordFailure` / `trackDeployment` for any target other than your own (except during cascade rollback in Step 8).
-- **DO NOT** retry on infrastructure errors. If the platform API is flaky, file a bypass and exit — the CTO/operator handles retries.
+- **DO NOT** retry on infrastructure errors. If the platform API is flaky, file a deputy-CTO report (priority critical) and exit — the CTO/operator handles retries.
 - The hard time budget is ~15 min total (10 min deploy poll + 5 min health probe). If you exceed it, file a bypass and exit.
 
 ## Why this agent exists

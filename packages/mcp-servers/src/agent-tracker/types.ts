@@ -138,18 +138,6 @@ export const SetAutomationRateArgsSchema = z.object({
 
 export const GetAutomationRateArgsSchema = z.object({});
 
-export const SetLockdownModeArgsSchema = z.object({
-  enabled: z.boolean().describe('Enable (true) or disable (false) the interactive session lockdown'),
-});
-
-export const GetLockdownModeArgsSchema = z.object({});
-
-export const SetLocalModeArgsSchema = z.object({
-  enabled: z.boolean().describe('Enable (true) or disable (false) local prototyping mode. When enabled, remote MCP servers are excluded from .mcp.json and credential-dependent automation is skipped.'),
-});
-
-export const GetLocalModeArgsSchema = z.object({});
-
 export const SetDebateModeArgsSchema = z.object({
   enabled: z.boolean().describe('Enable (true) or disable (false) the investigator adversarial-debate flow. When disabled, debate-mode-guard.js denies any Task call that tries to spawn a defender/challenger/judge sub-agent.'),
 });
@@ -527,69 +515,6 @@ export const InspectPersistentTaskArgsSchema = z.object({
 });
 export type InspectPersistentTaskArgs = z.infer<typeof InspectPersistentTaskArgsSchema>;
 
-// CTO Bypass Request Schemas
-export const SubmitBypassRequestArgsSchema = z.object({
-  task_type: z.enum(['persistent', 'todo'])
-    .describe('Type of task: "persistent" for persistent tasks, "todo" for todo-db tasks'),
-  task_id: z.string().min(1)
-    .describe('The persistent task ID or todo task ID requiring CTO authorization'),
-  category: z.enum(['destructive_operation', 'scope_change', 'ambiguous_requirement', 'resource_access', 'general'])
-    .default('general')
-    .describe('Category of bypass request'),
-  summary: z.string().min(10).max(500)
-    .describe('1-3 sentence explanation of what CTO authorization is needed for'),
-  details: z.string().max(5000).optional()
-    .describe('Extended context: what was attempted, options considered, file paths involved'),
-  pause_duration_minutes: z.number().int().min(1).max(1440).optional()
-    .describe('How long to pause before auto-resuming. Pauses ≤60 min auto-resume without CTO approval. Pauses >60 min require CTO approval (use only when genuinely blocked). Omit for indefinite pause (requires CTO approval).'),
-});
-export type SubmitBypassRequestArgs = z.infer<typeof SubmitBypassRequestArgsSchema>;
-
-export const ResolveBypassRequestArgsSchema = z.object({
-  request_id: z.string().min(1)
-    .describe('Bypass request ID to resolve (from session briefing or list_bypass_requests)'),
-  decision: z.enum(['approved', 'rejected'])
-    .describe('CTO decision: approve or reject the bypass request'),
-  context: z.string().min(1).max(5000)
-    .describe('CTO instructions/context for the agent — included in the revival prompt (approved) or rejection notice (rejected)'),
-});
-export type ResolveBypassRequestArgs = z.infer<typeof ResolveBypassRequestArgsSchema>;
-
-export const ListBypassRequestsArgsSchema = z.object({
-  status: z.enum(['pending', 'approved', 'rejected', 'cancelled', 'all'])
-    .default('pending')
-    .describe('Filter by status (default: pending)'),
-  limit: z.coerce.number().min(1).max(100).optional().default(20)
-    .describe('Maximum number of requests to return'),
-  synthesized: z.enum(['real', 'synthesized', 'all'])
-    .optional()
-    .default('real')
-    .describe('Filter by origin (default: real): "real" = agent-authored via submit_bypass_request, "synthesized" = framework-generated quota_exhaustion rows auto-resolved by quota-recovery-daemon, "all" = both'),
-});
-export type ListBypassRequestsArgs = z.infer<typeof ListBypassRequestsArgsSchema>;
-
-// Blocking Queue Schemas
-export const ListBlockingItemsArgsSchema = z.object({
-  status: z.enum(['active', 'resolved', 'all']).optional().default('active')
-    .describe('Filter by status. Default: active'),
-  plan_id: z.string().optional()
-    .describe('Filter by plan ID'),
-  limit: z.number().optional().default(20)
-    .describe('Max items to return'),
-});
-
-export const ResolveBlockingItemArgsSchema = z.object({
-  id: z.string().describe('Blocking queue item ID'),
-  resolution_context: z.string().optional()
-    .describe('Context about the resolution'),
-});
-
-export const GetBlockingSummaryArgsSchema = z.object({});
-
-export type ListBlockingItemsArgs = z.infer<typeof ListBlockingItemsArgsSchema>;
-export type ResolveBlockingItemArgs = z.infer<typeof ResolveBlockingItemArgsSchema>;
-export type GetBlockingSummaryArgs = z.infer<typeof GetBlockingSummaryArgsSchema>;
-
 // ============================================================================
 // Deputy Reports (PR 4 / Fix 3) — wedged-audit escalation inbox
 // ============================================================================
@@ -652,104 +577,6 @@ export const RequestSelfCompactArgsSchema = z.object({
   reason: z.string().optional().describe('Why the agent is requesting compaction (for audit trail)'),
 });
 export type RequestSelfCompactArgs = z.infer<typeof RequestSelfCompactArgsSchema>;
-
-export const CheckDeferredActionArgsSchema = z.object({
-  action_id: z.string().min(1).describe('The deferred action ID returned by the protected-action-gate'),
-});
-export type CheckDeferredActionArgs = z.infer<typeof CheckDeferredActionArgsSchema>;
-
-// ============================================================================
-// CTO Decision System Schemas
-// ============================================================================
-
-export const CTO_DECISION_TYPES = [
-  'bypass_request',
-  'protected_action',
-  'lockdown_toggle',
-  'local_mode_toggle',
-  'release_signoff',
-  'staging_override',
-  'deputy_bypass_resolution',
-  'deputy_deferred_approval',
-  'command_bypass',
-  'demo_local',
-  'deferred_action',
-  'protected_action_gate',
-  'audit_override',
-  'hotfix_promotion',
-] as const;
-
-export const RecordCtoDecisionArgsSchema = z.object({
-  decision_type: z.enum(CTO_DECISION_TYPES)
-    .describe('Category of decision being recorded'),
-  decision_id: z.string().min(1)
-    .describe('ID of the thing being decided (bypass request ID, deferred action code, release ID, etc.)'),
-  verbatim_text: z.string().min(5).max(2000)
-    .describe('The CTO verbatim approval/rejection text — copied EXACTLY as they typed it'),
-  session_id: z.string().optional()
-    .describe('Current session ID (auto-detected from env if omitted)'),
-});
-export type RecordCtoDecisionArgs = z.infer<typeof RecordCtoDecisionArgsSchema>;
-
-export const CheckCtoDecisionArgsSchema = z.object({
-  decision_id: z.string().min(1).describe('The decision_id (bypass request ID, action code, etc.) to check'),
-  decision_type: z.enum(CTO_DECISION_TYPES).optional().describe('Filter by decision type'),
-});
-export type CheckCtoDecisionArgs = z.infer<typeof CheckCtoDecisionArgsSchema>;
-
-// ============================================================================
-// CTO Decision Audit Verdict Schemas
-// ============================================================================
-
-export const CtoDecisionAuditPassArgsSchema = z.object({
-  decision_id: z.string().min(1)
-    .describe('The cto_decisions row ID to mark as audit_passed'),
-  evidence: z.string().min(10)
-    .describe('Concrete evidence supporting the audit pass verdict (min 10 chars)'),
-});
-export type CtoDecisionAuditPassArgs = z.infer<typeof CtoDecisionAuditPassArgsSchema>;
-
-export const CtoDecisionAuditFailArgsSchema = z.object({
-  decision_id: z.string().min(1)
-    .describe('The cto_decisions row ID to mark as audit_failed'),
-  failure_reason: z.string().min(10)
-    .describe('Explanation of why the audit failed (min 10 chars)'),
-  evidence: z.string().min(10)
-    .describe('Concrete evidence supporting the audit fail verdict (min 10 chars)'),
-});
-export type CtoDecisionAuditFailArgs = z.infer<typeof CtoDecisionAuditFailArgsSchema>;
-
-// ============================================================================
-// Deputy-CTO Monitor Bypass Resolution Schemas
-// ============================================================================
-
-export const DeputyResolveBypassRequestArgsSchema = z.object({
-  request_id: z.string().min(1)
-    .describe('Bypass request ID to resolve'),
-  decision: z.enum(['approved', 'rejected'])
-    .describe('Deputy decision: approve or reject the bypass request'),
-  reasoning: z.string().min(10)
-    .describe('Deputy reasoning for the decision (min 10 chars for audit trail)'),
-});
-export type DeputyResolveBypassRequestArgs = z.infer<typeof DeputyResolveBypassRequestArgsSchema>;
-
-export const DeputyApproveDeferredActionArgsSchema = z.object({
-  action_id: z.string().min(1)
-    .describe('Deferred action ID to approve'),
-  reasoning: z.string().min(10)
-    .describe('Deputy reasoning for approving this action (min 10 chars for audit trail)'),
-});
-export type DeputyApproveDeferredActionArgs = z.infer<typeof DeputyApproveDeferredActionArgsSchema>;
-
-export const DeputyEscalateToCtoArgsSchema = z.object({
-  request_id: z.string().min(1)
-    .describe('Bypass request ID to escalate to the CTO'),
-  reason: z.string().min(10)
-    .describe('Explanation of why CTO intervention is required'),
-  urgency: z.enum(['routine', 'important', 'critical'])
-    .describe('Urgency level: routine (next briefing), important (notify soon), critical (immediate attention)'),
-});
-export type DeputyEscalateToCtoArgs = z.infer<typeof DeputyEscalateToCtoArgsSchema>;
 
 // ============================================================================
 // CTO Alignment Tracking Schemas
@@ -869,10 +696,6 @@ export type SetFocusModeArgs = z.infer<typeof SetFocusModeArgsSchema>;
 export type GetFocusModeArgs = z.infer<typeof GetFocusModeArgsSchema>;
 export type SetAutomationRateArgs = z.infer<typeof SetAutomationRateArgsSchema>;
 export type GetAutomationRateArgs = z.infer<typeof GetAutomationRateArgsSchema>;
-export type SetLockdownModeArgs = z.infer<typeof SetLockdownModeArgsSchema>;
-export type GetLockdownModeArgs = z.infer<typeof GetLockdownModeArgsSchema>;
-export type SetLocalModeArgs = z.infer<typeof SetLocalModeArgsSchema>;
-export type GetLocalModeArgs = z.infer<typeof GetLocalModeArgsSchema>;
 export type SetDebateModeArgs = z.infer<typeof SetDebateModeArgsSchema>;
 export type GetDebateModeArgs = z.infer<typeof GetDebateModeArgsSchema>;
 

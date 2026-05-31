@@ -29,13 +29,12 @@ import { killProcessGroup, isClaudeProcess } from './process-tree.js';
 import { compactSessionIfNeeded } from './compact-session.js';
 import { auditEvent } from './session-audit.js';
 import { debugLog } from './debug-log.js';
-import { buildAuditorSessionSpec, buildAuthorizationAuditorSessionSpec, AUDITOR_AGENT_TYPES } from './auditor-prompt.js';
+import { buildAuditorSessionSpec, AUDITOR_AGENT_TYPES } from './auditor-prompt.js';
 import { buildPersistentMonitorDemoInstructions } from './persistent-monitor-demo-instructions.js';
 import { buildPersistentMonitorStrictInfraInstructions } from './persistent-monitor-strict-infra-instructions.js';
 import { checkAndExpireResources, releaseAllResources, removeFromAllQueues } from './resource-lock.js';
 import { cleanupStaleAllocations as cleanupStalePortAllocations } from './port-allocator.js';
 import { buildRevivalContext } from './persistent-revival-context.js';
-import { checkBypassBlock, getBypassResolutionContext } from './bypass-guard.js';
 
 // Self-healing module — loaded eagerly but non-fatal if missing
 let _handleBlocker = null;
@@ -44,13 +43,6 @@ try {
   _handleBlocker = mod.handleBlocker;
 } catch (_) { /* non-fatal — self-healing unavailable */ }
 
-// Audit escalation module — loaded eagerly via top-level await. Hoisted here
-// (rather than lazy-loaded inside drainQueue) because drainQueue is sync and
-// `await import()` inside a sync function is a parse-time SyntaxError.
-let _auditEscalation = null;
-try {
-  _auditEscalation = await import('./audit-escalation.js');
-} catch (_) { /* non-fatal — escalation unavailable */ }
 import { isLocalModeEnabled } from '../../../lib/shared-mcp-config.js';
 // NOTE: revival-utils.js imports from session-queue.js (circular dep), so we
 // inline these three utilities here instead of importing from revival-utils.js.
@@ -687,21 +679,6 @@ export function enqueueSession(spec) {
     }
   }
 
-  // Bypass request gate: block spawns for tasks with pending CTO bypass requests
-  // Source 'bypass-request-resolve' is exempt — it's the CTO approving the request
-  if (spec.source !== 'bypass-request-resolve') {
-    const bypassTaskId = spec.metadata?.persistentTaskId || spec.metadata?.taskId;
-    const bypassTaskType = spec.metadata?.persistentTaskId ? 'persistent' : (spec.metadata?.taskId ? 'todo' : null);
-    if (bypassTaskType && bypassTaskId) {
-      const bypassCheck = checkBypassBlock(bypassTaskType, bypassTaskId);
-      if (bypassCheck.blocked) {
-        log(`Bypass request BLOCKED: "${spec.title}" — pending CTO bypass request ${bypassCheck.requestId} (${bypassCheck.category})`);
-        auditEvent('session_enqueue_blocked', { reason: 'bypass_request', title: spec.title, source: spec.source, priority: spec.priority, bypassRequestId: bypassCheck.requestId });
-        return { queueId: null, blocked: 'bypass_request', title: spec.title, bypassRequestId: bypassCheck.requestId };
-      }
-    }
-  }
-
   // Auto-promote to automated lane for known automation sources.
   // Only promotes when lane is 'standard' (or unset) — respects explicit lane assignments
   // (persistent, gate, audit, etc.). The automated lane has no concurrency limit.
@@ -1237,13 +1214,6 @@ function requeueDeadPersistentMonitor(db, taskId, reapReason = 'unknown', diagno
     return;
   }
 
-  // Bypass request guard — belt-and-suspenders (task is typically paused, caught above)
-  const bypassCheck = checkBypassBlock('persistent', taskId);
-  if (bypassCheck.blocked) {
-    log(`[persistent-revival] Skipped revival for ${taskId}: pending CTO bypass request ${bypassCheck.requestId}`);
-    return;
-  }
-
   // Build revival context from last known state
   let revivalContext = '';
   try {
@@ -1471,10 +1441,6 @@ export function drainQueue() {
   // When an auditor dies and its task is still pending_audit, spawn a fresh auditor.
   // The reaper flags these in auditRevivals (task stays pending_audit, not reset to pending).
   if (reaperResult && reaperResult.auditRevivals && reaperResult.auditRevivals.length > 0) {
-    // Audit-escalation module is hoisted at module top (see _auditEscalation
-    // initialization above). Alias here so existing references read cleanly.
-    const auditEscalation = _auditEscalation;
-
     for (const revival of reaperResult.auditRevivals) {
       try {
         // Dedup: check if another auditor is already queued/running for this task
@@ -1486,77 +1452,11 @@ export function drainQueue() {
           continue;
         }
 
-        // Escalation gate: after MAX_AUDIT_ATTEMPTS revivals OR
-        // MAX_AUDIT_WALL_MINUTES wall time, STOP respawning and instead
-        // reset the audit + file a deputy_reports row. Authorization audits
-        // are out of scope (interactive, short-lived; CTO re-runs naturally).
-        if (auditEscalation && revival.taskType !== 'authorization') {
-          const decision = auditEscalation.shouldEscalateAudit({
-            taskType: revival.taskType,
-            taskId: revival.taskId,
-            projectDir: PROJECT_DIR,
-          });
-          if (decision.escalate) {
-            const result = auditEscalation.resetAuditAndReport({
-              taskType: revival.taskType,
-              taskId: revival.taskId,
-              projectDir: PROJECT_DIR,
-              payload: {
-                task_type: revival.taskType,
-                task_id: revival.taskId,
-                task_title: revival.taskTitle || '',
-                attempts: decision.attempts,
-                age_minutes: decision.ageMin,
-                escalation_reason: decision.reason,
-                last_agent_id: revival.agentId,
-                last_queue_id: revival.queueId,
-                criteria: (revival.criteria || '').slice(0, 500),
-                method: (revival.method || '').slice(0, 500),
-                auto_action_taken: 'audit_reset_to_in_progress',
-                suggested_triage: [
-                  'check audit-lane-guard denials in the auditor JSONL',
-                  'verify baseRef is present in audit metadata',
-                  'consider manual reset_*_audit with override reason',
-                ],
-              },
-            });
-            log(`Step 1b.5: ESCALATED ${revival.taskType} audit for task ${revival.taskId} — ${decision.reason}; reset=${result.reset}, deputy_report=${result.reportId || 'none'}`);
-            try {
-              auditEvent('audit_escalated_to_deputy', {
-                task_id: revival.taskId,
-                task_type: revival.taskType,
-                attempts: decision.attempts,
-                age_minutes: decision.ageMin,
-                reason: decision.reason,
-                deputy_report_id: result.reportId,
-              });
-            } catch (_) { /* non-fatal */ }
-            continue;
-          }
-        }
-
-        let spec;
-        let auditLabel;
-        if (revival.taskType === 'authorization') {
-          // Authorization audit revival — use the specialized builder
-          spec = buildAuthorizationAuditorSessionSpec(
-            {
-              decisionId: revival.taskId,
-              decisionType: revival.decisionType || 'unknown',
-              verbatimText: revival.verbatimText || revival.criteria || '',
-              decisionContext: revival.decisionContext || revival.method || '',
-              sessionId: revival.sessionId || '',
-            },
-            PROJECT_DIR,
-          );
-          auditLabel = 'Authorization audit';
-        } else {
-          spec = buildAuditorSessionSpec(
-            { taskId: revival.taskId, taskType: revival.taskType, taskTitle: revival.taskTitle, criteria: revival.criteria, method: revival.method },
-            PROJECT_DIR,
-          );
-          auditLabel = revival.taskType === 'plan' ? 'Plan audit' : 'Universal audit';
-        }
+        const spec = buildAuditorSessionSpec(
+          { taskId: revival.taskId, taskType: revival.taskType, taskTitle: revival.taskTitle, criteria: revival.criteria, method: revival.method },
+          PROJECT_DIR,
+        );
+        const auditLabel = revival.taskType === 'plan' ? 'Plan audit' : 'Universal audit';
         enqueueSession({
           ...spec,
           title: `Auditing: "${revival.taskTitle}" [${auditLabel}, revival]`,
@@ -1695,12 +1595,6 @@ export function drainQueue() {
         ).get(task.id);
 
         if (!existing) {
-          // Bypass request guard — skip orphaned tasks with pending CTO bypass requests
-          const bypassCheck1c = checkBypassBlock('persistent', task.id);
-          if (bypassCheck1c.blocked) {
-            log(`Step 1c: Skipping orphan ${task.id} — pending CTO bypass request ${bypassCheck1c.requestId}`);
-            continue;
-          }
           try {
             requeueDeadPersistentMonitor(db, task.id, 'orphan_catch_all');
           } catch (err) {
@@ -1745,13 +1639,6 @@ export function drainQueue() {
         "SELECT id FROM queue_items WHERE status IN ('queued', 'running', 'spawning') AND lane != 'audit' AND json_extract(metadata, '$.taskId') = ?"
       ).get(taskId);
       if (existing) continue;
-
-      // Bypass request guard — skip tasks with pending CTO bypass requests
-      const bypassCheck1d = checkBypassBlock('todo', taskId);
-      if (bypassCheck1d.blocked) {
-        log(`Step 1d: Skipping revival for task ${taskId} — pending CTO bypass request ${bypassCheck1d.requestId}`);
-        continue;
-      }
 
       // Verify the task still exists and is pending in todo.db
       try {
@@ -1803,16 +1690,6 @@ export function drainQueue() {
               }
             }
 
-            // Check for resolved bypass request context
-            let bypassCtxBlock = '';
-            try {
-              const bypassCtx = getBypassResolutionContext('todo', taskId);
-              if (bypassCtx) {
-                const decisionLabel = bypassCtx.decision === 'approved' ? 'APPROVED' : 'REJECTED';
-                bypassCtxBlock = `\n## CTO Bypass Resolution\nYour previous session submitted a bypass request:\n  Category: ${bypassCtx.category}\n  Summary: ${bypassCtx.summary}\n\nCTO Decision: ${decisionLabel}\nCTO Instructions: "${bypassCtx.context}"\n\n${bypassCtx.decision === 'approved' ? 'Proceed with the work, following the CTO\'s instructions above.' : 'The CTO rejected your request. Take an alternative approach or wrap up without the bypassed action.'}\n`;
-              }
-            } catch (_) { /* non-fatal */ }
-
             // If the dead candidate was an auditor, surface that context so the
             // task-runner knows it's being respawned to address an audit failure.
             // Best-effort lookup of the most recent task_audits row.
@@ -1838,7 +1715,6 @@ export function drainQueue() {
               `Task: ${task.title}`,
               task.section ? `Section: ${task.section}` : null,
               task.description ? `\nDescription:\n${task.description}` : null,
-              bypassCtxBlock || null,
               auditFailureBlock || null,
               `\nThis task was previously being worked on by agent ${candidate.agentId} which died unexpectedly.`,
               `Continue from where the previous agent left off. Check the task status and any existing work before starting.`,

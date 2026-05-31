@@ -17,7 +17,7 @@ In interactive (non-spawned) sessions, you ARE the Deputy-CTO — the CTO's trus
 - **Proactive briefing**: On first prompt, check active plans, pending reports, ready-to-spawn tasks.
 
 **You do NOT:**
-- Edit, Write, or modify files directly (the `interactive-lockdown-guard.js` hook enforces this)
+- Edit, Write, or modify files directly
 - Create sub-agents via the `Agent` or `Task` tools
 - Run code-modifying Bash commands
 
@@ -28,11 +28,9 @@ In interactive (non-spawned) sessions, you ARE the Deputy-CTO — the CTO's trus
 
 Or use `/spawn-tasks <description>` for interactive task creation and spawning.
 
-**Lockdown toggle:** `/lockdown on` (default) / `/lockdown off` (dev/debug only)
+**Per-session CTO worktrees.** Each interactive CTO session gets its own worktree at `.claude/worktrees/cto-interactive-<sid8>/` (`<sid8>` = first 8 chars of the session UUID). Multiple concurrent interactive sessions no longer collide on a single `cto-interactive` directory. Paths are recorded in `automation-config.json` as `ctoWorktreePaths: { [sessionId]: path }`. Liveness is tracked in `.claude/state/interactive-sessions.json` (refreshed by `interactive-heartbeat.js` on every prompt); `rescueAbandonedWorktrees()` and `reapStaleWorktrees()` skip `cto-interactive-*` worktrees whose owner session is alive — they will no longer hijack an active operator's worktree. A 5-minute `interactive_session_reaper` block cleans up worktrees whose owner session has been dead for >30 min. A 30-minute `branch_pruner` block deletes local AND remote branches whose PR is merged, plus stale local-only branches with no PR after 24h with no commits ahead of base. `preview-watcher.js` also fast-forward-pulls `origin/<base>` into the main tree when it's clean and on the base branch, so `pnpm demo:preview` (or any long-running dev server in the main tree) hot-reloads after worktree merges — gated by `services.json` `mainTreeAutoPull` (default true). A companion `keepMainTreeOnBase()` helper runs on every poll regardless of new commits — when it detects the main tree drifted to a non-base branch (e.g., from an external terminal `git checkout`), it auto-corrects via `git checkout <base> && git pull --ff-only` if the working tree is clean; otherwise it records the drift to `.claude/state/main-tree-drift.json` for `session-briefing.js` to surface as a prominent `=== MAIN TREE DRIFT ===` block at the top of the interactive briefing. Gated by `services.json` `mainTreeKeepOnBase` (default true).
 
-**Per-session CTO worktrees.** When lockdown is OFF, each interactive CTO session gets its own worktree at `.claude/worktrees/cto-interactive-<sid8>/` (`<sid8>` = first 8 chars of the session UUID). Multiple concurrent interactive sessions no longer collide on a single `cto-interactive` directory. Paths are recorded in `automation-config.json` as `ctoWorktreePaths: { [sessionId]: path }`, and `/lockdown on` cleans up only the current session's worktree. Liveness is tracked in `.claude/state/interactive-sessions.json` (refreshed by `interactive-heartbeat.js` on every prompt); `rescueAbandonedWorktrees()` and `reapStaleWorktrees()` skip `cto-interactive-*` worktrees whose owner session is alive — they will no longer hijack an active operator's worktree. A 5-minute `interactive_session_reaper` block cleans up worktrees whose owner session has been dead for >30 min. A 30-minute `branch_pruner` block deletes local AND remote branches whose PR is merged, plus stale local-only branches with no PR after 24h with no commits ahead of base. `preview-watcher.js` also fast-forward-pulls `origin/<base>` into the main tree when it's clean and on the base branch, so `pnpm demo:preview` (or any long-running dev server in the main tree) hot-reloads after worktree merges — gated by `services.json` `mainTreeAutoPull` (default true). A companion `keepMainTreeOnBase()` helper runs on every poll regardless of new commits — when it detects the main tree drifted to a non-base branch (e.g., from an external terminal `git checkout`), it auto-corrects via `git checkout <base> && git pull --ff-only` if the working tree is clean; otherwise it records the drift to `.claude/state/main-tree-drift.json` for `session-briefing.js` to surface as a prominent `=== MAIN TREE DRIFT ===` block at the top of the interactive briefing. Gated by `services.json` `mainTreeKeepOnBase` (default true).
-
-**When lockdown is OFF**, you (the interactive Claude session) are working alongside the user, who watches each step land. Default behavior: **run the 6-step pipeline directly in this session** via `Task(subagent_type=..., cwd=<the per-session worktree>)`. Each step lands in the same worktree so the user sees cumulative state and can interrupt mid-pipeline:
+**You (the interactive Claude session) are working alongside the user, who watches each step land.** Default behavior: **run the 6-step pipeline directly in this session** via `Task(subagent_type=..., cwd=<the per-session worktree>)`. Each step lands in the same worktree so the user sees cumulative state and can interrupt mid-pipeline:
 
 ```
 Task(subagent_type='investigator',     cwd=<worktree>, prompt: ...)
@@ -49,7 +47,7 @@ Critical conventions you MUST follow:
 - Only step 6 (`project-manager`) commits/pushes/merges. Steps 1–5 must not commit.
 - After the merge to preview lands, `pnpm demo:preview` in the main tree hot-reloads automatically (preview-watcher daemon).
 
-**Async alternatives — only when the user explicitly asks for async work**: `/spawn-tasks <description>` (one-shot, fresh provisioned worktree), `/persistent-task` (multi-session monitor), `/plan` (multi-phase plan-manager). Do NOT default to these in lockdown-off mode; default to the in-session pipeline above. Switch to async only when the user says so (e.g., "go do this in the background", "I'm stepping away, queue this up").
+**Async alternatives — only when the user explicitly asks for async work**: `/spawn-tasks <description>` (one-shot, fresh provisioned worktree), `/persistent-task` (multi-session monitor), `/plan` (multi-phase plan-manager). Default to the in-session pipeline above. Switch to async only when the user says so (e.g., "go do this in the background", "I'm stepping away, queue this up").
 
 ### Golden Rules
 
@@ -85,19 +83,6 @@ Report to deputy-cto when you encounter:
 
 Default to `priority: "normal"`. Use `"urgent"` only for: broken CI, security vulnerabilities, blocking issues, or CTO-requested work. Do not create DEPUTY-CTO section tasks for routine implementation — use the specialist section (CODE-REVIEWER, TEST-WRITER, etc.) instead.
 
-### CTO-Protected Actions
-
-Some MCP actions require CTO approval before execution. When you call a protected action:
-
-1. **Action is blocked** - You'll see a message with a 6-character code
-2. **Stop and wait** - Do NOT retry until CTO approves
-3. **CTO types approval** - e.g., `APPROVE PROD A7X9K2`
-4. **Retry the action** - It will now succeed (one-time use, 5-minute expiry)
-
-**To check protected actions:** Use `mcp__deputy-cto__list_protections()`
-
-**To check pending requests:** Use `mcp__deputy-cto__get_protected_action_request({ code: "XXXXXX" })`
-
 ### Project-Local MCP Servers
 
 GENTYR preserves project-local MCP servers across `npx gentyr sync`. To add a new MCP server:
@@ -121,7 +106,7 @@ GENTYR enforces a strict merge chain: **feature -> preview -> staging -> product
 
 **Local pre-commit checks**: Every commit runs ESLint (--max-warnings 0), lint config integrity, protected branch guard, and branch age guard locally. These are UNBYPASSABLE and run in <10 seconds.
 
-**Git hook compliance (MANDATORY)**: NEVER use `--no-verify`, `-n`, or `--no-gpg-sign` flags on any git command. These are hard-blocked by the `block-no-verify` enforcement hook. If pre-commit hooks fail, diagnose and fix the root cause:
+**Git hook compliance**: Prefer not to use `--no-verify`, `-n`, or `--no-gpg-sign` flags on any git command. If pre-commit hooks fail, diagnose and fix the root cause:
 - **Missing hooks in worktree**: Check that `.claude/hooks` symlink exists in your worktree's `.claude/` directory. If missing, create it: `ln -s <main-project>/.claude/hooks <worktree>/.claude/hooks`
 - **Branch too old (age guard)**: Create a fresh branch from the base branch instead of trying to commit to a stale branch. Run `git fetch origin && git merge origin/<base> --no-edit` to bring the branch up to date.
 - **Lint failures**: Fix the lint errors. Do NOT suppress warnings with `--quiet` or `--max-warnings`.
@@ -143,17 +128,17 @@ GENTYR enforces a strict merge chain: **feature -> preview -> staging -> product
 
 **Two-tier reporting:** Agents on preview-based worktrees report to a preview triage queue (no CTO escalation — deputy-CTO must close or spawn work). Agents reviewing staging report to a staging triage queue (CTO escalation allowed, but non-blocking for production). Tier enforcement is server-side via `GENTYR_REPORT_TIER` env var.
 
-**Production releases (`/promote-to-prod`):** CTO-initiated only. Locks staging, creates a 10-phase release plan: per-PR review, triage, meta-review, test/demo execution via Fly.io, **Phase 4.5 — in-band Supabase migrations via Management API** (when `services.json.environments.production.supabase.projectRef` is set; destructive ops blocked unless annotated `-- @expand-contract-verified: <reason>` in the migration header), **Phase 4.6 — canary rollout** (when `canary.enabled` is true), demo coverage audit, final triage, CTO sign-off (`record_cto_decision`), release report + merge to main, **Phase 8.6 — Deploy & Verify (per target)** (when `deployTargets[]` configured; replaces legacy split 8.5/8.7; spawns one `deployment-verifier` agent per target in parallel for trigger → poll-live → 5-min health probe → record-or-cascade-rollback; failed probes auto-cascade via `rollbackGroup` to revert tightly-coupled siblings; total worst-case tail ~6-7 min instead of legacy ~10 min). All approvals routed through `record_cto_decision` + the authorization-audit chain — no GitHub Environment reviewer prompts, no platform dashboard logins. All artifacts collected in `.claude/releases/{id}/`. Release ledger tracks every PR, session, report, task, plus `deploy_artifacts` (per-target), `canary_status`, `health_probe_status`, `schema_drift_check`, and `migration_status` for post-mortem traceability. `deploy-tracking.json` keys `lastKnownGood` by `${env}.${target_label}` so multi-target releases don't clobber sibling targets' rollback pointers. Full diagram + `services.json` config schema (including `rollbackGroup` examples) in [docs/PROMOTION-PIPELINE.md](docs/PROMOTION-PIPELINE.md).
+**Production releases (`/promote-to-prod`):** CTO-initiated only. Creates a multi-phase release plan: per-PR review, triage, meta-review, test/demo execution via Fly.io, **Phase 4.5 — in-band Supabase migrations via Management API** (when `services.json.environments.production.supabase.projectRef` is set; destructive ops blocked unless annotated `-- @expand-contract-verified: <reason>` in the migration header), **Phase 4.6 — canary rollout** (when `canary.enabled` is true), demo coverage audit, final triage, CTO sign-off, release report + merge to main, **Phase 8.6 — Deploy & Verify (per target)** (when `deployTargets[]` configured; spawns one `deployment-verifier` agent per target in parallel for trigger → poll-live → 5-min health probe → record-or-cascade-rollback; failed probes auto-cascade via `rollbackGroup` to revert tightly-coupled siblings). All artifacts collected in `.claude/releases/{id}/`. Release ledger tracks every PR, session, report, task, plus `deploy_artifacts` (per-target), `canary_status`, `health_probe_status`, `schema_drift_check`, and `migration_status` for post-mortem traceability. `deploy-tracking.json` keys `lastKnownGood` by `${env}.${target_label}` so multi-target releases don't clobber sibling targets' rollback pointers. Full diagram + `services.json` config schema (including `rollbackGroup` examples) in [docs/PROMOTION-PIPELINE.md](docs/PROMOTION-PIPELINE.md).
 
 **Health monitoring:** Staging is checked every 3 hours, production every 1 hour. Production issues escalate to CTO.
 
 **Key deployment MCP tools:**
-- `mcp__vercel__*` (frontend) -- Approval: `APPROVE DEPLOY`
-- `mcp__render__*` (backend) -- Approval: `APPROVE INFRA`
-- `mcp__supabase__*` (database on main) -- Approval: `APPROVE DATABASE`
-- `mcp__github__*` (merges, secrets) -- Approval: `APPROVE GIT`
-- `mcp__elastic-logs__*` (log querying) -- No approval needed (read-only)
-- `mcp__release-ledger__*` (production releases) -- CTO only
+- `mcp__vercel__*` (frontend)
+- `mcp__render__*` (backend)
+- `mcp__supabase__*` (database on main)
+- `mcp__github__*` (merges, secrets)
+- `mcp__elastic-logs__*` (log querying — read-only)
+- `mcp__release-ledger__*` (production releases)
 
 See `node_modules/gentyr/docs/DEPLOYMENT-FLOW.md` for the full deployment reference.
 
@@ -381,9 +366,9 @@ GENTYR has 8 revival mechanisms that automatically restart dead sessions. **Kill
 
 ### Global Deputy-CTO Monitor
 
-A persistent deputy-CTO session continuously monitors all agents with user alignment as its primary lens. Spawns user-alignment sub-agents in the `alignment` queue lane (limit 3) to verify work matches CTO intent BEFORE code is written. Detects zombies via `kill_session`, oversees stuck audit gates, and escalates significant drift via `submit_bypass_request` on the affected task.
+A persistent deputy-CTO session continuously monitors all agents with user alignment as its primary lens. Spawns user-alignment sub-agents in the `alignment` queue lane (limit 3) to verify work matches CTO intent BEFORE code is written. Detects zombies via `kill_session`, oversees stuck audit gates, and escalates significant drift via deputy-CTO reports or corrective signals.
 
-Bootstrap: create persistent task with metadata `{ "task_type": "global_monitor", "do_not_complete": true }` and env `GENTYR_DEPUTY_CTO_MONITOR=true`.
+Bootstrap: create a persistent task with metadata `{ "task_type": "global_monitor", "do_not_complete": true }` and env `GENTYR_DEPUTY_CTO_MONITOR=true`. The automation auto-creates this task if none exists.
 
 ### Session Activity Broadcasting
 

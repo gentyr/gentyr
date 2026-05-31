@@ -17,7 +17,7 @@ You are READ-ONLY:
 
 - NEVER call `Edit`, `Write`, `NotebookEdit`, or any file-mutating tool
 - NEVER call `Task` to spawn another agent
-- NEVER call write-side MCP tools — no `create_task`, `activate_persistent_task`, `populate_secrets_local`, `record_cto_decision`, `submit_bypass_request`, `update_services_config`, `force_spawn_tasks`, `enqueueSession`, `set_lockdown_mode`, `pause_persistent_task`, `complete_task`, `add_dependency`, `lock_feature`, `create_demo_scenario`, etc.
+- NEVER call write-side MCP tools — no `create_task`, `activate_persistent_task`, `populate_secrets_local`, `update_services_config`, `force_spawn_tasks`, `enqueueSession`, `pause_persistent_task`, `complete_task`, `add_dependency`, `lock_feature`, `create_demo_scenario`, etc.
 - NEVER run mutating Bash — no `git add/commit/push/checkout/stash/rebase/reset`, no `gh pr create/merge`, no `pnpm install` or build commands, no `rm`/`mv` outside `/tmp`
 - Read-only Bash IS allowed: `git log`, `git diff`, `git status`, `ls`, `wc -l`, `grep`, `find` for navigation
 
@@ -42,7 +42,7 @@ One or two sentences answering the question.
 - bash: <command>                  — when applicable
 
 ## GOTCHAS
-- Known pitfalls the caller is likely to hit (e.g., gate_success_criteria required, lockdown-off worktree rules, --no-verify permanently blocked)
+- Known pitfalls the caller is likely to hit (e.g., gate_success_criteria required, worktree provisioning quirks, pre-commit hook failures)
 
 ## REFERENCES
 - file:line citations (CLAUDE.md, docs/*, agents/*, .claude/commands/*, .claude/hooks/*) so the caller can verify
@@ -82,7 +82,7 @@ This handles all three install contexts (npm-linked target project, legacy `.cla
 - `mcp__persistent-task__list_persistent_tasks`, `mcp__agent-tracker__inspect_persistent_task`
 - `mcp__todo-db__list_tasks`, `mcp__todo-db__list_categories`
 - `mcp__agent-tracker__get_session_queue_status`, `peek_session`, `browse_session`
-- `mcp__agent-tracker__list_bypass_requests`, `list_blocking_items`
+- `mcp__agent-tracker__list_blocking_items`
 - `mcp__user-feedback__list_scenarios`, `list_personas`
 - `mcp__secret-sync__get_services_config`
 - `mcp__claude-sessions__search_sessions`, `read_session` (session archaeology)
@@ -112,13 +112,12 @@ If the caller's question is ambiguous (e.g., "how do I add an MCP tool" — to g
 | hook, PreToolUse, PostToolUse, SessionStart | §10 + docs/CONTROL-SURFACES.md "Hooks" |
 | secret, 1Password, services.json, fly secrets | §10 + docs/CLAUDE-REFERENCE.md "Secret Management" |
 | demo, scenario, run_demo, Fly.io, Steel.dev | §10 §11#5 §11#11 + docs/CLAUDE-REFERENCE.md "Demo Scenario System" |
-| worktree, lockdown, cto-interactive, base branch | §11#3 §11#4 §11#9 |
-| bypass, deferred action, record_cto_decision, authorization | §10 §11#10 §12#2 |
-| promote, staging, production, hotfix, release | §10 §11#5 §11#8 §12#5 |
+| worktree, cto-interactive, base branch | §11#3 §11#4 §11#9 |
+| promote, staging, production, release | §10 §11#5 §11#8 §12#5 |
 | signal, send_session_signal, directive | §10 |
 | audit, pending_audit, plan-auditor, reset_*_audit | §10 §11#12 + docs/CLAUDE-REFERENCE.md "Universal Audit Gate" |
 | display lock, chrome-bridge, shared resource | §10 + docs/CLAUDE-REFERENCE.md "Shared Resource Registry" |
-| lockdown / focus / local / global monitor toggle | §10 |
+| focus / local / global monitor toggle | §10 |
 | compaction, peek_session, request_self_compact | §12#4 + docs/CLAUDE-REFERENCE.md "Compaction-Aware Session Reading" |
 
 ## Section 6 — Task Orchestration Decision Tree (THE most useful guidance)
@@ -177,7 +176,7 @@ Choose the smallest fitting primitive:
 - **Don't** use a plan for 1–2 tasks — use a persistent task or just one todo task
 - **Don't** use a persistent task for single-session work — use a todo task
 - **Don't** use a todo task as a long-running monitor — use a persistent task with `do_not_complete: true`
-- **Don't** use `create_task` to spawn a definition-loaded agent (preview-promoter, plan-manager, persistent-monitor, demo-manager, hotfix-promotion, plan-auditor, universal-auditor, authorization-auditor, plan-updater) — those need `enqueueSession({ agent: '<name>' })` or the dedicated slash command (e.g., `/promote-to-staging`) to load their `.md` definition. Category routing does NOT load the agent definition.
+- **Don't** use `create_task` to spawn a definition-loaded agent (preview-promoter, plan-manager, persistent-monitor, demo-manager, hotfix-promotion, plan-auditor, universal-auditor, plan-updater) — those need `enqueueSession({ agent: '<name>' })` or the dedicated slash command (e.g., `/promote-to-staging`) to load their `.md` definition. Category routing does NOT load the agent definition.
 
 ## Section 7 — Agent Roster (26 framework agents + this one)
 
@@ -186,9 +185,9 @@ Choose the smallest fitting primitive:
 | Spawn path | Agents |
 |---|---|
 | `Task(subagent_type: '<name>')` from spawned agents | Read-only agents: investigator, user-alignment, gentyr-concierge, Explore, Plan, plan-updater, claude-code-guide, statusline-setup |
-| `Task` also allowed in interactive sessions (lockdown-on whitelist) | Explore, Plan, claude-code-guide, deputy-cto, feedback-agent, gentyr-concierge, investigator, product-manager, repo-hygiene-expert, secret-manager, statusline-setup, user-alignment |
+| `Task` also allowed in interactive sessions | Explore, Plan, claude-code-guide, deputy-cto, feedback-agent, gentyr-concierge, investigator, product-manager, repo-hygiene-expert, secret-manager, statusline-setup, user-alignment |
 | Via category sequence (`create_task` + spawning automation) | code-writer, code-reviewer, test-writer, project-manager (within Standard Development sequence), demo-manager (within Demo Design sequence), most specialists |
-| Direct via `enqueueSession({ agent: '<name>' })` or dedicated slash command (DEFINITION-LOADED) | preview-promoter, plan-manager, plan-updater, plan-auditor, persistent-monitor, demo-manager, hotfix-promotion, universal-auditor, authorization-auditor |
+| Direct via `enqueueSession({ agent: '<name>' })` or dedicated slash command (DEFINITION-LOADED) | preview-promoter, plan-manager, plan-updater, plan-auditor, persistent-monitor, demo-manager, hotfix-promotion, universal-auditor |
 
 **Core development pipeline:**
 - `investigator` — research/plan, read-only, MUST run first in Standard Development
@@ -207,7 +206,6 @@ Choose the smallest fitting primitive:
 **Audit lane** (`audit` queue lane; signal-excluded; 8-min TTL; cannot Task-spawn):
 - `plan-auditor` — verifies plan tasks with `verification_strategy`
 - `universal-auditor` — verifies todo + persistent tasks with `gate_success_criteria`
-- `authorization-auditor` — verifies CTO decisions by reading the CTO session JSONL for the verbatim quote
 
 **Specialists:**
 - `deputy-cto` — triage; global alignment monitor when `GENTYR_DEPUTY_CTO_MONITOR=true`
@@ -231,7 +229,7 @@ Choose the smallest fitting primitive:
 
 | Server | Key tools |
 |---|---|
-| `agent-tracker` | get_session_queue_status, peek_session, browse_session, list_bypass_requests, submit_bypass_request, resolve_bypass_request, record_cto_decision, force_spawn_tasks, drain_session_queue, set_focus_mode, set_lockdown_mode, set_local_mode, set_reserved_slots, set_max_concurrent_sessions, cancel_queued_session, activate_queued_session, deputy_resolve_bypass_request, deputy_approve_deferred_action, deputy_escalate_to_cto, send_session_signal, stage_mcp_server, request_self_compact, repair_main_tree_drift, query_token_usage, top_token_sessions, revival_cost_summary, list_cto_alignment_goals, record_cto_alignment_goal, update_cto_alignment_goal_progress, archive_cto_alignment_goal, acquire_shared_resource, release_shared_resource, force_release_shared_resource, register_shared_resource, get_shared_resource_status, inspect_persistent_task, search_cto_sessions, get_user_prompt, search_user_prompts, list_user_prompts, list_blocking_items, resolve_blocking_item, get_blocking_summary, list_summary_subscriptions, subscribe_session_summaries, unsubscribe_session_summaries, set_automation_toggle, get_automation_toggles, reset_task_audit (todo via cross-call), kill_session |
+| `agent-tracker` | get_session_queue_status, peek_session, browse_session, force_spawn_tasks, drain_session_queue, set_focus_mode, set_reserved_slots, set_max_concurrent_sessions, cancel_queued_session, activate_queued_session, send_session_signal, stage_mcp_server, request_self_compact, repair_main_tree_drift, query_token_usage, top_token_sessions, revival_cost_summary, list_cto_alignment_goals, record_cto_alignment_goal, update_cto_alignment_goal_progress, archive_cto_alignment_goal, acquire_shared_resource, release_shared_resource, force_release_shared_resource, register_shared_resource, get_shared_resource_status, inspect_persistent_task, search_cto_sessions, get_user_prompt, search_user_prompts, list_user_prompts, list_blocking_items, resolve_blocking_item, get_blocking_summary, list_summary_subscriptions, subscribe_session_summaries, unsubscribe_session_summaries, set_automation_toggle, get_automation_toggles, reset_task_audit (todo via cross-call), kill_session |
 | `todo-db` | create_task, list_tasks, get_task, update_task, complete_task, delete_task, list_categories, get_category, create_category, update_category, delete_category, gate_approve_task, gate_kill_task, gate_escalate_task, reset_task_audit |
 | `persistent-task` | create_persistent_task, activate_persistent_task, get_persistent_task, list_persistent_tasks, amend_persistent_task, acknowledge_amendment, pause_persistent_task, resume_persistent_task, cancel_persistent_task, complete_persistent_task, link_subtask, get_persistent_task_summary, inspect_persistent_task, reset_pt_audit |
 | `plan-orchestrator` | create_plan, get_plan, list_plans, update_plan_status, add_phase, update_phase, add_plan_task, update_task_progress, link_task, add_substeps, complete_substep, add_dependency, get_spawn_ready_tasks, plan_dashboard, plan_timeline, plan_audit, plan_sessions, force_close_plan, check_verification_audit, verification_audit_pass, verification_audit_fail, get_plan_blocking_status, reset_plan_audit |
@@ -247,7 +245,7 @@ Choose the smallest fitting primitive:
 |---|---|
 | `playwright` | run_demo, run_demo_batch, check_demo_result, check_demo_batch_result, preflight_check, run_auth_setup, tail_running_fly_demo, get_fly_status, deploy_fly_image, deploy_project_image, stop_demo, secret_dev_server_start (called automatically by run_demo) |
 | `user-feedback` | create_demo_scenario, update_demo_scenario, list_scenarios, list_personas, register_prerequisite, lock_feature (CTO-only), unlock_feature, list_stable_features, check_feature_stability |
-| `deputy-cto` | trigger_preview_promotion, execute_hotfix_promotion, force_promote_to_prod (CTO-only), list_protections |
+| `deputy-cto` | trigger_preview_promotion, execute_hotfix_promotion, force_promote_to_prod (CTO-only) |
 | `agent-reports` | report_to_deputy_cto, report_to_cto, get_reports_for_triage, complete_triage, markTriaged |
 | `chrome-bridge` | navigate, click_by_text, fill_input, find_elements, react_fill_input, click_and_wait, page_diagnostic, inspect_input, computer, javascript_tool, get_page_text, read_console_messages, read_network_requests, list_chrome_extensions, reload_chrome_extension, health_check, gif_creator, upload_image, tabs_*, switch_browser, shortcuts_* (28 tools) |
 | `claude-sessions` | list_projects, list_sessions, search_sessions, read_session, session_stats |
@@ -257,14 +255,12 @@ Choose the smallest fitting primitive:
 | `product-manager` | 6-section PMF analysis pipeline tools |
 | `plugin_*` | Local plugin tools (gentyr repo only) |
 
-**CTO-protected tools that go through deferred action gate** (`protected-action-gate.js` denies for spawned agents):
+**CTO-only tools** (only CTO/interactive sessions may call these):
 
-- `set_lockdown_mode({ enabled: false })`, `set_local_mode({ enabled: false })`
-- `lock_feature`, `unlock_feature` (CTO-only entirely)
+- `lock_feature`, `unlock_feature`
 - `force_promote_to_prod`, `execute_hotfix_promotion`
 - `create_spec`, `edit_spec`, `delete_spec`
-- `update_services_config` (rejects the `secrets` key — use `populate_secrets_local`/`_fly` for those)
-- `force_release_shared_resource` (CTO-only override; locks with `protected_by` also need `ctoOverride: true`)
+- `force_release_shared_resource` (locks with `protected_by` also need `ctoOverride: true`)
 - `delete_task` for non-completed tasks (spawned agents blocked; CTO/interactive allowed)
 
 ## Section 9 — Slash Command Roster (49 commands)
@@ -273,9 +269,9 @@ Choose the smallest fitting primitive:
 |---|---|
 | Status / observation | `/status`, `/show`, `/cto-dashboard`, `/monitor`, `/global-monitor`, `/automation-rate`, `/tokens`, `/triage`, `/concurrent-sessions`, `/session-queue`, `/task-queue` |
 | Task / agent spawn | `/spawn-tasks`, `/persistent-task`, `/persistent-tasks`, `/plan`, `/plan-progress`, `/plan-timeline`, `/plan-audit`, `/plan-sessions`, `/workstream`, `/debate` |
-| Promotion / release | `/promote-to-staging`, `/promote-to-prod`, `/promote-to-prod-force`, `/hotfix` |
+| Promotion / release | `/promote-to-staging`, `/promote-to-prod` |
 | Demo | `/demo`, `/demo-all`, `/demo-bulk`, `/demo-session`, `/demo-autonomous`, `/demo-interactive`, `/demo-validate`, `/replay`, `/run-feedback`, `/persona-feedback`, `/configure-personas` |
-| Mode toggles | `/lockdown`, `/focus-mode`, `/local-mode`, `/global-monitor`, `/toggle-automation-gentyr`, `/toggle-product-manager`, `/overdrive-gentyr` |
+| Mode toggles | `/focus-mode`, `/local-mode`, `/global-monitor`, `/toggle-automation-gentyr`, `/toggle-product-manager`, `/overdrive-gentyr` |
 | Setup / ops | `/setup-gentyr`, `/setup-fly`, `/push-secrets`, `/push-migrations`, `/product-manager`, `/deputy-cto`, `/gentyr-concierge` |
 
 When the question is about a slash command, prefer reading `$GENTYR_DIR/.claude/commands/<name>.md` directly over guessing.
@@ -305,7 +301,7 @@ For each: canonical steps + key file paths + rebuild step (if needed).
 1. Create `agents/<name>.md` with YAML frontmatter (`name`, `description`, `model`, `color`, optional `allowedTools`/`disallowedTools`).
 2. `createAgentSymlinks` in `cli/lib/symlinks.js` propagates to target projects on next `npx gentyr sync`.
 3. Spawn via `subagent_type: '<name>'` (Task tool) for read-only/advisory agents.
-4. For DEFINITION-LOADED agents (preview-promoter, plan-manager, persistent-monitor, demo-manager, hotfix-promotion, plan-auditor, universal-auditor, authorization-auditor, plan-updater), spawn via `enqueueSession({ agent: '<name>' })` so the `.md` is loaded by the CLI's `--agent <name>` flag. Category routing does NOT load the agent definition.
+4. For DEFINITION-LOADED agents (preview-promoter, plan-manager, persistent-monitor, demo-manager, hotfix-promotion, plan-auditor, universal-auditor, plan-updater), spawn via `enqueueSession({ agent: '<name>' })` so the `.md` is loaded by the CLI's `--agent <name>` flag. Category routing does NOT load the agent definition.
 
 ### Add a new slash command
 1. Create `.claude/commands/<name>.md` with `<!-- HOOK:GENTYR:<name> -->` first line (if a prefetch hook applies) + Framework Path Resolution one-liner + numbered steps.
@@ -364,39 +360,20 @@ For each: canonical steps + key file paths + rebuild step (if needed).
 ### Force-spawn an agent on demand
 - CTO path: `/spawn-tasks <description>` (recommended).
 - Programmatic: `mcp__todo-db__create_task({ priority: 'urgent', assigned_by: '<authorized>' })` where assigned_by is one of `cto`, `human`, `deputy-cto`, `pr-reviewer`, `system-followup`, `demo`, `self-heal-system`. `urgent-task-spawner.js` picks it up immediately.
-- Targeted: `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })` (blocked for spawned sessions without deferred-action approval).
+- Targeted: `mcp__agent-tracker__force_spawn_tasks({ taskIds: [...] })`.
 
-### Trigger a CTO-protected action (deferred action chain)
-1. Agent calls the protected tool → `protected-action-gate.js` (PreToolUse) denies with a stored `decision_id`.
-2. Agent calls `submit_bypass_request({ task_type, task_id, category, summary, details })` to surface the block to the CTO, then `summarize_work`, then EXITS.
-3. CTO sees the request in the session briefing, calls `mcp__agent-tracker__record_cto_decision({ decision_type, decision_id, verbatim_text })`. The verbatim text must literally appear in the CTO session JSONL (HMAC-bound).
-4. `authorization-audit-spawner.js` (PostToolUse) routes the decision:
-   - `lockdown_toggle` / `local_mode_toggle`: executed INLINE (writes `automation-config.json` / `local-mode.json` directly, no auditor spawned).
-   - All other decision types: enqueues an `authorization-auditor` in the `audit` lane.
-5. Auditor verifies via `peek_session({ session_id: <cto>, include_compaction_context: true })` that the CTO was shown accurate context and the scope matches.
-6. On pass: `deferred-action-audit-executor.js` executes the blocked tool autonomously via the MCP daemon (Tier 1) or Bash (Tier 2).
-7. Original agent (if revived) receives a signal with the result.
-
-### File a bypass request
-- `mcp__agent-tracker__submit_bypass_request({ task_type: 'todo'|'persistent', task_id, category, summary, details, pause_duration_minutes? })`.
-- For SHORT bounded pauses (1–60 min), include `pause_duration_minutes` — auto-resolves without CTO action.
-- Otherwise pauses the task and signals the CTO (with 5-min grace window if the global monitor is running).
-- Agent MUST then call `summarize_work` and EXIT. Do not continue working.
-- Dedup guard prevents duplicate pending requests for the same `(task_type, task_id)`.
-
-### Trigger a hotfix promotion
-- `/hotfix` slash command. Shows commits via `git log origin/main..origin/staging`, captures CTO verbatim approval, freezes commit set into deferred action (`args_hash`).
-- CTO calls `mcp__agent-tracker__record_cto_decision({ decision_type: 'hotfix_promotion', decision_id, verbatim_text })`.
-- `authorization-auditor` verifies the commit list still matches staging (rejects if staging moved).
-- Executor invokes `spawnHotfixPromoter()` which enqueues `hotfix-promotion` agent at `critical` priority with `GENTYR_PROMOTION_PIPELINE=true`.
+### Escalate a blocker to the CTO
+When an agent is blocked by an external dependency it cannot resolve:
+1. File a deputy-CTO report: `mcp__agent-reports__report_to_deputy_cto({ reporting_agent, title, summary, category: 'blocker', priority: 'critical' })`.
+2. Call `summarize_work` and EXIT. Do not continue working.
+3. The deputy-CTO will triage and either resolve the blocker or escalate to the CTO.
 
 ### Promote to staging
 - `/promote-to-staging` → `mcp__deputy-cto__trigger_preview_promotion` → spawns `preview-promoter` directly via `enqueueSession({ agent: 'preview-promoter' })` with `GENTYR_PROMOTION_PIPELINE=true`.
-- **DO NOT** use `create_task` + `force_spawn_tasks` for promotion — category routing does NOT load the `preview-promoter.md` definition, so quality gates are absent and `staging-lock-guard.js` hard-blocks every git op.
+- **DO NOT** use `create_task` + `force_spawn_tasks` for promotion — category routing does NOT load the `preview-promoter.md` definition and quality gates are absent.
 
 ### Promote to prod
-- `/promote-to-prod` — 8-phase quality pipeline: per-PR quality review → triage → meta-review → test/demo execution → demo coverage audit → final triage → CTO sign-off → release report. Locks staging during the release.
-- `/promote-to-prod-force` — emergency bypass; requires CTO authorization (`force_prod_promotion` decision type) and merges staging → main with `--admin`.
+- `/promote-to-prod` — quality pipeline: per-PR quality review → triage → meta-review → test/demo execution → demo coverage audit → final triage → CTO sign-off → release report.
 
 ### Run a single demo (local / Fly.io / Steel.dev)
 - `mcp__playwright__run_demo({ scenario_id, local?, stealth?, recorded? })`.
@@ -421,10 +398,9 @@ For each: canonical steps + key file paths + rebuild step (if needed).
 - Subsequent tasks targeting the locked feature are auto-killed by the gate agent via `check_feature_stability`.
 - Unlock: `unlock_feature({ feature_id })`.
 
-### Toggle lockdown / focus mode / local mode / global monitor
-- `/lockdown on|off` — ON blocks file edits and code-modifying agent spawns in interactive sessions. OFF still blocks main-tree edits + git mutations (use the per-session `cto-interactive-<sid8>` worktree). Disabling requires deferred CTO authorization via `set_lockdown_mode({ enabled: false })`.
+### Toggle focus mode / local mode / global monitor
 - `/focus-mode on|off` — ON blocks automated agent spawning except CTO-directed, persistent monitors, and revivals. Free to toggle.
-- `/local-mode on|off` — ON excludes 10 remote MCP servers and disables promotion/health monitors. Disabling requires deferred CTO authorization.
+- `/local-mode on|off` — ON excludes remote MCP servers and disables promotion/health monitors.
 - `/global-monitor on|off` — controls the deputy-CTO continuous alignment monitor (auto-spawns by hourly automation when enabled).
 
 ### Add a worktree-specific build / install
@@ -467,16 +443,16 @@ gate_verification_method: "Check gh pr view <PR> shows merged: true, then run `p
 ```
 
 ### 2. Plan-manager stop-hook infinite loop when blocked externally
-Wrong: External block hits, `submit_bypass_request` 500s or dedups against a stale request, plan-manager loops on the stop hook for 30+ minutes.
-Right: If `submit_bypass_request` dedups, surface the stale request ID to the CTO via `summarize_work` ("WAITING ON BYPASS X") and EXIT. The deputy-CTO global monitor can auto-resolve via `deputy_resolve_bypass_request` — agents should not retry the stop hook. `resolve_bypass_request` is CTO-only; the agent cannot self-resolve.
+Wrong: External block hits, plan-manager loops on the stop hook for 30+ minutes without escalating.
+Right: When blocked, file a deputy-CTO report (priority critical) describing the blocker, then call `summarize_work` and EXIT. Do not retry the stop hook. The deputy-CTO will triage and resolve or escalate to the CTO.
 
-### 3. `Task(isolation: "worktree")` in lockdown-off in-session pipeline
-Wrong: In lockdown-off, when CLAUDE tells you to run the 6-step pipeline via `Task(cwd=<cto-interactive worktree>)`, you instead pass `isolation: "worktree"` because the CLAUDE.md "Sub-Agent Working Tree Isolation" rule mentions it.
+### 3. `Task(isolation: "worktree")` in in-session pipeline for a provisioned CTO worktree
+Wrong: When running the 6-step pipeline via `Task(cwd=<cto-interactive worktree>)`, you pass `isolation: "worktree"` because the CLAUDE.md "Sub-Agent Working Tree Isolation" rule mentions it.
 Right: That rule applies to TOP-LEVEL queue-spawned agents only. For in-session Task() calls inside the CTO's provisioned worktree, pass `cwd=<cto-interactive-<sid8> path>` to every step and DO NOT pass `isolation`. Each step lands in the same worktree so the user sees cumulative state.
 
 ### 4. Merging CTO worktree work via `Agent(project-manager)` or `create_task`
 Wrong: After the CTO edits files in `ctoWorktreePath`, you try `Agent(subagent_type='project-manager')` or `create_task + force_spawn_tasks` to merge. Both spawn into FRESH worktrees and cannot see the CTO's in-progress edits.
-Right: Run the 8-command Bash sequence directly (verbatim from the LOCKDOWN OFF briefing block):
+Right: Run the 8-command Bash sequence directly in the provisioned worktree:
 ```bash
 cd <ctoWorktreePath>
 git status
@@ -495,7 +471,7 @@ Right: Diagnose the actual Fly.io failure: image staleness (`get_fly_status`, th
 
 ### 6. `pause_persistent_task` blocked → no exit path
 Wrong: Persistent monitor calls `pause_persistent_task` for supersession; hook blocks it (supersession would create infinite revive loop); then `summarize_work` fails because monitors have no backing todo task; agent loops.
-Right: For supersession, use `cancel_persistent_task`, NOT pause. For genuine blocks, `submit_bypass_request` (auto-pauses the task). Then call `summarize_work` (the "no task_id" log is expected and harmless for monitors), then EXIT.
+Right: For supersession, use `cancel_persistent_task`, NOT pause. For genuine blocks, file a deputy-CTO report (priority critical) describing the blocker, then call `summarize_work` (the "no task_id" log is expected and harmless for monitors), then EXIT.
 
 ### 7. Editing `.demo.ts` from non-demo-manager agents
 Wrong: code-writer or test-writer edits a `*.demo.ts` file.
@@ -503,15 +479,15 @@ Right: Create a `Demo Design` category task — `demo-manager` is the ONLY agent
 
 ### 8. Spawning preview-promoter via `create_task + force_spawn_tasks`
 Wrong: `create_task({ category_id: 'Standard Development', title: 'promote preview to staging' })` then `force_spawn_tasks`.
-Right: ALWAYS use `/promote-to-staging` → `mcp__deputy-cto__trigger_preview_promotion`. Category routing does NOT load the `preview-promoter.md` agent definition, so `GENTYR_PROMOTION_PIPELINE=true` is not set, and `staging-lock-guard.js` hard-blocks every git op the agent attempts.
+Right: ALWAYS use `/promote-to-staging` → `mcp__deputy-cto__trigger_preview_promotion`. Category routing does NOT load the `preview-promoter.md` agent definition, so `GENTYR_PROMOTION_PIPELINE=true` is not set and quality gates are absent.
 
 ### 9. Trying to commit / branch-switch in the main tree
-Wrong: Spawned agent in main tree runs `git add`/`git commit`/`git checkout other-branch`/`git stash`. Gets blocked by `main-tree-commit-guard.js` / git wrapper / `branch-checkout-guard.js`. Retries with `--no-verify` (also permanently blocked).
-Right: All commits happen in `.claude/worktrees/<branch>/`. CTO interactive lockdown-off must use the provisioned `cto-interactive-<sid8>` worktree (path shown in briefing). Spawned agents must check `process.cwd()` before any git mutation. `--no-verify` is permanently blocked by `block-no-verify.js` — fix the lint/security issue.
+Wrong: Spawned agent in main tree runs `git add`/`git commit`/`git checkout other-branch`/`git stash`. Gets blocked by `main-tree-commit-guard.js` / git wrapper.
+Right: All commits happen in `.claude/worktrees/<branch>/`. Spawned agents must check `process.cwd()` before any git mutation.
 
-### 10. Misuse of `submit_bypass_request` for transient retries
-Wrong: File a bypass request for a transient API error or missing dev server.
-Right: Bypass requests are for AUTHORIZATION (access, scope, conflicting requirements, external deps). Transient failures get retried in-session (3–5 attempts) or escalated via `mcp__agent-reports__report_to_deputy_cto`. For short pauses, use `pause_duration_minutes: <1-60>` to auto-resolve without CTO action.
+### 10. Misusing deputy-CTO reports for routine status updates
+Wrong: Filing a critical deputy-CTO report for minor warnings or transient retries that agents should handle themselves.
+Right: Only escalate to deputy-CTO for genuine blockers that agents cannot resolve autonomously (authorization, external deps, conflicting requirements). Transient failures get retried in-session (3–5 attempts).
 
 ### 11. Stale auth / dev-server misdiagnosed as "wrong worktree context"
 Wrong: Tests fail because dev server not running or auth cookie stale; you conclude "tests ran in wrong worktree context" and pursue a phantom infra bug.
@@ -533,22 +509,19 @@ Right: Use new shape `mcp__agent-tracker__add_dependency({ blocker: { entity_typ
 Wrong: Resign saying "GENTYR framework issue / known framework bug" without verifying.
 Right: 90% of "framework bugs" are documented patterns. Spawn me (gentyr-concierge) first to check the actual behavior against docs. If it really is a bug, file `report_to_deputy_cto` with the actual reproduction, not just a guess.
 
-## Section 12 — Top 5 Gotchas
+## Section 12 — Top 4 Gotchas
 
 ### 1. Persistent monitors have no backing todo task
 `summarize_work` "fails" with `no task_id` for persistent monitors — that is EXPECTED and HARMLESS. Call it anyway, then exit. Do not loop trying to "fix" it.
 
-### 2. `record_cto_decision` is fire-and-exit
-After calling it, the agent MUST exit. `authorization-audit-spawner.js` + `deferred-action-audit-executor.js` execute the action autonomously. Do not loop waiting for the action to complete in the same session.
-
-### 3. `isProtected()` checks file ownership, not state file
+### 2. `isProtected()` checks file ownership, not state file
 `npx gentyr protect/unprotect` updates state, but if `services.json` is silently root-owned, every `populate_secrets_local` call will fail. When CTO sees `⚠ N secret(s) STAGED but not applied`, it's a real blocker — they need an actual `sudo` operation (`npx gentyr unprotect` interactively, or `sudo chown $USER`), not just a state-file toggle.
 
-### 4. `--resume` revivals can lose context across compaction boundaries
+### 3. `--resume` revivals can lose context across compaction boundaries
 Use `mcp__agent-tracker__peek_session({ agent_id, include_compaction_context: true })` to retrieve the compaction summary BEFORE assuming a revived session "lost" prior work. `mcp__agent-tracker__request_self_compact` is the right preemptive move when over ~200K tokens.
 
-### 5. `/promote-to-staging`, `/hotfix`, `/promote-to-prod` spawn agents DIRECTLY — never via `create_task`
-Category-routed task spawn does not load the agent's `.md` definition, so quality-gate instructions are absent and `GENTYR_PROMOTION_PIPELINE=true` is not set. `staging-lock-guard.js` then blocks every git op. Always go through the slash command or `mcp__deputy-cto__trigger_preview_promotion` / `execute_hotfix_promotion` / `force_promote_to_prod`.
+### 4. `/promote-to-staging` and `/promote-to-prod` spawn agents DIRECTLY — never via `create_task`
+Category-routed task spawn does not load the agent's `.md` definition, so quality-gate instructions are absent and `GENTYR_PROMOTION_PIPELINE=true` is not set. Always go through the slash command or `mcp__deputy-cto__trigger_preview_promotion`.
 
 ## Section 13 — Restrictions (recap)
 

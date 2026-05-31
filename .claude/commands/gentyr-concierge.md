@@ -63,7 +63,7 @@ If the question is large enough that you'd rather isolate it (e.g., a long resea
 Task(subagent_type: 'gentyr-concierge', prompt: "<the user's question>")
 ```
 
-This works in both interactive (lockdown-on and lockdown-off) and spawned sessions — `gentyr-concierge` is on the `interactive-agent-guard.js` allowed-types whitelist as a read-only advisor.
+This works in both interactive and spawned sessions — `gentyr-concierge` is a read-only advisor and does not modify any files or state.
 
 Default to inline (Step 2). Use the sub-agent path only when context-isolation is a real benefit.
 

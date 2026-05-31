@@ -4,7 +4,7 @@ Multi-layered defense-in-depth architecture protecting the development pipeline 
 
 ## Overview
 
-GENTYR enforces a **fail-closed** security model (invariant G001): when any check encounters an error, ambiguity, or missing configuration, it **blocks** the action rather than allowing it through. Seven protection layers operate independently so that compromising one layer does not defeat the others.
+GENTYR uses root-owned critical hook files to prevent agent tampering with core safety checks. Tamper detection runs at commit time and session start.
 
 ## Threat Model
 
@@ -13,22 +13,17 @@ GENTYR enforces a **fail-closed** security model (invariant G001): when any chec
 | Threat | Description |
 |--------|-------------|
 | Hook tampering | Agent deleting or modifying git hooks or Claude Code hooks to remove safety checks |
-| Credential access | Agent reading secrets from files, environment variables, or CLI tools |
-| Unauthorized infra changes | Agent modifying production infrastructure (Render, Vercel, Supabase, etc.) without CTO approval |
+| Audit gate bypass | Agent attempting to complete tasks while `pending_audit` is active |
 | Git hook bypass | Agent using `--no-verify`, `-n`, or `core.hooksPath` to skip pre-commit review |
-| Approval forgery | Agent writing fake approval tokens to bypass deputy-CTO commit review or protected action gates |
-| MCP aliasing | Agent connecting to an unknown MCP server that shadows a protected server's tool names |
 | Lint weakening | Agent suppressing ESLint warnings or errors via flags or config file changes |
-| Secret leakage | User accidentally pasting credentials into chat, or agent extracting secrets from tool output |
 
 ### Trust Boundaries
 
 | Principal | Trust Level | Capabilities |
 |-----------|-------------|-------------|
-| CTO (human) | Full trust | Approves protected actions, reviews commits, manages secrets |
-| deputy-cto agent | Elevated trust | Reviews commits, triages reports, but cannot self-approve |
-| Other agents | Restricted | Cannot access secrets, modify infrastructure, or bypass hooks |
-| MCP servers | Scoped trust | Only allowlisted servers may be called; protected servers require approval |
+| CTO (human) | Full trust | Reviews commits, manages secrets, signs off releases |
+| deputy-cto agent | Elevated trust | Reviews commits, triages reports |
+| Other agents | Standard | Follow agent definitions and guidance; cannot tamper with root-owned hooks |
 
 ## Layer 1: Root Ownership
 
@@ -44,8 +39,8 @@ OS-level access control that prevents agents from modifying critical files, even
 Note: `.claude/` and `.claude/hooks/` are intentionally **not** root-owned as directories. Git requires write access to these paths for atomic file operations (`git stash`, `git checkout`, `git merge`). Root-owning `.claude/` blocked runtime file creation (databases, state files) and broke tracked git operations. Symlink target verification (described below) replaces directory ownership as the anti-tampering mechanism.
 
 **Files** (root-owned, `644`):
-- Hook scripts: `pre-commit-review.js`, `block-no-verify.js`, `protected-action-gate.js`, `authorization-audit-spawner.js`, `protected-action-approval-hook.js`, `credential-file-guard.js`, `secret-leak-detector.js`
-- Configuration: `protected-actions.json`, `.claude/settings.json`, `.claude/protection-key`, `.mcp.json`, `eslint.config.js`, `package.json`
+- Hook scripts: `pre-commit-review.js`, `block-no-verify.js`, `gate-confirmation-enforcer.js`, `signal-compliance-gate.js`
+- Configuration: `.claude/settings.json`, `.mcp.json`, `eslint.config.js`, `package.json`
 - Git hooks: `.husky/pre-commit` (`755`, executable)
 
 **Copy-on-protect for linked projects** (npm link / legacy symlink installs):
@@ -83,7 +78,6 @@ Because neither `.claude/` nor `.claude/hooks/` is root-owned as a directory, an
 - Agent cannot replace `.claude/hooks` symlink with a pointer to a different directory (symlink target verification)
 - Agent cannot modify `.mcp.json` to add unvetted MCP servers (root-owned)
 - Agent cannot weaken ESLint config or package.json scripts (root-owned)
-- Agent cannot tamper with the HMAC protection key used for approval verification (root-owned)
 
 ### Protection State
 
@@ -96,12 +90,8 @@ Written to `.claude/protection-state.json`. Direct installs (framework repo):
   "criticalHooks": [
     "pre-commit-review.js",
     "block-no-verify.js",
-    "protected-action-gate.js",
-    "authorization-audit-spawner.js",
-    "protected-action-approval-hook.js",
-    "credential-file-guard.js",
-    "secret-leak-detector.js",
-    "protected-actions.json"
+    "gate-confirmation-enforcer.js",
+    "signal-compliance-gate.js"
   ]
 }
 ```
@@ -119,59 +109,7 @@ Linked project installs (npm link / legacy symlink) also include `hooksProtected
 
 The `criticalHooks` array is the single source of truth for both the commit-time tamper check and the SessionStart tamper check. `hooksProtectedDir` redirects both checks to the local copy directory for linked projects.
 
-## Layer 2: Protected Action Gate
-
-**File**: `.claude/hooks/protected-action-gate.js`
-
-Blocks agents from authorizing their own actions on protected MCP servers and routes the call through the **Unified CTO Authorization System** (deferred actions + `record_cto_decision` + independent auditor).
-
-### Protected Servers
-
-Configured in `.claude/hooks/protected-actions.json`. Each entry specifies:
-- `tools`: `"*"` (all tools) or an array of specific tool names
-- `protection`: `"approval-only"` or `"deputy-cto-approval"`
-- `credentialKeys`: environment variable names guarded by the credential file guard
-
-Typical protected servers include Supabase (prod/staging), Render (prod/staging), Vercel, GitHub, Resend, 1Password, secret-sync, deputy-cto, and release-ledger.
-
-> The legacy `phrase` field (e.g. `"APPROVE SYNC"`) still appears on some entries for backward compatibility with the deprecated HOTFIX flow. New entries should not rely on it — the current authorization path does not use chat phrases.
-
-### Deferred Action Mechanism (current)
-
-1. **Block.** Agent calls a protected MCP tool; the gate denies the call and persists a `deferred_actions` row in `.claude/state/bypass-requests.db` with the exact `server + tool + args + args_hash + source_hook`. The denial response carries the deferred-action ID.
-2. **Spawned agents** are instructed to file `mcp__agent-tracker__submit_bypass_request`, summarize their work, and exit — they do not retry and do not wait.
-3. **Interactive (CTO) sessions** present the deferred-action ID to the CTO and ask for approval in natural language. There is no phrase, no code, and no fixed expiry chat pattern.
-4. **Record decision.** Agent calls `mcp__agent-tracker__record_cto_decision({ decision_type, decision_id, verbatim_text, session_id, ... })`. The tool scans the CTO's session JSONL for the verbatim quote and computes an HMAC-SHA256 proof over `(decision_type, decision_id, verbatim_text, session_file_hash)` using the protection key (root-owned, unreadable by agents).
-5. **Audit.** `authorization-audit-spawner.js` (PostToolUse) enqueues an `authorization-auditor` in the `audit` lane (Sonnet, 8-min TTL, signal-excluded). The auditor uses `peek_session` to re-read the CTO's session JSONL and verifies that (a) the verbatim quote actually appears, (b) the surrounding context was not misrepresented to the CTO, and (c) the decision scope matches the deferred action. For `lockdown_toggle` / `local_mode_toggle` only, execution is inline — no separate auditor is spawned because interactive sessions have no `agent_id`/`queue_id` for `peek_session` to look up.
-6. **Execute.** On audit pass, `deferred-action-audit-executor.js` (PostToolUse on `cto_decision_audit_pass`) loads the deferred action, atomically transitions it `approved → executing`, runs the original tool call autonomously via the MCP shared daemon (Tier 1) or Bash (Tier 2 / inline state writes), and marks it `completed`. The original requesting agent does not need to be alive.
-
-**Anti-forgery**: The deferred action's `args_hash` (SHA-256 of tool arguments) binds the executed call to the exact arguments the CTO was shown — no bait-and-switch. The CTO decision's `hmac` binds the verbatim quote to the session file hash — agents cannot fabricate or alter approvals. The auditor reads the actual session JSONL, not agent claims.
-
-**Fail-closed**: If the auditor cannot find the session file, cannot locate the verbatim quote, or detects a scope mismatch between the presented context and the deferred action, the verdict is FAIL and the action is not executed.
-
-### Legacy 6-char HMAC mechanism (removed)
-
-The pre-Phase-2 system generated a 6-character alphanumeric code and required the CTO to type `APPROVE <PHRASE> <CODE>` in chat. The files implementing it (`bypass-approval-hook.js`, `bypass-approval-token.js`) and the `APPROVE BYPASS` / `APPROVE HOTFIX` / `DENY BYPASS` / `CLEAR ALL BYPASS` patterns have been deleted. `protected-action-approval-hook.js` remains for the older code-based protected-action path (deprecated; do not rely on it in new code). The `/hotfix` slash command — the last legacy consumer — has been migrated onto `record_cto_decision({ decision_type: 'hotfix_promotion', ... })`. **Do not promise the CTO a 6-character code in new agent prompts; capture the CTO's natural-language approval and pass it to `record_cto_decision` verbatim.**
-
-### MCP Server Allowlist
-
-To prevent **MCP aliasing attacks** (an unknown server registering tools with the same names as protected tools):
-
-- **Known servers** listed in config → allowed
-- **Framework servers** in `allowedUnprotectedServers` (e.g., `todo-db`, `agent-tracker`, `specs-browser`, `session-events`) → allowed
-- **Unknown servers** → **BLOCKED** (exit 1)
-
-### Fail-Closed Behaviors (G001)
-
-| Condition | Result |
-|-----------|--------|
-| Config file missing | Block ALL MCP actions |
-| Config file corrupted | Block ALL MCP actions |
-| Protection key missing | Block protected actions |
-| HMAC verification fails | Delete forged approval, continue checking |
-| File lock timeout | Block action |
-
-## Layer 3: Bash Command Blocking
+## Layer 2: Bash Command Blocking
 
 **File**: `.claude/hooks/block-no-verify.js`
 
@@ -190,17 +128,7 @@ Pre-tool-use hook that intercepts Bash commands and blocks dangerous patterns.
 - `eslint --max-warnings N` where N > 0 (violates zero-tolerance policy)
 - `eslint --no-error-on-unmatched-pattern` (silently skips linting)
 
-**Credential CLI access**:
-- All 1Password CLI (`op`) subcommands: `run`, `read`, `item`, `inject`, `signin`, `signout`, `whoami`, `vault`, `document`, `connect`, `account`, `group`, `user`, `service-account`, `events-api`, `plugin`
-- `op --*` global flags
-
-### Bypass Mechanism
-
-For legitimate emergencies the agent should call `mcp__agent-tracker__submit_bypass_request({ task_type, task_id, category, summary, details })`. The request pauses the task, appears in the CTO's session briefing under `=== CTO BYPASS REQUESTS AWAITING DECISION ===`, and is resolved by the CTO via `resolve_bypass_request({ request_id, decision, context })`. No 6-character code is generated; the CTO replies in natural language. See "CTO Bypass Request System" in `CLAUDE.md` for the full lifecycle.
-
-> The legacy `APPROVE BYPASS <CODE>` chat pattern and `.claude/bypass-approval-token.json` have been removed. The `/hotfix` flow uses the same `record_cto_decision` pipeline (`decision_type: 'hotfix_promotion'`).
-
-## Layer 4: Deputy-CTO Commit Review
+## Layer 3: Deputy-CTO Commit Review
 
 **File**: `.claude/hooks/pre-commit-review.js` (v4.0 — PR-Based Review)
 
@@ -248,7 +176,7 @@ These run before any bypass logic and cannot be circumvented:
 2. **Git hooksPath validation** -- blocks if `core.hooksPath` is not `.husky` or empty
 3. **Strict ESLint** -- runs `eslint --max-warnings 0` on staged `.ts`/`.tsx` files
 
-## Layer 5: Secret Isolation
+## Layer 4: Secret Isolation
 
 **File**: `packages/mcp-servers/src/secret-sync/server.ts`
 
@@ -283,44 +211,7 @@ Even if all other layers were compromised, an agent cannot extract secret values
 2. The server handlers are designed to return status information, never credential values
 3. The 1Password CLI runs in the server's process space, not the agent's
 
-## Layer 6: Credential Guards
-
-Two complementary hooks that block credential access at different points.
-
-### Credential File Guard
-
-**File**: `.claude/hooks/credential-file-guard.js`
-
-Blocks file access tools (Read, Write, Edit, Bash, Grep, Glob) from touching credential files. Uses tiered protection with HMAC-signed CTO approval for configuration files.
-
-**Tiered Protection**:
-
-1. **Always-blocked files** (no escape hatch):
-   - `.env`, `.env.local`, `.env.production`, `.env.staging`, `.env.development`, `.env.test`, `.credentials.json`
-   - `.claude/protection-key`
-   - `.claude/protected-action-approvals.json`
-   - `.claude/bypass-approval-token.json`
-   - `.claude/commit-approval-token.json`
-
-2. **CTO-approvable files**: `.claude/config/services.json`, `.mcp.json`, `.claude/api-key-rotation.json`, `.claude/credential-provider.json`, `.claude/vault-mappings.json`. (Legacy entries in the gate config carry a `phrase` field like `APPROVE CONFIG` for backward compatibility; the active flow is described below.)
-
-**Approval flow**: When an agent attempts to access a CTO-approvable file, the gate denies the call and creates a deferred action (see "Deferred Action Mechanism" above). The CTO approves via natural-language `record_cto_decision`, an independent auditor verifies the approval against the session JSONL, and the executor performs the read/write autonomously. No 6-character code is generated; no `APPROVE <PHRASE> <CODE>` chat pattern is required.
-
-**Protected patterns**: `/\.env(\.[a-z]+)?$/i`
-
-**Bash analysis**: Tokenizes commands respecting quotes, scans all arguments (not just known file-position args), checks redirection targets, performs raw substring scan for blocked path suffixes, and blocks environment variable references (`$KEY`, `${KEY}`, `printenv KEY`) for keys listed in `protected-actions.json`.
-
-### Secret Leak Detector
-
-**File**: `.claude/hooks/secret-leak-detector.js`
-
-Scans user messages for accidentally pasted credentials.
-
-**Detected patterns**: 1Password service account tokens (`ops_`), GitHub PATs (`ghp_`, `github_pat_`), Render API keys (`rnd_`), Resend keys (`re_`), Supabase/JWT tokens (`eyJ...`), AWS access keys (`AKIA`), private keys (`-----BEGIN`), Stripe keys (`sk_live_`/`sk_test_`), OpenAI keys (`sk-...T3BlbkFJ`), Anthropic keys (`sk-ant-`), Slack tokens (`xox[bporas]-`), and context-dependent patterns for Vercel, Elastic, and Cloudflare tokens.
-
-**Behavior**: Emits a warning message with provider-specific rotation instructions. Does not block the message (the credential is already in context at detection time; the goal is to prompt immediate rotation).
-
-## Layer 7: Agent Capability Restrictions
+## Layer 5: Agent Capability Restrictions
 
 **File**: `.claude/agents/*.md`
 
@@ -330,39 +221,19 @@ Each agent definition can specify tool restrictions that limit what the agent ca
 
 Agent tool restrictions operate at two levels:
 
-1. **Agent-level** (`.claude/agents/*.md`): Instructions and `allowedTools`/`disallowedTools` fields tell the agent what it should and should not do. Examples:
-   - `secret-manager`: Cannot use Edit, Write, Bash, or Task -- restricted to read-only operations and MCP tools
-   - `investigator`: Investigation-only agent that must not edit code or write files
-   - `code-reviewer`: Cannot use deputy-cto MCP tools (reserved for the deputy-cto agent)
-   - `feedback-agent`: Cannot use Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch, or Task
-
-2. **Hook-level** (Layers 2-6): Even if an agent attempts to exceed its restrictions, the pre-tool-use hooks enforce hard boundaries. An agent that tries to read `.env` files hits the credential file guard regardless of its declared capabilities.
-
-The combination means agent restrictions are **defense-in-depth**: the agent definition is the first line of defense, and the hook system is the backstop.
+Agent definitions use `allowedTools`/`disallowedTools` to specify tool restrictions. Examples:
+- `secret-manager`: Cannot use Edit, Write, Bash, or Task — restricted to read-only operations and MCP tools
+- `investigator`: Investigation-only agent that must not edit code or write files
+- `code-reviewer`: Cannot use deputy-cto MCP tools (reserved for the deputy-cto agent)
+- `feedback-agent`: Cannot use Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch, or Task
 
 ## How Layers Interact
 
-### Example 1: Agent Attempts to Read a Production Secret
+### Example: Agent Attempts to Bypass Commit Review
 
-1. **Layer 7** (Agent Restrictions): If the agent is `secret-manager`, it cannot use `Read` or `Bash` tools at all
-2. **Layer 6** (Credential File Guard): If a general agent tries `Read` on `.env.production`, the hook blocks it
-3. **Layer 1** (Root Ownership): If an agent tries to circumvent hooks by modifying `credential-file-guard.js`, the file is root-owned and cannot be changed
-4. **Layer 3** (Bash Blocking): If an agent tries `op read op://vault/item/field`, the `op` command is blocked
-5. **Layer 5** (Secret Isolation): Even through the secret-sync MCP server, values are resolved in-process and never returned to the agent
-
-All five layers must be defeated to extract a secret value. Compromising any single layer is insufficient.
-
-### Example 2: Agent Attempts to Bypass Commit Review
-
-The commit-time approval token system for commits has been removed in v4.0 (PR-Based Review). Code review now happens at PR time via the deputy-CTO agent. The relevant attack surface is now bypassing the PR-level gate:
-
-1. **Layer 4** (Commit Review): Agent commits code; pre-commit hook runs lint + security checks. No deputy-CTO spawn at commit time.
-2. **Layer 2** (Protected Action Gate): Agent tries to call `mcp__deputy-cto__approve_commit` directly to forge a PR approval — this is a protected action; the gate denies it and routes it through the deferred-action + `record_cto_decision` flow, so a forged self-approval is rejected.
-3. **Layer 2** (Authorization Audit): Agent tries to fabricate a `cto_decisions` row to claim the CTO approved — `record_cto_decision` verifies the verbatim quote actually appears in the CTO's session JSONL before it stores anything, and the independent auditor re-verifies via `peek_session` before execution. An agent cannot generate the HMAC because the protection key is root-owned.
-4. **Layer 6** (Credential File Guard): Agent tries to read `.claude/protection-key` to compute the HMAC — the credential file guard blocks access.
-5. **Layer 1** (Root Ownership): Agent tries to modify the credential file guard to remove the block — the hook file is root-owned.
-
-The approval chain is cryptographically bound: code → HMAC → protection key → root ownership. Breaking any link blocks the attack.
+1. **Layer 3** (Commit Review): Agent commits code; pre-commit hook runs lint + security checks. No deputy-CTO spawn at commit time.
+2. **Layer 1** (Root Ownership): Agent tries to modify a hook file to remove checks — the file is root-owned.
+3. **Layer 2** (Bash Blocking): Agent tries to use `--no-verify` to bypass hooks — blocked by `block-no-verify.js`.
 
 ## Managing Protection
 
@@ -386,12 +257,8 @@ Re-applies root ownership without reinstalling the framework.
 
 ### Verify Protection
 ```bash
-# For direct installs — critical hook files should be root-owned in .claude/hooks/
-ls -la /path/to/project/.claude/hooks/protected-action-gate.js
-# Should show root:wheel ownership
-
-# For linked projects (npm link) — root-owned copies are in hooks-protected/
-ls -la /path/to/project/.claude/hooks-protected/protected-action-gate.js
+# Critical hook files should be root-owned in .claude/hooks/ (direct installs) or .claude/hooks-protected/ (npm link)
+ls -la /path/to/project/.claude/hooks/gate-confirmation-enforcer.js
 # Should show root:wheel ownership
 
 # .husky/ directory should be root-owned with sticky bit

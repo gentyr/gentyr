@@ -2,11 +2,6 @@
 
 How `/promote-to-staging` and `/promote-to-prod` work end-to-end after the production-promotion overhaul (PRs #758 / #759 / #760 / and this PR).
 
-> The CTO's only approval surface is the gentyr interactive session. No
-> github.com Environment clicks. No Render dashboard. No Supabase Studio.
-> Every external platform action is invoked by gentyr's plan-manager through
-> the authorization-audit chain.
-
 ## High-level flow
 
 ```
@@ -27,7 +22,7 @@ How `/promote-to-staging` and `/promote-to-prod` work end-to-end after the produ
   Phase 4.5    — Migration pre-flight against production Supabase (if configured)
   Phase 4.6    — Canary rollout watch (if canary.enabled)
   Phase 5-6    — Demo coverage audit, final triage
-  Phase 7      — CTO sign-off (record_cto_decision)
+  Phase 7      — CTO sign-off
   Phase 8      — Merge staging → main, generate release report
   Phase 8.6    — Deploy & Verify (per target):
                  for each deployTargets[] entry, spawn a deployment-verifier agent that
@@ -125,7 +120,7 @@ Destructive migrations (`DROP COLUMN`, `RENAME`, `ALTER TYPE`, `SET NOT NULL`, `
    ```
    The annotation must include a reason. The reason is captured in the release report so post-mortems can audit acknowledged destructive ops.
 
-2. **Emergency** — File a bypass request via `submit_bypass_request` and have the CTO approve via `record_cto_decision`. Used when the engineer cannot retrofit the annotation (e.g. external migration delivered through CI from a vendor).
+2. **Emergency** — The CTO may manually approve a destructive migration by annotating the header themselves. Used when the engineer cannot retrofit the annotation (e.g. external migration delivered through CI from a vendor).
 
 Both routes are recorded on the release ledger.
 
@@ -173,7 +168,7 @@ The drift check requires `secrets.local.SUPABASE_ACCESS_TOKEN` to be a literal t
 
 ## Per-environment secret RBAC
 
-`SecretProfile.environmentScope` gates credential resolution by release phase. A profile with `environmentScope: 'production'` is only resolvable when the calling session has `GENTYR_RELEASE_PHASE=prod` in its environment. `secret-env-scope-guard.js` is a PreToolUse hook that fires on every `secret_run_command` invocation.
+`SecretProfile.environmentScope` gates credential resolution by release phase. A profile with `environmentScope: 'production'` is only resolvable when the calling session has `GENTYR_RELEASE_PHASE=prod` in its environment.
 
 Set `environmentScope: 'any'` (or omit entirely) for profiles that are scope-agnostic.
 
@@ -181,7 +176,7 @@ Set `environmentScope: 'any'` (or omit entirely) for profiles that are scope-agn
 
 xy's `.github/workflows/migrate-production.yml`, `deploy-production.yml`, and `drift-check.yml` are NOT lifted into gentyr. Reasons:
 
-- xy uses GitHub Environments as the CTO approval surface. Gentyr uses `record_cto_decision` + the authorization-audit chain. The point of this overhaul is "one approval surface, gentyr-native."
+- xy uses GitHub Environments as the CTO approval surface. Gentyr uses in-session CTO sign-off. The point of this overhaul is "one approval surface, gentyr-native."
 - xy's drift check needs the postgres DB password. Gentyr's drift check uses the Management API only.
 
 Target projects (including xy itself) that already have these workflows can keep them as a redundant safety net for now. After a quarter of clean releases against gentyr's in-band gates, retire the GitHub Actions copies.

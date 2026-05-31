@@ -109,26 +109,14 @@ mcp__release-ledger__add_release_pr({
 })
 ```
 
-## Step 4: Lock Staging
+## Step 4: Update Release Record
 
-Lock staging to prevent new merges from contaminating the release candidate.
-
-```
-mcp__release-ledger__lock_staging({
-  release_id: "<release_id from Step 3>"
-})
-```
-
-The tool writes `.claude/state/staging-lock.json` and sets GitHub branch protection (best-effort).
-
-**CRITICAL**: Verify the response shows `locked: true`. If the lock fails, DO NOT proceed — stop and report the error to the CTO. The staging lock is a prerequisite for the release plan.
-
-Then update the release record with the lock timestamp from the response:
+Update the release record to record the start timestamp:
 
 ```
 mcp__release-ledger__update_release({
   release_id: "<release_id>",
-  staging_lock_at: "<locked_at from lock response>"
+  staging_lock_at: "<ISO timestamp of now>"
 })
 ```
 
@@ -248,7 +236,7 @@ mcp__plan-orchestrator__add_plan_task({
   plan_id: "<plan_id>",
   phase_id: "<phase_4_5_id>",
   title: "Apply Supabase migrations to production",
-  description: "Run migration-runner.js against the production Supabase project. Steps: (1) Resolve SUPABASE_ACCESS_TOKEN from 1Password via mcp__secret-sync__secret_run_command with profile 'supabase-prod' (or environmentScope: 'production'). (2) Diff supabase/migrations/ against schema_migrations via diffMigrations(). (3) Run migration-safety.checkMigrationSafety on the pending set. If safe=false (BLOCKED ops without @expand-contract-verified annotation), halt and file a bypass request. (4) Call applyMigrations({ accessToken, projectRef, migrationsDir }). (5) Reload PostgREST cache. (6) Call mcp__release-ledger__record_migration_status({ release_id, environment: 'production', applied, skipped, pending, failure_reason }). On non-empty pending[], halt the release.",
+  description: "Run migration-runner.js against the production Supabase project. Steps: (1) Resolve SUPABASE_ACCESS_TOKEN from 1Password via mcp__secret-sync__secret_run_command with profile 'supabase-prod' (or environmentScope: 'production'). (2) Diff supabase/migrations/ against schema_migrations via diffMigrations(). (3) Run migration-safety.checkMigrationSafety on the pending set. If safe=false (BLOCKED ops without @expand-contract-verified annotation), halt and report the issue to the CTO in the current session — do not proceed until the CTO confirms it is safe to continue. (4) Call applyMigrations({ accessToken, projectRef, migrationsDir }). (5) Reload PostgREST cache. (6) Call mcp__release-ledger__record_migration_status({ release_id, environment: 'production', applied, skipped, pending, failure_reason }). On non-empty pending[], halt the release.",
   verification_strategy: "applyMigrations() returned ok: true AND record_migration_status was called AND releases.migration_status.failure_reason is null AND len(pending) == 0",
   create_todo: true,
   todo_section: "GENERAL"
@@ -257,7 +245,7 @@ mcp__plan-orchestrator__add_plan_task({
 
 Add dependency: Phase 4.5 depends on Phase 4 (`add_dependency`), and Phase 5 (Demo Coverage Audit) depends on Phase 4.5.
 
-**Safety doctrine**: the migration runner blocks destructive ops by default. Engineers must either (a) refactor the migration to expand/contract, or (b) add `-- @expand-contract-verified: <reason explaining why the contract step is safe>` to the migration file header. The annotation is recorded in the release report so future post-mortems can audit acknowledged destructive operations. There is no platform-level "approve destructive migration" button — gentyr's authorization-audit chain is the only override (file a bypass request from the migration agent).
+**Safety doctrine**: the migration runner blocks destructive ops by default. Engineers must either (a) refactor the migration to expand/contract, or (b) add `-- @expand-contract-verified: <reason explaining why the contract step is safe>` to the migration file header. The annotation is recorded in the release report so future post-mortems can audit acknowledged destructive operations. There is no platform-level override button — the CTO must review and explicitly confirm in-session when destructive operations are flagged.
 
 ### 5d-canary. Conditional Canary Phase (only when `canary.enabled: true` in services.json)
 
@@ -320,10 +308,10 @@ Add phase dependencies so the canary phase depends on Phase 4, and Phase 5 (Demo
 - If any checks are failing, Phase 7 CANNOT start — return to Phase 4 to fix CI issues first
 
 **Phase 7 task**: "CTO Sign-off"
-- Description depends on `releaseApprovalTier` from the canary config check above:
+- Description depends on `releaseApprovalTier` from the canary config check above (the CTO approves in-session by typing confirmation; no external approval mechanism is required):
   - **If `releaseApprovalTier` is `"automated"`**: "All gate phases have passed. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Call mcp__release-ledger__record_cto_approval({ release_id }) — the automated tier allows the plan-manager to sign off directly without CTO intervention. (3) Verify release status is 'signed_off'."
-  - **If `releaseApprovalTier` is `"deputy"`**: "Awaiting CTO or deputy-CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Submit a bypass request to the CTO or deputy-CTO: 'Production release ready — review report and artifacts, then state your approval.' (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'."
-  - **Otherwise (default `"cto"`)**: "Awaiting CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Submit a bypass request to the CTO: 'Production release ready — review report and artifacts, then state your approval.' (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'. The CTO's interactive session agent handles the approval flow: calls present_release_summary to show the report, waits for verbal CTO approval, then calls record_cto_approval with the verbatim quote."
+  - **If `releaseApprovalTier` is `"deputy"`**: "Awaiting CTO or deputy-CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) File a deputy-CTO report notifying the CTO that the production release is ready for review. (3) Poll mcp__release-ledger__get_release({ release_id }) every 30s and complete when status === 'signed_off'."
+  - **Otherwise (default `"cto"`)**: "Awaiting CTO review and approval. The Phase 7 monitor must: (1) Generate the pre-signoff report via mcp__release-ledger__present_release_summary({ release_id }). (2) Present the report summary to the CTO in the session briefing and wait for the CTO's explicit in-session approval (the CTO types their approval in the chat). (3) Once the CTO confirms approval, call mcp__release-ledger__sign_off_release({ release_id, signed_off_by: 'cto' }) and verify release status is 'signed_off'."
 - verification_strategy: "Release status is 'signed_off' AND cto-approval.json exists in the release artifact directory"
 - create_todo: true, todo_section: "DEPUTY-CTO"
 
@@ -372,8 +360,8 @@ The plan-manager spawns the deployment-verifier persistent task per target in pa
 Add dependencies: Phase 8.6 depends on Phase 8 (`add_dependency`). Within Phase 8.6, tasks have no inter-task dependencies — every verifier runs in parallel.
 
 **Failure handling**:
-- Verifier deploy-trigger failure (platform API rejected the request) → verifier files a bypass request and exits without releasing. The CTO can retry that target's deploy manually. The release is NOT auto-cancelled — the merge succeeded; only the deploy is stuck.
-- Verifier poll-live timeout (>10 min waiting for `live` status) → same: bypass request, no auto-cancel.
+- Verifier deploy-trigger failure (platform API rejected the request) → verifier files a deputy-CTO report and exits. The CTO can retry that target's deploy manually. The release is NOT auto-cancelled — the merge succeeded; only the deploy is stuck.
+- Verifier poll-live timeout (>10 min waiting for `live` status) → same: file a deputy-CTO report, no auto-cancel.
 - Verifier probe failure → cascading AUTO-ROLLBACK via `resolveRollbackTargets` + `triggerInBandRollback` for every target in the failing target's `rollbackGroup`, then `cancel_release`. This is the only path in gentyr's promotion plan that auto-cancels a signed-off release.
 - Cascading rollback semantics: targets sharing a `rollbackGroup` string in services.json revert together (e.g., `backend` + `web` both tagged `'api-contract'` → backend probe fails → web also reverts). Isolated targets (no rollbackGroup, or distinct values) stay live when sibling targets fail.
 
@@ -425,7 +413,6 @@ Release ID:   <release_id>
 Version:      <version>
 Plan ID:      <plan_id>
 PRs included: <N>
-Staging:      LOCKED
 
 The release plan has 8 phases:
   1. Per-PR Quality Review (N review tasks)
@@ -447,7 +434,7 @@ A plan-manager has been spawned to drive the release through all phases.
 - /persistent-tasks — manage the release plan-manager
 
 ## When Phase 7 is reached
-You will be notified to review and approve. Use:
+You will be shown the release summary and asked to confirm in-session. Once you type your approval, the plan-manager calls:
   mcp__release-ledger__sign_off_release({ release_id: "<release_id>", signed_off_by: "cto" })
 ```
 
@@ -457,8 +444,6 @@ You will be notified to review and approve. Use:
 |------|---------|
 | `mcp__release-ledger__create_release` | Create a release record |
 | `mcp__release-ledger__add_release_pr` | Register a PR in the release |
-| `mcp__release-ledger__lock_staging` | Lock staging branch for the release |
-| `mcp__release-ledger__unlock_staging` | Unlock staging branch after release |
 | `mcp__release-ledger__update_release` | Link plan, set artifact dir, update timestamps |
 | `mcp__release-ledger__list_releases` | List releases by status |
 | `mcp__release-ledger__sign_off_release` | CTO sign-off on the release |

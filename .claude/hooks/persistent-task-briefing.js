@@ -356,7 +356,7 @@ When this task is done, call mcp__persistent-task__complete_persistent_task — 
 
 ## SCOPE WARNING
 This task has ${fullTotalCount} sub-tasks with only ${Math.round(fullCompletedCount / fullTotalCount * 100)}% completion rate.
-Consider requesting CTO scope review via submit_bypass_request with category: 'scope'.
+Consider requesting CTO scope review by filing a deputy-CTO report via mcp__agent-reports__report_to_deputy_cto (priority: 'critical').
 The current approach may need decomposition into smaller, focused tasks targeting specific root causes.`
   }
 

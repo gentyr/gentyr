@@ -177,16 +177,6 @@ async function main() {
 
   log(`Release completion detected for release ${releaseId} (persistent task ${persistentTaskId})`);
 
-  // Step 1: Unlock staging
-  try {
-    const { unlockStaging } = await import('./lib/staging-lock.js');
-    await unlockStaging(releaseId, { projectDir: PROJECT_DIR });
-    log(`Staging unlocked for release ${releaseId}`);
-  } catch (err) {
-    log(`Warning: failed to unlock staging: ${err.message}`);
-    // Continue — report generation is still valuable even if unlock fails
-  }
-
   // Step 2: Generate the structured release report
   let reportPath = null;
   try {

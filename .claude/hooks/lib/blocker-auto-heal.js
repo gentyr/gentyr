@@ -5,7 +5,7 @@
  *   rate_limit + transient → cooldown (handled by caller)
  *   auth_error → spawn credential-diagnosis task or escalate
  *   crash/infra → spawn investigation task or escalate
- *   fix_attempts >= max → escalate to CTO (submit_bypass_request)
+ *   fix_attempts >= max → escalate to CTO (deputy-CTO report) + pause task
  *
  * Follows the demo-failure-spawner.js pattern for dedup and escalation.
  *
@@ -263,7 +263,7 @@ function spawnFixTask(persistentTaskId, diagnosis, diagRecord) {
 }
 
 /**
- * Escalate to CTO via bypass request and pause the persistent task.
+ * Escalate to the CTO by filing a deputy-CTO report and pausing the persistent task.
  * @param {string} persistentTaskId
  * @param {object} diagnosis
  * @param {object} diagRecord
@@ -285,58 +285,56 @@ function escalateToCto(persistentTaskId, diagnosis, diagRecord) {
     }
   } catch (_) { /* non-fatal */ }
 
-  // Submit bypass request
-  const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-  if (!fs.existsSync(bypassDbPath)) {
-    log(`Cannot escalate: bypass-requests.db not found at ${bypassDbPath}`);
-    return;
-  }
-
-  let bypassDb;
+  // Fetch actual task title from persistent-tasks.db
+  let taskTitle = `Persistent task ${persistentTaskId}`;
   try {
-    bypassDb = new Database(bypassDbPath);
-    bypassDb.pragma('busy_timeout = 3000');
-
-    // Dedup: check for existing pending request
-    const existing = bypassDb.prepare(
-      "SELECT id FROM bypass_requests WHERE task_type = 'persistent' AND task_id = ? AND status = 'pending' LIMIT 1"
-    ).get(persistentTaskId);
-
-    if (!existing) {
-      // Fetch actual task title from persistent-tasks.db
-      let taskTitle = `Persistent task ${persistentTaskId}`;
-      try {
-        const ptDbPath2 = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-        if (fs.existsSync(ptDbPath2)) {
-          const ptDbRo = new Database(ptDbPath2, { readonly: true });
-          ptDbRo.pragma('busy_timeout = 3000');
-          const row = ptDbRo.prepare('SELECT title FROM persistent_tasks WHERE id = ?').get(persistentTaskId);
-          if (row?.title) taskTitle = row.title;
-          ptDbRo.close();
-        }
-      } catch (_) { /* non-fatal — use generic title */ }
-
-      const category = diagnosis.error_type === 'auth_error' ? 'infrastructure' : 'general';
-      const summary = `Self-healing exhausted after ${diagRecord.fix_attempts} fix attempts for ${diagnosis.error_type}. ${diagnosis.sample_error || ''}`.slice(0, 500);
-      bypassDb.prepare(`
-        INSERT INTO bypass_requests (id, task_type, task_id, task_title, agent_id, category, summary, details, status, created_at)
-        VALUES (?, 'persistent', ?, ?, 'self-heal-system', ?, ?, ?, 'pending', ?)
-      `).run(
-        generateId(),
-        persistentTaskId,
-        taskTitle,
-        category,
-        summary,
-        JSON.stringify({ diagnosis, fix_attempts: diagRecord.fix_attempts, fix_task_ids: diagRecord.fix_task_ids }),
-        new Date().toISOString()
-      );
-      log(`Escalated to CTO: persistent task ${persistentTaskId} after ${diagRecord.fix_attempts} fix attempts`);
+    const ptDbPath2 = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
+    if (fs.existsSync(ptDbPath2)) {
+      const ptDbRo = new Database(ptDbPath2, { readonly: true });
+      ptDbRo.pragma('busy_timeout = 3000');
+      const row = ptDbRo.prepare('SELECT title FROM persistent_tasks WHERE id = ?').get(persistentTaskId);
+      if (row?.title) taskTitle = row.title;
+      ptDbRo.close();
     }
+  } catch (_) { /* non-fatal — use generic title */ }
 
-    bypassDb.close();
-  } catch (e) {
-    try { if (bypassDb) bypassDb.close(); } catch (_) { /* non-fatal */ }
-    log(`Failed to submit bypass request: ${e.message}`);
+  // File a deputy-CTO report so the failure is surfaced for triage.
+  const reportsDbPath = path.join(PROJECT_DIR, '.claude', 'cto-reports.db');
+  if (fs.existsSync(reportsDbPath)) {
+    let reportsDb;
+    try {
+      reportsDb = new Database(reportsDbPath);
+      reportsDb.pragma('busy_timeout = 3000');
+
+      const idempotencyKey = `self_heal_exhausted_${persistentTaskId}`;
+      const existing = reportsDb.prepare('SELECT id FROM reports WHERE idempotency_key = ?').get(idempotencyKey);
+      if (!existing) {
+        const now = new Date();
+        const summary = `Self-healing exhausted after ${diagRecord.fix_attempts} fix attempts for ${diagnosis.error_type}. ${diagnosis.sample_error || ''}`.slice(0, 500);
+        const details = `Persistent task "${taskTitle}" (${persistentTaskId}) has been paused after self-healing was exhausted. Error type: ${diagnosis.error_type}. Fix attempts: ${diagRecord.fix_attempts}. Fix task IDs: ${diagRecord.fix_task_ids || 'none'}. ${diagnosis.sample_error ? `Sample error: ${diagnosis.sample_error}` : ''}`;
+        reportsDb.prepare(`
+          INSERT INTO reports (id, reporting_agent, title, summary, category, priority, created_at, created_timestamp, idempotency_key)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          `selfheal-${persistentTaskId}`,
+          'self-heal-system',
+          `Self-healing exhausted: ${taskTitle}`,
+          `${summary}\n\n${details}`,
+          'automation',
+          'urgent',
+          now.toISOString(),
+          now.toISOString(),
+          idempotencyKey,
+        );
+        log(`Filed deputy-CTO report for persistent task ${persistentTaskId} after ${diagRecord.fix_attempts} fix attempts`);
+      }
+      reportsDb.close();
+    } catch (e) {
+      try { if (reportsDb) reportsDb.close(); } catch (_) { /* non-fatal */ }
+      log(`Failed to file deputy-CTO report: ${e.message}`);
+    }
+  } else {
+    log(`cto-reports.db not found at ${reportsDbPath} — escalation report skipped`);
   }
 
   // Pause the persistent task

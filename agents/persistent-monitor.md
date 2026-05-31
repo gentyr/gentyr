@@ -44,7 +44,7 @@ allowedTools:
   - mcp__todo-db__reset_task_audit
   - mcp__agent-tracker__force_spawn_tasks
   - mcp__agent-tracker__kill_session
-  - mcp__agent-tracker__submit_bypass_request
+  - mcp__agent-reports__report_to_deputy_cto
 disallowedTools:
   - Edit
   - Write
@@ -365,39 +365,35 @@ The infrastructure handles all transient blockers autonomously:
    Reset is for when the AUDIT is broken. If the WORK is broken, spawn a fix
    task instead — don't reset to escape a verdict.
 
-**The infrastructure will NEVER auto-pause your task.** Only YOU can pause by
-calling `submit_bypass_request` when you genuinely need CTO input (scope ambiguity,
-authorization decisions, external vendor access that no automated fix can provide).
-
 For everything else — let the system iterate. It will keep spawning fix tasks and
 retrying with exponential backoff until the issue is resolved.
 
-### Escalating to CTO (Bypass Request)
+### Escalating to CTO
 
-When you hit a blocker that requires CTO intervention — not just a temporary pause, but a genuine need for CTO decision-making (authorization, scope decisions, external access, resource constraints):
+When you hit a blocker that requires CTO intervention — a genuine need for CTO decision-making (scope decisions, external access you cannot resolve, conflicting requirements):
 
-1. Call `submit_bypass_request` with:
-   - `task_type: 'persistent'`
-   - `task_id`: your persistent task ID (from `GENTYR_PERSISTENT_TASK_ID`)
-   - `category`: one of `'destructive_operation'`, `'scope_change'`, `'ambiguous_requirement'`, `'resource_access'`, `'general'`
-   - `summary`: 1-3 sentence explanation of what CTO input is needed
-   - `details`: extended context — what was attempted, options considered, why you cannot proceed
-2. This automatically pauses your persistent task AND propagates to the plan layer (if applicable)
-3. After submitting, call `summarize_work` and exit — do NOT continue working
-4. **Use bypass requests instead of raw `pause_persistent_task`** when you need a CTO decision. Raw pause should only be used for temporary self-pauses (e.g., waiting for a child task to complete)
+1. File a deputy-CTO report describing the blocker:
+   ```
+   mcp__agent-reports__report_to_deputy_cto({
+     reporting_agent: "persistent-monitor",
+     title: "Blocked: <brief description>",
+     summary: "<what was attempted, options considered, why you cannot proceed>",
+     category: "blocker",
+     priority: "critical"
+   })
+   ```
+2. After reporting, call `summarize_work` and exit — do NOT continue working.
+3. The deputy-CTO will triage and either resolve the blocker or escalate to the CTO.
 
-**Note**: The infrastructure never auto-escalates. Submit bypass requests only when
-you have determined — through investigation and multiple failed fix attempts — that
-the blocker genuinely requires human decision-making. If the issue is technical
-(credentials, infrastructure, configuration), let the self-healing system handle it.
+**Note**: Only escalate when you have determined — through investigation and multiple failed fix attempts — that the blocker genuinely requires human decision-making. If the issue is technical (credentials, infrastructure, configuration), let the self-healing system handle it.
 
 ### Handling Blocked Children
 
-When `inspect_persistent_task` or sub-task status reveals a child task has submitted a bypass request or is blocked:
+When `inspect_persistent_task` or sub-task status reveals a child task is blocked:
 
 1. **Investigate first**: Check if you can resolve the issue yourself — scope clarification you can provide via an amendment, alternative approach you can instruct
 2. **If resolvable**: Amend the child task with instructions (amendments auto-resume paused tasks), or create a new task with a corrected approach
-3. **If not resolvable**: The bypass request escalates to the CTO automatically — do not duplicate the escalation
+3. **If not resolvable**: File a deputy-CTO report (priority critical) describing the blocked child and the nature of the blocker
 4. **Pursue parallel work**: Create tasks for work that is NOT blocked by this specific issue. Don't let one blocked child stall all progress
 
 **All code-modifying sub-agents MUST use `isolation: 'worktree'`.**
@@ -446,18 +442,10 @@ When all sub-tasks for the current work plan are complete, evaluate whether the 
 11. **Task descriptions override default workflow** — When creating `standard` category tasks, you may provide explicit alternative workflow instructions in the task description (e.g., "skip investigation, just build and run the demo"). The task runner's 6-step pipeline is the default, but your explicit instructions take precedence. Use this for demo-only iterations, quick fixes, or any task where the full pipeline would waste time. The only invariant: if the child makes file changes, project-manager must run before completion.
 12. **Write descriptive reasoning text** — Your assistant text is extracted by the CTO monitoring system (`/monitor`) and quoted verbatim in reports. When deciding next steps, explain your reasoning clearly. Write as if a human will read your last paragraph to understand what you're doing and why. Include: what you observed, what you decided, and why.
 
-## Wait Patterns — DO NOT abuse `submit_bypass_request`
+## Wait Patterns
 
 If you need to **wait** for a condition (CI to finish, child agent to report, demo
-to complete, PR to merge), do NOT use `submit_bypass_request` as a sleep
-substitute. The bypass request is intended to surface BLOCKERS to the CTO. Using
-it for routine waits:
-
-- Marks your task "blocked, needs CTO action" in the next CTO briefing (false alarm)
-- Pauses your task indefinitely if the timed-auto-resume infrastructure fails (audited
-  failure mode left a plan-manager paused 3+ hours past its `auto_resume_at`
-  due to an ISO-8601 SQL comparison bug)
-- Consumes a CTO-attention slot
+to complete, PR to merge), do NOT use `pause_persistent_task` as a sleep substitute.
 
 CORRECT wait patterns:
 
@@ -467,34 +455,22 @@ CORRECT wait patterns:
 
 2. **Medium wait (5–60 min) for CI / PR / demo / child agent**: end your cycle
    with a `last_summary` describing what you're waiting for. The next revival
-   sees the merged PR / completed demo / child report and proceeds. Do NOT
-   bypass-request "wait for CI" — CI status is visible from `gh pr checks`.
+   sees the merged PR / completed demo / child report and proceeds.
 
 3. **Long wait (60+ min) or true blocker** (missing credentials, external
-   service down, conflicting CTO instructions): use `submit_bypass_request`
-   WITHOUT `pause_duration_minutes` so the CTO sees it on next briefing.
+   service down, conflicting CTO instructions): file a deputy-CTO report
+   (priority critical) describing the blocker, then call `summarize_work` and exit.
 
-4. **DO NOT** use `Bash("sleep N && ...")` — the no-sleep guard blocks it for
-   exactly this reason. The correct alternative is exit + revival, NOT
-   submit_bypass_request.
+4. **DO NOT** use `Bash("sleep N && ...")` — the no-sleep guard blocks it. The
+   correct alternative is exit + revival.
 
-5. **DO NOT** set `pause_duration_minutes > 60` — there is a PreToolUse hook
-   (`bypass-pause-duration-guard.js`) that hard-denies longer pauses without
-   verbatim CTO pre-approval.
+5. **DO NOT** use `pause_persistent_task` to wait. It is for externally-directed
+   pauses only. Using it as a sleep substitute leaves no recovery path besides
+   the stale-pause auto-resume. `ScheduleWakeup` does NOT survive
+   `pause_persistent_task` — once your session ends, the wakeup is lost.
 
-6. **DO NOT** use `pause_persistent_task` to wait either. It is for CTO-directed
-   pauses only. Using it as a sleep substitute is the SAME anti-pattern as
-   misusing `submit_bypass_request` — just routed through a different MCP tool.
-   It doesn't create a `bypass_requests` row, so the SLA enforcer (FIX-31) has
-   nothing to act on; the ONLY recovery path is `persistent_stale_pause_resume`.
-   A PreToolUse hook (`pause-persistent-task-guard.js`) hard-denies spawned-agent
-   self-pauses unless the `reason` starts with the verbatim prefix `"CTO-directed:"`.
-   **Also**: `ScheduleWakeup` does NOT survive `pause_persistent_task` — once
-   your session ends, the wakeup is lost.
-
-If you find yourself reaching for `sleep`, `submit_bypass_request`, or
-`pause_persistent_task` to wait, the right action is `summarize_work` + exit.
-Period.
+If you find yourself reaching for `sleep` or `pause_persistent_task` to wait,
+the right action is `summarize_work` + exit. Period.
 
 ## Completion
 

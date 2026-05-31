@@ -9,7 +9,7 @@ GENTYR_DIR="$([ -d node_modules/gentyr ] && echo node_modules/gentyr || { [ -d .
 
 ## Overview
 
-Produces a layered, comprehensive system status report. Starts with an executive summary, then drills into every layer: plans, persistent tasks, todo-db tasks, session queue, bypass requests, and -- most importantly -- a deep investigator-driven analysis of every active session.
+Produces a layered, comprehensive system status report. Starts with an executive summary, then drills into every layer: plans, persistent tasks, todo-db tasks, session queue, and -- most importantly -- a deep investigator-driven analysis of every active session.
 
 Accepts optional argument: `/status plans`, `/status persistent`, `/status <plan-id-prefix>`, `/status <task-id-prefix>`, or bare `/status`.
 
@@ -81,12 +81,9 @@ mcp__todo-db__list_tasks({ status: 'pending_audit', limit: 10 })
 mcp__todo-db__list_tasks({ status: 'pending_review', limit: 10 })
 ```
 
-### Step 2e: BYPASS REQUESTS & BLOCKING
+### Step 2e: RECENT COMPLETIONS (continued)
 
-```
-mcp__agent-tracker__list_bypass_requests({ status: 'pending' })
-mcp__agent-tracker__get_blocking_summary({})
-```
+(No additional data gathering needed for this step; proceed to Step 2f.)
 
 ### Step 2f: RECENT COMPLETIONS
 
@@ -193,7 +190,7 @@ mcp__agent-tracker__browse_session({ agent_id: "<monitor_agent_id>", page_size: 
 \`\`\`
 
 Page backward through history to find:
-- **Bypass requests triaged**: Any \`deputy_resolve_bypass_request\` or \`deputy_escalate_to_cto\` calls
+- **Escalations filed**: Any `report_to_deputy_cto` calls or `deputy_escalate_to_cto` calls
 - **Alignment signals sent**: Any \`send_session_signal\` calls to other agents
 - **Correction tasks created**: Any \`create_task\` calls for misalignment fixes
 - **Zombies killed**: Any \`kill_session\` calls
@@ -270,7 +267,7 @@ You already rendered Sections 1-5 and 7 BEFORE spawning the investigator (per St
 ```
 ## Executive Summary
 
-- **BLOCKER**: 2 pending CTO bypass requests (Evidence Viewer credentials, staging lock override)
+- **BLOCKER**: 2 deputy-CTO reports pending review (Evidence Viewer build failure, staging promotion blocked)
 - Plan "Release v2.3" at 67% -- Phase 3 verification running, Phase 4 blocked on demo pass
 - 4 agents running (2 monitors + 2 task runners), queue at 4/48, memory low
 - 3 tasks completed in last 2 hours (auth timeout fix, HIPAA gate, attestation FK)
@@ -448,15 +445,12 @@ Insert the investigator's full per-session report here. This is the core of the 
 **Assessment:** Healthy -- parent idle but sub-agent actively running batch demos
 ```
 
-### Section 7: Blockers & Bypass Requests
+### Section 7: Blockers
 
 ```
-## Blockers & Bypass Requests
+## Blockers
 
-### Pending CTO Bypass Requests: 0
-(none)
-
-### Active Blocking Queue Items: 0
+### Pending Reports for Triage: 0
 (none)
 ```
 
@@ -468,7 +462,7 @@ Synthesize everything into a comprehensive assessment. Be specific -- reference 
 ## Assessment
 
 **System State:** 2 focused sessions running in a clean queue (4/48 capacity).
-Memory pressure is low. No bypass requests pending. No blocking items.
+Memory pressure is low. No pending reports. No blocking items.
 
 **Plan Progress:** Release v2.3 at 67%. Phase 3 verification is the active front --
 the Evidence Viewer build prereq fix (agent-abcdefgh) is at code-writer stage 60%
@@ -513,7 +507,7 @@ Uptime: <session uptime>
 
 | Action | Count | Last Occurrence |
 |--------|-------|-----------------|
-| Bypass requests triaged | N | Xm ago |
+| Escalations filed | N | Xm ago |
 | Alignment signals sent | N | Xm ago |
 | Correction tasks created | N | Xm ago |
 | Zombies killed | N | Xm ago |
@@ -521,7 +515,7 @@ Uptime: <session uptime>
 
 ### Recent Actions (last 3-5 substantive actions, verbatim from session)
 
-  #NNN [HH:MM:SS] [tool] deputy_resolve_bypass_request({ request_id: "...", decision: "approved" })
+  #NNN [HH:MM:SS] [tool] deputy_escalate_to_cto({ report_id: "...", reason: "..." })
   #NNN [HH:MM:SS] [tool] send_session_signal({ agent_id: "...", signal: { type: "directive", ... } })
   #NNN [HH:MM:SS] [text] "Checked 4 active tasks against CTO intent. All aligned."
 
@@ -533,7 +527,7 @@ Uptime: <session uptime>
 - Assessment: Healthy -- actively monitoring / Idle -- no actions taken in Xh / Stuck -- looping on errors
 ```
 
-**Key:** The global monitor review should answer: "Is the deputy-CTO monitor actually doing useful work, or just burning tokens on sleep loops?" Look for concrete actions (bypass triage, signals, task creation) vs. pure polling. If the monitor has been running for hours with zero actions, note that it may be over-monitoring for the current workload.
+**Key:** The global monitor review should answer: "Is the deputy-CTO monitor actually doing useful work, or just burning tokens on sleep loops?" Look for concrete actions (escalation reports, signals, task creation) vs. pure polling. If the monitor has been running for hours with zero actions, note that it may be over-monitoring for the current workload.
 
 ---
 

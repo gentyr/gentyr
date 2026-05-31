@@ -21,7 +21,6 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
 
 let Database = null;
@@ -29,28 +28,6 @@ try {
   Database = (await import('better-sqlite3')).default;
 } catch {
   // SQLite unavailable — detection still works, side effects are skipped.
-}
-
-// Best-effort identifier for the OAuth account whose quota was hit. Used to
-// group synthesis_count when the same account exhausts repeatedly within one
-// reset window, and to let quota-recovery-daemon auto-resolve only the rows
-// belonging to the account that recovered (other accounts may still be at
-// 100%). Tries ~/.claude/.credentials.json; returns account email when
-// available, else a truncated token fingerprint, else null. Never throws.
-function detectActiveAccount() {
-  try {
-    const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
-    if (!fs.existsSync(credPath)) return null;
-    const creds = JSON.parse(fs.readFileSync(credPath, 'utf8'));
-    const oauth = creds.claudeAiOauth || {};
-    if (typeof oauth.account === 'string' && oauth.account) return oauth.account;
-    if (typeof oauth.email === 'string' && oauth.email) return oauth.email;
-    if (typeof oauth.accessToken === 'string') {
-      const stripped = oauth.accessToken.replace(/^sk-ant-[a-z]+\d+-/i, '');
-      return `token:${stripped.slice(0, 8)}`;
-    }
-  } catch { /* best-effort */ }
-  return null;
 }
 
 const TAIL_LINES = 50;
@@ -155,25 +132,22 @@ export function detectQuotaCrashInJsonl(jsonlPath) {
  *
  * - Pauses the linked persistent task with `do_not_auto_resume: true` and a
  *   `pause_reason: 'quota_exhaustion'` marker, so `requeueDeadPersistentMonitor`
- *   and `persistent_stale_pause_resume` both skip it.
- * - Files an indefinite bypass request (no `pause_duration_minutes`) so the CTO
- *   sees it in the next interactive briefing. The bypass-guard module already
- *   blocks revival paths for tasks with pending bypass requests, so the linked
- *   todo task (if any) will not be re-spawned until the CTO resolves the request.
+ *   and `persistent_stale_pause_resume` both skip it. The quota-recovery-daemon
+ *   re-activates these tasks directly once the quota window clears.
  *
- * Safe to call repeatedly — the pending-quota-bypass-request dedup query
- * prevents duplicate inserts. All DB writes are best-effort; failures log
- * but do not throw, because the reaper must continue regardless.
+ * Safe to call repeatedly — the pause is idempotent. All DB writes are
+ * best-effort; failures log but do not throw, because the reaper must continue
+ * regardless.
  *
  * SYNCHRONOUS — callable from `reapSyncPass()` without async restructuring.
  *
  * @param {object} params
  * @param {object} params.detection - return value from detectQuotaCrashInJsonl
  * @param {object} params.metadata - parsed queue_items.metadata for the dead session
- * @param {string} params.agentId - the dead session's agent id (for bypass_request.agent_id)
+ * @param {string} params.agentId - the dead session's agent id
  * @param {string} params.projectDir - absolute project dir for DB paths
  * @param {function} [params.log] - optional logger (msg) => void
- * @returns {{ paused_persistent?: string, bypass_request_id?: string, error?: string }}
+ * @returns {{ paused_persistent?: string, error?: string }}
  */
 export function handleQuotaCrashOnReap({ detection, metadata, agentId, projectDir, log }) {
   const logger = log || (() => {});
@@ -190,10 +164,8 @@ export function handleQuotaCrashOnReap({ detection, metadata, agentId, projectDi
 
   const taskType = metadata.taskType === 'persistent' || metadata.persistentTaskId ? 'persistent' : 'todo';
 
-  const bypassDbPath = path.join(projectDir, '.claude', 'state', 'bypass-requests.db');
-  try { fs.mkdirSync(path.dirname(bypassDbPath), { recursive: true }); } catch { /* non-fatal */ }
-
-  // 1. Pause the persistent task (if applicable).
+  // Pause the persistent task (if applicable). The quota-recovery-daemon
+  // re-activates quota-paused tasks directly once the quota window clears.
   if (taskType === 'persistent') {
     const ptDbPath = path.join(projectDir, '.claude', 'state', 'persistent-tasks.db');
     if (fs.existsSync(ptDbPath)) {
@@ -244,96 +216,6 @@ export function handleQuotaCrashOnReap({ detection, metadata, agentId, projectDi
         try { ptDb && ptDb.close(); } catch { /* best-effort */ }
       }
     }
-  }
-
-  // 2. File a bypass request. Indefinite (no pause_duration_minutes) — CTO must resolve.
-  let bypassDb;
-  try {
-    bypassDb = new Database(bypassDbPath);
-    bypassDb.pragma('journal_mode = WAL');
-    bypassDb.pragma('busy_timeout = 3000');
-
-    // Dedup against the summary prefix rather than category. The
-    // `bypass_requests.category` CHECK constraint only allows the canonical
-    // categories (destructive_operation/scope_change/ambiguous_requirement/
-    // resource_access/general), so we tag quota-exhaustion via the `[quota_exhaustion]`
-    // summary prefix and store the row under category='general'. Prior versions
-    // inserted with category='quota_exhaustion' and were silently rejected by
-    // the CHECK constraint — leaving the CTO with no visible bypass request.
-    //
-    // synthesized=1 + auto_resolvable=1 distinguishes these rows from real
-    // agent-authored bypasses. They are auto-resolved by quota-recovery-daemon
-    // when the account's quota recovers, and excluded from CTO triage surfaces
-    // so the inbox shows only substantive requests.
-    const account = detectActiveAccount();
-    const existing = bypassDb.prepare(
-      "SELECT id FROM bypass_requests WHERE task_type = ? AND task_id = ? AND status = 'pending' AND summary LIKE '[quota_exhaustion]%' LIMIT 1"
-    ).get(taskType, taskId);
-    if (existing) {
-      // Same task hit quota again — bump synthesis_count rather than file a
-      // duplicate row. Helps the CTO see "this task has hit quota 5 times"
-      // when reviewing the eventual stale-sweep.
-      try {
-        bypassDb.prepare(
-          "UPDATE bypass_requests SET synthesis_count = synthesis_count + 1 WHERE id = ?"
-        ).run(existing.id);
-      } catch { /* synthesis_count column may be missing on stale DBs — non-fatal */ }
-      out.bypass_request_id = existing.id;
-      logger(`quota-detector: bypass request already pending for ${taskType}:${taskId} (${existing.id}) — bumped synthesis_count`);
-    } else {
-      const reqId = `br-${crypto.randomBytes(4).toString('hex')}`;
-      const taskTitle = metadata.taskTitle || metadata.title || (taskType === 'persistent' ? 'Persistent task' : 'Todo task');
-      const summary = detection.resetHint
-        ? `[quota_exhaustion] Spawned agent hit Anthropic quota limit — resets ${detection.resetHint}`
-        : '[quota_exhaustion] Spawned agent hit Anthropic quota limit';
-      const details = [
-        `Detected quota-exhaustion message in dead session JSONL for agent ${agentId}.`,
-        `Raw text: ${detection.rawText.slice(0, 300)}`,
-        account ? `OAuth account: ${account}` : 'OAuth account: unknown (credentials not resolvable)',
-        '',
-        'This is a SYNTHESIZED bypass request — the framework filed it after detecting',
-        'the quota-exhausted assistant message in the dead session JSONL. The agent did',
-        'NOT call submit_bypass_request. quota-recovery-daemon will auto-resolve this row',
-        'when the account quota recovers; no CTO action is normally required.',
-        '',
-        'Note: the quota window applies to the Anthropic OAuth identity used by the spawned',
-        'agent — which may be a different account than this interactive session. The session',
-        'briefing quota indicator only reflects the active interactive account.',
-      ].join('\n');
-
-      // Insert with the new synthesized columns. Wrap in a try/catch that
-      // falls back to the legacy INSERT for stale DBs that have not yet
-      // migrated — the framework guarantees the migration runs on next
-      // agent-tracker server start, but quota-detector runs from the reaper
-      // which may execute before any server has touched the bypass DB on a
-      // fresh install.
-      try {
-        bypassDb.prepare(`
-          INSERT INTO bypass_requests (id, task_type, task_id, task_title, agent_id, category, summary, details, synthesized, synthesizer, synthesis_account, auto_resolvable)
-          VALUES (?, ?, ?, ?, ?, 'general', ?, ?, 1, 'quota-detector', ?, 1)
-        `).run(reqId, taskType, taskId, taskTitle, agentId || null, summary, details, account);
-      } catch (insertErr) {
-        // Stale DB — fall back to the legacy INSERT. The row will not be
-        // categorized as synthesized but will still appear correctly.
-        if (/no such column|has no column/i.test(insertErr.message)) {
-          bypassDb.prepare(`
-            INSERT INTO bypass_requests (id, task_type, task_id, task_title, agent_id, category, summary, details)
-            VALUES (?, ?, ?, ?, ?, 'general', ?, ?)
-          `).run(reqId, taskType, taskId, taskTitle, agentId || null, summary, details);
-        } else {
-          throw insertErr;
-        }
-      }
-      out.bypass_request_id = reqId;
-      out.synthesized = true;
-      out.synthesis_account = account;
-      logger(`quota-detector: filed synthesized bypass ${reqId} for ${taskType}:${taskId} (account: ${account || 'unknown'})`);
-    }
-  } catch (err) {
-    logger(`quota-detector: bypass request insert failed: ${err.message}`);
-    out.error = `bypass_insert_failed: ${err.message}`;
-  } finally {
-    try { bypassDb && bypassDb.close(); } catch { /* best-effort */ }
   }
 
   return out;

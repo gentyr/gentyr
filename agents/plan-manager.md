@@ -226,7 +226,7 @@ When managing a production release plan and `releaseApprovalTier` is `"automated
 4. Mark the CTO Sign-off plan task as completed
 
 When `releaseApprovalTier` is `"cto"` or `"deputy"` (the default):
-- Follow the existing workflow: call `mcp__release-ledger__present_release_summary`, submit a bypass request to the CTO (or deputy-CTO for the "deputy" tier), and poll for sign-off completion.
+- Follow the existing workflow: call `mcp__release-ledger__present_release_summary` and report to the deputy-CTO (or CTO for the "cto" tier) via `mcp__agent-reports__report_to_deputy_cto` requesting sign-off review, then poll for sign-off completion.
 
 To check the approval tier, read services.json via `mcp__secret-sync__get_services_config` and look for the `releaseApprovalTier` field. If absent, default to `"cto"`.
 
@@ -329,24 +329,16 @@ If a persistent task fails:
 ## Blocked by External Dependency
 
 If you cannot proceed because of an external blocker (missing credentials, CTO action required, etc.):
-1. **Submit a bypass request**: `mcp__agent-tracker__submit_bypass_request({ task_type: 'persistent', task_id: '<your ID>', category: 'resource_access', summary: '<what CTO action is needed>', details: '<full context>' })` — this auto-pauses your task, propagates to the plan, and notifies the CTO
-2. After submitting, call `summarize_work` and stop — the stop hook escape hatch will allow you to exit cleanly once the task is paused
+1. **File a deputy-CTO report**: `mcp__agent-reports__report_to_deputy_cto({ reporting_agent: "plan-manager", title: "<blocker description>", summary: "<what was attempted, why blocked, what CTO action is needed>", category: "blocker", priority: "critical" })`
+2. After reporting, call `summarize_work` and stop — the stop hook escape hatch will allow you to exit cleanly once the task is paused
 3. **Do NOT skip tasks to escape the stop hook** — the server enforces skip authorization
 4. Tasks in gate phases cannot be skipped at all (server-enforced)
 5. Skipping a task requires `skip_reason` and `skip_authorization` fields — only use with CTO direction
 
-## Wait Patterns — DO NOT abuse `submit_bypass_request`
+## Wait Patterns
 
 If you need to **wait** for a condition (CI to finish, child agent to report, demo
-to complete, PR to merge), do NOT use `submit_bypass_request` as a sleep
-substitute. The bypass request is intended to surface BLOCKERS to the CTO. Using
-it for routine waits:
-
-- Marks your task "blocked, needs CTO action" in the next CTO briefing (false alarm)
-- Pauses your task indefinitely if the timed-auto-resume infrastructure fails (audited
-  failure mode: ISO-8601 vs `datetime('now')` SQL comparison bug left a plan-manager
-  paused 3+ hours past its `auto_resume_at`)
-- Consumes a CTO-attention slot
+to complete, PR to merge), do NOT use `pause_persistent_task` as a sleep substitute.
 
 CORRECT wait patterns:
 
@@ -357,34 +349,17 @@ CORRECT wait patterns:
 2. **Medium wait (5–60 min) for CI / PR / demo / child agent**: end your cycle
    with a `last_summary` describing the condition you're waiting for. The next
    revival will see the merged PR / completed demo / child report and proceed.
-   Do NOT bypass-request "wait for CI" — CI status is visible from
-   `gh pr checks`, and your re-spawn will catch it.
 
 3. **Long wait (60+ min) or true blocker** (missing credentials, external
-   service down, conflicting CTO instructions): use `submit_bypass_request`
-   WITHOUT `pause_duration_minutes` so the CTO sees it on next briefing and
-   resolves with full context.
+   service down, conflicting CTO instructions): file a deputy-CTO report
+   (priority critical), then call `summarize_work` and exit.
 
-4. **DO NOT** use `Bash("sleep N && ...")` — the no-sleep guard blocks it for
-   exactly this reason. The correct alternative is exit + revival, NOT
-   submit_bypass_request.
+4. **DO NOT** use `Bash("sleep N && ...")` — the no-sleep guard blocks it. The
+   correct alternative is exit + revival.
 
-5. **DO NOT** set `pause_duration_minutes > 60` — there is a PreToolUse hook
-   (`bypass-pause-duration-guard.js`) that hard-denies longer pauses without
-   verbatim CTO pre-approval.
+5. **DO NOT** use `pause_persistent_task` to wait. It is for externally-directed
+   pauses only. `ScheduleWakeup` does NOT survive `pause_persistent_task` —
+   once your session ends, the wakeup is lost.
 
-6. **DO NOT** use `pause_persistent_task` to wait either. `pause_persistent_task`
-   is for CTO-directed pauses only. Using it to "wait for child agents" or
-   "wait for the next scheduled event" is the SAME anti-pattern as misusing
-   `submit_bypass_request` — just routed through a different MCP tool. It
-   doesn't even create a `bypass_requests` row, so the SLA enforcer (FIX-31)
-   has nothing to act on; the ONLY recovery path is `persistent_stale_pause_resume`,
-   and any single failure in that path leaves you stuck. A PreToolUse hook
-   (`pause-persistent-task-guard.js`) hard-denies spawned-agent self-pauses
-   unless the `reason` starts with the verbatim prefix `"CTO-directed:"`.
-   **Also**: `ScheduleWakeup` does NOT survive `pause_persistent_task` —
-   once your session ends, the wakeup is lost. Stop relying on it.
-
-If you find yourself reaching for `sleep`, `submit_bypass_request`, or
-`pause_persistent_task` to wait, the right action is `summarize_work` + exit.
-Period.
+If you find yourself reaching for `sleep` or `pause_persistent_task` to wait,
+the right action is `summarize_work` + exit. Period.

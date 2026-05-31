@@ -18,7 +18,7 @@ queued → spawning → running → completed
 
 **Function:** `enqueueSession()` in `session-queue.js`
 
-Seven sequential gate checks before insertion:
+Six sequential gate checks before insertion:
 
 | # | Gate | Condition | Result if blocked |
 |---|------|-----------|-------------------|
@@ -27,8 +27,7 @@ Seven sequential gate checks before insertion:
 | 3 | Persistent task dedup | Same `persistentTaskId` in persistent lane | Returns existing queueId |
 | 4 | Plan-level dedup | Another **plan manager** (`isPlanManager: true`) for same `planId` already queued/running/spawning | Returns existing queueId |
 | 5 | Worktree exclusivity | Same worktree/cwd in use by another session | `blocked: 'worktree_exclusive'` |
-| 6 | Bypass request guard | Pending CTO bypass request for this task | `blocked: 'bypass_request'` |
-| 7 | Focus mode gate | Focus mode enabled + not an allowed source/priority | `blocked: 'focus_mode'` |
+| 6 | Focus mode gate | Focus mode enabled + not an allowed source/priority | `blocked: 'focus_mode'` |
 
 **Focus mode allows through:** `cto`/`critical` priority, `persistent`/`gate`/`audit`/`revival`/`automated` lanes, `force-spawn-tasks`/`persistent-task-spawner`/`stop-continue-hook`/`session-queue-reaper`/`sync-recycle` sources, or items with `persistentTaskId`.
 
@@ -42,7 +41,7 @@ After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 
 **Step 1b: Re-enqueue dead persistent monitors** — Calls `requeueDeadPersistentMonitor()`. Skips tasks that are not in `active` status (e.g., idle-paused or manually paused monitors are left alone — prevents the reaper from fighting the idle pause). Circuit breaker: max 3 hard revivals per task in 10 min → exponential backoff (5→10→20→60 min). Rate-limit detection: scans session tail, applies 5-min cooldown (excluded from crash counter). Self-healing: calls `handleBlocker()` → may escalate to CTO or spawn fix task.
 
-**Step 1b.5: Audit session revival** — For each item in `reaperResult.auditRevivals`, dedup-checks for an existing auditor in `queued/running/spawning` state for the same task ID (via `json_extract(metadata, '$.taskId')`). If none found, enqueues the appropriate auditor (type determined by `taskType` — `universal-auditor` for todo/persistent, `plan-auditor` for plan, `authorization-auditor` for authorization) in the `audit` lane with an 8-minute TTL. Source tagged `session-reaper-audit-revival`. Emits `audit_session_revived` audit event. This prevents tasks from being permanently stuck in `pending_audit` when an auditor crashes. Covers all four audit types including CTO authorization decisions.
+**Step 1b.5: Audit session revival** — For each item in `reaperResult.auditRevivals`, dedup-checks for an existing auditor in `queued/running/spawning` state for the same task ID (via `json_extract(metadata, '$.taskId')`). If none found, enqueues the appropriate auditor (type determined by `taskType` — `universal-auditor` for todo/persistent, `plan-auditor` for plan) in the `audit` lane with an 8-minute TTL. Source tagged `session-reaper-audit-revival`. Emits `audit_session_revived` audit event. This prevents tasks from being permanently stuck in `pending_audit` when an auditor crashes.
 
 **Step 1c: Orphan persistent task catch-all** — Queries `persistent-tasks.db` for `active` tasks with no queued/running monitor. Re-enqueues via `requeueDeadPersistentMonitor()`.
 
@@ -94,8 +93,8 @@ After passing gates: inserts into `queue_items`, calls `drainQueue()` inline.
 
 | # | Mechanism | Trigger | Latency | Priority | Lane | Max Retries | Guards |
 |---|-----------|---------|---------|----------|------|-------------|--------|
-| 1 | **Revival daemon** (`scripts/revival-daemon.js`) | fs.watch on agent-tracker-history | <1s | urgent | revival | 5 (then escalating cooldown) | Memory pressure, bypass guard, suspended check, age <1h |
-| 2 | **Session reviver** (`session-reviver.js`) | Hourly automation, 10-min cooldown | ~10 min | urgent | revival | 1 per cycle, max 3/cycle | Memory pressure, concurrency slots, bypass guard, suspended check |
+| 1 | **Revival daemon** (`scripts/revival-daemon.js`) | fs.watch on agent-tracker-history | <1s | urgent | revival | 5 (then escalating cooldown) | Memory pressure, suspended check, age <1h |
+| 2 | **Session reviver** (`session-reviver.js`) | Hourly automation, 10-min cooldown | ~10 min | urgent | revival | 1 per cycle, max 3/cycle | Memory pressure, concurrency slots, suspended check |
 | 3 | **Dead agent recovery** (SessionStart hook) | Every interactive session start | Immediate (CTO login) | N/A (no spawn) | N/A | 1 per login | Lock coordination, spawned-session skip |
 | 4 | **Crash-loop resume** (SessionStart hook) | Every interactive session start | Immediate (CTO login) | N/A (informational) | N/A | N/A | Reports only — no auto-resume |
 | 5 | **Stop-continue hook** (Stop hook) | Agent attempts to stop | Real-time | N/A (gates exit) | N/A | Blocks until conditions met | Persistent task status, plan completion, worktree cleanup |
@@ -141,8 +140,8 @@ draft → active → paused ⇆ active → completed
 | Transition | Trigger | Side Effects |
 |-----------|---------|--------------|
 | `draft → active` | `activate_persistent_task` | Spawner hook enqueues monitor in `persistent` lane at `critical` priority; auto-activates 2 reserved slots |
-| `active → paused` | `pause_persistent_task`, bypass request, circuit breaker | `propagatePauseToPlan()` → plan task paused → blocking_queue entry; audit event |
-| `paused → active` | `resume_persistent_task`, amendment auto-resume, stale-pause auto-resume, CTO bypass approval | `propagateResumeToPlan()` → plan task in_progress → blocking_queue resolved; spawner hook re-enqueues monitor |
+| `active → paused` | `pause_persistent_task`, circuit breaker | `propagatePauseToPlan()` → plan task paused; audit event |
+| `paused → active` | `resume_persistent_task`, amendment auto-resume, stale-pause auto-resume | `propagateResumeToPlan()` → plan task in_progress; spawner hook re-enqueues monitor |
 | `active → completed` | `complete_persistent_task` | `plan-persistent-sync.js` hook → routes to `pending_audit` or `completed` on linked plan task; cascade to phase/plan |
 | `* → cancelled` | `cancel_persistent_task` | Audit event; plan cascade may auto-pause |
 
@@ -180,7 +179,6 @@ draft → active → paused ⇆ active → completed
 | Session reviver | 10 min | Scans history for dead sessions, revives up to 3 |
 | Session reaper (async) | 30 min | Hard-kills stuck sessions, reconciles TODO tasks |
 | Persistent monitor health | 15 min | Detects dead/stale monitors, re-enqueues |
-| Timed pause auto-resume | 1 min | Auto-resolves expired timed bypass pauses (≤60 min) without CTO action |
 | Stale-pause auto-resume | 15 min | Resumes persistent tasks paused > 30 min |
 | Rate-limit cooldown recovery | 30 min | Clears expired rate-limit cooldowns, re-enqueues |
 | Self-heal fix check | 5 min | Checks fix task completion, resolves/escalates blockers |
@@ -229,7 +227,6 @@ draft → active → paused ⇆ active → completed
 | Memory pressure | Spawn gate | Blocks non-critical spawns at high/critical RAM pressure |
 | Focus mode | Enqueue gate | Blocks non-essential automation (allows CTO/critical/persistent) |
 | Quota exhaustion | Enqueue + spawn gate | Blocks all non-CTO spawns and queue draining when usage ≥ 99%; cleared by quota-recovery-daemon |
-| Bypass request | Enqueue + revival gate | Blocks task spawn/revival when CTO decision pending |
 | CTO activity gate | Automation gate | Blocks gate-required hourly automation when no CTO briefing in 24h |
 | Worktree exclusivity | Enqueue gate | Blocks sessions targeting same worktree |
 | Self-pause circuit breaker | Auto-resume guard | Sets `do_not_auto_resume` after 2+ self-pauses in 2 hours |

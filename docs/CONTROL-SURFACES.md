@@ -6,12 +6,12 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Count | When It Fires | What It Controls |
 |----------|-------|---------------|-----------------|
-| 1. Hooks | 92 JS files | Every tool call, session start/stop, user prompt | Real-time guardrails, context injection, lifecycle management |
+| 1. Hooks | ~60 JS files | Every tool call, session start/stop, user prompt | Context injection, lifecycle management, audit gates |
 | 2. Agent Definitions | 26 shared (target projects only) | At agent spawn | Model tier, allowed tools, behavioral instructions, workflow. The gentyr repo itself has no `.claude/agents/` — these definitions live in the framework's `agents/` directory and are symlinked into target projects on install. |
-| 3. MCP Servers/Tools | ~38 servers, ~730+ tools | On tool invocation | What actions agents can take, what data they can access |
-| 4. Slash Commands | 46 commands | User-initiated | Workflows, dashboards, configuration |
+| 3. MCP Servers/Tools | ~38 servers, ~700+ tools | On tool invocation | What actions agents can take, what data they can access |
+| 4. Slash Commands | ~40 commands | User-initiated | Workflows, dashboards, configuration |
 | 5. CLAUDE.md (managed section) | 1 template | Every conversation turn | Persistent behavioral instructions in system prompt |
-| 6. Session Briefing | 1 hook + content | Session start | One-time context dump: queue status, active tasks, bypass requests |
+| 6. Session Briefing | 1 hook + content | Session start | One-time context dump: queue status, active tasks, focus mode |
 | 7. Prompt Templates | ~10 builders | Agent spawn | Task-specific instructions injected into spawn prompts |
 | 8. Automation Scripts | 26 scripts | Cron/launchd/daemon | Background orchestration outside of agent sessions |
 
@@ -19,7 +19,7 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 | Category | Can Block | Can Inject Context | Can Spawn Agents | Can Modify Code | Persists Across Sessions |
 |----------|-----------|-------------------|-----------------|----------------|------------------------|
-| PreToolUse hooks | **Yes** | No | No | No | No (stateless) |
+| PreToolUse hooks | Yes (audit + signal gates only) | No | No | No | No (stateless) |
 | PostToolUse hooks | No | **Yes** | **Yes** | No | No (stateless) |
 | SessionStart hooks | No | **Yes** | **Yes** | No | No (one-shot) |
 | Agent Definitions | No | **Yes** (instructions) | No | Indirectly | **Yes** (file-based) |
@@ -30,28 +30,12 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 
 ## Hooks by Lifecycle Phase
 
-### PreToolUse (18 hooks — BLOCK dangerous actions)
+### PreToolUse (2 hooks — audit gate and signal compliance)
 
 | Hook | Matcher | Purpose |
 |------|---------|---------|
-| interactive-lockdown-guard.js | `""` (all) | Block file-editing tools in interactive CTO sessions |
-| block-no-verify.js | `Bash` | Block hook bypass and lint-weakening commands: `--no-verify`, `-n` shorthand, `--no-gpg-sign`, `core.hooksPath` writes/unset, `.husky` or `.claude/hooks` deletion, ESLint `--quiet`/`--max-warnings N`; also blocks 1Password CLI access — all secrets must flow through MCP env fields |
-| credential-file-guard.js | `Bash,Read,Write,Edit,NotebookEdit,Grep,Glob` | Block access to credential files |
-| playwright-cli-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block direct Playwright CLI via Bash or secret_run_command (use MCP tools) |
-| branch-checkout-guard.js | `Bash` | Block branch switching in main tree |
-| main-tree-commit-guard.js | `Bash` | Block git add/commit on protected branches |
-| worktree-cwd-guard.js | `Bash` | Block Bash when CWD is deleted worktree |
-| worktree-path-guard.js | `Write,Edit,NotebookEdit` | Block file writes outside worktree boundary |
-| worktree-remove-guard.js | `Bash` | Block `git worktree remove` on worktrees owned by other active sessions (Bug #6 Layer 3) |
-| interactive-agent-guard.js | `Agent` | Block code-modifying sub-agents in interactive sessions |
-| block-team-tools.js | `TeamCreate,TeamDelete,SendMessage` | Block Team tools (use Agent tool instead) |
-| secret-profile-gate.js | `mcp__secret-sync__secret_run_command` | Enforce secret profile usage |
-| protected-action-gate.js | `mcp__*` | Block protected MCP actions; store as deferred action for spawned agents |
-| staging-lock-guard.js | `Bash` | Block staging operations (gh pr create --base staging, gh pr merge targeting staging, gh pr merge --admin, git push, git merge) for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`; CI check verification on staging merges |
-| worktree-sync-guard.js | `Bash,mcp__secret-sync__secret_run_command` | Block `gentyr sync` when CWD is inside a worktree (sync destroys the worktree directory) |
 | gate-confirmation-enforcer.js | `mcp__todo-db__complete_task,mcp__persistent-task__complete_persistent_task` | Block task completion while `pending_audit` is active; prevents bypassing the audit gate |
 | signal-compliance-gate.js | `mcp__agent-tracker__send_session_signal` | Validate inter-agent signals against schema before delivery; reject malformed or unauthorized signal types |
-| demo-local-guard.js | `mcp__playwright__run_demo,mcp__playwright__run_demo_batch,mcp__playwright__run_tests,mcp__playwright__launch_ui_mode` | Block local demo execution for spawned agents (CTO HMAC bypass required) |
 
 ### PostToolUse (40 hooks — REACT to actions, inject context, spawn agents)
 
@@ -93,9 +77,6 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | release-completion-hook.js | `complete_persistent_task` | On release plan-manager completion: unlock staging, generate report, emit audit event, broadcast signal |
 | universal-audit-spawner.js | `complete_task,update_task_progress,complete_persistent_task` | Fire on task completion; when `gate_success_criteria` / `verification_strategy` set, transition to `pending_audit` and enqueue Haiku auditor in `audit` lane |
 | alignment-monitor-briefing.js | `""` (all) | Deliver cross-session alignment violation summaries to active deputy-CTO monitor sessions |
-| bypass-request-router.js | `submit_bypass_request` | Route bypass requests to global monitor via directive signal; CTO sees after 5-min grace period |
-| authorization-audit-spawner.js | `mcp__agent-tracker__record_cto_decision` | On verified CTO decision: for `lockdown_toggle`/`local_mode_toggle`, executes inline (writes state files, skips auditor — interactive sessions have no `agent_id`/`queue_id`); for all others, transitions to `audit_pending` and enqueues `authorization-auditor` in `audit` lane (8-min TTL); skips auditor when `decision_type === 'audit_override'` |
-| deferred-action-audit-executor.js | `mcp__agent-tracker__cto_decision_audit_pass` | On authorization audit pass, load linked deferred action and execute via MCP daemon (Tier 1) or Bash (Tier 2); signal original agent with result |
 | monitor-poll-budget-hook.js | `mcp__agent-tracker__peek_session` | Advisory: track `peek_session` frequency per spawned monitor session; emit `additionalContext` warning when >5 calls in 5-min rolling window. Fast-exits in under 1ms for non-`peek_session` tools, interactive sessions, and non-monitor spawned sessions |
 
 ### SessionStart (9 hooks — set initial context)
@@ -110,15 +91,13 @@ GENTYR guides Claude Code agents through **8 distinct control surface categories
 | credential-health-check.js | Verify 1Password connectivity |
 | playwright-health-check.js | Verify Playwright and browser availability |
 | plan-briefing.js | Brief agent on active plan state |
-| session-briefing.js | Comprehensive context dump: queue, tasks, deferred actions, bypass requests, focus mode, active persona profile; also warns when main has commits not in staging (merge-back needed) |
+| session-briefing.js | Comprehensive context dump: queue, tasks, focus mode, active persona profile; also warns when main has commits not in staging (merge-back needed) |
 
 ### UserPromptSubmit (13 hooks — process user/CTO input)
 
 | Hook | Purpose |
 |------|---------|
-| cto-notification-hook.js | Update CTO status line; inject pending bypass request details into model context on every prompt |
-| secret-leak-detector.js | Scan for leaked secrets |
-| protected-action-approval-hook.js | Deprecated (Phase 3). Previously detected approval phrase+code tokens and executed deferred actions via MCP daemon — superseded by authorization-audit-spawner.js + deferred-action-audit-executor.js. (The legacy bypass-approval-hook.js has been fully removed, including its HOTFIX branch.) |
+| cto-notification-hook.js | Update CTO status line; inject relevant status into model context on every prompt |
 | slash-command-prefetch.js | Pre-fetch data for slash commands |
 | branch-drift-check.js | Check for upstream branch drift |
 | comms-notifier.js | Notify about pending inter-agent communications |
@@ -148,7 +127,6 @@ Key modules consumed by hooks:
 - `port-allocator.js` — Per-worktree port isolation
 - `process-tree.js` — Process group management (killProcessGroup, killProcessesInDirectory)
 - `task-category.js` — Task pipeline resolution (resolveCategory, buildPromptFromCategory)
-- `bypass-guard.js` — CTO bypass request checking
 - `blocker-auto-heal.js` — Self-healing orchestrator for persistent monitors: diagnoses crash type, spawns fix tasks, escalates to CTO after max attempts (`handleBlocker`)
 - `pause-propagation.js` — Hierarchical pause/resume propagation between persistent tasks and plans (propagatePauseToPlan, propagateResumeToPlan, assessPlanBlocking)
 - `persistent-monitor-revival-prompt.js` — Revival prompt builder (now includes self-heal context from blocker_diagnosis)
@@ -161,14 +139,11 @@ Key modules consumed by hooks:
 - `feature-branch-helper.js` — Branch naming and detection
 - `llm-client.js` — Shared `callLLMStructured` for Haiku structured JSON output via `--json-schema`
 - `report-auto-resolver.js` — PR-based report auto-resolution and dedup (runReportAutoResolve, runReportDedup)
-- `deferred-action-db.js` — Deferred protected action DB operations (create, read, list, mark approved/executing/completed/failed, dedup, expire)
-- `deferred-action-executor.js` — MCP HTTP execution, HMAC verification with timing-safe comparison, full execution pipeline for deferred actions
-- `staging-lock.js` — Staging lock state management (`lockStaging`, `unlockStaging`, `isStagingLocked`, `getStagingLockState`); persists lock to `.claude/state/staging-lock.json`; best-effort GitHub branch protection via `gh api`
 - `release-orchestrator.js` — Production release artifact collection: `enumerateReleasePRs` (gh pr list with git fallback), `getArtifactDir` (create `.claude/releases/{id}/prs|sessions|reports/`), `collectSessionArtifact` (copy JSONL by agent marker), `collectDemoArtifacts` (copy screenshots/recordings + demo-results.json), `collectTriageArtifacts` (query cto-reports.db + deputy-cto.db)
-- `release-report-generator.js` — Structured release report pipeline: `generateStructuredReport` reads release-ledger.db + artifacts, fills `templates/release-report-template.md` with 17 placeholders (including `{cto_approval}`), writes `report.md` to artifact dir; `convertToPdf` converts to PDF via headless Chromium; `generateCtoApproval` reads `cto-approval.json` to fill Section 9
-- `cto-approval-proof.js` — CTO release approval cryptographic proof: `verifyQuoteInJsonl` (line-by-line JSONL scan for verbatim quote), `computeApprovalHmac` (HMAC-SHA256 with `cto-release-approval` domain separator), `verifyApprovalHmac` (constant-time verification), `computeFileHash` (SHA-256), `findCurrentSessionJsonl` (session discovery — encodes project path by replacing all non-alphanumeric chars with dashes to match canonical `~/.claude/projects/` directory naming). Consumed by `record_cto_approval` tool on release-ledger server. **TOCTOU defense**: `record_cto_approval` copies the live JSONL to a stable snapshot first, then verifies the quote and hashes the snapshot (not the live file), ensuring the archived hash matches the verified content. **Spawned-session guard**: `record_cto_approval` blocks `CLAUDE_SPAWNED_SESSION=true` sessions — only interactive CTO sessions can sign off releases. **`approval_text` minimum**: 10 characters (enforced by Zod schema) to ensure a substantive audit trail
+- `release-report-generator.js` — Structured release report pipeline: `generateStructuredReport` reads release-ledger.db + artifacts, fills `templates/release-report-template.md`, writes `report.md` to artifact dir; `convertToPdf` converts to PDF via headless Chromium
+- `cto-approval-proof.js` — CTO release approval verification: `verifyQuoteInJsonl` (line-by-line JSONL scan for verbatim quote), `computeFileHash` (SHA-256), `findCurrentSessionJsonl` (session discovery). Consumed by `record_cto_approval` tool on release-ledger server. **Spawned-session guard**: `record_cto_approval` blocks `CLAUDE_SPAWNED_SESSION=true` sessions — only interactive CTO sessions can sign off releases. **`approval_text` minimum**: 10 characters (enforced by Zod schema) to ensure a substantive audit trail
 - `compact-session.js` — Session compaction utilities: reads session context token counts from JSONL tails, tracks compaction events in `compact-tracker.json`, and executes `claude --resume <id> -p /compact` on dead sessions before revival when context is high. Exports `compactSessionIfNeeded(sessionId, cwd, opts)`. Consumed by `session-queue.js` `spawnQueueItem` for revival-time compaction of `resume`-type spawns.
-- `auditor-prompt.js` — Single source of truth for building auditor session specs. Exports `buildAuditorSessionSpec()` consumed by `universal-audit-spawner.js` (first spawn), `authorization-audit-spawner.js` (CTO authorization audits), and `session-queue.js` Step 1b.5 (revival spawn). Also exports `buildAuthorizationAuditorSessionSpec()`. Internally calls `resolveAuditTools(taskType)` to dispatch across four task types: `'todo'` (universal-auditor + todo-db tools), `'persistent'` (universal-auditor + persistent-task tools), `'plan'` (plan-auditor + plan-orchestrator tools), `'authorization'` (authorization-auditor + agent-tracker cto_decision tools).
+- `auditor-prompt.js` — Single source of truth for building auditor session specs. Exports `buildAuditorSessionSpec()` consumed by `universal-audit-spawner.js` (first spawn) and `session-queue.js` Step 1b.5 (revival spawn). Internally calls `resolveAuditTools(taskType)` to dispatch across three task types: `'todo'` (universal-auditor + todo-db tools), `'persistent'` (universal-auditor + persistent-task tools), `'plan'` (plan-auditor + plan-orchestrator tools).
 - `load-test-runner.js` — Lightweight autocannon-based load test runner. Reads route configuration from `services.json` (`loadTest` section), runs load tests per route, and returns structured performance results. `autocannon` must be installed in the target project. Used by the promotion pipeline when `loadTest.enabled: true`.
 - `ai-compatibility-check.js` — LLM-powered (Haiku) dependency upgrade compatibility validator. Fetches npm registry metadata and changelogs, analyzes project usage patterns, and classifies upgrades as compatible/risky with specific breaking-change identification. Returns `{ compatible, risks, recommendation }`.
 - `ai-pr-decomposition.js` — LLM-powered (Haiku) large-PR decomposer. When a PR exceeds 3000 lines, suggests how to split commits into independently-promotable groups by feature/concern. Returns `{ groups }` with each group's commits, rationale, and suggested branch name.
@@ -191,7 +166,6 @@ These agent definitions live in the framework's `agents/` directory and are inst
 | plan-updater | haiku | Sync plan substeps | Lightweight, completes in <30s |
 | plan-auditor | sonnet | Verify plan task completion | Independent, 8-min TTL, audit lane |
 | universal-auditor | sonnet | Verify todo-db and persistent task completion | Independent, 8-min TTL, audit lane, signal-excluded; does NOT audit plan tasks |
-| authorization-auditor | sonnet | Verify CTO authorization decisions against presented context | Independent, 8-min TTL, audit lane, signal-excluded; verifies via peek_session JSONL; fail-closed on missing session |
 | demo-manager | sonnet | Demo lifecycle | Only agent that creates/modifies .demo.ts files |
 | feedback-agent | sonnet | User persona testing | No source code access |
 | product-manager | opus | PMF analysis | External research only |
@@ -213,11 +187,11 @@ These agent definitions live in the framework's `agents/` directory and are inst
 | todo-db | create_task, list_tasks, complete_task, summarize_work, gate_approve_task, list_categories | Task CRUD, categories, gate approval |
 | persistent-task | create/activate/amend/pause/resume/cancel/complete_persistent_task, inspect_persistent_task | Persistent task lifecycle |
 | plan-orchestrator | create_plan, add_phase, add_plan_task, get_spawn_ready_tasks, plan_dashboard | Plans, phases, tasks, dependencies |
-| agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, submit/resolve_bypass_request, list/resolve_blocking_item, get_blocking_summary, peek_session, browse_session, set_automation_toggle, get_automation_toggles, record_cto_decision, check_cto_decision, cto_decision_audit_pass, cto_decision_audit_fail, repair_main_tree_drift, query_token_usage, top_token_sessions, token_attribution_health, revival_cost_summary | Session queue, signals, locks, bypass, blocking queue, automation toggles, CTO authorization chain, main-tree drift repair, token usage attribution |
+| agent-tracker | get_session_queue_status, set_max_concurrent_sessions, acquire/release_shared_resource, peek_session, browse_session, set_automation_toggle, get_automation_toggles, repair_main_tree_drift, query_token_usage, top_token_sessions, token_attribution_health, revival_cost_summary | Session queue, signals, locks, automation toggles, main-tree drift repair, token usage attribution |
 | user-feedback | create_persona, register_feature, create_demo_scenario, register_prerequisite, lock/unlock_feature, create/archive/switch/list/get/delete_persona_profile, verify_demo_completeness | Personas, features, scenarios, prerequisites, persona profiles, demo completeness gate |
 | product-manager | start_section, approve_section, get_section | PMF analysis pipeline |
-| deputy-cto | create_report, list_reports, acknowledge_report, force_promote_to_prod | Reports, triage, delegation, CTO-gated force production promotion |
-| release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report, present_release_summary, record_cto_approval | Production release evidence chain (staging lock → CTO sign-off with cryptographic proof) |
+| deputy-cto | create_report, list_reports, acknowledge_report | Reports, triage, delegation |
+| release-ledger | create_release, get_release, list_releases, update_release, sign_off_release, cancel_release, add_release_pr, update_release_pr_status, add_release_session, add_release_report, add_release_task, get_release_evidence, generate_release_report, present_release_summary, record_cto_approval | Production release evidence chain (CTO sign-off) |
 
 ### Infrastructure Servers (Tier 1 — shared daemon)
 
@@ -253,9 +227,9 @@ feedback-reporter, playwright-feedback, programmatic-feedback
 **Tasks**: spawn-tasks, task-queue, triage, persistent-task, persistent-tasks
 **Monitoring**: monitor, status, tokens
 **Plans**: plan, plan-progress, plan-timeline, plan-audit, plan-sessions
-**Config**: automation-rate, concurrent-sessions, configure-personas, focus-mode, global-monitor, lockdown, local-mode, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
-**Operations**: cto-dashboard, deputy-cto, promote-to-prod, promote-to-prod-force, promote-to-staging, session-queue, show, workstream
-**Infrastructure**: hotfix, push-migrations, push-secrets, overdrive-gentyr, setup-fly
+**Config**: automation-rate, concurrent-sessions, configure-personas, focus-mode, global-monitor, setup-gentyr, toggle-automation-gentyr, toggle-product-manager
+**Operations**: cto-dashboard, deputy-cto, promote-to-prod, promote-to-staging, session-queue, show, workstream
+**Infrastructure**: push-migrations, push-secrets, overdrive-gentyr, setup-fly
 **Analysis**: persona-feedback, product-manager, replay, run-feedback
 
 ## Prompt Injection Points (7 major sources)
@@ -263,7 +237,7 @@ feedback-reporter, playwright-feedback, programmatic-feedback
 | Source | When | What |
 |--------|------|------|
 | CLAUDE.md.gentyr-section | Every turn (system prompt) | Merge chain, agent workflow, commit rules, tool reference |
-| session-briefing.js | Session start | Queue state, active tasks, bypass requests, focus mode |
+| session-briefing.js | Session start | Queue state, active tasks, focus mode |
 | plan-briefing.js | Session start | Active plan state and progress |
 | buildPromptFromCategory() | Agent spawn | 6-step pipeline (or custom category sequence) |
 | buildPersistentMonitorRevivalPrompt() | Monitor revival | Last summary, amendments, sub-task status, demo/infra flags |

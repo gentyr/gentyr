@@ -198,12 +198,6 @@ do_protect() {
 
     local files=(
         "$hooks_dir/pre-commit-review.js"
-        "$hooks_dir/bypass-approval-hook.js"
-        "$hooks_dir/block-no-verify.js"
-        "$hooks_dir/protected-action-gate.js"
-        "$hooks_dir/protected-action-approval-hook.js"
-        "$hooks_dir/credential-file-guard.js"
-        "$hooks_dir/secret-leak-detector.js"
         "$hooks_dir/protected-actions.json"
         "$PROJECT_DIR/.claude/settings.json"
         "$PROJECT_DIR/.claude/protection-key"
@@ -264,12 +258,6 @@ do_unprotect() {
 
     local files=(
         "$hooks_dir/pre-commit-review.js"
-        "$hooks_dir/bypass-approval-hook.js"
-        "$hooks_dir/block-no-verify.js"
-        "$hooks_dir/protected-action-gate.js"
-        "$hooks_dir/protected-action-approval-hook.js"
-        "$hooks_dir/credential-file-guard.js"
-        "$hooks_dir/secret-leak-detector.js"
         "$hooks_dir/protected-actions.json"
         "$PROJECT_DIR/.claude/settings.json"
         "$PROJECT_DIR/.claude/TESTING.md"
@@ -617,16 +605,14 @@ for state_file in \
     "$PROJECT_DIR/.claude/state/usage-snapshots.json" \
     "$PROJECT_DIR/.claude/hourly-automation-state.json" \
     "$PROJECT_DIR/.claude/plan-executor-state.json" \
-    "$PROJECT_DIR/.claude/bypass-approval-token.json" \
     "$PROJECT_DIR/.claude/commit-approval-token.json" \
-    "$PROJECT_DIR/.claude/protection-state.json" \
-    "$PROJECT_DIR/.claude/protected-action-approvals.json"; do
+    "$PROJECT_DIR/.claude/protection-state.json"; do
     [ -f "$state_file" ] || echo '{}' > "$state_file"
 done
 
-# Generate protection key if missing (required by protected-action-gate.js for G024)
+# Generate protection key if missing (HMAC signing key for credential protection)
 # This must happen during normal installation, not only during --protect-mcp, so that
-# protected MCP actions do not fail-closed on a missing key file.
+# protected operations do not fail-closed on a missing key file.
 if [ ! -f "$PROJECT_DIR/.claude/protection-key" ]; then
     echo "  Generating protection key..."
     CLAUDE_PROJECT_DIR="$PROJECT_DIR" node "$FRAMEWORK_DIR/scripts/encrypt-credential.js" --generate-key
@@ -666,7 +652,6 @@ fi
 # Also create WAL journal files (-shm, -wal) since SQLite needs them
 for db_file in \
     "$PROJECT_DIR/.claude/todo.db" \
-    "$PROJECT_DIR/.claude/deputy-cto.db" \
     "$PROJECT_DIR/.claude/cto-reports.db" \
     "$PROJECT_DIR/.claude/session-events.db"; do
     [ -f "$db_file" ] || touch "$db_file"
@@ -1066,7 +1051,6 @@ GITIGNORE_ENTRIES="
 .claude/settings.local.json
 .claude/settings.json
 .claude/protection-key
-.claude/protected-action-approvals.json
 .claude/protection-state.json
 .claude/specs-config.json
 .claude/playwright-health.json
