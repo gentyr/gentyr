@@ -449,12 +449,6 @@ function answerQuestion(args: AnswerQuestionArgs): AnswerQuestionResult | ErrorR
   }
 
   // Block answering bypass-request and protected-action-request questions via this tool
-  if (question.type === 'bypass-request') {
-    return { error: 'Cannot answer bypass-request questions via answer_question. The CTO must type "APPROVE BYPASS <code>" in chat.' };
-  }
-  if (question.type === 'protected-action-request') {
-    return { error: 'Cannot answer protected-action-request questions via answer_question. Use approve_protected_action or deny_protected_action.' };
-  }
 
   if (question.status === 'answered') {
     return {
@@ -484,14 +478,6 @@ function clearQuestion(args: ClearQuestionArgs): ClearQuestionResult | ErrorResu
 
   if (!question) {
     return { error: `Question not found: ${args.id}` };
-  }
-
-  // Block clearing pending bypass-request and protected-action-request questions
-  if (question.type === 'bypass-request' && question.status === 'pending') {
-    return { error: 'Cannot clear a pending bypass-request. The CTO must type "APPROVE BYPASS <code>". Only answered bypass-requests can be cleared.' };
-  }
-  if (question.type === 'protected-action-request' && question.status === 'pending') {
-    return { error: 'Cannot clear a pending protected-action-request. Use approve_protected_action or deny_protected_action.' };
   }
 
   const now = new Date();
@@ -562,15 +548,6 @@ const APPROVAL_TOKEN_PATH = path.join(PROJECT_DIR, '.claude', 'commit-approval-t
 
 function approveCommit(args: ApproveCommitArgs): ApproveCommitResult {
   const db = getDb();
-
-  // Reject rationales starting with "EMERGENCY BYPASS" — only execute_bypass may use this prefix
-  if (/^EMERGENCY\s+BYPASS/i.test(args.rationale)) {
-    return {
-      approved: false,
-      decision_id: '',
-      message: 'Cannot use "EMERGENCY BYPASS" prefix in approve_commit rationale. Use request_bypass for emergency bypass requests.',
-    };
-  }
 
   // G020: Block commits when ANY pending items exist (questions OR triage)
   const pending = getTotalPendingItems();
@@ -1304,18 +1281,7 @@ function listAutomationConfig(): ListAutomationConfigResult {
 // ============================================================================
 
 async function triggerPreviewPromotion(args: TriggerPreviewPromotionArgs): Promise<TriggerPreviewPromotionResult | ErrorResult> {
-  // 1. Check staging lock
-  try {
-    const stagingLockPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'staging-lock.js');
-    if (fs.existsSync(stagingLockPath)) {
-      const { isStagingLocked } = await import(stagingLockPath);
-      if (isStagingLocked(PROJECT_DIR)) {
-        return { error: 'Preview promotion blocked: staging is locked for a production release. Complete or cancel the release via /promote-to-prod.' };
-      }
-    }
-  } catch { /* non-fatal — proceed if lock check fails */ }
-
-  // 2. Check branches exist
+  // 1. Check branches exist
   try {
     execSync('git rev-parse --verify origin/preview', { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
     execSync('git rev-parse --verify origin/staging', { cwd: PROJECT_DIR, encoding: 'utf8', timeout: 5000, stdio: 'pipe' });

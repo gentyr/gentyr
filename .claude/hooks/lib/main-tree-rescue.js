@@ -274,8 +274,8 @@ git revert --abort 2>/dev/null || true
 \`\`\`
 
 If the abort fails for any reason, **do not attempt to resolve manually**.
-Call \`mcp__agent-tracker__submit_bypass_request\` with
-\`category: "scope"\` summarizing the conflict, then exit.
+File a deputy-CTO report via \`mcp__agent-reports__report_to_deputy_cto\`
+(priority: critical) summarizing the conflict, then exit.
 
 ### Step 3 — Salvage orphaned work to a rescue branch
 
@@ -346,8 +346,8 @@ git pull --ff-only origin ${baseDisplay}
 
 - If \`git pull --ff-only\` fails (non-fast-forward — meaning local
   \`${baseDisplay}\` has commits not on origin), **do NOT force**.
-  Call \`mcp__agent-tracker__submit_bypass_request\` with
-  \`category: "scope"\` summarizing the divergence and exit. The
+  File a deputy-CTO report via \`mcp__agent-reports__report_to_deputy_cto\`
+  (priority: critical) summarizing the divergence and exit. The
   CTO must decide whether to reset, rebase, or investigate.
 
 ### Step 5 — Verify
