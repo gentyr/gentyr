@@ -3,266 +3,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/interactive-lockdown-guard.js",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/block-no-verify.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/playwright-cli-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/branch-checkout-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/main-tree-commit-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/cto-worktree-subagent-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-cwd-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-remove-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-sync-guard.js",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/staging-lock-guard.js",
-            "timeout": 3
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-base-guard.js",
-            "timeout": 3
-          }
-        ]
-      },
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-path-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/spawned-main-tree-edit-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-path-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/spawned-main-tree-edit-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "NotebookEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/worktree-path-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/spawned-main-tree-edit-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Grep",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Glob",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/credential-file-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "TeamCreate",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/block-team-tools.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "TeamDelete",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/block-team-tools.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "SendMessage",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/block-team-tools.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/interactive-agent-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/debate-mode-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__secret-sync__secret_run_command",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/playwright-cli-guard.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/secret-profile-gate.js",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/secret-env-scope-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__playwright__run_demo,mcp__playwright__run_demo_batch,mcp__playwright__run_tests,mcp__playwright__launch_ui_mode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/demo-local-guard.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/protected-action-gate.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "matcher": "mcp__todo-db__complete_task,mcp__todo-db__summarize_work",
         "hooks": [
           {
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/signal-compliance-gate.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__agent-tracker__submit_bypass_request",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/bypass-pause-duration-guard.js",
             "timeout": 5
           }
         ]
@@ -358,11 +103,6 @@
             "type": "command",
             "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/cto-notification-hook.js",
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/secret-leak-detector.js",
-            "timeout": 5
           },
           {
             "type": "command",
@@ -727,14 +467,6 @@
         }]
       },
       {
-        "matcher": "mcp__agent-tracker__submit_bypass_request",
-        "hooks": [{
-          "type": "command",
-          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/bypass-request-router.js",
-          "timeout": 10
-        }]
-      },
-      {
         "matcher": "mcp__persistent-task__complete_persistent_task",
         "hooks": [{
           "type": "command",
@@ -783,27 +515,11 @@
         }]
       },
       {
-        "matcher": "mcp__agent-tracker__record_cto_decision",
-        "hooks": [{
-          "type": "command",
-          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/authorization-audit-spawner.js",
-          "timeout": 15
-        }]
-      },
-      {
         "matcher": "mcp__agent-tracker__update_cto_alignment_goal_progress",
         "hooks": [{
           "type": "command",
           "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/cto-alignment-spec-review.js",
           "timeout": 10
-        }]
-      },
-      {
-        "matcher": "mcp__agent-tracker__cto_decision_audit_pass",
-        "hooks": [{
-          "type": "command",
-          "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/deferred-action-audit-executor.js",
-          "timeout": 30
         }]
       },
       {

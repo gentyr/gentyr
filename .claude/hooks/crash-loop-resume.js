@@ -19,13 +19,6 @@ import path from 'path';
 
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
-// Bypass guard — check for pending CTO bypass requests
-let checkBypassBlock = () => ({ blocked: false });
-try {
-  const bg = await import('./lib/bypass-guard.js');
-  checkBypassBlock = bg.checkBypassBlock;
-} catch (_) { /* non-fatal — fail open */ }
-
 // Accumulate warnings/errors for systemMessage (never stderr in SessionStart hooks)
 const warnings = [];
 
@@ -97,19 +90,15 @@ async function main() {
 
     // The circuit breaker no longer auto-pauses tasks (replaced with exponential backoff).
     // This hook now only shows paused tasks to the CTO for awareness.
-    // Paused tasks are either: manually paused by a monitor (bypass request) or
+    // Paused tasks are either: manually paused by a monitor or
     // paused by the self-pause circuit breaker (2+ self-pauses in 2h).
     // No auto-resume — the stale-pause auto-resume in hourly-automation handles that.
     const pauseReasons = [];
     for (const task of pausedTasks) {
       let reason = 'manual';
       try {
-        const bypassCheck = checkBypassBlock('persistent', task.id);
-        if (bypassCheck.blocked) reason = 'bypass-request';
-        else {
-          const meta = task.metadata ? JSON.parse(task.metadata) : {};
-          if (meta.do_not_auto_resume) reason = 'do-not-auto-resume';
-        }
+        const meta = task.metadata ? JSON.parse(task.metadata) : {};
+        if (meta.do_not_auto_resume) reason = 'do-not-auto-resume';
       } catch (_) { /* non-fatal */ }
       pauseReasons.push(`"${task.title?.slice(0, 40) || task.id.slice(0, 8)}" (${reason})`);
     }

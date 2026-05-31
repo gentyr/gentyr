@@ -39,8 +39,6 @@ import { resolveUserPrompts } from './lib/user-prompt-resolver.js';
 import { buildStrictInfraGuidancePrompt } from './lib/strict-infra-guidance-prompt.js';
 import { resolveCategory, buildPromptFromCategory, enrichTaskWithAuditFailure } from './lib/task-category.js';
 import { runReportAutoResolve, runReportDedup } from './lib/report-auto-resolver.js';
-import { isStagingLocked } from './lib/staging-lock.js';
-import { isLocalModeEnabled } from '../../lib/shared-mcp-config.js';
 import {
   resolveBaseBranch,
   computeWorktreeDivergence,
@@ -1011,7 +1009,6 @@ mcp__agent-tracker__search_sessions({ query: "<keywords>", limit: 10 })  // Sear
 **ALWAYS ESCALATE (no exceptions):**
 - **G002 Violations**: Any report mentioning stub code, placeholder, TODO, FIXME, or "not implemented"
 - **Security vulnerabilities**: Any report with category "security" or mentioning vulnerabilities
-- **Bypass requests**: Any bypass-request type (these require CTO approval)
 
 If the report matches ANY auto-escalation rule, skip to "If ESCALATING" - do not self-handle or dismiss.
 
@@ -1336,7 +1333,6 @@ mcp__agent-tracker__search_sessions({ query: "<keywords>", limit: 10 })
 **ALWAYS ESCALATE (no exceptions):**
 - **G002 Violations**: Any report mentioning stub code, placeholder, TODO, FIXME, or "not implemented"
 - **Security vulnerabilities**: Any report with category "security" or mentioning vulnerabilities
-- **Bypass requests**: Any bypass-request type (these require CTO approval)
 
 If the report matches ANY auto-escalation rule, skip to "If ESCALATING".
 
@@ -2860,12 +2856,6 @@ function getPromotionWorktree(promotionType) {
  * @returns {{ queueId: string, position: number, drained: object }}
  */
 export function spawnHotfixPromotion(commits) {
-  // Block hotfix if staging is locked for a production release
-  if (isStagingLocked(PROJECT_DIR)) {
-    log('Hotfix blocked: staging is locked for production release');
-    return { queueId: null, blocked: 'staging_locked' };
-  }
-
   const commitList = commits.join('\n');
   const wt = getPromotionWorktree('staging-promotion');
 
@@ -2940,12 +2930,6 @@ Complete within 25 minutes. If blocked, report and exit.`,
  * @returns {{ queueId: string, promotionId: string, commitCount: number, previewSha: string } | { error: string }}
  */
 export function spawnPreviewPromotion(commits) {
-  // Block promotion if staging is locked for a production release
-  if (isStagingLocked(PROJECT_DIR)) {
-    log('Preview promotion blocked: staging is locked for production release');
-    return { error: 'Preview promotion blocked: staging is locked for production release' };
-  }
-
   const commitList = commits.join('\n');
 
   // Get the current preview SHA for promotion ID generation
@@ -3486,10 +3470,7 @@ async function main() {
 
   // Overdrive and reaper removed — session queue manages concurrency and stale PID cleanup.
 
-  const localMode = isLocalModeEnabled(PROJECT_DIR);
-  if (localMode) {
-    log('Local mode is enabled. Skipping remote service automations.');
-  }
+  const localMode = false;
 
   const state = getState();
   const now = Date.now();
@@ -3913,350 +3894,6 @@ async function main() {
   });
 
   // =========================================================================
-  // TIMED PAUSE AUTO-RESUME (1-minute runIfDue cooldown, gate-exempt)
-  // Auto-resolves bypass requests with auto_resume_at <= now. These are
-  // short-duration pauses (≤60 min) that don't need CTO approval.
-  // =========================================================================
-  await runIfDue('timed_pause_auto_resume', {
-    state, now,
-    stateKey: 'lastTimedPauseAutoResumeRun',
-    label: 'Timed pause auto-resume',
-    gateExempt: true,
-    fn: async () => {
-      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-      if (!Database || !fs.existsSync(bypassDbPath)) return;
-
-      let db;
-      try {
-        db = new Database(bypassDbPath);
-        db.pragma('journal_mode = WAL');
-        db.pragma('busy_timeout = 3000');
-
-        // Find expired timed pauses.
-        // NOTE: auto_resume_at is stored as ISO-8601 (e.g. '2026-05-24T14:20:41.321Z'), but
-        // datetime('now') returns SQLite's canonical format ('2026-05-24 14:20:41'). A naive
-        // string compare fails because 'T' (0x54) > ' ' (0x20), so an ISO string sorts AFTER
-        // the bare format for same-day rows. Wrap both sides in datetime() to coerce to the
-        // same canonical format before comparing.
-        const expired = db.prepare(
-          "SELECT id, task_type, task_id, task_title, summary, pause_duration_minutes FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NOT NULL AND datetime(auto_resume_at) <= datetime('now')"
-        ).all();
-
-        if (!expired || expired.length === 0) return;
-
-        for (const req of expired) {
-          // Mark as approved (auto-resolved)
-          db.prepare(
-            "UPDATE bypass_requests SET status = 'approved', resolution_context = ?, resolved_at = datetime('now'), resolved_by = 'timed_auto_resume' WHERE id = ? AND status = 'pending'"
-          ).run(`Auto-resumed after ${req.pause_duration_minutes || '?'}-minute timed pause.`, req.id);
-
-          log(`[timed-pause-auto-resume] Auto-resolved bypass request ${req.id} for ${req.task_type} task ${req.task_id} (${req.task_title})`);
-
-          // Resume the task
-          if (req.task_type === 'persistent') {
-            const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-            let ptDb;
-            try {
-              ptDb = new Database(ptDbPath);
-              ptDb.pragma('busy_timeout = 3000');
-              const result = ptDb.prepare(
-                "UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'"
-              ).run(req.task_id);
-
-              if (result.changes > 0) {
-                // Record resumed event
-                ptDb.prepare(
-                  "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
-                ).run(
-                  crypto.randomUUID(),
-                  req.task_id,
-                  JSON.stringify({ reason: 'timed_pause_expired', bypass_request_id: req.id, pause_duration_minutes: req.pause_duration_minutes }),
-                );
-
-                // Load full task object for revival prompt
-                const task = ptDb.prepare(
-                  "SELECT id, title, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?"
-                ).get(req.task_id);
-
-                if (task) {
-                  // Enqueue monitor revival
-                  // FIX-B-HOTFIX: pass agentType/hookType/tagContext/projectDir explicitly.
-                  // buildRevivalPrompt() returns { prompt, extraEnv, metadata, agent } —
-                  // not the full enqueueSession() spec. The previous spread pattern
-                  // silently threw "enqueueSession: agentType is required" after
-                  // auto-resolving the bypass, leaving the task stuck "active" with
-                  // no monitor spawned. Matches the canonical pattern at
-                  // persistent_monitor_health (line ~3662).
-                  const revivalResult = await buildRevivalPrompt(task, `Timed pause expired after ${req.pause_duration_minutes || '?'} minutes. Resume work where you left off.`);
-                  if (revivalResult) {
-                    enqueueSession({
-                      title: `[Revival] Timed pause expired: ${req.task_title}`,
-                      agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
-                      hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
-                      tagContext: 'persistent-monitor',
-                      source: 'timed-pause-auto-resume',
-                      priority: 'urgent',
-                      lane: 'persistent',
-                      ttlMs: 0,
-                      prompt: revivalResult.prompt,
-                      projectDir: PROJECT_DIR,
-                      extraEnv: revivalResult.extraEnv,
-                      metadata: revivalResult.metadata,
-                      agent: revivalResult.agent,
-                    });
-                  }
-                }
-
-                // Propagate resume to plan layer
-                try {
-                  const ppPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
-                  const { propagateResumeToPlan } = await import(ppPath);
-                  propagateResumeToPlan(req.task_id);
-                } catch { /* non-fatal */ }
-              }
-            } finally {
-              try { ptDb?.close(); } catch { /* ignore */ }
-            }
-          } else {
-            // For todo tasks, status was reset to 'pending' — normal spawning resumes
-            log(`[timed-pause-auto-resume] Todo task ${req.task_id} auto-unblocked — normal spawning will resume`);
-          }
-        }
-      } catch (err) {
-        log(`[timed-pause-auto-resume] Error: ${err.message}`);
-      } finally {
-        try { db?.close(); } catch { /* ignore */ }
-      }
-    },
-  });
-
-  // =========================================================================
-  // STUCK DEFERRED-ACTION EXECUTOR RECOVERY (1-minute runIfDue, gate-exempt)
-  // Promotes deferred_actions stuck in 'executing' status for >10 minutes to
-  // 'failed' with execution_error='executor_hung'. The inline lockdown_toggle
-  // path in authorization-audit-spawner.js (and the deferred-action audit
-  // executor) transition pending→executing before potentially slow work
-  // (worktree provisioning, MCP HTTP, Bash). If the executor process is
-  // killed mid-execution or hangs on a network call with no timeout, the row
-  // stays in 'executing' forever and the action is never retried. This sweep
-  // unblocks retries and surfaces the failure to the CTO via the deferred
-  // action's execution_error field.
-  // =========================================================================
-  await runIfDue('stuck_executor_recovery', {
-    state, now,
-    stateKey: 'lastStuckExecutorRecoveryRun',
-    label: 'Stuck deferred-action executor recovery',
-    gateExempt: true,
-    fn: async () => {
-      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-      if (!Database || !fs.existsSync(bypassDbPath)) return;
-
-      let db;
-      try {
-        const { expireStuckExecuting } = await import('./lib/deferred-action-db.js');
-        db = new Database(bypassDbPath);
-        db.pragma('journal_mode = WAL');
-        db.pragma('busy_timeout = 3000');
-        const { promoted, ids } = expireStuckExecuting(db, 10);
-        if (promoted > 0) {
-          log(`[stuck-executor-recovery] Promoted ${promoted} stuck deferred_action(s) to 'failed': ${ids.join(', ')}`);
-        }
-      } catch (err) {
-        log(`[stuck-executor-recovery] Error: ${err.message}`);
-      } finally {
-        try { db?.close(); } catch { /* ignore */ }
-      }
-    },
-  });
-
-  // =========================================================================
-  // BYPASS SLA ENFORCER (1-minute runIfDue cooldown, gate-exempt)
-  // FIX-31: Hard SLA guarantee — no pending bypass with `auto_resume_at` may
-  // stay pending past `auto_resume_at + 5 minutes`. This is an INDEPENDENT
-  // defense-in-depth path from `timed_pause_auto_resume`:
-  //   - Different SQL (always uses datetime() coercion — would have caught FIX-1
-  //     even if timed_pause_auto_resume's SQL was broken).
-  //   - Different recovery: force-resolves the bypass AND force-resumes the task
-  //     AND emits a high-severity CTO alert, even if either primary path failed.
-  //   - Independent code path: no shared dependency on timed_pause_auto_resume,
-  //     no shared dependency on persistent_stale_pause_resume.
-  // SLA budget: 5 minutes past `auto_resume_at` is the trigger (giving the
-  // primary `timed_pause_auto_resume` path 4 minutes of normal cooldown grace
-  // plus 1 minute of slack). Past 5 min, infrastructure failure is assumed and
-  // forced recovery fires.
-  // =========================================================================
-  await runIfDue('bypass_sla_enforcer', {
-    state, now,
-    stateKey: 'lastBypassSlaEnforcerRun',
-    label: 'Bypass SLA enforcer',
-    gateExempt: true,
-    fn: async () => {
-      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-      if (!Database || !fs.existsSync(bypassDbPath)) return;
-      let db;
-      try {
-        db = new Database(bypassDbPath);
-        db.pragma('journal_mode = WAL');
-        db.pragma('busy_timeout = 3000');
-
-        // Use datetime(auto_resume_at, '+5 minutes') for the SLA grace window AND
-        // for the lex-safe coercion. Works regardless of whether FIX-1 lands.
-        const overdue = db.prepare(`
-          SELECT id, task_type, task_id, task_title, summary, pause_duration_minutes, auto_resume_at, created_at
-          FROM bypass_requests
-          WHERE status = 'pending'
-            AND auto_resume_at IS NOT NULL
-            AND datetime(auto_resume_at, '+5 minutes') <= datetime('now')
-        `).all();
-
-        if (!overdue || overdue.length === 0) return;
-
-        for (const req of overdue) {
-          // Compute how overdue we are for log + alert clarity
-          let overdueMinutes = 0;
-          try {
-            overdueMinutes = Math.round((Date.now() - new Date(req.auto_resume_at).getTime()) / 60000);
-          } catch { /* ignore parse errors */ }
-
-          log(`[bypass-sla-enforcer] OVERDUE bypass ${req.id} for ${req.task_type} task ${req.task_id} (${req.task_title}) — auto_resume_at=${req.auto_resume_at} is ${overdueMinutes}m overdue. Force-resolving and respawning.`);
-
-          // 1. Force-resolve the bypass (idempotent — only fires when still pending)
-          db.prepare(`
-            UPDATE bypass_requests
-            SET status = 'approved',
-                resolution_context = ?,
-                resolved_at = datetime('now'),
-                resolved_by = 'bypass_sla_enforcer'
-            WHERE id = ? AND status = 'pending'
-          `).run(`SLA breach: auto_resume_at + 5 minutes elapsed (${overdueMinutes}m overdue). Force-resolved by enforcer.`, req.id);
-
-          // 2. Force-resume the persistent task and enqueue a revival monitor.
-          //    Mirrors the timed_pause_auto_resume revival path but lives in its
-          //    own try/catch so a failure in the persistent-task layer cannot
-          //    block the bypass row from being resolved.
-          if (req.task_type === 'persistent') {
-            const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-            let ptDb;
-            try {
-              ptDb = new Database(ptDbPath);
-              ptDb.pragma('busy_timeout = 3000');
-              const result = ptDb.prepare(
-                "UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'"
-              ).run(req.task_id);
-
-              if (result.changes > 0) {
-                ptDb.prepare(
-                  "INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))"
-                ).run(
-                  crypto.randomUUID(),
-                  req.task_id,
-                  JSON.stringify({
-                    reason: 'sla_enforced_resume',
-                    bypass_request_id: req.id,
-                    overdue_minutes: overdueMinutes,
-                    pause_duration_minutes: req.pause_duration_minutes,
-                  }),
-                );
-
-                const task = ptDb.prepare(
-                  "SELECT id, title, metadata, monitor_session_id FROM persistent_tasks WHERE id = ?"
-                ).get(req.task_id);
-
-                if (task) {
-                  // FIX-B-HOTFIX: pass agentType/hookType/tagContext/projectDir explicitly.
-                  // See timed_pause_auto_resume above for full reasoning.
-                  const revivalResult = await buildRevivalPrompt(task, `SLA-enforced resume: your timed pause was overdue by ${overdueMinutes} minutes (primary auto-resume failed). Resume work where you left off and treat this as a normal revival.`);
-                  if (revivalResult) {
-                    enqueueSession({
-                      title: `[Revival] SLA-enforced resume: ${req.task_title}`,
-                      agentType: AGENT_TYPES.PERSISTENT_TASK_MONITOR,
-                      hookType: HOOK_TYPES.PERSISTENT_TASK_MONITOR,
-                      tagContext: 'persistent-monitor',
-                      source: 'bypass-sla-enforcer',
-                      priority: 'critical',
-                      lane: 'persistent',
-                      ttlMs: 0,
-                      prompt: revivalResult.prompt,
-                      projectDir: PROJECT_DIR,
-                      extraEnv: revivalResult.extraEnv,
-                      metadata: revivalResult.metadata,
-                      agent: revivalResult.agent,
-                    });
-                  }
-                }
-
-                try {
-                  const ppPath = path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'pause-propagation.js');
-                  const { propagateResumeToPlan } = await import(ppPath);
-                  propagateResumeToPlan(req.task_id);
-                } catch { /* non-fatal */ }
-              }
-            } catch (err) {
-              log(`[bypass-sla-enforcer] persistent-task resume failed for ${req.task_id}: ${err.message} (bypass row still force-resolved)`);
-            } finally {
-              try { ptDb?.close(); } catch { /* ignore */ }
-            }
-          } else {
-            log(`[bypass-sla-enforcer] Todo task ${req.task_id} bypass force-resolved — normal spawning will resume`);
-          }
-
-          // 3. Write a CTO alert so the SLA breach is visible at the top of the
-          //    next interactive session briefing (consumed by session-briefing.js
-          //    via the SLA-breach block).
-          try {
-            const alertDir = path.join(PROJECT_DIR, '.claude', 'state');
-            const alertPath = path.join(alertDir, 'sla-breach-alerts.json');
-            let alerts = [];
-            if (fs.existsSync(alertPath)) {
-              try { alerts = JSON.parse(fs.readFileSync(alertPath, 'utf8')) || []; } catch { alerts = []; }
-            }
-            alerts.unshift({
-              id: `sla-${req.id}`,
-              ts: new Date().toISOString(),
-              severity: 'high',
-              category: 'sla_breach',
-              bypass_request_id: req.id,
-              task_type: req.task_type,
-              task_id: req.task_id,
-              task_title: req.task_title,
-              overdue_minutes: overdueMinutes,
-              auto_resume_at: req.auto_resume_at,
-              message: `Plan/persistent task '${req.task_title}' bypass auto-resume was overdue by ${overdueMinutes}m. Enforcer auto-resumed.`,
-            });
-            // Keep at most 50 most recent alerts.
-            alerts = alerts.slice(0, 50);
-            const tmpPath = `${alertPath}.tmp`;
-            fs.writeFileSync(tmpPath, JSON.stringify(alerts, null, 2));
-            fs.renameSync(tmpPath, alertPath);
-          } catch (err) {
-            log(`[bypass-sla-enforcer] Failed to write CTO alert (non-fatal): ${err.message}`);
-          }
-
-          // 4. Append a structured audit-log entry.
-          try {
-            const sa = await import(path.join(PROJECT_DIR, '.claude', 'hooks', 'lib', 'session-audit.js'));
-            if (sa.appendAuditEvent) {
-              sa.appendAuditEvent({
-                type: 'bypass_sla_breach',
-                bypass_request_id: req.id,
-                task_type: req.task_type,
-                task_id: req.task_id,
-                task_title: req.task_title,
-                overdue_minutes: overdueMinutes,
-                auto_resume_at: req.auto_resume_at,
-              });
-            }
-          } catch { /* non-fatal — session-audit may not be available in all installs */ }
-        }
-      } catch (err) {
-        log(`[bypass-sla-enforcer] Error: ${err.message}`);
-      } finally {
-        try { db?.close(); } catch { /* ignore */ }
-      }
-    },
-  });
-
-  // =========================================================================
   // PERSISTENT STALE PAUSE AUTO-RESUME (15-minute runIfDue cooldown)
   // Detects paused tasks whose pause event is older than the configured
   // threshold and auto-resumes them. Rate limits and other transient issues
@@ -4293,16 +3930,6 @@ async function main() {
         let resumed = 0;
 
         for (const task of pausedTasks) {
-          // Bypass request guard — skip tasks with pending CTO bypass requests
-          try {
-            const { checkBypassBlock } = await import('./lib/bypass-guard.js');
-            const bypassCheck = checkBypassBlock('persistent', task.id);
-            if (bypassCheck.blocked) {
-              log(`Persistent stale pause auto-resume: "${task.title}" has pending CTO bypass request — skipping`);
-              continue;
-            }
-          } catch (_) { /* non-fatal — fail open */ }
-
           // Find the most recent 'paused' event for this task
           const pauseEvent = ptDb.prepare(
             "SELECT created_at FROM events WHERE persistent_task_id = ? AND event_type = 'paused' ORDER BY created_at DESC LIMIT 1"
@@ -4523,15 +4150,12 @@ ${taskList}
 
 For EACH task:
 1. Read the task: mcp__persistent-task__get_persistent_task({ id: "<task_id>", include_amendments: true })
-2. Check if it has a pending bypass request: mcp__agent-tracker__list_bypass_requests({ status: "pending" })
-3. Check if the blocking condition has been resolved (e.g., credential issue fixed, deployment completed)
+2. Check if the blocking condition has been resolved (e.g., credential issue fixed, deployment completed)
 
 DECISIONS:
-- If the task can be SAFELY RESUMED (no pending bypass, blocking condition resolved): call mcp__persistent-task__resume_persistent_task({ id: "<task_id>" })
-- If the task NEEDS CTO INPUT (ambiguous situation, policy decision, conflicting requirements): call mcp__agent-tracker__submit_bypass_request with category "paused_task_escalation" and a clear summary of what the CTO needs to decide
+- If the task can be SAFELY RESUMED (blocking condition resolved): call mcp__persistent-task__resume_persistent_task({ id: "<task_id>" })
 - If the task's parent plan or objective is COMPLETED/CANCELLED: cancel the task via mcp__persistent-task__cancel_persistent_task
 
-Do NOT resume tasks that have pending bypass requests — those are waiting for CTO decisions.
 After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
         });
 
@@ -4543,99 +4167,6 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
     },
   });
 
-  // =========================================================================
-  // DEFERRED ACTION AUTO-RESUME (gate-exempt, 5-minute cooldown)
-  // When a deferred protected action is completed/approved, auto-resolve the
-  // linked bypass request so the paused task can re-spawn. Also re-spawns
-  // tasks paused by protected action gates that have been waiting >5 minutes.
-  // =========================================================================
-  await runIfDue('deferred_action_resume', {
-    state, now,
-    stateKey: 'lastDeferredActionResumeCheck',
-    label: 'Deferred action auto-resume',
-    fn: async () => {
-      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-      if (!Database || !fs.existsSync(bypassDbPath)) return;
-
-      let db;
-      try {
-        db = new Database(bypassDbPath);
-        db.pragma('busy_timeout = 3000');
-      } catch { return; }
-
-      try {
-        // Check if deferred_actions table exists
-        const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='deferred_actions'").get();
-        if (!tableExists) return;
-
-        // Find completed deferred actions that have linked pending bypass requests
-        const completedActions = db.prepare(`
-          SELECT da.id as action_id, da.server, da.tool, da.status as action_status,
-                 da.requester_task_type, da.requester_task_id, da.execution_result,
-                 bp.id as bypass_id, bp.status as bypass_status
-          FROM deferred_actions da
-          JOIN bypass_requests bp ON bp.task_id = da.requester_task_id
-            AND bp.task_type = da.requester_task_type
-          WHERE da.status IN ('completed', 'failed')
-            AND bp.status = 'pending'
-            AND da.executed_at > datetime('now', '-1 hour')
-        `).all();
-
-        let resolved = 0;
-        for (const row of completedActions) {
-          const context = row.action_status === 'completed'
-            ? `Auto-resolved: deferred action ${row.action_id} (${row.server}:${row.tool}) completed successfully. Task can resume.`
-            : `Auto-resolved: deferred action ${row.action_id} (${row.server}:${row.tool}) failed. Task will retry.`;
-          db.prepare(
-            "UPDATE bypass_requests SET status = 'approved', resolution_context = ?, resolved_at = datetime('now'), resolved_by = 'deferred-action-auto-resume' WHERE id = ? AND status = 'pending'"
-          ).run(context, row.bypass_id);
-          resolved++;
-          log(`Deferred action auto-resume: resolved bypass ${row.bypass_id} (action ${row.action_id} ${row.action_status})`);
-        }
-
-        // Also find pending bypass requests with category 'protected_action' older than 5 minutes
-        // whose parent persistent task or plan is completed/cancelled — auto-resolve them
-        const staleBypasses = db.prepare(`
-          SELECT id, task_type, task_id FROM bypass_requests
-          WHERE status = 'pending'
-            AND category = 'protected_action'
-            AND created_at < datetime('now', '-5 minutes')
-        `).all();
-
-        for (const bp of staleBypasses) {
-          // Check if the parent task is still active
-          let parentDone = false;
-          if (bp.task_type === 'persistent') {
-            const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-            if (fs.existsSync(ptDbPath)) {
-              try {
-                const ptDb = new Database(ptDbPath, { readonly: true });
-                const task = ptDb.prepare('SELECT status FROM persistent_tasks WHERE id = ?').get(bp.task_id);
-                if (task && ['completed', 'cancelled', 'failed'].includes(task.status)) {
-                  parentDone = true;
-                }
-                ptDb.close();
-              } catch { /* non-fatal */ }
-            }
-          }
-
-          if (parentDone) {
-            db.prepare(
-              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = 'Auto-cancelled: parent task is completed/cancelled', resolved_at = datetime('now') WHERE id = ? AND status = 'pending'"
-            ).run(bp.id);
-            log(`Deferred action auto-resume: cancelled stale bypass ${bp.id} (parent task done)`);
-            resolved++;
-          }
-        }
-
-        if (resolved > 0) {
-          debugLog('hourly-automation', 'deferred_action_resume', { resolved });
-        }
-      } finally {
-        try { db.close(); } catch { /* non-fatal */ }
-      }
-    },
-  });
 
   // =========================================================================
   // RATE LIMIT COOLDOWN RECOVERY (gate-exempt, 2-minute cooldown)
@@ -5198,9 +4729,8 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
           '7. Sleep 5 minutes, then repeat',
           '',
           '## Escalation Framework',
-          '- Minor drift: send a signal to the agent (~50%)',
+          '- Minor drift: send a signal to the agent (~65%)',
           '- Moderate misalignment: create a correction task (~35%)',
-          '- Significant drift or systemic issues: submit_bypass_request (~15%)',
           '',
           '## Signal Throttling',
           'Max 1 signal per agent per 30 minutes.',
@@ -7090,7 +6620,7 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
     stateKey: 'lastBranchPruner',
     gateExempt: true,
     label: 'Branch pruner',
-    localModeSkip: isLocalModeEnabled(PROJECT_DIR),
+    localModeSkip: false,
     fn: async () => {
       // List all local branches with no worktree
       let localBranches = [];
@@ -7208,117 +6738,6 @@ After triaging all tasks, call mcp__todo-db__summarize_work and exit.`,
     },
   });
 
-  // =========================================================================
-  // BYPASS REQUEST STALENESS CHECK (5min cooldown)
-  // Auto-cancels pending bypass requests whose blocking condition has cleared:
-  // linked task deleted/terminal, or resource_access requests older than 1 hour.
-  // =========================================================================
-  await runIfDue('bypass_request_staleness_check', {
-    state, now, intervals: config.intervals,
-    stateKey: 'lastBypassStalenessCheck',
-    label: 'Bypass request staleness check',
-    fn: async () => {
-      if (!Database) return;
-      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-      if (!fs.existsSync(bypassDbPath)) return;
-
-      let bypassDb;
-      try {
-        bypassDb = new Database(bypassDbPath);
-        bypassDb.pragma('busy_timeout = 3000');
-
-        const pendingRequests = bypassDb.prepare(
-          "SELECT id, task_type, task_id, category, created_at FROM bypass_requests WHERE status = 'pending'"
-        ).all();
-
-        if (pendingRequests.length === 0) return;
-
-        let cancelled = 0;
-        for (const req of pendingRequests) {
-          let shouldCancel = false;
-          let reason = '';
-
-          if (req.task_type === 'todo') {
-            const todoDbPath = path.join(PROJECT_DIR, '.claude', 'todo.db');
-            if (!fs.existsSync(todoDbPath)) { shouldCancel = true; reason = 'todo_db_missing'; }
-            else {
-              try {
-                const todoDb = new Database(todoDbPath, { readonly: true });
-                todoDb.pragma('busy_timeout = 2000');
-                const task = todoDb.prepare('SELECT id, status FROM tasks WHERE id = ?').get(req.task_id);
-                todoDb.close();
-                if (!task) { shouldCancel = true; reason = 'task_deleted'; }
-                else if (task.status === 'completed') { shouldCancel = true; reason = 'task_completed'; }
-              } catch (_) { /* fail-open: don't cancel on read error */ }
-            }
-          } else if (req.task_type === 'persistent') {
-            const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-            if (fs.existsSync(ptDbPath)) {
-              try {
-                const ptDb = new Database(ptDbPath, { readonly: true });
-                ptDb.pragma('busy_timeout = 2000');
-                const task = ptDb.prepare('SELECT id, status FROM persistent_tasks WHERE id = ?').get(req.task_id);
-                ptDb.close();
-                if (!task) { shouldCancel = true; reason = 'task_deleted'; }
-                else if (['completed', 'cancelled', 'failed'].includes(task.status)) { shouldCancel = true; reason = `task_${task.status}`; }
-              } catch (_) { /* fail-open */ }
-            }
-          }
-
-          // Resource access bypass requests: auto-cancel after 1 hour
-          // (resource locks have 15-30 min TTLs, so 1 hour is very generous)
-          if (!shouldCancel && req.category === 'resource_access' && req.created_at) {
-            try {
-              const ageMs = Date.now() - new Date(req.created_at).getTime();
-              if (ageMs > 60 * 60 * 1000) { shouldCancel = true; reason = 'resource_access_stale_1h'; }
-            } catch (_) { /* non-fatal */ }
-          }
-
-          if (shouldCancel) {
-            bypassDb.prepare(
-              "UPDATE bypass_requests SET status = 'cancelled', resolution_context = ?, resolved_at = datetime('now') WHERE id = ? AND status = 'pending'"
-            ).run(`Auto-cancelled: ${reason}`, req.id);
-
-            // Also resolve any linked blocking_queue entries
-            bypassDb.prepare(
-              "UPDATE blocking_queue SET status = 'resolved', resolved_at = datetime('now'), resolution_context = ? WHERE bypass_request_id = ? AND status = 'active'"
-            ).run(`Auto-resolved: bypass request cancelled (${reason})`, req.id);
-
-            // If the task was paused for this bypass, resume it
-            if (req.task_type === 'persistent') {
-              try {
-                const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-                if (fs.existsSync(ptDbPath)) {
-                  const ptDb = new Database(ptDbPath);
-                  ptDb.pragma('busy_timeout = 2000');
-                  const task = ptDb.prepare('SELECT id, status FROM persistent_tasks WHERE id = ?').get(req.task_id);
-                  if (task && task.status === 'paused') {
-                    ptDb.prepare("UPDATE persistent_tasks SET status = 'active' WHERE id = ? AND status = 'paused'").run(req.task_id);
-                    ptDb.prepare("INSERT INTO events (id, persistent_task_id, event_type, details, created_at) VALUES (?, ?, 'resumed', ?, datetime('now'))").run(
-                      randomUUID(), req.task_id, JSON.stringify({ reason: 'bypass_request_auto_cancelled', bypass_id: req.id })
-                    );
-                    log(`Bypass staleness: auto-resumed persistent task ${req.task_id} (bypass ${req.id} cancelled: ${reason})`);
-                  }
-                  ptDb.close();
-                }
-              } catch (_) { /* non-fatal */ }
-            }
-
-            cancelled++;
-            try { auditEvent('bypass_request_auto_cancelled', { request_id: req.id, task_type: req.task_type, task_id: req.task_id, reason }); } catch (_) { /* non-fatal */ }
-          }
-        }
-
-        if (cancelled > 0) {
-          log(`Bypass staleness check: auto-cancelled ${cancelled} stale request(s).`);
-        }
-      } catch (err) {
-        log(`Bypass staleness check error: ${err.message}`);
-      } finally {
-        try { bypassDb?.close(); } catch (_) { /* non-fatal */ }
-      }
-    },
-  });
 
   // =========================================================================
   // ORPHAN PROCESS REAPER (15min cooldown, was 60min)

@@ -108,4 +108,4 @@ When active, the deputy-CTO runs in continuous alignment monitoring mode:
 Escalation framework:
 - Minor drift: signal to the agent (~50%)
 - Moderate misalignment: correction task (~35%)
-- Significant drift: submit_bypass_request (~15%)
+- Significant drift: file a deputy-CTO report for CTO visibility (~15%)

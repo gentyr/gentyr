@@ -3,11 +3,10 @@
  * Single source of truth — consumed by universal-audit-spawner.js (first spawn)
  * and session-queue.js Step 1b.5 (revival spawn).
  *
- * Supports four task types:
+ * Supports three task types:
  *   - 'todo'          → task_audit_pass / task_audit_fail (on todo-db server)
  *   - 'persistent'    → pt_audit_pass / pt_audit_fail (on persistent-task server)
  *   - 'plan'          → verification_audit_pass / verification_audit_fail (on plan-orchestrator server)
- *   - 'authorization' → cto_decision_audit_pass / cto_decision_audit_fail (on agent-tracker server)
  *
  * @module lib/auditor-prompt
  */
@@ -21,23 +20,14 @@
 export const AUDITOR_AGENT_TYPES = new Set([
   'universal-auditor',
   'plan-auditor',
-  'authorization-auditor',
 ]);
 
 /**
  * Resolve the pass/fail MCP tool names and agent definition for a given task type.
- * @param {'todo'|'persistent'|'plan'|'authorization'} taskType
+ * @param {'todo'|'persistent'|'plan'} taskType
  * @returns {{ passTool: string, failTool: string, agent: string, idParam: string }}
  */
 function resolveAuditTools(taskType) {
-  if (taskType === 'authorization') {
-    return {
-      passTool: 'mcp__agent-tracker__cto_decision_audit_pass',
-      failTool: 'mcp__agent-tracker__cto_decision_audit_fail',
-      agent: 'authorization-auditor',
-      idParam: 'decision_id',
-    };
-  }
   if (taskType === 'plan') {
     return {
       passTool: 'mcp__plan-orchestrator__verification_audit_pass',

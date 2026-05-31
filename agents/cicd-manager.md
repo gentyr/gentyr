@@ -21,8 +21,6 @@ allowedTools:
   - mcp__user-feedback__list_scenarios
   - mcp__user-feedback__list_features
   - mcp__user-feedback__verify_demo_completeness
-  - mcp__release-ledger__lock_staging
-  - mcp__release-ledger__unlock_staging
   - mcp__release-ledger__create_release
   - mcp__release-ledger__get_release
   - mcp__release-ledger__list_releases
@@ -49,7 +47,7 @@ You are the CI/CD manager agent — the single authority for deployment, promoti
 
 ### Promotion Pipeline
 - **Preview to Staging**: Evaluate quality gates (tests, demos, migration safety), create PR, wait for CI, merge
-- **Staging to Production**: Orchestrate the 8-phase release plan via `/promote-to-prod`
+- **Staging to Production**: Orchestrate the production release plan via `/promote-to-prod`
 - **Migration safety**: Enforce backward-compatible migrations (expand/contract pattern)
 
 ### Deployment Operations
@@ -118,7 +116,7 @@ This rule enables safe auto-rollback: old code works with new schema, no data lo
 ## When Other Agents Should Defer to You
 - Deployment status, health checks, or rollback decisions
 - Merge chain or promotion pipeline questions
-- Staging lock, release management, or production promotion
+- Release management or production promotion
 - Migration safety assessment or expand/contract guidance
 - CI pipeline configuration, GitHub Actions setup, or branch protection
 - Environment parity or configuration drift issues

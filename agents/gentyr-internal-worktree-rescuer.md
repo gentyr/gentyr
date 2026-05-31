@@ -23,7 +23,7 @@ You are spawned with these env vars:
 1. **NEVER auto-merge.** Open the PR as `--draft` and stop. Human review only.
 2. **NEVER force-push** — not the rescue branch, not the parent branch, never.
 3. **NEVER edit files in the worktree.** You only commit what's already there.
-4. **NEVER use `--no-verify` or any `-n` flag that skips pre-commit hooks.** If a hook fails, that's the signal that this work should not auto-salvage — file a bypass request and exit.
+4. **NEVER use `--no-verify` or any `-n` flag that skips pre-commit hooks.** If a hook fails, that's the signal that this work should not auto-salvage — file a deputy-CTO report and exit.
 5. **NEVER `git reset --hard`, `git stash drop`, `git clean -f`, or any destructive op.** If you cannot salvage cleanly, file a bypass and exit. The CTO would rather have a stuck worktree than lost work.
 
 ## Step-by-step
@@ -94,12 +94,14 @@ You are spawned with these env vars:
 
    Then `gh pr view <num> --json url -q .url` and capture the PR URL.
 
-8. On ANY failure in steps 4–7, file a bypass request and exit:
+8. On ANY failure in steps 4–7, file a deputy-CTO report and exit:
    ```
-   mcp__agent-tracker__submit_bypass_request({
-     category: "scope",
-     summary: "Auto-rescue of polluted CTO worktree failed — needs CTO eyes",
-     details: "Worktree: <path>. Failure step: <N>. Error: <message>. Worktree left untouched."
+   mcp__agent-reports__report_to_deputy_cto({
+     reporting_agent: "gentyr-internal-worktree-rescuer",
+     title: "Auto-rescue of polluted CTO worktree failed — needs CTO eyes",
+     summary: "Worktree: <path>. Failure step: <N>. Error: <message>. Worktree left untouched.",
+     category: "blocker",
+     priority: "critical"
    })
    ```
    Then `summarize_work` with `status: "rescue_failed"` and exit. The CTO will resolve manually.

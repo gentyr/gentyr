@@ -465,139 +465,6 @@ function getTodoCounts() {
 }
 
 /**
- * Get count of active blocking queue items
- */
-function getBlockingQueueCount() {
-  try {
-    const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-    if (!fs.existsSync(dbPath)) return 0;
-    if (!Database) return 0;
-    const db = new Database(dbPath, { readonly: true });
-    db.pragma('busy_timeout = 1000');
-    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='blocking_queue'").get();
-    if (!tableExists) { db.close(); return 0; }
-    const result = db.prepare("SELECT COUNT(*) as cnt FROM blocking_queue WHERE status = 'active'").get();
-    db.close();
-    return result?.cnt || 0;
-  } catch (_) {
-    return 0;
-  }
-}
-
-/**
- * Cache for pending bypass requests (60-second TTL)
- */
-let _bypassRequestsCache = null;
-let _bypassRequestsCacheTime = 0;
-const BYPASS_REQUESTS_CACHE_TTL_MS = 60000;
-
-/**
- * Check if the global deputy-CTO monitor session is currently active.
- * Lightweight: persistent-tasks.db only + PID liveness check.
- */
-function isGlobalMonitorActive() {
-  const ptDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
-  if (!Database || !fs.existsSync(ptDbPath)) return false;
-  try {
-    const db = new Database(ptDbPath, { readonly: true });
-    db.pragma('busy_timeout = 1000');
-    const task = db.prepare(
-      "SELECT status, monitor_pid FROM persistent_tasks WHERE metadata LIKE '%\"task_type\":\"global_monitor\"%' LIMIT 1"
-    ).get();
-    db.close();
-    if (!task || task.status !== 'active') return false;
-    if (task.monitor_pid) {
-      try { process.kill(task.monitor_pid, 0); return true; } catch (_) { return false; }
-    }
-    return false;
-  } catch (_) {
-    return false;
-  }
-}
-
-/**
- * Get pending bypass requests with full details for CTO action.
- * Uses a 60-second cache to avoid querying the DB on every prompt.
- * When the global monitor is active, hides requests < 5 min old (grace period)
- * unless the monitor explicitly escalated them.
- * Returns array of { id, task_title, category, summary, created_at } or empty array.
- */
-function getPendingBypassRequests() {
-  const now = Date.now();
-  if (_bypassRequestsCache !== null && (now - _bypassRequestsCacheTime) < BYPASS_REQUESTS_CACHE_TTL_MS) {
-    return _bypassRequestsCache;
-  }
-
-  try {
-    const dbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-    if (!fs.existsSync(dbPath) || !Database) {
-      _bypassRequestsCache = [];
-      _bypassRequestsCacheTime = now;
-      return _bypassRequestsCache;
-    }
-    const db = new Database(dbPath, { readonly: true });
-    db.pragma('busy_timeout = 1000');
-    const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='bypass_requests'").get();
-    if (!tableExists) {
-      db.close();
-      _bypassRequestsCache = [];
-      _bypassRequestsCacheTime = now;
-      return _bypassRequestsCache;
-    }
-
-    // Pull real (agent-authored) requests, and a count of synthesized
-    // (framework-generated quota_exhaustion) requests separately. Synthesized
-    // rows are FYI-only — quota-recovery-daemon auto-resolves them when the
-    // OAuth account's quota window clears, so they must not appear in the
-    // bypass-block prompt that demands CTO action.
-    let rows;
-    let synthesizedCount = 0;
-    try {
-      rows = db.prepare(
-        "SELECT id, task_title, category, summary, created_at, deputy_escalated, synthesized FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL AND COALESCE(synthesized, 0) = 0 ORDER BY created_at ASC"
-      ).all();
-      const row = db.prepare(
-        "SELECT COUNT(*) AS cnt FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL AND synthesized = 1"
-      ).get();
-      synthesizedCount = (row && row.cnt) || 0;
-    } catch (_) {
-      try {
-        rows = db.prepare(
-          "SELECT id, task_title, category, summary, created_at, deputy_escalated FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
-        ).all();
-      } catch (_) {
-        rows = db.prepare(
-          "SELECT id, task_title, category, summary, created_at FROM bypass_requests WHERE status = 'pending' AND auto_resume_at IS NULL ORDER BY created_at ASC"
-        ).all();
-      }
-    }
-    db.close();
-
-    rows = rows || [];
-
-    // Grace period: if global monitor is active, hide real requests < 5 min
-    // old. Synthesized count is never grace-filtered — it is informational.
-    if (rows.length > 0 && isGlobalMonitorActive()) {
-      const GRACE_PERIOD_MS = 5 * 60 * 1000;
-      rows = rows.filter(req => {
-        if (req.deputy_escalated === 1) return true;
-        const age = now - new Date(req.created_at).getTime();
-        return age >= GRACE_PERIOD_MS;
-      });
-    }
-
-    if (synthesizedCount > 0) rows.synthesizedCount = synthesizedCount;
-    _bypassRequestsCache = rows;
-    _bypassRequestsCacheTime = now;
-    return _bypassRequestsCache;
-  } catch (_) {
-    _bypassRequestsCache = [];
-    _bypassRequestsCacheTime = now;
-    return _bypassRequestsCache;
-  }
-}
-
-/**
  * Read preview → staging drift count from automation state file.
  * Fast: file read only, no git subprocess.
  */
@@ -974,10 +841,6 @@ async function main() {
       parts.push(releaseStatus.label);
     }
     const itemCount = deputyCto.pending + unreadReports;
-    const blockingCount = getBlockingQueueCount();
-    if (blockingCount > 0) {
-      parts.push(`${blockingCount} BLOCKING`);
-    }
     const criticalDrift = getPreviewDriftFromState();
     if (criticalDrift > 0) {
       parts.push(`STAGING: ${criticalDrift} behind`);
@@ -1041,12 +904,6 @@ async function main() {
       lines.push(`Staging: ${previewDrift} commit${previewDrift === 1 ? '' : 's'} behind preview`);
     }
 
-    // Line 4: Blocking queue (work-stopping items — shown above pending)
-    const blockingCount = getBlockingQueueCount();
-    if (blockingCount > 0) {
-      lines.push(`BLOCKED: ${blockingCount} item(s) blocking work — resolve bypass requests or use /deputy-cto`);
-    }
-
     // Line 5: Pending items (if any)
     const ctoPending = [];
     if (deputyCto.pending > 0) {
@@ -1060,46 +917,6 @@ async function main() {
     }
 
     message = lines.join('\n');
-  }
-
-  // Build bypass request block — PREPENDED to additionalContext so the model
-  // sees it first. Synthesized (quota-recovery) rows are EXCLUDED here: they
-  // are auto-resolved by quota-recovery-daemon and never need CTO action, so
-  // injecting them as "BYPASS REQUEST(S) NEED CTO DECISION" is exactly the
-  // bug that motivated this fix. They are mentioned only as a footnote.
-  const pendingBypassRequests = getPendingBypassRequests();
-  const realCount = pendingBypassRequests.length;
-  const synthesizedCount = pendingBypassRequests.synthesizedCount || 0;
-  let bypassBlock = '';
-  if (realCount > 0) {
-    const bypassLines = [
-      `URGENT — ${realCount} BYPASS REQUEST(S) NEED CTO DECISION`,
-      '',
-      'CRITICAL RULE: You MUST NOT call resolve_bypass_request yourself. Only the CTO can approve or reject bypass requests.',
-      'You MUST use AskUserQuestion to present each request with Approve/Reject options. Wait for the CTO to choose before taking any action.',
-      'DO NOT auto-approve, auto-reject, or resolve these on your own — even if the decision seems obvious.',
-      '---',
-    ];
-    for (let i = 0; i < pendingBypassRequests.length; i++) {
-      const req = pendingBypassRequests[i];
-      const age = req.created_at ? `${Math.round((Date.now() - new Date(req.created_at).getTime()) / 60000)}m ago` : '';
-      bypassLines.push(`${i + 1}. [${req.id}] "${req.task_title || 'Unknown'}" (${req.category || 'general'})${age ? ` [${age}]` : ''}`);
-      bypassLines.push(`   Summary: ${req.summary || 'No summary'}`);
-      bypassLines.push(`   To approve: CTO must explicitly say "approve" or select Approve via AskUserQuestion`);
-      bypassLines.push(`   To reject: CTO must explicitly say "reject" or select Reject via AskUserQuestion`);
-      bypassLines.push('');
-    }
-    bypassLines.push('MANDATORY WORKFLOW:');
-    bypassLines.push('1. Use AskUserQuestion NOW to present each pending bypass request to the CTO with Approve/Reject options.');
-    bypassLines.push('2. After the CTO responds, call record_cto_decision({ decision_type: "bypass_request", decision_id: "<request_id>", verbatim_text: "<CTO exact words>" })');
-    bypassLines.push('3. ONLY THEN call resolve_bypass_request({ request_id: "<id>", decision: "approved"/"rejected", context: "<CTO words>" })');
-    bypassLines.push('');
-    bypassLines.push('If the user\'s message is about something else, present the bypass requests FIRST, then address their message.');
-    if (synthesizedCount > 0) {
-      bypassLines.push('');
-      bypassLines.push(`(FYI: ${synthesizedCount} additional quota-recovery row(s) are pending — they will auto-resolve when quota clears. DO NOT present them to the CTO.)`);
-    }
-    bypassBlock = bypassLines.join('\n');
   }
 
   // PR 4 / Fix 3: count open deputy_reports (wedged-audit escalations).
@@ -1122,30 +939,18 @@ async function main() {
     }
   } catch { /* non-fatal */ }
 
-  // systemMessage: short status line for terminal. Real bypasses are urgent;
-  // synthesized rows are informational; deputy reports are deputy-cto inbox.
-  // Build segments and join — collapse to a compact format when the line
-  // would overflow.
+  // systemMessage: short status line for terminal. Deputy reports are the
+  // deputy-cto inbox count.
   const statusParts = [];
-  if (realCount > 0)        statusParts.push(`${realCount} BYPASS`);
-  if (synthesizedCount > 0) statusParts.push(`${synthesizedCount} QUOTA-AUTO`);
   if (deputyReportCount > 0) statusParts.push(`${deputyReportCount} DEPUTY-REPORT`);
-  let bypassPrefix = '';
+  let statusPrefix = '';
   if (statusParts.length > 0) {
-    const verbose = `${statusParts.join(' | ')} AWAITING DECISION | `;
-    if (verbose.length <= 60) {
-      bypassPrefix = verbose;
-    } else {
-      const total = realCount + synthesizedCount;
-      bypassPrefix = `${total} BYPASS (${realCount}R/${synthesizedCount}Q) | `;
-    }
+    statusPrefix = `${statusParts.join(' | ')} | `;
   }
-  const systemMsg = bypassPrefix + message;
+  const systemMsg = statusPrefix + message;
 
-  // additionalContext: bypass requests FIRST, then status — model sees bypass requests at top priority
-  const modelContext = bypassBlock
-    ? bypassBlock + '\n\n' + message
-    : message;
+  // additionalContext: status line for the model.
+  const modelContext = message;
 
   console.log(JSON.stringify({
     continue: true,

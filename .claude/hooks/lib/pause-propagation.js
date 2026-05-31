@@ -5,11 +5,9 @@
  * - Updates the linked plan task status to 'paused'
  * - Assesses plan impact (dependencies, gates, parallel work)
  * - Auto-pauses the plan if fully blocked
- * - Creates a blocking_queue entry for CTO visibility
  *
  * When a persistent task is resumed, propagates the resume back up:
  * - Resumes the plan task
- * - Resolves blocking_queue entries
  * - Resumes the plan if no other tasks are paused
  */
 
@@ -20,7 +18,6 @@ import { randomUUID } from 'node:crypto';
 const PROJECT_DIR = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const PERSISTENT_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'persistent-tasks.db');
 const PLANS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'plans.db');
-const BYPASS_DB_PATH = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
 
 let Database = null;
 try {
@@ -30,54 +27,20 @@ try {
 }
 
 /**
- * Ensure the blocking_queue table exists in bypass-requests.db.
- * Called before any read/write on the bypass DB to handle fresh installs.
- *
- * @param {import('better-sqlite3').Database} db - An open bypass-requests DB connection
- */
-function ensureBlockingQueueTable(db) {
-  // Schema must match the canonical definition in agent-tracker/server.ts getBypassDb()
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS blocking_queue (
-      id TEXT PRIMARY KEY,
-      bypass_request_id TEXT,
-      source_task_type TEXT NOT NULL,
-      source_task_id TEXT NOT NULL,
-      persistent_task_id TEXT,
-      plan_task_id TEXT,
-      plan_id TEXT,
-      plan_title TEXT,
-      blocking_level TEXT NOT NULL DEFAULT 'task',
-      impact_assessment TEXT,
-      summary TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active',
-      resolved_at TEXT,
-      resolution_context TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      CHECK (blocking_level IN ('task', 'persistent_task', 'plan')),
-      CHECK (status IN ('active', 'resolved', 'superseded'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_blocking_queue_status ON blocking_queue(status);
-  `);
-}
-
-/**
  * Propagate a persistent task pause up to the plan layer.
  *
  * Reads the persistent task's metadata for plan linkage. If linked, updates
- * the plan task to 'paused', assesses downstream impact, optionally auto-pauses
- * the plan itself when fully blocked, and inserts a blocking_queue entry for
- * CTO visibility.
+ * the plan task to 'paused', assesses downstream impact, and optionally
+ * auto-pauses the plan itself when fully blocked.
  *
  * @param {string} persistentTaskId - The ID of the persistent task that was paused
  * @param {string} [pauseReason] - Human-readable reason for the pause
- * @param {string} [bypassRequestId] - Optional bypass request ID that triggered the pause
- * @returns {{ propagated: boolean, blocking_level?: string, plan_auto_paused?: boolean, impact?: object, blocking_queue_id?: string, error?: string }}
+ * @returns {{ propagated: boolean, blocking_level?: string, plan_auto_paused?: boolean, impact?: object, error?: string }}
  */
-export function propagatePauseToPlan(persistentTaskId, pauseReason, bypassRequestId) {
+export function propagatePauseToPlan(persistentTaskId, pauseReason) {
   if (!Database || !persistentTaskId) return { propagated: false };
 
-  let ptDb, plansDb, bypassDb;
+  let ptDb, plansDb;
   try {
     // Step 1: Read persistent task metadata for plan linkage
     if (!fs.existsSync(PERSISTENT_DB_PATH)) return { propagated: false };
@@ -122,7 +85,7 @@ export function propagatePauseToPlan(persistentTaskId, pauseReason, bypassReques
       // Plan task was not in_progress — check its current status
       const currentTask = plansDb.prepare('SELECT status FROM plan_tasks WHERE id = ?').get(planTaskId);
       if (!currentTask || currentTask.status === 'paused') {
-        // Already paused or doesn't exist — still continue to create blocking_queue entry
+        // Already paused or doesn't exist — still continue to assess plan impact
       } else {
         // Task is in a terminal or non-pausable state, skip propagation
         plansDb.close();
@@ -175,69 +138,8 @@ export function propagatePauseToPlan(persistentTaskId, pauseReason, bypassReques
       }
     }
 
-    // Step 9: Read plan title for the blocking_queue entry
-    const planRow = plansDb.prepare('SELECT title FROM plans WHERE id = ?').get(planId);
-    const planTitle = planRow?.title ?? null;
-
     plansDb.close();
     plansDb = null;
-
-    // Step 10: Insert into blocking_queue in bypass-requests.db
-    const blockingQueueId = 'block-' + randomUUID().slice(0, 12);
-
-    const impactAssessment = JSON.stringify({
-      blocked_tasks: blockedTaskIds,
-      blocks_phase: blockedTaskIds.length > 0,
-      is_gate: isGatePhase,
-      parallel_paths_available: hasParallelWork,
-    });
-
-    const summary = pauseReason || 'Persistent task paused';
-
-    if (!fs.existsSync(BYPASS_DB_PATH)) {
-      // bypass-requests.db is created by agent-tracker — if it doesn't exist yet,
-      // skip the blocking_queue write (non-fatal). The entry will be created
-      // when submit_bypass_request is called, which always opens the canonical DB.
-      return {
-        propagated: true,
-        blocking_level: blockingLevel,
-        plan_auto_paused: planAutoPaused,
-        plan_task_id: planTaskId,
-        plan_id: planId,
-        impact: {
-          blocked_tasks: blockedTaskIds,
-          blocks_phase: blockedTaskIds.length > 0,
-          is_gate: isGatePhase,
-          parallel_paths_available: hasParallelWork,
-        },
-        blocking_queue_id: null,
-      };
-    }
-
-    bypassDb = new Database(BYPASS_DB_PATH);
-    bypassDb.pragma('journal_mode = WAL');
-    bypassDb.pragma('busy_timeout = 3000');
-
-    ensureBlockingQueueTable(bypassDb);
-
-    bypassDb.prepare(`
-      INSERT INTO blocking_queue (id, bypass_request_id, source_task_type, source_task_id, persistent_task_id, plan_task_id, plan_id, plan_title, blocking_level, impact_assessment, summary, status)
-      VALUES (?, ?, 'persistent', ?, ?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(
-      blockingQueueId,
-      bypassRequestId ?? null,
-      persistentTaskId,
-      persistentTaskId,
-      planTaskId,
-      planId,
-      planTitle,
-      blockingLevel,
-      impactAssessment,
-      summary,
-    );
-
-    bypassDb.close();
-    bypassDb = null;
 
     return {
       propagated: true,
@@ -251,14 +153,12 @@ export function propagatePauseToPlan(persistentTaskId, pauseReason, bypassReques
         is_gate: isGatePhase,
         parallel_paths_available: hasParallelWork,
       },
-      blocking_queue_id: blockingQueueId,
     };
   } catch (e) {
     return { propagated: false, error: e.message };
   } finally {
     try { ptDb?.close(); } catch (_) { /* best-effort */ }
     try { plansDb?.close(); } catch (_) { /* best-effort */ }
-    try { bypassDb?.close(); } catch (_) { /* best-effort */ }
   }
 }
 
@@ -266,16 +166,16 @@ export function propagatePauseToPlan(persistentTaskId, pauseReason, bypassReques
  * Propagate a persistent task resume back up to the plan layer.
  *
  * Reads the persistent task's metadata for plan linkage. If linked, resumes
- * the plan task, resolves any active blocking_queue entries, and resumes the
- * plan itself if no other plan tasks remain paused.
+ * the plan task and resumes the plan itself if no other plan tasks remain
+ * paused.
  *
  * @param {string} persistentTaskId - The ID of the persistent task that was resumed
- * @returns {{ propagated: boolean, plan_resumed?: boolean, blocking_items_resolved?: number, error?: string }}
+ * @returns {{ propagated: boolean, plan_resumed?: boolean, error?: string }}
  */
 export function propagateResumeToPlan(persistentTaskId) {
   if (!Database || !persistentTaskId) return { propagated: false };
 
-  let ptDb, plansDb, bypassDb;
+  let ptDb, plansDb;
   try {
     // Step 1: Read persistent task metadata for plan linkage
     if (!fs.existsSync(PERSISTENT_DB_PATH)) return { propagated: false };
@@ -352,36 +252,15 @@ export function propagateResumeToPlan(persistentTaskId) {
     plansDb.close();
     plansDb = null;
 
-    // Step 4: Resolve active blocking_queue items in bypass-requests.db
-    let blockingItemsResolved = 0;
-
-    if (fs.existsSync(BYPASS_DB_PATH)) {
-      bypassDb = new Database(BYPASS_DB_PATH);
-      bypassDb.pragma('journal_mode = WAL');
-      bypassDb.pragma('busy_timeout = 3000');
-      ensureBlockingQueueTable(bypassDb);
-
-      const resolveResult = bypassDb.prepare(
-        "UPDATE blocking_queue SET status = 'resolved', resolved_at = datetime('now') WHERE persistent_task_id = ? AND status = 'active'"
-      ).run(persistentTaskId);
-
-      blockingItemsResolved = resolveResult.changes;
-
-      bypassDb.close();
-      bypassDb = null;
-    }
-
     return {
       propagated: true,
       plan_resumed: planResumed,
-      blocking_items_resolved: blockingItemsResolved,
     };
   } catch (e) {
     return { propagated: false, error: e.message };
   } finally {
     try { ptDb?.close(); } catch (_) { /* best-effort */ }
     try { plansDb?.close(); } catch (_) { /* best-effort */ }
-    try { bypassDb?.close(); } catch (_) { /* best-effort */ }
   }
 }
 
@@ -400,7 +279,7 @@ export function assessPlanBlocking(planId) {
 
   if (!Database || !planId) return safe;
 
-  let plansDb, bypassDb;
+  let plansDb;
   try {
     // Step 1: Open plans.db read-only
     if (!fs.existsSync(PLANS_DB_PATH)) return safe;
@@ -432,25 +311,7 @@ export function assessPlanBlocking(planId) {
     plansDb.close();
     plansDb = null;
 
-    // Step 5: Get active blocking_queue items for this plan from bypass-requests.db
-    let blockingItems = [];
-    if (fs.existsSync(BYPASS_DB_PATH)) {
-      bypassDb = new Database(BYPASS_DB_PATH, { readonly: true });
-      bypassDb.pragma('busy_timeout = 3000');
-      try {
-        // Attempt SELECT directly — table may not exist yet on read-only connections.
-        // Silently return empty array if the table is absent (non-fatal).
-        blockingItems = bypassDb.prepare(
-          "SELECT id, persistent_task_id, plan_task_id, blocking_level, impact_assessment, summary, created_at FROM blocking_queue WHERE plan_id = ? AND status = 'active'"
-        ).all(planId);
-      } catch (_) {
-        // Table does not exist yet — return empty array, non-fatal
-      }
-      bypassDb.close();
-      bypassDb = null;
-    }
-
-    // Step 6: Determine fully_blocked vs partially_blocked
+    // Step 5: Determine fully_blocked vs partially_blocked
     const hasParallelWork = availableWork.length > 0;
     const fullyBlocked = pausedTasksWithDeps.length > 0 && !hasParallelWork;
     const partiallyBlocked = pausedTasksWithDeps.length > 0 && hasParallelWork;
@@ -460,12 +321,11 @@ export function assessPlanBlocking(planId) {
       partially_blocked: partiallyBlocked,
       paused_tasks: pausedTasksWithDeps,
       available_parallel_work: availableWork,
-      blocking_items: blockingItems,
+      blocking_items: [],
     };
   } catch (e) {
     return { ...safe, error: e.message };
   } finally {
     try { plansDb?.close(); } catch (_) { /* best-effort */ }
-    try { bypassDb?.close(); } catch (_) { /* best-effort */ }
   }
 }

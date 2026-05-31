@@ -314,7 +314,7 @@ Then call `mcp__todo-db__complete_task` if a task ID was provided.
 
 ## Key Constraints
 
-- This agent runs with `GENTYR_PROMOTION_PIPELINE=true` injected by its spawner (hourly-automation.js or trigger_preview_promotion MCP tool). This env var bypasses the staging-lock-guard, allowing the agent to create and merge PRs targeting staging.
+- This agent runs with `GENTYR_PROMOTION_PIPELINE=true` injected by its spawner (hourly-automation.js or trigger_preview_promotion MCP tool). This env var identifies the session as part of the promotion pipeline.
 - This agent does NOT edit source files — it is a read-only quality review and promotion agent.
 - This agent creates fix tasks only within self-healing loops (test failures at Step 3, coverage gaps at Step 3.5, CI failures at Step 5). It does NOT edit source files directly — fix tasks are delegated to code-writer/test-writer agents.
 - `create_task` may ONLY be used within self-healing loops (Steps 3, 3.5, 5) to spawn fix agents. NEVER create "continuation" or "completion" tasks that attempt to resume the promotion pipeline. If context pressure reaches CRITICAL, call `mcp__agent-tracker__request_self_compact`. If compaction is not possible, call `summarize_work` and exit — the automation will re-trigger a fresh promoter.

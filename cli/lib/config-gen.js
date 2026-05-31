@@ -12,7 +12,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 // Single source of truth for shared MCP daemon config
-import { TIER1_SERVERS as TIER1_SHARED_SERVERS, MCP_DAEMON_PORT as DEFAULT_MCP_DAEMON_PORT, REMOTE_SERVERS, isLocalModeEnabled, extractProjectServers, mergeProjectServers } from '../../lib/shared-mcp-config.js';
+import { TIER1_SERVERS as TIER1_SHARED_SERVERS, MCP_DAEMON_PORT as DEFAULT_MCP_DAEMON_PORT, extractProjectServers, mergeProjectServers } from '../../lib/shared-mcp-config.js';
 import { readOpTokenFromPlist } from '../../lib/op-token-resolver.js';
 
 /**
@@ -97,34 +97,6 @@ export function generateMcpJson(projectDir, frameworkDir, frameworkRel, opts = {
     }
   }
 
-  // --- Local Prototyping Mode: exclude remote servers ---
-  const localMode = isLocalModeEnabled(projectDir);
-  if (localMode) {
-    try {
-      const config = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
-      let removed = 0;
-      for (const name of REMOTE_SERVERS) {
-        if (config.mcpServers && Object.prototype.hasOwnProperty.call(config.mcpServers, name)) {
-          delete config.mcpServers[name];
-          removed++;
-        }
-      }
-      // Rewrite playwright entry to direct invocation (strip mcp-launcher.js wrapper)
-      if (config.mcpServers && config.mcpServers['playwright']) {
-        const pw = config.mcpServers['playwright'];
-        if (Array.isArray(pw.args) && pw.args.some(a => typeof a === 'string' && a.includes('mcp-launcher.js'))) {
-          // args format: ["scripts/mcp-launcher.js", "playwright", "path/to/server.js"]
-          // keep only the last arg (the server.js path)
-          pw.args = [pw.args[pw.args.length - 1]];
-        }
-      }
-      fs.writeFileSync(outputPath, JSON.stringify(config, null, 2) + '\n');
-      console.log(`  Local mode: excluded ${removed} remote servers`);
-    } catch (err) {
-      console.log(`  Warning: could not apply local mode exclusions: ${err.message}`);
-    }
-  }
-
   // When generating for the gentyr repo itself, add plugin-manager + installed plugins
   const isGentyrRepo = path.resolve(projectDir) === path.resolve(frameworkDir);
   if (isGentyrRepo) {
@@ -161,8 +133,7 @@ export function generateMcpJson(projectDir, frameworkDir, frameworkRel, opts = {
   }
 
   // Inject OP token — prefer explicit arg, then preserve existing, then read from launchd plist
-  // Skipped in local mode: no remote servers remain to receive the token
-  const token = !localMode && (opts.opToken || existingOpToken || readOpTokenFromPlist());
+  const token = opts.opToken || existingOpToken || readOpTokenFromPlist();
   if (token) {
     try {
       const config = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
@@ -254,87 +225,6 @@ export function mergeSettings(projectDir, frameworkDir) {
 }
 
 /**
- * Apply local mode transformations to the GENTYR framework section content.
- *
- * Strips remote-service-specific content and prepends a [LOCAL MODE ACTIVE]
- * header so agents know which tools and workflows are unavailable.
- *
- * Conservative approach: only removes clearly remote-dependent content.
- * All local tooling (task system, agent orchestration, playwright, plans,
- * persistent tasks, worktrees, etc.) is preserved verbatim.
- *
- * @param {string} sectionContent - Raw content of CLAUDE.md.gentyr-section
- * @returns {string} Transformed content with local mode header and remote sections stripped
- */
-function applyLocalModeToClaudeMdSection(sectionContent) {
-  let content = sectionContent;
-
-  // ------------------------------------------------------------------
-  // Strip the "Deployment Flow" section.
-  // This section references mcp__vercel__*, mcp__render__*, mcp__supabase__*,
-  // mcp__github__*, mcp__elastic-logs__*, and Render/Vercel/Elasticsearch
-  // health monitoring — none of which are available in local mode.
-  //
-  // The section starts at "### Deployment Flow" and ends just before the
-  // next "### " heading. We use a regex that captures the entire block.
-  // ------------------------------------------------------------------
-  content = content.replace(
-    /^### Deployment Flow\n[\s\S]*?(?=^### |\n<!-- GENTYR-FRAMEWORK-END -->)/m,
-    '',
-  );
-
-  // ------------------------------------------------------------------
-  // In the Playwright section, strip the note about 1Password credential
-  // injection, since 1Password is not required in local mode.
-  // The specific line is:
-  //   "- CLI bypasses 1Password credential injection — tests fail silently"
-  // ------------------------------------------------------------------
-  content = content.replace(
-    /^- CLI bypasses 1Password credential injection[^\n]*\n/m,
-    '',
-  );
-
-  // ------------------------------------------------------------------
-  // Clean up any runs of 3+ blank lines that may have been introduced
-  // by the removals above.
-  // ------------------------------------------------------------------
-  content = content.replace(/\n{3,}/g, '\n\n');
-
-  // ------------------------------------------------------------------
-  // Prepend the [LOCAL MODE ACTIVE] header block immediately after the
-  // opening HTML marker so it's the first thing agents see.
-  // ------------------------------------------------------------------
-  const markerStart = '<!-- GENTYR-FRAMEWORK-START -->';
-  const localModeHeader = [
-    markerStart,
-    '## [LOCAL MODE — LOCAL DEVELOPMENT ONLY]',
-    '',
-    '> **This project is configured for local-only development.** There is no cloud',
-    '> infrastructure, no deployment pipeline, no remote databases, and no secret management.',
-    '> Everything runs on the developer\'s machine.',
-    '>',
-    '> **Stack:** TypeScript (strict), shadcn/ui components, Vitest for testing, pnpm.',
-    '> Backend is open — use whatever database, API framework, or service fits the project.',
-    '> See `specs/global/STACK-PREFERENCES.md` for details.',
-    '>',
-    '> **Do NOT reference or suggest:** Vercel, Supabase, Render, Cloudflare, Elastic,',
-    '> Codecov, Resend, 1Password, or any cloud deployment service. Do not suggest',
-    '> deploying, pushing to staging, or configuring remote infrastructure.',
-    '> Do not reference `op://` vault paths or any `mcp__secret-sync__*` tools.',
-    '>',
-    '> **Dev server:** Use Bash directly (e.g. `pnpm dev`). No secret injection needed.',
-    '>',
-    '> **All local tooling works normally:** todo-db, agent-tracker, playwright, plans,',
-    '> persistent tasks, worktrees, session queue, specs-browser, product-manager, etc.',
-    '',
-  ].join('\n');
-
-  content = content.replace(markerStart, localModeHeader);
-
-  return content;
-}
-
-/**
  * Update the CLAUDE.md file with the GENTYR framework section.
  *
  * @param {string} projectDir - Absolute path to the target project
@@ -362,13 +252,6 @@ export function updateClaudeMd(projectDir, frameworkDir) {
   }
 
   let section = fs.readFileSync(sectionPath, 'utf8');
-
-  // Apply local mode transformations if local prototyping mode is active.
-  // This strips remote-service content and prepends a [LOCAL MODE ACTIVE] header.
-  if (isLocalModeEnabled(projectDir)) {
-    section = applyLocalModeToClaudeMdSection(section);
-    console.log('  Local mode: applied CLAUDE.md transformations (remote sections stripped)');
-  }
 
   if (fs.existsSync(claudeMdPath)) {
     let content = fs.readFileSync(claudeMdPath, 'utf8');
@@ -425,7 +308,6 @@ export function updateGitignore(projectDir) {
     '.claude/settings.local.json',
     '.claude/settings.json',
     '.claude/protection-key',
-    '.claude/protected-action-approvals.json',
     '.claude/protection-state.json',
     '.claude/specs-config.json',
     '.claude/playwright-health.json',

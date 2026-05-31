@@ -217,7 +217,7 @@ async function main() {
               gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: 'plan_manager_incomplete', isTask: true, isPersistent: true });
               console.log(JSON.stringify({
                 decision: 'block',
-                reason: `[PLAN MANAGER] Plan has ${incompleteTasks.count} incomplete task(s). Continue executing the plan by spawning persistent tasks for each ready plan task. If blocked by an external dependency that requires CTO intervention, submit a bypass request via mcp__agent-tracker__submit_bypass_request (this auto-pauses your task, propagates to the plan, and notifies the CTO), then call summarize_work and stop. Do NOT skip tasks to escape this gate.`,
+                reason: `[PLAN MANAGER] Plan has ${incompleteTasks.count} incomplete task(s). Continue executing the plan by spawning persistent tasks for each ready plan task. If blocked by an external dependency that requires CTO intervention, file a deputy-CTO report via mcp__agent-reports__report_to_deputy_cto (priority: 'critical'), then call summarize_work and stop. Do NOT skip tasks to escape this gate.`,
               }));
               process.exit(0);
             }
@@ -254,7 +254,7 @@ async function main() {
 
       if (taskStillActive) {
         const blockReason = ptStatus === 'pending_audit'
-          ? '[AUDIT IN FLIGHT] Your persistent task is in pending_audit — an independent auditor is verifying your work. Wait for the verdict. Poll mcp__persistent-task__check_pt_audit({ id: "' + ptTaskId + '" }) every 30s. If pass → exit. If fail → address the failure. If still pending_audit after 30 min with no auditor in the queue, file a submit_bypass_request asking the deputy-CTO to call mcp__persistent-task__reset_pt_audit — do NOT call reset yourself; the auditor cannot reset its own audit.'
+          ? '[AUDIT IN FLIGHT] Your persistent task is in pending_audit — an independent auditor is verifying your work. Wait for the verdict. Poll mcp__persistent-task__check_pt_audit({ id: "' + ptTaskId + '" }) every 30s. If pass → exit. If fail → address the failure. If still pending_audit after 30 min with no auditor in the queue, file a deputy-CTO report via mcp__agent-reports__report_to_deputy_cto (priority: "critical") asking the deputy-CTO to call mcp__persistent-task__reset_pt_audit — do NOT call reset yourself; the auditor cannot reset its own audit.'
           : '[PERSISTENT MONITOR] Your persistent task is still active. Continue monitoring sub-tasks. Call mcp__persistent-task__complete_persistent_task when the outcome criteria are met, or mcp__persistent-task__pause_persistent_task if you need to pause.';
         debugLog('Decision: BLOCK (persistent task monitor — task still active)');
         gentyrDebugLog('stop-hook', 'decision', { decision: 'block', reason: 'persistent_monitor_active', isTask: true, isPersistent: true });

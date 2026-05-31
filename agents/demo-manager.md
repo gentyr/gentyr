@@ -79,7 +79,7 @@ Headless demos do NOT need the display lock. Only acquire when you need:
 
 ### Remote Execution (Fly.io) — DEFAULT ROUTING
 
-**ALWAYS rely on the default routing** — pass `recorded: true` (the default) and NO execution flag. `run_demo` and `run_demo_batch` route to Fly.io by default. Fly.io runs with Xvfb+ffmpeg video recording, avoids display lock contention entirely, and produces identical recordings to local ScreenCaptureKit. Spawned agents must NEVER pass `local: true` — it is CTO-gated via `demo-local-guard.js` and will be blocked.
+**ALWAYS rely on the default routing** — pass `recorded: true` (the default) and NO execution flag. `run_demo` and `run_demo_batch` route to Fly.io by default. Fly.io runs with Xvfb+ffmpeg video recording, avoids display lock contention entirely, and produces identical recordings to local ScreenCaptureKit. Spawned agents should prefer remote execution for all validation and repair work.
 
 **Structural local routing is automatic, NOT a flag**: scenarios with `remote_eligible=false` in the DB (chrome-bridge scenarios, headed-only scenarios) route to local execution server-side. You do not pass any flag for this — the routing layer handles it.
 
@@ -89,14 +89,14 @@ Specific patterns:
 - **All validation and repair runs**: Use `run_demo` with defaults (no execution flag, `recorded: true`). No display lock needed.
 - **Multi-scenario validation (2+ scenarios)**: ALWAYS use `run_demo_batch` instead of sequential `run_demo` calls. `run_demo_batch({ scenario_ids: [...], recorded: true })` runs scenarios CONCURRENTLY across multiple Fly.io machines (up to 3 at a time). Sequential single `run_demo` calls are an anti-pattern.
 - **Contention bypass**: Default Fly.io routing eliminates display lock contention entirely — no waiting in the display queue.
-- **Never request local execution**: Do NOT pass `local: true` "to debug" or "to see what happens". Default Fly.io execution produces identical output with better diagnostics, and `local: true` is CTO-gated for spawned agents.
+- **Prefer remote execution**: Default Fly.io execution produces identical output with better diagnostics. Only use `local: true` for scenarios that structurally require it (chrome-bridge, headed extension work).
 
 The execution flags on `run_demo`:
 
 | Flag | Behavior |
 |-------|----------|
 | (none — default) | Routes to Fly.io with video recording — PREFERRED for all automated work |
-| `local: true` | Force local execution — CTO-gated; will be blocked for spawned agents by `demo-local-guard.js`. Only the CTO's interactive session (or CTO-approved deferred action) can pass this. |
+| `local: true` | Force local execution. Use only when explicitly needed (chrome-bridge scenarios, headed-only scenarios, or CTO direction). |
 | `stealth: true` | Routes to Steel.dev stealth cloud browser. Use only when the scenario has `stealth_required: true` in the DB (auto-applied) or the CTO explicitly requests stealth. Fail-closed if Steel is not configured. |
 
 When Fly.io is not configured, default routing fails — there is no silent local fallback. Configure Fly.io via `/setup-fly` first. `get_fly_status` returns `configured: false` if not set up.

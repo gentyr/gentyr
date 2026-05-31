@@ -5,32 +5,6 @@ One command for full GENTYR project setup. Runs a programmatic check script, dis
 
 The prefetch hook has pre-run `setup-check.js` and injected its JSON output as `[PREFETCH:setup-gentyr]` context above. Use that data for Phase 1 instead of running the script. If the prefetch data is missing, run the script directly.
 
-## Local Mode Check
-
-First, check if this project is in local prototyping mode:
-
-```bash
-node -e "
-const fs = require('fs');
-const path = require('path');
-try {
-  const state = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_PROJECT_DIR || process.cwd(), '.claude', 'state', 'local-mode.json'), 'utf8'));
-  console.log(JSON.stringify({ localMode: state.enabled === true }));
-} catch { console.log(JSON.stringify({ localMode: false })); }
-"
-```
-
-If `localMode: true`, inform the user:
-
-> **This project is in local prototyping mode.** Credential setup is not needed — no remote
-> services (1Password, Supabase, Vercel, Render, etc.) are configured. All local tooling
-> (agents, tasks, playwright, plans) works without credentials.
->
-> To switch to full infrastructure mode later, run `/local-mode` to disable local mode,
-> then re-run `/setup-gentyr`.
-
-Then **stop** — do not proceed with the setup flow below.
-
 ## Framework Path Resolution
 
 Before running any commands, resolve the GENTYR framework directory (supports npm link, legacy symlink, and running from within the gentyr repo):
@@ -46,7 +20,6 @@ Use this `$GENTYR_DIR` value for all subsequent `node` commands and `Read` tool 
 - **No credentials on disk.** Vault mappings (`.claude/vault-mappings.json`) contain only `op://` references and non-secret identifiers, not actual secret values.
 - **Runtime resolution.** The MCP launcher (`scripts/mcp-launcher.js`) resolves credentials from 1Password when each MCP server starts.
 - **Credentials in memory only.** Secret values exist only in the MCP server process memory.
-- **credential-file-guard.js** blocks agents from reading `.mcp.json` (defense-in-depth, since `.mcp.json` contains no credentials with the launcher architecture).
 - **OP_SERVICE_ACCOUNT_TOKEN** is injected into `.mcp.json` by the install script (`--op-token` arg), not stored in vault-mappings.json.
 
 ## Credential Classification
@@ -125,69 +98,11 @@ Parse the JSON output. This single call determines everything — do NOT run ind
      ...
    ```
 
-5. If everything is configured (`summary.secretsMissing === 0` and `summary.identifiersMissing === 0`), skip to Phase 5 (Write Vault Mappings).
+5. If everything is configured (`summary.secretsMissing === 0` and `summary.identifiersMissing === 0`), skip to Phase 4 (Write Vault Mappings).
 
-6. Otherwise, proceed to Phase 2 (account inventory), Phase 3 (missing secrets), and Phase 4 (missing identifiers).
+6. Otherwise, proceed to Phase 2 (missing secrets) and Phase 3 (missing identifiers).
 
-### Phase 2: Claude Account Inventory
-
-The prefetch hook injected account inventory data in `[PREFETCH:setup-gentyr]`.
-
-1. **Display current account inventory** from `gathered.accountInventory`:
-   ```
-   Claude Accounts ({N} detected):
-
-     ✓ user@example.com — active (5h: 45%, 7d: 30%) [Max plan]
-     ✗ user2@example.com — expired (last seen 2d ago)
-     ○ (no other accounts)
-
-   Active key: a1b2c3d4... | Available quota headroom: ~55%
-   ```
-
-   If `gathered.accountInventory` is null, display: "No account rotation state found. Run `/login` to authenticate your first Claude account."
-
-   For accounts where `email` is null (profile not yet fetched), show the `keyId` prefix instead.
-
-2. **Ask if user wants to add another account**:
-   Use `AskUserQuestion`:
-   - "Do you want to add another Claude account for quota rotation?"
-   - Options: "Yes, add an account" / "No, continue setup"
-
-3. **If yes — guide through login**:
-   a. Instruct: "Run `/login` now. This will open your browser to authenticate with a different Claude account."
-   b. Wait for user to confirm they've completed the login.
-   c. **Detect the new account** by running:
-      ```bash
-      node --input-type=module -e "
-      import { syncKeys, readRotationState, checkKeyHealth } from './.claude/hooks/key-sync.js';
-      const sync = await syncKeys(console.error);
-      const state = readRotationState();
-      const accounts = new Map();
-      for (const [id, k] of Object.entries(state.keys)) {
-        if (k.status === 'invalid') continue;
-        const key = k.account_uuid || id;
-        if (!accounts.has(key)) accounts.set(key, { ...k, keyId: id });
-      }
-      console.log(JSON.stringify({
-        keysAdded: sync.keysAdded,
-        tokensRefreshed: sync.tokensRefreshed,
-        totalKeys: Object.keys(state.keys).length,
-        accounts: [...accounts.values()].map(a => ({
-          email: a.account_email, status: a.status,
-          usage: a.last_usage, subscription: a.subscriptionType,
-        })),
-      }));
-      "
-      ```
-   d. **Parse output and confirm to user**:
-      - If `keysAdded > 0`: "New account detected! {email}" + updated inventory table
-      - If `keysAdded === 0` but `tokensRefreshed > 0`: "Account token refreshed for {email}"
-      - If neither: "No new account found. Make sure you logged in with a different account."
-   e. **Loop back to step 2** — ask if they want to add another account.
-
-4. **When done** (user says "No, continue setup"), proceed to Phase 3 (Missing Secrets).
-
-### Phase 3: Guide User Through Missing Secrets
+### Phase 2: Guide User Through Missing Secrets
 
 For each credential in the JSON output where `type === "secret"` AND (`existsInOp === false` OR `mappedInVault === false`):
 
@@ -213,7 +128,7 @@ For each credential in the JSON output where `type === "secret"` AND (`existsInO
 
 **IMPORTANT:** NEVER read the actual secret value. The setup-check script only checks existence (never reads values). You should only display the credential name and its `op://` reference.
 
-### Phase 4: Collect Non-Secret Identifiers
+### Phase 3: Collect Non-Secret Identifiers
 
 For each credential in the JSON output where `type === "identifier"` AND `mappedInVault === false`:
 
@@ -228,13 +143,13 @@ For each credential in the JSON output where `type === "identifier"` AND `mapped
    - **Header:** The credential name (e.g., "Zone ID")
    - **Options:** "I'll provide it" + "Skip for now"
 
-5. If the user provides a value, note it for Phase 5 (vault-mappings write). These are NOT `op://` references — they are stored as direct values.
+5. If the user provides a value, note it for Phase 4 (vault-mappings write). These are NOT `op://` references — they are stored as direct values.
 
-### Phase 5: Write Vault Mappings
+### Phase 4: Write Vault Mappings
 
 Write `.claude/vault-mappings.json` with:
 - `op://` references for all secrets whose `existsInOp === true` (use the `opPath` from the JSON output)
-- Direct values for non-secret identifiers collected in Phase 4
+- Direct values for non-secret identifiers collected in Phase 3
 - Preserve any existing mappings that are still valid
 
 File: `.claude/vault-mappings.json`
@@ -267,7 +182,7 @@ File: `.claude/vault-mappings.json`
 ```
 Only one of `ELASTIC_CLOUD_ID` or `ELASTIC_ENDPOINT` should be present. The setup-check.js `altKey` mechanism treats them as alternatives.
 
-This file is NOT blocked by credential-file-guard (it contains only `op://` references and non-secret identifiers).
+This file contains only `op://` references and non-secret identifiers.
 
 **Credential-to-server mapping reference:**
 
@@ -290,7 +205,7 @@ This file is NOT blocked by credential-file-guard (it contains only `op://` refe
 | Resend API Key | `resend` | `RESEND_API_KEY` |
 | Codecov Token | `codecov` | `CODECOV_TOKEN` |
 
-### Phase 6: Service Config
+### Phase 5: Service Config
 
 If `.claude/config/services.json` does not exist:
 
@@ -301,7 +216,7 @@ If `.claude/config/services.json` does not exist:
 2. Create `.claude/config/services.json` with the provided values and empty secret mappings
 3. Inform the user they can populate the `secrets` section later for `/push-secrets` to use
 
-### Phase 7: Verify & Validate
+### Phase 6: Verify & Validate
 
 This phase is **mandatory** — always run both scripts, never ask the user if they want validation.
 
@@ -356,13 +271,13 @@ This phase is **mandatory** — always run both scripts, never ask the user if t
 
 6. **Warnings** (status: `warn`) are informational, not blocking. Display the `remediation` text but proceed.
 
-7. **Proceed to Phase 8** when:
+7. **Proceed to Phase 7** when:
    - All credentials are mapped (`secretsMissing === 0` and `identifiersMissing === 0`)
    - No validation failures (warns are acceptable)
 
 8. Remind the user: **"Restart Claude Code to activate the updated credential mappings."**
 
-### Phase 8: Branch Protection & Deployment Pipeline
+### Phase 7: Branch Protection & Deployment Pipeline
 
 After verifying MCP servers, set up the deployment pipeline:
 

@@ -48,29 +48,6 @@ Root-owned critical hook files prevent agent modification. Tamper detection uses
 
 > Full details: [Protection Security Model](docs/CLAUDE-REFERENCE.md#protection-security-model)
 
-### Local Prototyping Mode
-
-```bash
-npx gentyr init --local              # Install without remote servers
-npx gentyr status                    # Shows "Local mode: enabled"
-```
-
-Excludes all 10 remote MCP servers (`github`, `cloudflare`, `supabase`, `vercel`, `render`, `codecov`, `resend`, `elastic-logs`, `onepassword`, `secret-sync`) from `.mcp.json`. **1Password is completely unnecessary in local mode.** All 24 local servers (todo-db, agent-tracker, playwright, plans, persistent tasks, etc.) remain fully functional.
-
-**Two-layer design:** Layer 1 (MCP servers in `.mcp.json`) requires `npx gentyr sync` + session restart after toggling. Layer 2 (automation behavior, credential checks, agent prompts) takes effect immediately.
-
-**Toggle at runtime:** `/local-mode` slash command or `set_local_mode` MCP tool on agent-tracker. Enabling is unrestricted. Disabling requires CTO authorization via `record_cto_decision` (Unified CTO Authorization System).
-
-**What's skipped in local mode:**
-- Credential health check (no 1Password warnings)
-- Health monitors (staging/production), promotion pipelines, demo validation with OP secrets, feedback spawning
-- Remote MCP tool references stripped from agent prompts and CLAUDE.md.gentyr-section
-- Dashboard remote panels show "Disabled — local mode active" instead of empty data
-
-**What keeps running:** Session reviver/reaper, worktree cleanup, task runner, lint checker, antipattern hunter, triage, merge chain (falls back to feature -> main when `origin/preview` doesn't exist).
-
-**Unavailable in local mode:** `/push-secrets`, `/push-migrations`, `/hotfix`, `secret-manager` agent.
-
 ### Uninstall
 
 ```bash
@@ -127,7 +104,7 @@ cd /path/to/project && claude mcp list
 > to **target projects** that install gentyr. The gentyr repo uses `feature -> main`
 > with immediate self-merge — see "Mandatory Git Workflow" above.
 
-In target projects, GENTYR enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`. Direct commits to `main`, `staging`, and `preview` are blocked at multiple layers: the git wrapper (`git-wrappers/git`, Layer 1 — blocks `git add`/`git commit` on protected non-base branches for all sessions), the `main-tree-commit-guard.js` PreToolUse hook (Layer 1 all-sessions block + Layer 2 spawned-agent block), the `branch-checkout-guard.js` PreToolUse hook (blocks branch switching in the main tree), and pre-commit/pre-push husky hooks. Only promotion pipeline agents (`GENTYR_PROMOTION_PIPELINE=true`) may operate on protected branches.
+In target projects, GENTYR enforces a 4-stage merge chain: `feature/* -> preview -> staging -> main`. Direct commits to `main`, `staging`, and `preview` are blocked by the git wrapper (`git-wrappers/git`, PATH-injected) and pre-commit/pre-push husky hooks. Only promotion pipeline agents (`GENTYR_PROMOTION_PIPELINE=true`) may operate on protected branches.
 
 ### Feature Branch Commit Flow (Self-Merge)
 
@@ -166,7 +143,7 @@ The original non-scoped path (full suite failures always block) is preserved ver
 - `lib/test-scope.js` — shared ES module: `getActiveTestScope()`, `getTestScopeConfig()`, `buildScopedCommand()`, `formatPushSummary()`. Shell metacharacter sanitization in `buildScopedCommand()` prevents injection via `unitTestPattern` values in `services.json`.
 - `lib/test-scope-classifier.js` — Node CLI called from `pre-push` on failures. Resolves scope config, re-runs scoped tests, prints a formatted summary, exits 0 or 1. Fail-closed when scope config is absent or malformed.
 
-**Promotion pipeline awareness**: `hourly-automation.js` injects scope context into hotfix promotion agent prompts via `getTestScopePromptContext()`. When a scope is active, promotion agents are instructed that only scoped test failures are blocking; non-scoped failures are informational.
+**Promotion pipeline awareness**: `hourly-automation.js` injects scope context into promotion agent prompts via `getTestScopePromptContext()`. When a scope is active, promotion agents are instructed that only scoped test failures are blocking; non-scoped failures are informational.
 
 **Session briefing**: Both interactive (deputy-CTO) and spawned-agent briefings in `session-briefing.js` display the active scope name and description when `activeTestScope` is set.
 
@@ -208,11 +185,11 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 **Worktree freshness system**: Multi-layer defense ensuring worktrees stay current with the base branch. Layer 0: `scripts/preview-watcher.js` daemon (launchd KeepAlive) polls every 30s, auto-merges clean worktrees, broadcasts signals, and calls `syncWorktreeDeps()` after each merge to re-install dependencies if the lockfile changed. Layer 1: `worktree-freshness-check.js` PostToolUse hook nags agents every 2 minutes if stale. Layer 2: `plan-merge-tracker.js` broadcasts on PR merge. Layer 3: `run_demo` hard gate auto-syncs or blocks stale demos. Layer 4: `session-briefing.js` reports freshness at session start. Layer 5: `createWorktree()` verifies freshness after fetch. All layers use `git merge origin/{baseBranch} --no-edit` (not rebase) because merge commits are exempt from the branch age guard. `syncWorktreeDeps()` hashes the lockfile after install and re-installs + rebuilds only when the hash changes, preventing redundant installs. Agents in worktrees should never need to run `pnpm install` manually.
 
-**Main-tree drift repair**: The `repair_main_tree_drift` MCP tool on `agent-tracker` is an MCP-triggered equivalent of the abandoned-worktree rescue, but for the project's MAIN tree. When the CTO runs `pnpm demo:local` (or any command that detaches HEAD), or when the working tree is dirty on a non-base branch, the `preview-watcher.js` daemon refuses to fast-forward `origin/preview` into the main tree — breaking HMR for `pnpm demo:preview`. Calling `repair_main_tree_drift` enqueues a project-manager rescue session at `critical` priority with `GENTYR_MAIN_TREE_REPAIR=true` in its env (a narrow bypass recognized by `main-tree-commit-guard.js` and `branch-checkout-guard.js`). The rescue agent salvages any orphaned work to a draft PR (via `git checkout -b rescue/main-tree-<ts>`, `git commit`, `gh pr create --draft`) and only then restores the main tree via `git checkout <baseBranch> && git pull --ff-only`. **Never auto-merges**, **never force-pushes**, files a bypass request on conflicts. Idempotent: returns `no_drift` when clean-on-base, `already_queued` when a rescue is in flight. Pass `dry_run: true` to inspect what would happen without enqueuing. Drift is defined narrowly — dirty-on-base is NOT drift (the CTO may be actively editing); only wrong-branch-with-dirty, detached HEAD, or mid-merge/rebase trigger repair. Logic lives in `.claude/hooks/lib/main-tree-rescue.js` (`detectMainTreeDrift`, `buildMainTreeRescuePrompt`), driven by `scripts/repair-main-tree-drift.js`. MCP-only — no automatic trigger from hourly automation or the preview-watcher.
+**Main-tree drift repair**: The `repair_main_tree_drift` MCP tool on `agent-tracker` is an MCP-triggered equivalent of the abandoned-worktree rescue, but for the project's MAIN tree. When the CTO runs `pnpm demo:local` (or any command that detaches HEAD), or when the working tree is dirty on a non-base branch, the `preview-watcher.js` daemon refuses to fast-forward `origin/preview` into the main tree — breaking HMR for `pnpm demo:preview`. Calling `repair_main_tree_drift` enqueues a project-manager rescue session at `critical` priority with `GENTYR_MAIN_TREE_REPAIR=true` in its env. The rescue agent salvages any orphaned work to a draft PR (via `git checkout -b rescue/main-tree-<ts>`, `git commit`, `gh pr create --draft`) and only then restores the main tree via `git checkout <baseBranch> && git pull --ff-only`. **Never auto-merges**, **never force-pushes**, exits on conflicts after filing a note for human review. Idempotent: returns `no_drift` when clean-on-base, `already_queued` when a rescue is in flight. Pass `dry_run: true` to inspect what would happen without enqueuing. Drift is defined narrowly — dirty-on-base is NOT drift (the CTO may be actively editing); only wrong-branch-with-dirty, detached HEAD, or mid-merge/rebase trigger repair. Logic lives in `.claude/hooks/lib/main-tree-rescue.js` (`detectMainTreeDrift`, `buildMainTreeRescuePrompt`), driven by `scripts/repair-main-tree-drift.js`. MCP-only — no automatic trigger from hourly automation or the preview-watcher.
 
-**Abandoned worktree rescue**: `rescueAbandonedWorktrees()` in `hourly-automation.js` detects worktrees that have uncommitted changes but no active agent process, then spawns a project-manager to commit the orphaned work and open a draft PR for human review. Runs every **15 minutes** (`getCooldown('abandoned_worktree_rescue', 15)`). **Fail-closed + session-queue cross-check** (PR #475): before calling `lsof +D`, pre-loads active session paths from `session-queue.db` (`running/queued/spawning/suspended`) and skips any worktree that matches; `lsof` errors/timeouts now set `inUse = true` (skip rescue) instead of proceeding as if no processes exist — preventing the bug where `ETIMEDOUT` was treated as "safe to rescue". **Pre-enqueue dedup + rescue prompt hardening** (PR #478): before spawning a rescue agent, checks `session-queue.db` for any already-queued/running session targeting the same worktree path and skips the spawn if one exists; rescue prompt explicitly instructs the project-manager agent not to remove the worktree ("Do NOT remove the worktree — the cleanup automation handles removal after merge"). **Mandatory base-sync + draft-PR-only + divergence stats** (PR #712): logic extracted to `.claude/hooks/lib/rescue-worktree.js`; the rescue prompt now requires `git fetch origin <base> && git merge origin/<base> --no-edit` before any push (conflict → file bypass request and exit, never auto-resolve), opens the PR as `--draft` and never auto-merges, and embeds a `computeWorktreeDivergence()` snapshot (commits ahead/behind, files/lines changed, branch age, dirty file mtimes, `fresh_crash`/`stale_orphan` heuristic) in the PR body for human review. Closes the 2026-05-22 destructive-overwrite failure mode. Full background: [Abandoned Worktree Rescue](docs/abandoned-worktree-rescue.md).
+**Abandoned worktree rescue**: `rescueAbandonedWorktrees()` in `hourly-automation.js` detects worktrees that have uncommitted changes but no active agent process, then spawns a project-manager to commit the orphaned work and open a draft PR for human review. Runs every **15 minutes** (`getCooldown('abandoned_worktree_rescue', 15)`). **Fail-closed + session-queue cross-check** (PR #475): before calling `lsof +D`, pre-loads active session paths from `session-queue.db` (`running/queued/spawning/suspended`) and skips any worktree that matches; `lsof` errors/timeouts now set `inUse = true` (skip rescue) instead of proceeding as if no processes exist — preventing the bug where `ETIMEDOUT` was treated as "safe to rescue". **Pre-enqueue dedup + rescue prompt hardening** (PR #478): before spawning a rescue agent, checks `session-queue.db` for any already-queued/running session targeting the same worktree path and skips the spawn if one exists; rescue prompt explicitly instructs the project-manager agent not to remove the worktree ("Do NOT remove the worktree — the cleanup automation handles removal after merge"). **Mandatory base-sync + draft-PR-only + divergence stats** (PR #712): logic extracted to `.claude/hooks/lib/rescue-worktree.js`; the rescue prompt now requires `git fetch origin <base> && git merge origin/<base> --no-edit` before any push (conflict → exit and leave a note for the CTO, never auto-resolve), opens the PR as `--draft` and never auto-merges, and embeds a `computeWorktreeDivergence()` snapshot (commits ahead/behind, files/lines changed, branch age, dirty file mtimes, `fresh_crash`/`stale_orphan` heuristic) in the PR body for human review. Closes the 2026-05-22 destructive-overwrite failure mode. Full background: [Abandoned Worktree Rescue](docs/abandoned-worktree-rescue.md).
 
-**Per-session CTO worktrees + interactive liveness tracking** (PR #709): When `/lockdown off` is approved, `authorization-audit-spawner.js` provisions a session-scoped worktree named `cto-interactive-<sid8>` per interactive session and stores its path in `automation-config.json` under `ctoWorktreePaths: { [sessionId]: path }`. The legacy singular `ctoWorktreePath` is still written for back-compat. `/lockdown on` removes only the current session's worktree. Concurrent CTO sessions no longer collide on a shared `cto-interactive` worktree. **Interactive liveness tracking** (`lib/interactive-liveness.js` shared module + `interactive-heartbeat.js` UserPromptSubmit hook, root-owned): per-session state at `.claude/state/interactive-sessions.json`, keyed by session UUID, with 30-min staleness threshold and PID liveness check. **Rescue/reaper interactive-aware**: `rescueAbandonedWorktrees()` hard-skips `cto-interactive-*` worktrees and cross-checks `interactive-sessions.json`; `reapStaleWorktrees()` cross-checks live CTO sessions before reaping. A new `interactive_session_reaper` block (5-minute cooldown, gate-exempt) purges dead-session entries, removes their worktrees only when clean (never auto-commits in-progress CTO work), and cleans up `automation-config.json`. Closes the prior failure where automation hijacked the CTO's worktree mid-session by committing in-flight code on the wrong branch and switching HEAD.
+**Per-session CTO worktrees + interactive liveness tracking** (PR #709): Interactive sessions each get their own worktree named `cto-interactive-<sid8>` per session UUID, stored in `automation-config.json` under `ctoWorktreePaths: { [sessionId]: path }`. The legacy singular `ctoWorktreePath` is still written for back-compat. Concurrent CTO sessions no longer collide on a shared `cto-interactive` worktree. **Interactive liveness tracking** (`lib/interactive-liveness.js` shared module + `interactive-heartbeat.js` UserPromptSubmit hook): per-session state at `.claude/state/interactive-sessions.json`, keyed by session UUID, with 30-min staleness threshold and PID liveness check. **Rescue/reaper interactive-aware**: `rescueAbandonedWorktrees()` hard-skips `cto-interactive-*` worktrees and cross-checks `interactive-sessions.json`; `reapStaleWorktrees()` cross-checks live CTO sessions before reaping. A new `interactive_session_reaper` block (5-minute cooldown, gate-exempt) purges dead-session entries, removes their worktrees only when clean (never auto-commits in-progress CTO work), and cleans up `automation-config.json`.
 
 **Stale worktree reaper**: `reapStaleWorktrees()` in `hourly-automation.js` removes worktrees older than 4 hours with no uncommitted changes. Runs every **20 minutes** (`getCooldown('stale_worktree_reaper', 20)`). Dirty worktrees are skipped (rescue handles those). **Skip guard + session-queue cross-check + fail-closed lsof** (PR #475): pre-loads active session paths from `session-queue.db` and skips any matching worktree; then runs `lsof +D` as a secondary check — if any processes are detected the worktree is **skipped** (not killed). `lsof` errors/timeouts are treated as fail-closed: skip the worktree rather than proceeding. Previously, active processes were killed by `removeWorktree()` with no pre-check, and `lsof` errors were silently treated as "no processes". Calls `removeWorktree(branch, { force: true })` (PR #478) to bypass the `removeWorktree()` session-queue guard, since safety was already verified by the pre-checks above.
 
@@ -232,7 +209,7 @@ Concurrent agents work in isolated git worktrees at `.claude/worktrees/<branch>/
 
 **Main-tree drift mechanism**: `scripts/preview-watcher.js` gains `keepMainTreeOnBase()` called every 30s. Auto-corrects clean main-tree drift via `git checkout <base> && git pull --ff-only`. Records to `.claude/state/main-tree-drift.json` when unsafe (dirty / mid-merge / mid-rebase). Gated by `services.json` `mainTreeKeepOnBase` (default `true`); `mainTreeAutoPull` (default `true`) controls the fast-forward-pull of `origin/<base>` into the main tree after each base-branch update (skipped when on a non-base branch or with an in-flight merge/rebase). `session-briefing.js` adds a prominent `=== MAIN TREE DRIFT ===` block at briefing top with live git re-check and recovery command. Both fields are in `ServicesConfigSchema`. Closes the `pnpm demo:preview` hot-reload failure mode where the main tree silently drifted to another branch.
 
-**Session activity broadcasting**: `scripts/session-activity-broadcaster.js` daemon (launchd KeepAlive) polls every 5 minutes, reads all running session JSONL tails, generates per-session summaries via `claude -p --model haiku`, creates a unified super-summary, stores both in `.claude/state/session-activity.db`, and broadcasts the super-summary to all agents. Sub-agent activity (Agent tool sub-agents detected via the `subagents/` directory) is included in each session's summary when present, giving the broadcaster visibility into nested agent work. All `callLLM` and `callLLMStructured` subprocess invocations inject `CLAUDE_SPAWNED_SESSION=true` so the broadcaster's internal `claude` calls are correctly identified as spawned (non-interactive) sessions by all hooks, including the interactive-lockdown-guard. Agents access detailed summaries via `session-activity` MCP tools: `get_session_summary` (by UUID), `list_session_summaries` (by session/agent ID), `list_project_summaries`, `get_project_summary`. No DB cleanup — summaries are stored long-term.
+**Session activity broadcasting**: `scripts/session-activity-broadcaster.js` daemon (launchd KeepAlive) polls every 5 minutes, reads all running session JSONL tails, generates per-session summaries via `claude -p --model haiku`, creates a unified super-summary, stores both in `.claude/state/session-activity.db`, and broadcasts the super-summary to all agents. Sub-agent activity (Agent tool sub-agents detected via the `subagents/` directory) is included in each session's summary when present, giving the broadcaster visibility into nested agent work. All `callLLM` and `callLLMStructured` subprocess invocations inject `CLAUDE_SPAWNED_SESSION=true` so the broadcaster's internal `claude` calls are correctly identified as spawned (non-interactive) sessions by all hooks. Agents access detailed summaries via `session-activity` MCP tools: `get_session_summary` (by UUID), `list_session_summaries` (by session/agent ID), `list_project_summaries`, `get_project_summary`. No DB cleanup — summaries are stored long-term.
 
 **Session summary subscription system**: The broadcaster supports a subscription model so agents receive targeted summaries of other sessions rather than only the global broadcast. Three delivery tiers: `short` (2-4 sentence summary), `detailed` (full summary + agent type context), `verbatim` (full summary + raw recent session messages for near-complete visibility). Subscriptions are stored in a `summary_subscriptions` table in `session-activity.db`. Each poll cycle runs three additional steps after the global broadcast: Step 8 — auto-subscribes persistent-task monitors to all their child sessions at `verbatim` tier (keyed by `persistentTaskId` in session metadata); Step 9 — delivers pending subscriptions as signals via `sendSignal`; Step 10 — LLM-driven selective delivery using `callLLMStructured()` with `--json-schema` to detect cross-session relevance (overlapping files, dependent features, merge conflict risk) and deliver targeted summaries to sessions that would benefit. Step 10 skips sessions already covered by Step 9. Three MCP tools on the `agent-tracker` server manage subscriptions: `subscribe_session_summaries` (short/detailed/verbatim), `unsubscribe_session_summaries`, and `list_summary_subscriptions` (shows both outgoing and incoming relationships).
 
@@ -261,7 +238,7 @@ Code-modifying sub-agents (`code-reviewer`, `code-writer`, `test-writer`) MUST b
 
 **Why**: Without worktree isolation, sub-agents share the parent session's working tree. Concurrent file edits from multiple agents cause conflicts, and any git operation (stash, reset) in the main tree can destroy all agents' uncommitted work.
 
-**Enforcement**: Two layers enforce this. Layer 1: the git wrapper (`git-wrappers/git`, PATH-injected) and `main-tree-commit-guard.js` PreToolUse hook both block `git add`/`git commit` on protected non-base branches for ALL sessions (interactive and spawned). Layer 2: `main-tree-commit-guard.js` additionally hard-blocks `git add`/`git commit`/`git reset --hard`/`git stash`/`git clean`/`git pull` for spawned agents (`CLAUDE_SPAWNED_SESSION=true`) in the main tree. `GENTYR_PROMOTION_PIPELINE=true` exempts both layers.
+**Enforcement**: The git wrapper (`git-wrappers/git`, PATH-injected) blocks `git add`/`git commit` on protected non-base branches for ALL sessions. `GENTYR_PROMOTION_PIPELINE=true` exempts promotion agents.
 
 **Example**:
 ```
@@ -282,30 +259,13 @@ Task(subagent_type: "code-writer", ...)
 
 **Task-specific workflow overrides**: The standard 6-step pipeline (investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager) injected into agent prompts is the DEFAULT. If a task description provides explicit alternative workflow instructions (e.g., "skip investigation, just build and run the demo"), spawned agents follow those instructions instead. This is intentional: the task creator (persistent monitor, CTO, or other orchestrator) knows the context. The only invariant is that project-manager must run if file changes were made. This replaces the former "WORKFLOW IS NON-NEGOTIABLE" enforcement across `hourly-automation.js`, `urgent-task-spawner.js`, and `scripts/force-spawn-tasks.js`.
 
-## Enforcement Doctrine: Multi-Layer Compliance
+## Compliance Guidance
 
-GENTYR uses a layered enforcement architecture that GUARANTEES consistent outcomes. Agent compliance is not optional or guidance-based — critical behaviors are enforced at the infrastructure level so agents CANNOT deviate regardless of their reasoning.
+GENTYR uses guidance, orchestration, and task-completion audit gates to keep agents on the right path. Actions are no longer hard-blocked by PreToolUse hooks (except task-completion and signal-compliance gates, which remain). Agents are expected to follow documented patterns; infrastructure and CI enforce the merge chain at the PR level.
 
-### Three Enforcement Layers
+### Guidance Patterns
 
-| Layer | Mechanism | Can agent bypass? | Examples |
-|-------|-----------|:---:|---------|
-| **Guidance** (soft) | Agent definitions, CLAUDE.md, session briefing, prompt templates | Yes (agent can ignore) | "Use the project-manager for git ops", "Defer to cicd-manager for deployments" |
-| **Orchestration** (medium) | PostToolUse hooks that inject reminders, session-completion-gate that blocks summarize_work | Technically yes (agent could stop responding) | uncommitted-change-monitor, project-manager-reminder, worktree-cleanup-gate |
-| **Enforcement** (hard) | PreToolUse hooks that DENY tool calls, root-owned files agents can't modify | **No** — tool call is rejected before execution | staging-lock-guard, main-tree-commit-guard, credential-file-guard, interactive-lockdown-guard |
-
-### Design Principle: Don't Trust the Agent
-
-For any behavior that MUST happen consistently:
-1. **Guide** the agent to do it willingly (agent definitions, CLAUDE.md, prompt injection)
-2. **Orchestrate** the environment so doing the right thing is easy (PostToolUse hooks inject reminders)
-3. **Enforce** at the infrastructure level so the wrong thing is impossible (PreToolUse hooks block bad actions)
-
-Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
-
-### Enforcement Patterns
-
-#### Pattern 1: Protected Branch Merge Guard
+#### Pattern 1: Preview-to-Staging Promotion
 
 **Requirement**: Only the preview-promoter agent (with full quality gates) can merge to staging.
 
@@ -318,32 +278,11 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 - `pr-auto-merge-nudge.js`: Reminds agent to wait for CI after PR creation
 - `preview_promotion` automation block: Auto-spawns preview-promoter every 30 minutes. Both `preview_promotion` and `promotion_retry_check` are in the `INFRASTRUCTURE_KEYS` set (not rate-multiplied). The retry check also resets the cooldown timer alongside the SHA to allow immediate re-promotion after a crash, and includes dead-promoter detection for `no_output_crash` sessions with no merge artifacts.
 
-**Enforcement layer**:
-- `staging-lock-guard.js` (PreToolUse, root-owned): DENIES `gh pr create --base staging`, `gh pr merge` targeting staging (runtime PR target check + CI check verification), `gh pr merge --admin` (admin CI bypass), `git push origin staging` for ALL sessions without `GENTYR_PROMOTION_PIPELINE=true`
+**CI enforcement**:
 - `merge-chain-check.yml` (GitHub Actions): BLOCKS PRs from non-preview branches to staging
-- `setup-branch-protection.js`: Configures GitHub required status checks; staging has `enforce_admins: true` to prevent admin CI bypass
+- `setup-branch-protection.js`: Configures GitHub required status checks
 
-**CTO bypass**: Agent calls `record_cto_decision` with the CTO's verbatim approval → `authorization-audit-spawner.js` enqueues an independent auditor → on audit pass, `deferred-action-audit-executor.js` executes the blocked action autonomously.
-
-#### Pattern 2: Interactive Session Lockdown
-
-**Requirement**: CTO interactive sessions manage via tasks/agents, never edit code directly.
-
-**Guidance layer**:
-- Session briefing: "Deputy-CTO console — manage via tasks"
-- `CLAUDE.md.gentyr-section`: Documents the lockdown model
-
-**Orchestration layer**:
-- `orchestration-guidance-hook.js`: Nudges toward parallel tasks when complexity detected
-
-**Enforcement layer**:
-- `interactive-lockdown-guard.js` (PreToolUse, root-owned): DENIES Write/Edit/NotebookEdit and code-modifying Agent spawns in interactive sessions. When lockdown is disabled, still DENIES Write/Edit/NotebookEdit to main-tree files (only worktree, `.claude/`, and `~/.claude/` paths are allowed) to prevent conflicts with running agents.
-- `interactive-agent-guard.js` (PreToolUse): DENIES code-modifying agent types when lockdown is on; ALLOWS all agent types when lockdown is off (reads `interactiveLockdownDisabled` from `automation-config.json`).
-- Deferred action required to disable: `set_lockdown_mode({ enabled: false })` creates a deferred action; CTO approves via `record_cto_decision`, `authorization-audit-spawner.js` executes inline (writes `automation-config.json` directly and auto-provisions a `cto-interactive` worktree — no separate auditor spawned for lockdown toggles since interactive sessions have no `agent_id`/`queue_id` for `peek_session` to locate).
-
-**CTO bypass**: Agent calls `record_cto_decision` with the CTO's verbatim approval → `authorization-audit-spawner.js` executes the lockdown state change inline (skips auditor for `lockdown_toggle` decision type).
-
-#### Pattern 3: Backward-Compatible Migration Enforcement
+#### Pattern 2: Backward-Compatible Migration Enforcement
 
 **Requirement**: All database migrations must be backward-compatible (enables safe auto-rollback).
 
@@ -356,10 +295,9 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 
 **Enforcement layer**:
 - Preview-promoter agent EXITS without promoting when any BLOCKED operation is detected (hard gate, not a warning); records full per-operation results in `migration-safety.json`
-- `staging-lock-guard.js`: Even if the promoter is somehow bypassed, staging is blocked
 - Auto-rollback (`auto-rollback.js`): If a bad migration somehow reaches staging, code is automatically reverted
 
-#### Pattern 4: CI Wait Before Merge
+#### Pattern 3: CI Wait Before Merge
 
 **Requirement**: All PRs must pass CI before merging (to any branch).
 
@@ -370,69 +308,26 @@ Guidance reduces friction. Enforcement guarantees outcomes. Use BOTH.
 **Orchestration layer**:
 - `pr-auto-merge-nudge.js`: Injects CI wait reminder after every `gh pr create`
 
-**Enforcement layer**:
+**CI enforcement**:
 - GitHub branch protection (required status checks): `gh pr merge` fails if CI hasn't passed
 - `setup-branch-protection.js`: Configures these rules automatically
 
-### The Unified CTO Authorization System
+### Adding New Guidance
 
-When enforcement blocks a legitimate CTO action, the authorization system allows temporary override through a verified, audited approval chain:
+When adding a new "should always happen" behavior:
 
-1. **Agent hits a block**: PreToolUse hook creates a `deferred_actions` record and returns `permissionDecision: 'deny'` with the deferred action ID
-2. **Agent presents to CTO**: Shows the blocked action context and requests the CTO's verbatim approval; for spawned agents, files a `submit_bypass_request` and exits
-3. **CTO approves**: Types approval response; agent calls `record_cto_decision` with the verbatim text and the `deferred_action_id`
-4. **authorization-audit-spawner.js fires**: For `lockdown_toggle` and `local_mode_toggle`, executes inline (writes state files directly, marks `audit_passed` without spawning an auditor — interactive sessions have no `agent_id`/`queue_id` for `peek_session` to look up). For all other decision types, transitions to `audit_pending` and enqueues an independent `authorization-auditor` agent in the `audit` lane (Sonnet-tier, 8-min TTL, signal-excluded)
-5. **authorization-auditor verifies**: Uses `peek_session` with the CTO's `session_id` to read the CTO's session JSONL — confirms the CTO was presented accurate context, the decision scope matches the actual action, and no critical information was omitted or misrepresented
-6. **On audit pass**: `deferred-action-audit-executor.js` executes the blocked tool call autonomously via the MCP shared daemon (Tier 1) or Bash (Tier 2); signals the original agent with the result
-7. **On audit fail**: The blocked action is NOT executed; the agent receives a failure signal with the scope mismatch reason
+1. **Add guidance** — update agent definitions and CLAUDE.md so agents understand why
+2. **Add orchestration** — PostToolUse hook that reminds/nudges the correct behavior
+3. **Add to criticalHooks if needed** — in `cli/commands/protect.js` if the hook must survive agent edits
+4. **Test** — verify agents follow the expected path in practice
 
-**Security properties**:
-- CTO approval is recorded verbatim and hashed in `cto_decisions` table — agents cannot fabricate a decision
-- Independent auditor verifies context accuracy from the actual session JSONL — not from agent claims
-- Deferred action is bound by `args_hash` — approved args must match stored args (no bait-and-switch)
-- Spawned sessions cannot override the auditor verdict — server-side guard blocks `cto_decision_audit_pass` for spawned sessions
-- Fail-closed: auditor cannot find session file → FAIL verdict (never passes on uncertainty)
-- Stale auditors are auto-revived by `session-reaper.js` to prevent `pending_audit` stuck states
-
-**Legacy HMAC bypass removed**: `bypass-approval-hook.js` and `bypass-approval-token.js` have been deleted. The `APPROVE BYPASS <code>`, `DENY BYPASS <code>`, `CLEAR ALL BYPASS`, and `APPROVE HOTFIX <code>` typed-phrase patterns are gone. All CTO approvals — including emergency hotfix promotion (see "Hotfix Promotion" below) — now use the deferred action + `record_cto_decision` + `authorization-auditor` chain. New enforcement hooks must use the deferred action pattern (`createDeferredAction` in `lib/deferred-action-db.js`) — there is no longer a code-based fallback.
-
-**Hotfix Promotion** (`/hotfix`, `mcp__deputy-cto__execute_hotfix_promotion`): The `/hotfix` slash command collects commits via `git log origin/main..origin/staging`, shows them to the CTO, captures the CTO's verbatim approval, and calls `execute_hotfix_promotion({ commits })`. `protected-action-gate.js` intercepts (registered in `protected-actions.json` under `deputy-cto`) and creates a deferred action whose `args_hash` freezes the commit set. The agent then calls `record_cto_decision({ decision_type: 'hotfix_promotion', decision_id, verbatim_text })`. `authorization-audit-spawner.js` routes hotfix decisions through the default auditor path (not inline-execute) — the auditor verifies via `peek_session({ session_id })` that the agent showed the commits to the CTO before the approval text, re-runs `git log` to confirm the commit set still matches (rejects if staging moved), and checks `isStagingLocked()`. On pass, `deferred-action-audit-executor.js` invokes the `execute_hotfix_promotion` tool-name branch — which calls `spawnHotfixPromoter()` in `.claude/hooks/lib/hotfix-spawn.js` — to enqueue the `hotfix-promotion` agent at `critical` priority with `GENTYR_PROMOTION_PIPELINE=true`. The handler in `deputy-cto/server.ts` is a defense-in-depth stub that errors out; in normal operation the gate fires first and the promoter is spawned by the executor, not the tool handler.
-
-**When to use the authorization system in new enforcement hooks**:
-```javascript
-// In a PreToolUse hook that blocks an action:
-// 1. Call createDeferredAction() to persist the blocked call
-// 2. Return permissionDecision: 'deny' with the deferred action ID
-// 3. The agent presents the ID to the CTO, calls record_cto_decision, and exits
-// 4. authorization-audit-spawner.js and deferred-action-audit-executor.js handle the rest
-```
-
-### Adding New Enforcement
-
-When adding a new "must always happen" behavior:
-
-1. **Start with enforcement** — write the PreToolUse hook that blocks the bad action
-2. **Add to criticalHooks** — in `cli/commands/protect.js` so it becomes root-owned
-3. **Add guidance** — update agent definitions and CLAUDE.md so agents understand why
-4. **Add orchestration** — PostToolUse hook that reminds/nudges the correct behavior
-5. **Wire CTO bypass** — include bypass instructions in the denial message
-6. **Test the enforcement** — verify an agent CANNOT perform the blocked action
-
-### Files Involved in Enforcement
+### Files Involved in Audit Gates and Compliance
 
 | File | Role | Root-owned? |
 |------|------|:-----------:|
-| `.claude/hooks/staging-lock-guard.js` | Block staging merges | Yes |
-| `.claude/hooks/main-tree-commit-guard.js` | Block main tree commits by spawned agents | Yes |
-| `.claude/hooks/spawned-main-tree-edit-guard.js` | Block Write/Edit/NotebookEdit into main tree by spawned agents (catches CWD fallback to PROJECT_DIR) | Yes |
-| `.claude/hooks/interactive-lockdown-guard.js` | Block file edits in CTO sessions | Yes |
-| `.claude/hooks/credential-file-guard.js` | Block access to credential files | Yes |
-| `.claude/hooks/branch-checkout-guard.js` | Block branch switching in main tree | Yes |
-| `.claude/hooks/block-no-verify.js` | Block hook bypass and lint-weakening commands (--no-verify, --no-gpg-sign, core.hooksPath writes, ESLint weakening, 1Password CLI access) | Yes |
 | `.claude/hooks/gate-confirmation-enforcer.js` | Block task completion during audit | Yes |
 | `.claude/hooks/signal-compliance-gate.js` | Block malformed inter-agent signals | Yes |
-| `.claude/hooks/demo-local-guard.js` | Block local demo execution by spawned agents | Yes |
-| `.claude/protection-key` | HMAC signing key for bypass tokens | Yes |
+| `.claude/hooks/block-no-verify.js` | Block hook bypass and lint-weakening commands (--no-verify, --no-gpg-sign, core.hooksPath writes, ESLint weakening) | Yes |
 | `cli/commands/protect.js` | Manages the criticalHooks list | — |
 
 ## Propagation to Linked Projects
@@ -555,7 +450,7 @@ By default, the automation service runs without 1Password credentials in backgro
 
 **Alert conditions**: (1) 3+ consecutive failures for the same endpoint → `consecutive_failures` alert; (2) response time > 2× the 5-minute rolling baseline → `latency_spike` alert. Alerts are written atomically (tmp+rename) to `.claude/state/synthetic-alerts.json` (capped at last 100 entries).
 
-**Auto-rollback integration**: `hourly-automation.js` runs an `auto_rollback_check` gate-exempt block every 2 minutes. It reads `synthetic-alerts.json`, filters to `consecutive_failures` alerts from the last 10 minutes, deduplicates by environment, then calls `recordFailure(envName)` and `executeRollback(envName, PROJECT_DIR)` from `.claude/hooks/lib/auto-rollback.js` when rollback conditions are met (deploy < 5 minutes old, 3+ consecutive failures, known-good prior deploy exists). Rollback targets Vercel (`npx vercel rollback --yes`) or Render (REST API) based on the `platform` field in deploy state. Skipped in local mode.
+**Auto-rollback integration**: `hourly-automation.js` runs an `auto_rollback_check` gate-exempt block every 2 minutes. It reads `synthetic-alerts.json`, filters to `consecutive_failures` alerts from the last 10 minutes, deduplicates by environment, then calls `recordFailure(envName)` and `executeRollback(envName, PROJECT_DIR)` from `.claude/hooks/lib/auto-rollback.js` when rollback conditions are met (deploy < 5 minutes old, 3+ consecutive failures, known-good prior deploy exists). Rollback targets Vercel (`npx vercel rollback --yes`) or Render (REST API) based on the `platform` field in deploy state.
 
 **Deploy state**: `auto-rollback.js` tracks deployments in `.claude/state/deploy-tracking.json`. Call `trackDeployment(environment, deployId, platform)` after each deploy, `recordHealthy(environment, deployId, platform)` when health checks pass (updates `lastKnownGood`). The rollback log is at `.claude/auto-rollback.log`.
 
@@ -628,13 +523,12 @@ Non-exempt task completions are independently audited to verify that work was ge
 - `task_audit_pass` / `pt_audit_pass` — task transitions `pending_audit → completed`, normal cascade runs
 - `task_audit_fail` / `pt_audit_fail` — task reverts to `in_progress` with failure reason injected into the next spawn prompt
 
-**Routing by task type** (`lib/auditor-prompt.js`, `resolveAuditTools()`): Four task types are supported.
+**Routing by task type** (`lib/auditor-prompt.js`, `resolveAuditTools()`): Three task types are supported.
 - `'todo'` → `universal-auditor` agent, `task_audit_pass`/`task_audit_fail` on `todo-db` server
 - `'persistent'` → `universal-auditor` agent, `pt_audit_pass`/`pt_audit_fail` on `persistent-task` server
 - `'plan'` → `plan-auditor` agent, `verification_audit_pass`/`verification_audit_fail` on `plan-orchestrator` server
-- `'authorization'` → `authorization-auditor` agent, `cto_decision_audit_pass`/`cto_decision_audit_fail` on `agent-tracker` server
 
-`buildAuditorSessionSpec()` in `lib/auditor-prompt.js` is the single source of truth for spawning auditors across all four types. `universal-audit-spawner.js` (first spawn), `authorization-audit-spawner.js` (CTO authorization audits), and `session-queue.js` Step 1b.5 (revival spawn) consume this shared module.
+`buildAuditorSessionSpec()` in `lib/auditor-prompt.js` is the single source of truth for spawning auditors across all three types. `universal-audit-spawner.js` (first spawn) and `session-queue.js` Step 1b.5 (revival spawn) consume this shared module.
 
 **Gate-exempt categories**: Triage & Delegation, Project Management, and Workstream Management categories complete directly without audit (their work is coordination, not deliverable artifacts).
 
@@ -644,11 +538,9 @@ Non-exempt task completions are independently audited to verify that work was ge
 - `mcp__persistent-task__reset_pt_audit({ id, reason })` — persistent task audit (also cascade-reverts parent todo task if it had been completed by a prior audit-pass)
 - `mcp__plan-orchestrator__reset_plan_audit({ plan_task_id, reason })` — plan task audit (also writes a state_change row to the plan timeline)
 
-**Authorization**: CTO/interactive sessions, deputy-cto, persistent-monitor, and plan-manager are allowed. Auditor agents (universal-auditor / plan-auditor / authorization-auditor) and task-runners are explicitly denied — auditors cannot reset their own audit; task-runners cannot escape verdicts on their own work. Identity is verified via `CLAUDE_QUEUE_ID` lookup in `session-queue.db` (same pattern as `verifyUserAlignmentIdentity()`). Shared logic lives in `.claude/hooks/lib/audit-reset.js`.
+**Authorization**: CTO/interactive sessions, deputy-cto, persistent-monitor, and plan-manager are allowed. Auditor agents (universal-auditor / plan-auditor) and task-runners are explicitly denied — auditors cannot reset their own audit; task-runners cannot escape verdicts on their own work. Identity is verified via `CLAUDE_QUEUE_ID` lookup in `session-queue.db` (same pattern as `verifyUserAlignmentIdentity()`). Shared logic lives in `.claude/hooks/lib/audit-reset.js`.
 
 **What reset is NOT**: It does NOT redo the work — only the audit. If the work product itself is broken, use the standard task flow (drive a new task) or `retry_plan_task` (for plan tasks) instead. The session-reaper's Step 1b.5 already handles ROUTINE auditor death by auto-respawning after 10 min of `verdict IS NULL`; `reset_*_audit` is the manual override for cases that auto-recovery cannot solve (wedged-but-not-stale, post-verdict false-pass/fail, or repeated auditor failures on the same task).
-
-**Authorization-audits are out of scope**: CTO authorization audits are interactive and short-lived; if a CTO authorization decision goes wrong, the existing `record_cto_decision` flow re-runs naturally.
 
 **Signal compliance gate**: The `signal-compliance-gate.js` PreToolUse hook validates all inter-agent signals via `send_session_signal` against a registered schema before delivery. Directive signals (requiring acknowledgment) MUST be acknowledged before the receiving agent can complete its task — enforced by `signal-reader.js` tracking.
 
@@ -658,11 +550,7 @@ An always-on persistent deputy-CTO session operating in continuous alignment mon
 
 **Idle auto-pause/resume**: The `global_monitor_idle_check` block in `hourly-automation.js` (1-minute cycle, gate-exempt) manages the monitor's lifecycle based on session activity. When no work sessions are active (excluding the monitor itself, gate, audit, and alignment lanes), the monitor is auto-paused with `auto_idle_pause: true` in metadata and `do_not_auto_resume: true` to prevent `persistent_stale_pause_resume` from fighting the idle pause. When any work session becomes active (running or spawning), the monitor is auto-resumed immediately on the next 1-minute check — the idle metadata flags are cleared, the task transitions back to `active`, and a new monitor session is enqueued at `critical` priority. The `requeueDeadPersistentMonitor()` function in `session-queue.js` also checks task status before reviving — paused tasks (including idle-paused) are skipped.
 
-**Escalation framework**: Signals for minor drift (~50%), self-created correction tasks for moderate misalignment (~35%), and `submit_bypass_request` on the affected task for significant drift or systemic issues (~15%).
-
-**Bypass request routing**: When any agent calls `submit_bypass_request`, the `bypass-request-router.js` PostToolUse hook checks if the global monitor is active. If so, it sends a `BYPASS_REQUEST` directive signal to the monitor, giving it ~5 minutes to triage the request before the CTO sees it. The CTO's `session-briefing.js` and `cto-notification-hook.js` apply a 5-minute grace period: pending requests younger than 5 minutes are hidden while the monitor is active. Requests explicitly escalated by the monitor (`deputy_escalated = 1`) bypass the grace period and appear to the CTO immediately. If the monitor is not active, requests appear to the CTO immediately (no grace period).
-
-**Deputy bypass resolution**: 3 exclusive MCP tools on the `agent-tracker` server — `deputy_resolve_bypass_request`, `deputy_approve_deferred_action`, `deputy_escalate_to_cto` — allow the global monitor to handle CTO bypass requests autonomously. Enforced by 3-layer identity verification (env var → session-queue.db metadata → persistent-tasks.db cross-check). CTO-only actions (release-ledger, lockdown, staging) are permanently blocked.
+**Escalation framework**: Signals for minor drift (~50%), self-created correction tasks for moderate misalignment (~35%), escalation to the deputy-CTO via report for significant drift or systemic issues (~15%).
 
 **Signal throttling**: Max 1 signal per agent per 30 minutes. If >5 signals are firing per hour, the monitor escalates a diagnostic report to the CTO.
 
@@ -711,13 +599,13 @@ Lets the CTO delegate complex multi-step objectives to a dedicated monitor sessi
 
 **Amendment system**: After activation the CTO can amend a task with `addendum`, `correction`, `scope_change`, or `priority_shift` types. The monitor polls for unacknowledged amendments each cycle and must call `acknowledge_amendment` before proceeding. Adding an amendment to a paused task auto-resumes it (no manual `resume_persistent_task` needed).
 
-**`persistent-monitor` agent** (`agents/persistent-monitor.md`, Opus-tier): Read-only for files. Orchestrates sub-agents via `todo-db` task creation, not direct edits — never uses the Task tool to spawn code-writers (all code changes must go through `create_task` + `force_spawn_tasks` so they are tracked, gated, and worktree-provisioned). The Task tool is only allowed for lightweight investigation. **Skepticism protocol**: monitors do NOT accept child agent success claims at face value — must `inspect_persistent_task` and `peek_session` for concrete evidence (exit codes, PASS/FAIL strings, `check_demo_result` with `status: 'passed'`, PR merge confirmations) before allowing completion. Missing evidence → `send_session_signal` demanding proof, or create a re-verification task if the child already exited. **Supersession**: `scope_change` amendments indicating supersession must trigger `cancel_persistent_task`, NOT `pause_persistent_task` — pausing creates an infinite revive/re-pause cycle. **Blocked situations**: when authorization is needed (access, conflicting requirements, external deps), call `submit_bypass_request`, then `summarize_work`, then exit.
+**`persistent-monitor` agent** (`agents/persistent-monitor.md`, Opus-tier): Read-only for files. Orchestrates sub-agents via `todo-db` task creation, not direct edits — never uses the Task tool to spawn code-writers (all code changes must go through `create_task` + `force_spawn_tasks` so they are tracked, gated, and worktree-provisioned). The Task tool is only allowed for lightweight investigation. **Skepticism protocol**: monitors do NOT accept child agent success claims at face value — must `inspect_persistent_task` and `peek_session` for concrete evidence (exit codes, PASS/FAIL strings, `check_demo_result` with `status: 'passed'`, PR merge confirmations) before allowing completion. Missing evidence → `send_session_signal` demanding proof, or create a re-verification task if the child already exited. **Supersession**: `scope_change` amendments indicating supersession must trigger `cancel_persistent_task`, NOT `pause_persistent_task` — pausing creates an infinite revive/re-pause cycle. **Blocked situations**: when authorization is needed (access, conflicting requirements, external deps), call `summarize_work` and exit, leaving a note for the CTO in `last_summary`.
 
 **Demo / strict-infra flags** in task metadata: `demo_involved: true` injects demo-specialized monitor instructions (`lib/persistent-monitor-demo-instructions.js`) and is asked about during `/persistent-task` creation. `strict_infra_guidance: true` adds MCP-only infrastructure prompts (`lib/strict-infra-guidance-prompt.js`) plus the `strict-infra-nudge-hook.js` PostToolUse enforcement and propagates the flag to child tasks.
 
 **3 PostToolUse hooks**: `persistent-task-briefing.js` (state injection on every tool call), `persistent-task-linker.js` (auto-link sub-tasks via `persistent_task_id`), `persistent-task-spawner.js` (fires on activate/resume/amend/pause/cancel — enqueues monitor or emits audit event accordingly; callers must NOT manually spawn monitors).
 
-**Cross-system wiring**: `todo-db` `create_task` accepts `persistent_task_id`. `stop-continue-hook.js` blocks normal stop for active monitors and redirects to `submit_bypass_request`. `session-briefing.js` lists active monitors. `cto-notification-hook.js` injects pending bypass requests into `additionalContext` on every CTO prompt.
+**Cross-system wiring**: `todo-db` `create_task` accepts `persistent_task_id`. `stop-continue-hook.js` blocks normal stop for active monitors and ensures completion criteria are met before exit. `session-briefing.js` lists active monitors.
 
 **CTO Dashboard**: `PersistentTaskSection` reads from `persistent-tasks.db` via `packages/cto-dashboard/src/utils/persistent-task-reader.ts`. Rendered on `/cto-report` and `/cto-dashboard`.
 
@@ -736,7 +624,7 @@ End-to-end attribution of every `claude` and `claude -p` invocation in the proje
 **Attribution precedence chain** (collector resolves each session to a single source string): (1) agent marker in JSONL first user message (`[Automation][...]`, `[Task][...]`, `[AGENT:...]`); (2) `resume_session_id` column on `session-queue.db` (for `--resume` revivals); (3) `subprocess_calls` join (subprocess invoked via `llm-client.js` with a tag); (4) `CLAUDE_USAGE_TAG` env var fallback; (5) `interactive-cto` for raw user sessions; (6) `unknown`. Subagent meta is read from `meta.json` sidecar when present — `agentType` (camelCase, what Claude Code writes) is normalized alongside legacy `agent_type` (snake_case). `agent-acompact-*.jsonl` files (Claude Code auto-compactor subprocesses) are routed to a dedicated `compaction-subagent` source so their cost is visible rather than hidden in `unknown`. Backfill passes (`backfillSubagentAttribution()` and `backfillWorkCategoryAttribution()`) re-resolve existing rows on daemon startup.
 
 **Three attribution dimensions** beyond the legacy `source` column (added by `lib/work-category.js`, idempotent ALTER TABLE on every DB open):
-- `work_category` — the stable kind-of-work this session represents (e.g., `plan-manager`, `persistent-monitor`, `universal-auditor`, `plan-auditor`, `authorization-auditor`, `task-runner`, `demo-manager`, `preview-promoter`, `pr-reviewer`, `staging-reviewer`, `security-auditor`, `feedback-agent`, `gate-agent`, `antipattern-hunter`, `compliance-checker`, `deputy-cto`, `health-monitor`, `lint-fixer`, `claudemd-refactor`, `federation-mapper`, `hotfix-promotion`, `test-fixer`, `todo-maintenance`, `compaction-subagent`, `agent-tool-subagent`, `interactive-cto`, `subprocess-llm`, `other`). Survives revival — a revived persistent monitor keeps `work_category=persistent-monitor` rather than collapsing to `session-queue-reaper`. Agent-tool subagents (user-alignment, investigator, code-writer, code-reviewer, test-writer, etc.) keep their specific type in `agent_type`; `work_category` collapses them to `agent-tool-subagent` for grouped reports — pivot by `agent_type` to see each subagent type individually.
+- `work_category` — the stable kind-of-work this session represents (e.g., `plan-manager`, `persistent-monitor`, `universal-auditor`, `plan-auditor`, `task-runner`, `demo-manager`, `preview-promoter`, `pr-reviewer`, `staging-reviewer`, `security-auditor`, `feedback-agent`, `gate-agent`, `antipattern-hunter`, `compliance-checker`, `deputy-cto`, `health-monitor`, `lint-fixer`, `claudemd-refactor`, `federation-mapper`, `test-fixer`, `todo-maintenance`, `compaction-subagent`, `agent-tool-subagent`, `interactive-cto`, `subprocess-llm`, `other`). Survives revival — a revived persistent monitor keeps `work_category=persistent-monitor` rather than collapsing to `session-queue-reaper`. Agent-tool subagents (user-alignment, investigator, code-writer, code-reviewer, test-writer, etc.) keep their specific type in `agent_type`; `work_category` collapses them to `agent-tool-subagent` for grouped reports — pivot by `agent_type` to see each subagent type individually.
 - `spawn_origin` — earliest source of the queue chain for this work, chased via `persistentTaskId`/`taskId`/`planId` back to the original `enqueueSession()` call.
 - `is_revival` + `revived_by` + `revival_count` — flags rows whose source is one of 9+ revival paths (`session-queue-reaper`, `revive_dead_persistent_monitor`, `drain-audit-orphan-recovery`, `session-reviver`, `revival-daemon`, `crash-loop-resume`, `sync-recycle`, etc.) and records the normalized revival mechanism.
 
@@ -811,7 +699,7 @@ The `triage_check` block in `hourly-automation.js` (default 5-minute cooldown) n
 
 ## Staging Reactive Review
 
-Automated 4-review-stream analysis of every new commit on staging that hasn't been promoted to main. Controlled by `stagingReactiveReviewEnabled: true` in `automation-config.json` (default off, skipped in local mode). Cooldown: `staging_reactive_review` (default 60 minutes).
+Automated 4-review-stream analysis of every new commit on staging that hasn't been promoted to main. Controlled by `stagingReactiveReviewEnabled: true` in `automation-config.json` (default off). Cooldown: `staging_reactive_review` (default 60 minutes).
 
 **How it works** (`runIfDue('staging_reactive_review', ...)` in `hourly-automation.js`):
 1. Fetches `origin/staging` and `origin/main`; exits early if either branch is absent
@@ -870,16 +758,16 @@ Traceability chain from user prompts through tasks, specs, and implementations. 
 
 **Prompt injection** (`.claude/hooks/lib/user-prompt-resolver.js`): Shared module that resolves UUIDs to content by scanning session JSONL files directly (no DB dependency). Called by `urgent-task-spawner.js` and `hourly-automation.js` to prepend a `## Referenced User Prompts` block into agent prompts when `user_prompt_uuids` is set on the task. Caps at 5 UUIDs per task, 2000 chars per prompt.
 
-**`user-alignment` agent** (`agents/user-alignment.md`): Auditor that runs after the code-reviewer in the standard development workflow. Looks up `user_prompt_uuids` on the task (falls back to keyword search), checks `userPromptRefs` in related specs, reviews `git diff`, and verifies the implementation addresses user intent. Creates `CODE-REVIEWER` fix tasks for misalignments; escalates significant drift to the deputy-CTO. Does NOT edit files or commit. **Spec proposals**: After verifying alignment, the agent checks whether specs should be created or updated for changed files. Spec writes (`create_spec`, `edit_spec`) are CTO-gated via deferred actions — the agent calls the tool, the `protected-action-gate` blocks it and stores the proposed spec content, and the CTO approves or rejects before it's written. The agent files a `submit_bypass_request` and exits; on CTO approval the deferred action auto-executes via the MCP daemon (specs-browser is Tier 1).
+**`user-alignment` agent** (`agents/user-alignment.md`): Auditor that runs after the code-reviewer in the standard development workflow. Looks up `user_prompt_uuids` on the task (falls back to keyword search), checks `userPromptRefs` in related specs, reviews `git diff`, and verifies the implementation addresses user intent. Creates `CODE-REVIEWER` fix tasks for misalignments; escalates significant drift to the deputy-CTO. Does NOT edit files or commit. **Spec proposals**: After verifying alignment, the agent checks whether specs should be created or updated for changed files and proposes spec changes via `create_spec`/`edit_spec` directly.
 
 ## CTO Alignment Tracking
 
-Persistent, audited memory of unique CTO-stated goals captured verbatim by the `user-alignment` sub-agent — long-lived, periodically reassessed, and fed back into the specs system once a goal hits 100% completion. Mirrors the cryptographic-proof model of `record_cto_decision` (verbatim substring must exist in a CTO session JSONL, HMAC-bound to the session file) so agents cannot fabricate goals; unlike one-shot CTO decisions, goals are long-lived with a percentage progress dimension.
+Persistent memory of unique CTO-stated goals captured verbatim by the `user-alignment` sub-agent — long-lived, periodically reassessed, and fed back into the specs system once a goal hits 100% completion. Verbatim text must exist in a CTO session JSONL so agents cannot fabricate goals.
 
-**Table**: `cto_alignment_goals` in `.claude/state/bypass-requests.db` (shared with `cto_decisions`/`deferred_actions`/`bypass_requests`). Fields: `id` (ag-...), `short_title`, `verbatim_text`, `cto_session_id`, `cto_session_file_hash`, `cto_prompt_timestamp`, `cto_prompt_line_number`, `hmac`, `status` (`active`/`completed`/`archived`/`superseded`), `completion_percentage`, `last_assessment_at`, `last_assessment_evidence`, `completed_at`, `spec_review_triggered_at`, `spec_review_outcome`, `archived_at`, `archived_reason`, `archive_verbatim_text`, `archive_cto_session_id`, `recorded_by_agent`, `created_at`. Partial UNIQUE index on `(cto_session_id, substr(verbatim_text, 1, 500))` where status not in archived/superseded — same goal cannot be recorded twice.
+**Table**: `cto_alignment_goals` in `.claude/state/agent-tracker.db`. Fields: `id` (ag-...), `short_title`, `verbatim_text`, `cto_session_id`, `cto_session_file_hash`, `cto_prompt_timestamp`, `cto_prompt_line_number`, `hmac`, `status` (`active`/`completed`/`archived`/`superseded`), `completion_percentage`, `last_assessment_at`, `last_assessment_evidence`, `completed_at`, `spec_review_triggered_at`, `spec_review_outcome`, `archived_at`, `archived_reason`, `archive_verbatim_text`, `archive_cto_session_id`, `recorded_by_agent`, `created_at`. Partial UNIQUE index on `(cto_session_id, substr(verbatim_text, 1, 500))` where status not in archived/superseded — same goal cannot be recorded twice.
 
 **5 MCP tools** (on `agent-tracker` server):
-- `record_cto_alignment_goal` — RESTRICTED TO user-alignment. Verifies verbatim text against CTO session JSONL via `verifyQuoteInJsonl` (only human/user messages count), HMAC-binds the goal to the session file. Returns `already_exists: true` on dedup.
+- `record_cto_alignment_goal` — RESTRICTED TO user-alignment. Verifies verbatim text against CTO session JSONL via `verifyQuoteInJsonl` (only human/user messages count). Returns `already_exists: true` on dedup.
 - `list_cto_alignment_goals` — open to all agents. Default filter `status: 'active'`. Omits verbatim/evidence by default for compact responses; pass `include_evidence: true` for detail.
 - `get_cto_alignment_goal` — open to all agents. Full row including verbatim_text and HMAC.
 - `update_cto_alignment_goal_progress` — RESTRICTED TO user-alignment. Updates completion_percentage with evidence, and/or sets `spec_review_outcome` after the 100% spec-review pass. When percentage transitions <100→100, the goal moves to `status='completed'`, `spec_review_outcome='pending'`, and the spec-review hook fires.
@@ -887,7 +775,7 @@ Persistent, audited memory of unique CTO-stated goals captured verbatim by the `
 
 **Identity verification** (`verifyUserAlignmentIdentity()` in `agent-tracker/server.ts`): Two-layer check — Layer A reads `queue_items.agent`/`agent_type`/`metadata.agent_type` from `session-queue.db` via `CLAUDE_QUEUE_ID` (top-level spawn); Layer B falls back to the sub-agent `.meta.json` adjacent to the current session JSONL when `CLAUDE_QUEUE_ID` is absent (Task() sub-agent). Verbatim verification remains the primary security primitive; identity check is defense-in-depth.
 
-**Spec-review hook** (`cto-alignment-spec-review.js`, PostToolUse on `mcp__agent-tracker__update_cto_alignment_goal_progress`): Fires when an update sets `transitioned_to_complete: true`. Injects `additionalContext` instructing user-alignment to: (1) re-read the verbatim via `get_cto_alignment_goal`; (2) enumerate global and local specs via `list_specs` / `list_suites`; (3) decide whether to `create_spec`/`edit_spec`/`delete_spec` to absorb the goal into living specifications (each write goes through the existing `protected-action-gate` → CTO approval flow); (4) close the loop by calling `update_cto_alignment_goal_progress` again with `spec_review_outcome: 'specs_proposed' | 'no_changes_needed'`. Listed in `criticalHooks` in `cli/commands/protect.js`.
+**Spec-review hook** (`cto-alignment-spec-review.js`, PostToolUse on `mcp__agent-tracker__update_cto_alignment_goal_progress`): Fires when an update sets `transitioned_to_complete: true`. Injects `additionalContext` instructing user-alignment to: (1) re-read the verbatim via `get_cto_alignment_goal`; (2) enumerate global and local specs via `list_specs` / `list_suites`; (3) decide whether to `create_spec`/`edit_spec`/`delete_spec` to absorb the goal into living specifications; (4) close the loop by calling `update_cto_alignment_goal_progress` again with `spec_review_outcome: 'specs_proposed' | 'no_changes_needed'`.
 
 **User-alignment workflow integration**: Every user-alignment run now (a) captures durable CTO goals from resolved user prompts via `record_cto_alignment_goal`, (b) reassesses every active goal with `list_cto_alignment_goals` + `update_cto_alignment_goal_progress`, and (c) archives superseded goals when newer CTO prompts contradict them. Operational one-shot requests are explicitly skipped — only durable outcomes (a feature must do X, a specification must hold) are tracked.
 
@@ -984,105 +872,9 @@ Rules:
 - Fatal/unexpected errors should exit with `{ continue: true, systemMessage: "..." }` — never with `process.exit(1)` or a raw stderr write.
 - The cross-hook guard test at `.claude/hooks/__tests__/session-start-no-stderr.test.js` enforces this with static analysis + runtime subprocess checks (36 tests).
 
-## CTO Bypass Request System
-
-Agents blocked by access, authorization, or resource constraints can pause themselves and request CTO authorization rather than failing silently or spinning in retry loops. The CTO sees pending requests in the next interactive session briefing and resolves them with a single MCP tool call.
-
-**DB**: `.claude/state/bypass-requests.db` (SQLite, auto-created). Three tables: `bypass_requests` with `id`, `task_type` (`persistent`/`todo`), `task_id`, `task_title`, `agent_id`, `category`, `summary`, `details`, `status` (`pending`/`approved`/`rejected`/`cancelled`), `resolution_context`, `resolved_at`, `resolved_by`, `pause_duration_minutes` (optional — when set, the pause auto-expires without CTO action), `auto_resume_at` (ISO timestamp — computed as `created_at + pause_duration_minutes` when `pause_duration_minutes` is set), `created_at`; `blocking_queue` (see below); and `deferred_actions` (see Deferred Protected Actions section). Two indexes on `status` and `(task_type, task_id)` for `bypass_requests`.
-
-**Bypass categories** (passed as `category` to `submit_bypass_request`): guides the CTO on what kind of authorization is needed — e.g., `"infrastructure"`, `"secrets"`, `"scope"`, `"access"`, or any custom string.
-
-**Agent workflow**: An agent that needs CTO authorization calls `submit_bypass_request` with `task_type`, `task_id`, `category`, `summary`, and `details`. Optionally, `pause_duration_minutes` (integer, 1–60) can be passed for short bounded pauses that do not require CTO approval — the pause auto-expires and the task resumes automatically when the timer elapses. Pauses >60 min or with no duration require CTO action. The tool pauses the relevant task (persistent → `paused` with `reason: 'cto_bypass_request'`; todo → `pending` so spawning is blocked by the bypass guard), emits a signal to the CTO's interactive session (unless the pause is timed), and returns instructions: write a `last_summary`, then exit. The agent MUST call `summarize_work` and stop — it must not continue working.
-
-**Dedup guard**: `submit_bypass_request` checks for an existing `pending` request for the same `(task_type, task_id)` pair before inserting. Duplicate submissions are rejected with an error pointing to the existing request ID.
-
-**CTO workflow**: Pending requests appear in the `=== CTO BYPASS REQUESTS AWAITING DECISION ===` section of the interactive session briefing (above the Persistent Tasks section) with title, type, category, age, summary, and the exact `resolve_bypass_request` invocation to copy. The CTO calls `resolve_bypass_request` with `request_id`, `decision` (`"approved"` or `"rejected"`), and `context` (instructions for the agent on how to proceed). On approval: persistent tasks are set to `active` and a monitor is immediately enqueued in the `persistent` lane at `critical` priority, with the CTO's approval context injected into the revival prompt. Todo tasks are left in `pending` — the bypass guard clears and normal spawning resumes on the next drain cycle, with the approval context injected via `getBypassResolutionContext()`. On rejection: persistent tasks stay `paused`, todo tasks stay `pending`, and the rejection context is injected into the next revival/spawn so the agent can take an alternative approach.
-
-**Auto-cancel**: `list_bypass_requests` (and `resolve_bypass_request`) auto-cancel requests for tasks that no longer exist or are already `completed`/`cancelled`, returning `auto_cancelled: true` so the CTO knows no action is needed.
-
-**Revival guard** (`lib/bypass-guard.js`): Shared read-only module with two exports:
-- `checkBypassBlock(taskType, taskId)` — returns `{ blocked: true, requestId, summary, category, auto_resume_at? }` if a `pending` request exists; `{ blocked: false }` otherwise. `auto_resume_at` is included when the pause is timed (i.e., set to auto-expire). Fail-open on any error (never blocks revival due to DB unavailability).
-- `getBypassResolutionContext(taskType, taskId)` — returns the most-recent resolved (`approved`/`rejected`) request's `{ decision, context, requestId, category, summary }` for injection into revival prompts.
-
-**Integration points** (bypass guard applied at 4 locations):
-- `session-queue.js` `requeueDeadPersistentMonitor()` — skips revival if a pending bypass request exists
-- `session-queue.js` `spawnQueueItem()` — injects approval/rejection context into spawn prompt when a resolved request exists
-- `hourly-automation.js` `persistent_stale_pause_resume` — skips auto-resume for tasks with pending bypass requests
-- `crash-loop-resume.js` SessionStart hook — skips crash-loop auto-resume for tasks with pending bypass requests
-- `session-reviver.js` — skips revival for tasks with pending bypass requests
-- `persistent-monitor-revival-prompt.js` — injects bypass resolution context block when `getBypassResolutionContext()` returns a result
-
-**Session briefing integration**: `session-briefing.js` adds a `=== CTO BYPASS REQUESTS AWAITING DECISION ===` block to the interactive briefing when pending requests exist. Pause reason detection extended to include `'bypass-request'` alongside `'crash-loop'` and `'manual'` — the PAUSED TASKS summary line now shows the breakdown (e.g., `"2 bypass-request, 1 crash-loop, 1 manual"`). A separate `=== WORK BLOCKED — CTO ACTION REQUIRED ===` section lists active `blocking_queue` items (grouped by blocking level) when any exist. The CTO notification hook's status line also shows a `N BLOCKING` prefix when blocking queue items are active.
-
-**Blocking queue** (`blocking_queue` table in `bypass-requests.db`): Tracks work-stopping items with hierarchical severity. Populated automatically by `pause-propagation.js` when a persistent task pause propagates up to the plan layer. Fields: `id`, `bypass_request_id` (optional link to a bypass request), `source_task_type`, `source_task_id`, `persistent_task_id`, `plan_task_id`, `plan_id`, `plan_title`, `blocking_level` (`task` / `persistent_task` / `plan`), `impact_assessment` (JSON: blocked_tasks, blocks_phase, is_gate, parallel_paths_available), `summary`, `status` (`active` / `resolved` / `superseded`), `resolved_at`, `resolution_context`. Resolved automatically when `propagateResumeToPlan()` fires on persistent task resumption; can also be resolved manually via `resolve_blocking_item`.
-
-**3 blocking queue MCP tools** (on `agent-tracker` server):
-- `list_blocking_items` — list active (or all) blocking queue items, optionally filtered by `plan_id`
-- `resolve_blocking_item` — manually mark a blocking item resolved with optional `resolution_context`
-- `get_blocking_summary` — aggregate count of active blocking items by level and plan
-
-**Timed pause auto-resume**: `hourly-automation.js` runs a `timed_pause_auto_resume` gate-exempt check every 1 minute. It queries `bypass_requests` for `pending` rows where `auto_resume_at IS NOT NULL AND auto_resume_at <= now`. For each expired timed pause: the bypass request is auto-resolved (status set to `approved`, `resolved_by: 'timed_pause_auto_resume'`), the linked persistent task is re-activated via `resume_persistent_task`, and `propagateResumeToPlan` clears any `blocking_queue` entries. CTO is NOT notified for timed pauses — they resolve autonomously. Cooldown key: `timed_pause_auto_resume: 1` in `config-reader.js` DEFAULTS.
-
-**Timed pauses are invisible to the CTO**: Three consumers previously queried `bypass_requests WHERE status = 'pending'` without filtering out timed pauses (`auto_resume_at IS NOT NULL`), causing the CTO to see "URGENT — BYPASS REQUEST(S) NEED CTO DECISION" for pauses that auto-resolve within the specified duration. `session-briefing.js`, `cto-notification-hook.js`, and `bypass-request-router.js` now exclude `auto_resume_at IS NOT NULL` from their pending-bypass queries. Timed pauses resolve silently via `timed_pause_auto_resume`; only indefinite or >60min pauses surface to the CTO.
-
-**3 MCP tools** (on `agent-tracker` server, version 9.3.0):
-- `submit_bypass_request` — agent-facing; submits a bypass request and pauses the task. Accepts optional `pause_duration_minutes` (1–60) for short auto-expiring pauses that don't require CTO approval. After submitting, the agent MUST summarize work and exit.
-- `resolve_bypass_request` — CTO-facing; approves or rejects a pending request. On approval of a persistent task, immediately enqueues a revival monitor.
-- `list_bypass_requests` — CTO-facing; lists requests by status (default: `pending`). Auto-cancels stale requests for gone/completed tasks.
-
-## Deferred Protected Actions
-
-Both interactive and spawned sessions now use the deferred action system when hitting protected action blocks. When a session hits a protected action block, `protected-action-gate.js` stores the exact tool call (server, tool, args) in a persistent DB and the agent presents the deferred action to the CTO via `record_cto_decision`. The CTO does NOT need to type a phrase or approve code — the agent records the CTO's verbatim response, and the authorization audit chain executes the action autonomously after audit pass.
-
-**Key distinction from old approval system (deprecated)**: The old `APPROVE <phrase> <code>` pattern required the requesting agent to be alive and retry. The deferred action system is fully asynchronous — the requesting agent exits immediately after calling `record_cto_decision`, and `deferred-action-audit-executor.js` executes the blocked call autonomously after the `authorization-auditor` passes it.
-
-**Interactive session gate response** (Phase 3): When `protected-action-gate.js` creates a deferred action for an interactive session, it outputs a `permissionDecision: 'deny'` response with the deferred action ID and instructs the agent to call `record_cto_decision` with the CTO's verbatim approval. No phrase or code required — the session JSONL is the audit trail.
-
-**Spawned agent gate response**: When `protected-action-gate.js` creates a deferred action for a spawned agent, it outputs a `permissionDecision: 'deny'` response with `permissionDecisionReason` containing the deferred action ID and the exact `submit_bypass_request` arguments the agent must call before exiting. This ensures spawned agents always file a bypass request so the CTO can unblock stalled work.
-
-**DB**: `deferred_actions` table in `.claude/state/bypass-requests.db` (shared with `bypass_requests` table). Fields: `id`, `server`, `tool`, `args` (JSON), `args_hash` (SHA256 of args), `source_hook` (which hook created this entry), `code` (6-char approval code — legacy, present for backward compat), `phrase` (legacy), `pending_hmac`, `approved_hmac`, `status` (`pending`/`approved`/`executing`/`completed`/`failed`/`expired`/`cancelled`), `requester_agent_id`, `requester_session_id`, `requester_task_type`, `requester_task_id`, `execution_result`, `execution_error`, timestamps.
-
-**Status lifecycle**: `pending` → `approved` → `executing` → `completed` or `failed`. Atomic transition from `approved` to `executing` prevents double-execution. `expired` for past-TTL pending items; `cancelled` for CTO-cancelled items.
-
-**Execution routing**: Deferred auto-execution supports three paths: Tier 1 servers are called via the shared MCP daemon on port 18090; Bash commands are executed directly via `child_process.execFile` in the deferred action's recorded CWD; and specific Tier 2 state changes (`set_lockdown_mode`, `set_local_mode`) have inline execution paths in the executor that write the state files directly (`automation-config.json` and `local-mode.json` respectively). Other Tier 2 servers require per-session stdio and cannot be auto-executed — the executor shows a manual execution hint for these.
-
-**Authorization audit chain** (new in Phase 1): After `record_cto_decision` is called with the CTO's verbatim approval:
-1. `authorization-audit-spawner.js` (PostToolUse) fires. For `lockdown_toggle` and `local_mode_toggle` decisions, execution is **inline** — the spawner directly writes `automation-config.json` or `local-mode.json` and transitions the decision to `audit_passed` without spawning an auditor (interactive sessions have no `agent_id`/`queue_id` so `peek_session` cannot verify them; the JSONL quote verification in `record_cto_decision` is sufficient proof). For all other decision types, the spawner enqueues an `authorization-auditor` in the `audit` lane.
-2. The `authorization-auditor` uses `peek_session` with the CTO's `session_id` to read the session JSONL — verifies context accuracy and scope match
-3. On pass: `deferred-action-audit-executor.js` (PostToolUse on `cto_decision_audit_pass`) executes the blocked action via MCP daemon or Bash
-4. On fail: the blocked action is not executed; the agent is signaled with the mismatch reason
-5. Stale `authorization-auditor` sessions are auto-revived by `session-reaper.js` Step 1b.5
-
-**`cto_decisions` table** (in `bypass-requests.db`, auto-migrated): Tracks CTO authorization decisions for the audit chain. Fields: `id`, `decision_type`, `decision_id`, `verbatim_text`, `session_id`, `session_file_hash`, `hmac`, `status` (`pending`/`verified`/`audit_pending`/`audit_passed`/`audit_failed`/`consumed`), `decision_context` (JSON — what will actually be executed), `audit_session_id`, `audit_verdict`, `audit_evidence`, `audit_completed_at`, `consumed_at`, `created_at`. The `decision_type` field routes to different verification logic: `'bypass_request'`, `'lockdown_toggle'`, `'deferred_action'`, `'audit_override'`.
-
-**Security model**:
-- CTO approval is recorded verbatim + hashed in `cto_decisions` — agents cannot fabricate or alter it
-- Independent auditor reads the actual session JSONL via `peek_session` — not agent claims or summaries
-- `args_hash` binding prevents bait-and-switch (executed args must match stored args)
-- Audit-override decision type (`'audit_override'`) skips the auditor for CTO-initiated force-overrides
-- Fail-closed: session unavailable or compacted beyond recovery → FAIL verdict
-- Stale auditors are auto-revived (never permanently stuck in `audit_pending`)
-
-**Legacy CTO workflow** (deprecated, pending Phase 5 cleanup): Pending deferred actions still appear in the `=== DEFERRED PROTECTED ACTIONS AWAITING APPROVAL ===` section of the interactive session briefing. `protected-action-approval-hook.js` (UserPromptSubmit) is deprecated but preserved for the HOTFIX flow.
-
-**Dedup guard**: If the same `server + tool + args_hash` combination already has a `pending` deferred action, the gate hook returns the existing entry rather than creating a duplicate.
-
-**Key modules**:
-- `lib/deferred-action-db.js` — DB operations: `createDeferredAction`, `getDeferredActionByCode`, `listPendingDeferredActions`, `markApproved`, `markExecuting`, `markCompleted`, `markFailed`, `cancelAction`, `expireStaleActions`, `findDuplicatePending`
-- `lib/deferred-action-executor.js` — Legacy MCP HTTP execution pipeline (pre-Phase 3); retained for reference
-- `.claude/hooks/deferred-action-audit-executor.js` — Phase 1 executor: fires on `cto_decision_audit_pass`, loads deferred action, executes via MCP daemon (Tier 1) or Bash (Tier 2), signals original agent
-
 ## Hooks Reference
 
-Individual hook specifications for all GENTYR hooks (auto-sync, CTO notification, branch drift, branch checkout guard, main tree commit guard, uncommitted change monitor, PR auto-merge nudge, project-manager reminder, credential health check, credential file guard, playwright CLI guard, playwright health check, worktree path guard, worktree CWD guard, interactive agent guard, interactive session lockdown guard, progress-tracker, long-command-warning).
-
-The **Interactive Session Lockdown Guard** (`.claude/hooks/interactive-lockdown-guard.js`) enforces the deputy-CTO console model: in interactive (non-spawned) sessions, only read/observe tools and GENTYR task/agent management MCP tools are permitted. File-editing tools (`Edit`, `Write`, `NotebookEdit`) and code-modifying sub-agent types are blocked. Spawned sessions (`CLAUDE_SPAWNED_SESSION=true`) are always unrestricted. Toggle via `/lockdown on|off` or `mcp__agent-tracker__set_lockdown_mode`. **Plan file whitelist**: writes to `.claude/plans/` and `EnterPlanMode`/`ExitPlanMode` tool calls are always permitted even when lockdown is active, so the CTO can write plan files without disabling lockdown; path traversal is defended via `path.resolve()`. **Memory file whitelist**: writes to `~/.claude/projects/*/memory/` are also always permitted — memory files are auto-memory persistence, not code. **`claude-sessions` tool whitelist**: All `mcp__claude-sessions__` tools (`search_sessions`, `list_sessions`, `read_session`, `list_projects`, `session_stats`) are allowed through lockdown — these are read-only session introspection tools safe for interactive use. **1Password tool whitelist**: 6 `onepassword` MCP tools are individually allowed through lockdown: `check_auth`, `list_items`, `op_vault_map` (read-only, no secret values), `read_secret` (default `include_value: false` only confirms existence — no secret values exposed), `create_item`, and `add_item_fields` (write tools where secret values go direct to `op` CLI, never in agent context). **Authorization required to disable** (Phase 2, implemented): `set_lockdown_mode({ enabled: false })` creates a deferred action in `bypass-requests.db`. The agent presents the deferred action ID to the CTO, records the CTO's verbatim approval via `record_cto_decision({ decision_type: "lockdown_toggle", ... })`, and `authorization-audit-spawner.js` executes inline — it directly writes `automation-config.json` and marks the CTO decision `audit_passed` without spawning an auditor (interactive sessions have no `agent_id`/`queue_id`, so `peek_session` cannot verify them; the JSONL quote verification in `record_cto_decision` is sufficient proof). **Auto-worktree provisioning on disable**: When lockdown is disabled, `authorization-audit-spawner.js` also auto-provisions a `cto-interactive` git worktree and stores its path in `automation-config.json` as `ctoWorktreePath`. When lockdown is re-enabled, `ctoWorktreePath` is cleared. **Lockdown-off enforcement** (safe worktree workflow): Even with lockdown disabled, `interactive-lockdown-guard.js` enforces a safe editing workflow — `Write`/`Edit`/`NotebookEdit` to main-tree files are BLOCKED, and Bash git mutation commands (`git stash`, `git checkout`, `git switch`, `git merge`, `git pull`, `git rebase`, `git reset`, `git clean`, `git add`, `git commit`, `git push`, `git worktree remove`) are BLOCKED in the main tree to prevent conflicts with other running agents. Read-only git commands (`log`, `diff`, `status`, `show`, `branch`, `fetch`) are allowed in the main tree. All commands are unrestricted when CWD is inside a worktree. Allowed Write/Edit paths: files inside `.claude/worktrees/` (the provisioned CTO worktree), `.claude/` framework files, and `~/.claude/` memory files. Every approved tool call injects workflow guidance pointing the CTO to their provisioned worktree path. Session-briefing shows a prominent `=== LOCKDOWN OFF — CTO WORKTREE WORKFLOW ===` block when lockdown is disabled, with the recorded worktree path verified on disk and a recreate command surfaced when missing. Deny messages explicitly state restrictions are "INDEPENDENT of /lockdown" so agents do not waste time toggling lockdown trying to escape main-tree blocks; `main-tree-commit-guard.js` deny messages carry the same wording. `lockdown.md` includes a "Still blocked when lockdown is OFF" section listing the 4 categories of independent restrictions (main-tree edits, git mutations in main tree, `--no-verify`, commit guard).
-
-**Lockdown-off guidance to Claude (in-session pipeline)**: When `/lockdown off` is active the CTO is babysitting interactively, and the preferred workflow is to **run the standard 6-step pipeline directly in-session** via `Task(cwd=<cto-interactive-* worktree>)`, NOT to delegate to `/spawn-tasks` / `/persistent-task` / `/plan`. The async task systems remain available for stepping away. Guidance is rendered in second person addressing Claude directly: `session-briefing.js` LOCKDOWN OFF block leads with `IN-SESSION PIPELINE` and the 6-step sequence (`investigator → code-writer → test-writer → code-reviewer → user-alignment → project-manager`) all passing `cwd=<worktree>`; demotes `/spawn-tasks` to an "only when the user explicitly wants async" subsection. `interactive-lockdown-guard.js` `orchestrationReminder` rewritten as `YOUR PIPELINE: run...` and clarifies that step 6 is the only step that commits. `interactive-agent-guard.js` no longer nudges away from code-modifying agents when lockdown is off — the orientation is the opposite (run them directly in-session). `CLAUDE.md.gentyr-section` lockdown-toggle section explicitly tells Claude not to default to async, only to use it when the user says so. **Project-manager worktree-aware behavior**: When `project-manager` is invoked with `cwd:` inside `.claude/worktrees/cto-interactive*/`, it (a) still self-merges as usual after CI passes, but (b) skips worktree removal AND base branch sync because the parent CTO session still owns the worktree.
-
-**Explicit CTO worktree merge sequence in briefing**: When the CTO turns lockdown off and edits files in `ctoWorktreePath`, agents previously tried `Agent(subagent_type='project-manager')` or `create_task + force_spawn_tasks` to merge — both spawn into FRESH worktrees and cannot see the CTO's in-progress edits. The session briefing in lockdown-off mode now renders the EXACT 8-command Bash sequence (`cd worktree`, `git status`, `git add`, `git commit`, `git push`, `gh pr create`, `gh pr checks`, `gh pr merge`) with the worktree path interpolated, plus explicit "DO NOT use Agent/Task — they create fresh worktrees" warnings. `lockdown.md` includes a parallel "How to Merge CTO Worktree Work (lockdown-OFF mode)" section. The approve-other-tools guidance string in `interactive-lockdown-guard.js` includes a one-line merge sequence with the actual worktree path on every approved tool call.
-
-**Inline execution column-name fix** (32b04f8): The inline execution path for `lockdown_toggle` and `local_mode_toggle` decisions in `authorization-audit-spawner.js` previously used the wrong column name in its UPDATE statement (`completed_at` instead of `executed_at`). The UPDATE silently threw "no such column", the outer try/catch swallowed it, and the deferred action row sat in `status='executing'` forever even though `automation-config.json` had been written. Every prior lockdown/local-mode toggle was silently broken at the DB-transition step since PR #625 shipped Phase 1 of the Unified CTO Authorization System. Now uses the canonical `markCompleted()` helper. **Lockdown-off agent access**: When lockdown is disabled, `interactive-agent-guard.js` allows ALL agent types including code-modifying agents (`code-writer`, `code-reviewer`, `test-writer`) — previously these were blocked even with lockdown off. `set_local_mode({ enabled: false })` uses the same pattern with `decision_type: "local_mode_toggle"`, writing `local-mode.json` inline. **Legacy bypass removed** (`bypass-approval-hook.js`, `bypass-approval-token.js`): deleted. The hotfix flow has been migrated onto the same `record_cto_decision` + auditor pipeline lockdown and local-mode already use — there is no remaining consumer of the typed-phrase + HMAC-token system. **Security invariant**: spawned sessions can never call `set_lockdown_mode({ enabled: false })` — the server-side spawned-session guard fires first, preventing any spawned or misbehaving agent from removing its own constraints. Lockdown toggles emit `lockdown_enabled`/`lockdown_disabled` audit events to `session-audit.log`.
+Individual hook specifications for all GENTYR hooks (auto-sync, CTO notification, branch drift, uncommitted change monitor, PR auto-merge nudge, project-manager reminder, credential health check, playwright health check, worktree CWD guard, progress-tracker, long-command-warning).
 
 > Full details: [Hooks Reference](docs/CLAUDE-REFERENCE.md#hooks-reference)
 
@@ -1248,7 +1040,7 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 
 **Idempotency for `populate_secrets_local`**: After op:// validation, the tool partitions entries into no-ops (already in `services.json.secrets.local` with the same value) and dirty entries (new or changed). When all entries are no-ops, the tool returns `noOp: true` with the count — no write, no stage. When falling back to pending on EACCES, it also drops any stale pending entries that already match `services.json` before re-staging. `cli/commands/sync.js` step 1.6 applies the same defensive pre-filter — pending entries whose values already match `services.json` are removed before op:// validation runs. This closes the loop where revived spawned agents repeatedly staged keys already present in `services.json`, perpetuating "⚠ N secret(s) STAGED but not applied" warnings across multiple sync cycles.
 
-**`populate_secrets_fly` tool**: Mirrors `populate_secrets_local` but writes to `secrets.fly[appName]` instead of `secrets.local`. Accepts `{ appName, entries }` where entries are `op://` references. Stages to `.claude/state/secrets-fly-pending.json` when `services.json` is root-protected; sync step 1.6b applies pending entries on the next `npx gentyr sync`. Eliminates the bypass-request loop when agents need to push secrets to a Fly app — previously `update_services_config` rejected the `secrets` key and `populate_secrets_local` only handled `secrets.local`. Session briefing surfaces a "no `secrets.fly[<appName>]` configured" hint when `fly.appName` is set but the block is empty. `pending-sync-notifier.js` also reports staged `secrets.fly` entries.
+**`populate_secrets_fly` tool**: Mirrors `populate_secrets_local` but writes to `secrets.fly[appName]` instead of `secrets.local`. Accepts `{ appName, entries }` where entries are `op://` references. Stages to `.claude/state/secrets-fly-pending.json` when `services.json` is root-protected; sync step 1.6b applies pending entries on the next `npx gentyr sync`. Eliminates the workaround when agents need to push secrets to a Fly app — previously `update_services_config` rejected the `secrets` key and `populate_secrets_local` only handled `secrets.local`. Session briefing surfaces a "no `secrets.fly[<appName>]` configured" hint when `fly.appName` is set but the block is empty. `pending-sync-notifier.js` also reports staged `secrets.fly` entries.
 
 **Fly.io as a secret push destination**: `secret_sync_secrets({ target: 'fly' })` pushes resolved secrets to a Fly app via the Fly Machines API (`POST /v1/apps/{app}/secrets`, bulk upsert). Schema: `secrets.fly` is a map of app name to env var name to op:// reference. Targets `'fly'` accepted by `SyncSecrets`, `ListMappings`, and `VerifySecrets` enums. Secret values resolve from 1Password and never enter agent context. Request body is wrapped as `{ secrets: [{ name, type: 'opaque', value }] }` (the Machines API rejects bare arrays and requires `name`, not `label`). `FLY_API_TOKEN` is in the `secret-sync` server's `credentialKeys` for protection.
 
@@ -1258,7 +1050,7 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 
 **`add_item_fields` tool** (on the 1Password MCP server, version 3.0.0): Adds or updates fields on an existing 1Password item. Accepts `item` (name or ID), optional `vault`, and `fields` (array of `{ field, value, type, section }`). Returns `op://` references for the added/updated fields only. Use to enrich existing items (e.g. adding a service-role-key to an existing Supabase item) without recreating the item.
 
-**`secrets-local-health.js` UserPromptSubmit hook**: Warns on every message (5-minute cooldown) if `secrets.local` is empty or missing keys referenced by secret profiles. Instructs agents to call `op_vault_map` + `populate_secrets_local` immediately, and instructs them to ask the CTO to run `npx gentyr sync` when entries are staged but not yet applied. Skipped in local mode and spawned sessions.
+**`secrets-local-health.js` UserPromptSubmit hook**: Warns on every message (5-minute cooldown) if `secrets.local` is empty or missing keys referenced by secret profiles. Instructs agents to call `op_vault_map` + `populate_secrets_local` immediately, and instructs them to ask the CTO to run `npx gentyr sync` when entries are staged but not yet applied. Skipped for spawned sessions.
 
 **`pending-sync-notifier.js` UserPromptSubmit hook**: In interactive (CTO) sessions only, warns when any pending configuration files exist that require `npx gentyr sync` to apply. Checks all 4 pending file types: `secrets-local-pending.json`, `services-config-pending.json`, `mcp-servers-pending.json`, and `fly-config-pending.json`. Shows a `systemMessage` in the terminal listing each pending file and its contents — does NOT inject into model context. 10-minute cooldown. Skipped for spawned sessions.
 
@@ -1266,7 +1058,7 @@ The secret-sync MCP server orchestrates secrets from 1Password to deployment pla
 
 **`elastic` section in `ServicesConfigSchema`**: Optional section in `services.json` enabling centralized Elastic Cloud log shipping from all project components. Fields: `apiKey` (op:// ref, required), `cloudId` (op:// ref, Elastic Cloud), `endpoint` (op:// ref, Serverless — mutually exclusive with cloudId at runtime), `queryApiKey` (op:// ref, optional read-only key for querying), `enabled` (boolean, default true), `indexPrefix` (string, default `'logs'`; produces indices named `{prefix}-{service}-{date}`). Configured via `mcp__secret-sync__update_services_config`. Credentials for local dev and demos are added to `secrets.local` via `mcp__secret-sync__populate_secrets_local`. Deployment credentials (renderProduction, renderStaging, vercel) must be configured separately and synced via `/push-secrets`. Session briefing shows a one-line logging health status at login. Use `mcp__elastic-logs__verify_logging_config` to check configuration completeness across all environments.
 
-**Elastic credentials in Playwright server**: The `playwright` server's `credentialKeys` in `protected-actions.json` include `ELASTIC_API_KEY`, `ELASTIC_CLOUD_ID`, and `ELASTIC_ENDPOINT`. These are resolved from 1Password by `mcp-launcher.js` and injected into the Playwright server process, enabling `elastic_query_hint` on batch results and demo telemetry shipping.
+**Elastic credentials in Playwright server**: The `playwright` server's `ELASTIC_API_KEY`, `ELASTIC_CLOUD_ID`, and `ELASTIC_ENDPOINT` credentials are resolved from 1Password by `mcp-launcher.js` and injected into the Playwright server process, enabling `elastic_query_hint` on batch results and demo telemetry shipping.
 
 > Full details: [Secret Management](docs/CLAUDE-REFERENCE.md#secret-management)
 
@@ -1276,25 +1068,17 @@ The icon-processor MCP server provides 12 tools for sourcing, downloading, proce
 
 > Full details: [Icon Processor MCP Server](docs/CLAUDE-REFERENCE.md#icon-processor-mcp-server)
 
-## Production Promotion System (Phase 0)
-
-Two components that form the foundation of the production promotion overhaul — tracking releases with a full evidence chain and preventing staging contamination during active releases.
+## Production Promotion System
 
 ### Release Ledger MCP Server
 
-The release-ledger MCP server (`packages/mcp-servers/src/release-ledger/`) tracks production releases from staging lock through CTO sign-off. State is in `.claude/state/release-ledger.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
+The release-ledger MCP server (`packages/mcp-servers/src/release-ledger/`) tracks production releases with a full evidence chain. State is in `.claude/state/release-ledger.db` (SQLite, WAL mode). Tier 2 (stateful, per-session stdio).
 
 **13 tools**: `create_release`, `get_release`, `list_releases`, `update_release`, `sign_off_release`, `cancel_release`, `add_release_pr`, `update_release_pr_status`, `add_release_session`, `add_release_report`, `add_release_task`, `get_release_evidence`, `generate_release_report`.
 
-**5-table SQLite schema**: `releases`, `release_prs`, `release_sessions`, `release_reports`, `release_tasks`. The `releases` table tracks `version`, `status` (`in_progress`/`signed_off`/`cancelled`), `plan_id`, `persistent_task_id`, `staging_lock_at`/`staging_unlock_at`, `signed_off_at`/`signed_off_by`, and `report_path`. The `get_release_evidence` tool returns the full evidence chain for a release (PRs, sessions, reports, tasks). `generate_release_report` produces a human-readable markdown summary.
+**5-table SQLite schema**: `releases`, `release_prs`, `release_sessions`, `release_reports`, `release_tasks`. The `releases` table tracks `version`, `status` (`in_progress`/`signed_off`/`cancelled`), `plan_id`, `persistent_task_id`, `signed_off_at`/`signed_off_by`, and `report_path`. The `get_release_evidence` tool returns the full evidence chain for a release (PRs, sessions, reports, tasks). `generate_release_report` produces a human-readable markdown summary.
 
-### Staging Lock Guard
-
-**Shared module**: `.claude/hooks/lib/staging-lock.js` — manages lock state at `.claude/state/staging-lock.json`. Exports `lockStaging(releaseId, options)`, `unlockStaging(releaseId, options)`, `isStagingLocked()`, `getStagingLockState()`. Best-effort GitHub branch protection via `gh api` (non-fatal — local state file is the primary enforcement mechanism).
-
-**PreToolUse hook**: `.claude/hooks/staging-lock-guard.js` — blocks Bash commands that would create PRs targeting staging or merge into staging. Blocked patterns: `gh pr create --base staging` (and `--base=staging`, `-B staging`), `gh pr merge` targeting staging (runtime PR target check via `gh pr view`), `git push origin staging` (including refspecs like `HEAD:staging`), `git merge staging`. Uses the same shell tokenizer as `main-tree-commit-guard.js`. Fast exit: `GENTYR_PROMOTION_PIPELINE=true` passes through unconditionally. The guard is always-on — staging operations are blocked regardless of lock state for non-pipeline agents. Fail-open on `gh pr view` timeout (2s) and unexpected errors.
-
-**Manual promotion**: `/promote-to-staging` slash command calls `mcp__deputy-cto__trigger_preview_promotion` which spawns the preview-promoter agent directly via `enqueueSession({ agent: 'preview-promoter' })` with `GENTYR_PROMOTION_PIPELINE=true`. Do NOT use `create_task` or `force_spawn_tasks` for staging promotion — the task system routes through category-based resolution which does not load the preview-promoter agent definition.
+**Manual promotion**: `/promote-to-staging` slash command spawns the preview-promoter agent directly via `enqueueSession({ agent: 'preview-promoter' })` with `GENTYR_PROMOTION_PIPELINE=true`. Do NOT use `create_task` or `force_spawn_tasks` for staging promotion — the task system routes through category-based resolution which does not load the preview-promoter agent definition.
 
 ### /promote-to-prod — CTO-Initiated Production Release
 
@@ -1317,27 +1101,13 @@ The ONLY path to production. Replaces the former automated midnight-window promo
 | 7 | CTO Sign-off | Yes | CTO reviews and explicitly approves the release |
 | 8 | Release Report | No | 8-section structured report generated (.md + .pdf) |
 
-**Flow**: CTO runs `/promote-to-prod` -> enumerates PRs -> locks staging (GitHub API + local) -> creates release plan -> plan-manager drives phases -> CTO signs off -> staging merges to main -> report generated -> staging unlocked.
+**Flow**: CTO runs `/promote-to-prod` → enumerates PRs → creates release plan → plan-manager drives phases → CTO reviews and signs off at Phase 7 → staging merges to main → report generated.
 
 **Monitoring**: `/plan-progress`, `/monitor`, `/persistent-tasks`
-
-**Staging Lock**: During a release, all merges to staging are blocked (GitHub branch protection + `staging-lock-guard.js` PreToolUse hook). `GENTYR_PROMOTION_PIPELINE=true` agents are exempt.
 
 **Release Artifacts**: Collected in `.claude/releases/{release-id}/` — JSONL transcripts, session summaries, screenshots, test/demo results, triage actions, CTO decisions.
 
 **Release Ledger**: `release-ledger` MCP server tracks PRs, sessions, reports, and tasks per release for post-mortem traceability.
-
-### /promote-to-prod-force — Emergency Force Promotion
-
-Emergency bypass for directly merging staging to main without quality gates. CTO-gated via the authorization system.
-
-**Command**: `/promote-to-prod-force`
-
-**Flow**: CTO reviews staging drift → types confirmation → agent calls `record_cto_decision` (type `force_prod_promotion`) → calls `mcp__deputy-cto__force_promote_to_prod({ decision_id })` → tool verifies CTO decision exists and is verified → creates or reuses a PR from staging to main → merges with `--admin` CI bypass → marks decision consumed → returns PR URL.
-
-**Gate enforcement**: `force_promote_to_prod` is registered in `protected-actions.json` so spawned agents are blocked by `protected-action-gate.js`. Only interactive CTO sessions can invoke the tool.
-
-**When to use**: Production incidents where the full `/promote-to-prod` quality pipeline cannot complete in time. Not for routine promotion.
 
 ## Plan Orchestrator MCP Server
 
@@ -1393,7 +1163,7 @@ All hooks are in the `criticalHooks` list in `cli/commands/protect.js` (root-own
 
 The CTO dashboard (`packages/cto-dashboard/`) supports `--mock` for development and `--page N` to split rendering across 3 pages. `/cto-report` runs all three pages. Includes WORKLOG system for agent work tracking via `summarize_work` tool.
 
-**Live CTO Dashboard** (`packages/cto-dashboard-live/`): Real-time Ink/React TUI that polls live data every 3 seconds. Launched via `/cto-dashboard` slash command (macOS only — opens a Terminal.app window). Five pages navigated via Tab / `1` / `2` / `3` / `4` / `5`. Built automatically by `npx gentyr sync` (step 7d); if `dist/` is missing, the `/cto-dashboard` command instructs the user to run sync rather than building inline (blocked by lockdown guard). Built `dist/` is gitignored.
+**Live CTO Dashboard** (`packages/cto-dashboard-live/`): Real-time Ink/React TUI that polls live data every 3 seconds. Launched via `/cto-dashboard` slash command (macOS only — opens a Terminal.app window). Five pages navigated via Tab / `1` / `2` / `3` / `4` / `5`. Built automatically by `npx gentyr sync` (step 7d); if `dist/` is missing, the `/cto-dashboard` command instructs the user to run sync rather than building inline. Built `dist/` is gitignored.
 
 **Page 1 — Observe**: Session list showing all sessions with persistent task hierarchy (monitors at top level, child sessions indented beneath). Keyboard navigation: arrow keys to select sessions, Enter to send a signal/message to the selected session (or resume a dead session), `[` / `]` to browse session summaries, `pgUp`/`pgDn` to scroll the activity stream (pgUp=older, pgDn=newer), `end` to jump back to latest activity. When scrolled up, the viewport is pinned — new entries do not auto-scroll — and the stream title shows `scrolled (N, end to follow)`. Activity content persists after session death with a `session_end` marker appended. Session items are two-line: status icon + id + title + elapsed on line 1, agent type + priority badge + last action on line 2.
 

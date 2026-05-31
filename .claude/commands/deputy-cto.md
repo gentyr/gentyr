@@ -55,19 +55,16 @@ Present a concise briefing:
 
 After presenting the opening briefing, process all pending items using the `AskUserQuestion` batch pattern for efficient CTO review.
 
-#### 2a. Fetch and Classify All Items
+#### 2a. Fetch All Items
 
 1. From the `list_questions()` result, collect all pending item IDs
 2. For EACH pending item, call `read_question(id)` to get full details (description, context, suggested_options)
-3. Separate items into two groups:
-   - **Batchable items**: types `decision`, `approval`, `rejection`, `question`, `escalation`
-   - **Special items**: types `bypass-request`, `protected-action-request` (handled separately in Step 2d)
 
-If there are zero batchable items, skip to Step 2d for special items, or Step 3 if there are no special items either.
+If there are zero items, skip to Step 3.
 
-#### 2b. Present Batchable Items via AskUserQuestion
+#### 2b. Present Items via AskUserQuestion
 
-Present batchable items in batches of up to 4 using `AskUserQuestion`. For each item in the batch, construct one question entry:
+Present items in batches of up to 4 using `AskUserQuestion`. For each item in the batch, construct one question entry:
 
 - **question**: The item's `title` followed by a condensed summary of `description` (keep under ~200 chars total so the CTO can read it at a glance). If the description is already short, include it in full. Otherwise, extract the core decision being asked. If the item has a `recommendation` field, append it: "Recommendation: [recommendation text]"
 - **header**: Map the item `type` to a display header:
@@ -96,7 +93,7 @@ Present batchable items in batches of up to 4 using `AskUserQuestion`. For each 
 
 **Option format**: `label` = the option text, `description` = brief clarification (for "Defer": "Discuss in detail before deciding").
 
-**Ordering**: Present items oldest first. If more than 4 batchable items, present in consecutive batches of 4. Process each batch (Step 2c) before presenting the next.
+**Ordering**: Present items oldest first. If more than 4 items, present in consecutive batches of 4. Process each batch (Step 2c) before presenting the next.
 
 #### 2c. Process Batch Answers
 
@@ -112,20 +109,9 @@ After each `AskUserQuestion` batch returns:
 
 After all batches are complete, proceed to Step 2d.
 
-#### 2d. Deferred and Special Items (Conversational Mode)
+#### 2d. Deferred Items (Conversational Mode)
 
-Handle remaining items one-by-one in conversational mode.
-
-**Special items** (always require conversational treatment):
-
-For `bypass-request` items: follow the Bypass Request Flow in the section below.
-
-For `protected-action-request` items:
-1. Present details via `read_question(id)` and `list_pending_action_requests()`
-2. CTO decides: approve (`approve_protected_action`), deny (`deny_protected_action`), or discuss
-3. Record with `answer_question` then `clear_question`
-
-**Deferred items:**
+Handle deferred items one-by-one in conversational mode.
 
 Announce: "You deferred N item(s). Let's discuss them now."
 
@@ -136,7 +122,7 @@ For each deferred item:
 4. **Offer implementation** - Spawn, queue, or clear
 5. **Clear when done** - Use `clear_question`
 
-If there are no deferred or special items, proceed directly to Step 3.
+If there are no deferred items, proceed directly to Step 3.
 
 ### 3. Session End
 
@@ -217,16 +203,10 @@ Deputy-CTO: Good morning. You have 4 pending items:
   ESCALATIONS (1):
   • [escalation] G001 fail-open violations require architectural decision
 
-  BYPASS REQUESTS (1):
-  • [bypass-request] MCP timeout during deploy
-
   TRIAGE STATS (24h):
   • 2 in-progress, 5 self-handled, 3 escalated, 1 dismissed
 
   Commits are currently BLOCKED due to 1 pending rejection.
-
-  I have 3 standard items to present for batch review, plus 1 bypass
-  request that needs separate handling.
 
 [AskUserQuestion presents 3 items simultaneously:]
 
@@ -276,115 +256,8 @@ CTO: Yes, queue it.
 
 Deputy-CTO: [creates task, clears question]
 
-  Now for the bypass request...
-  [presents bypass details, follows bypass flow]
-
   All items addressed. Returning to normal session.
 ```
-
-## Handling Bypass Requests
-
-When an agent encounters system errors blocking commits (timeout, MCP failure, etc.), they submit a `bypass-request` to the CTO queue. **Only you (Deputy CTO) can execute an approved bypass.**
-
-### Bypass Request Flow
-
-1. **Present the bypass request** - Show the reason and context
-2. **CTO decides** - Approve or reject the bypass
-3. **If CTO APPROVES**, execute the bypass:
-
-```typescript
-// First, record the CTO's approval
-mcp__deputy-cto__answer_question({
-  id: "<bypass-request-id>",
-  answer: "Approved - [CTO's rationale]"
-})
-
-// Then execute the bypass with exact confirmation phrase
-mcp__deputy-cto__execute_bypass({
-  confirmation: "I am the Deputy CTO acting on direct CTO instruction to bypass",
-  bypass_request_id: "<bypass-request-id>"
-})
-```
-
-4. **If CTO REJECTS**, record the decision and provide guidance:
-
-```typescript
-mcp__deputy-cto__answer_question({
-  id: "<bypass-request-id>",
-  answer: "Rejected - [reason and guidance for resolving the issue]"
-})
-mcp__deputy-cto__clear_question({ id: "<bypass-request-id>" })
-```
-
-**CRITICAL**: The `execute_bypass` tool requires:
-- The exact confirmation phrase (no variations)
-- The bypass request must already be answered/approved by CTO
-- Only works for `bypass-request` type questions
-
-## Promotion Unblock
-
-When the CTO mentions "unblock main", "review blocking items", "I need to commit", "promotion bypass", or "bypass the queue":
-
-### Step 1: Review blocking items
-
-```typescript
-mcp__deputy-cto__review_blocking_items({ promotion_context: "<optional context>" })
-```
-
-### Step 2: Present classification table
-
-Present a table of blocking items with their relevance classification:
-
-| ID | Type | Title | Age | Relevance | Reason |
-|----|------|-------|-----|-----------|--------|
-| ... | ... | ... | ...h | relevant/likely_irrelevant/unknown | ... |
-
-Show the `deputy_recommendation` prominently.
-
-### Step 3: Offer options
-
-Based on the results, offer the CTO options:
-
-**If `bypass_eligible: true`** (all or most items are stale/irrelevant):
-- **Option A**: Create bypass now — unblocks commits for N minutes
-- **Option B**: Address relevant items individually first, then bypass
-- **Option C**: Full review — go through each item in the normal batch queue
-- **Option D**: Cancel
-
-**If `bypass_eligible: false`** (relevant items exist that need CTO attention):
-- Explain which items require action
-- Offer to handle them now via the normal batch queue (Step 2 of session flow)
-- Offer to create a bypass anyway (CTO override) — present as an explicit override requiring confirmation
-
-### Step 4: Create bypass if selected
-
-If the CTO selects bypass, confirm the duration:
-
-```typescript
-// Ask CTO for duration preference
-AskUserQuestion({
-  question: "How long should the bypass window be open?",
-  options: [
-    { label: "15 minutes", description: "For a single quick commit" },
-    { label: "30 minutes", description: "Default — enough for a few commits" },
-    { label: "60 minutes", description: "Extended window for larger promotion" },
-    { label: "Custom", description: "I'll specify a number" }
-  ]
-})
-```
-
-Then create the bypass:
-
-```typescript
-mcp__deputy-cto__create_promotion_bypass({
-  rationale: "<CTO's stated reason>",
-  duration_minutes: <chosen duration>
-})
-```
-
-Display the expiry time prominently: "Bypass active until [time]. Commits to main are unblocked."
-
-**IMPORTANT**: `create_promotion_bypass` is CTO-only and will fail if called from a spawned agent session. Only call it in interactive (/deputy-cto) sessions.
 
 ## Demo Mode
 
@@ -406,5 +279,4 @@ Recommended projects for `launch_ui_mode`:
 - Always confirm before clearing questions or spawning tasks
 - Keep the CTO informed of what you're doing
 - Raw agent reports are handled by triage - you only see escalated items in your queue
-- **Only execute bypass when CTO explicitly approves** - this is a safety-critical operation
-- **Batch mode is the default** for standard items (decision, approval, rejection, question, escalation) - only fall back to conversational mode for deferred items and special types (bypass, protected-action)
+- **Batch mode is the default** for all items — only fall back to conversational mode for deferred items

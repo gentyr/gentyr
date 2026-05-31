@@ -62,13 +62,9 @@ export const INFRASTRUCTURE_KEYS = new Set([
   'rate_limit_cooldown_minutes',
   'usage_quota_cooldown_minutes',
   'persistent_stale_pause_resume',
-  'timed_pause_auto_resume',     // FIX-14: must run at 1m absolute, not rate-multiplied
-  'bypass_sla_enforcer',          // FIX-31: SLA defense-in-depth, must run at 1m absolute
-  'stuck_executor_recovery',      // rescue deferred_actions stuck in 'executing', must run at 1m absolute
   'plan_task_merge_reconciler',   // FIX-6: back-fills missed PR merges into plan_tasks
   'persistent_heartbeat_stale_minutes',
   'plan_orphan_detection',
-  'deferred_action_resume',
   'self_heal_fix_check',
   'self_heal_max_fix_attempts',
   'self_heal_fix_task_timeout_minutes',
@@ -214,9 +210,6 @@ const DEFAULTS = {
   branch_pruner: 30,                   // 30 minutes (prune merged/dead local + remote branches)
   stale_work_detector: 2880,           // 48 hours
   demo_validation: 1440,               // daily
-  timed_pause_auto_resume: 1,          // 1 minute (check frequently for expired timed pauses)
-  bypass_sla_enforcer: 1,              // 1 minute (FIX-31: SLA defense-in-depth, independent of timed_pause_auto_resume)
-  stuck_executor_recovery: 1,          // 1 minute (rescue deferred_actions stuck in 'executing' >10min)
   plan_task_merge_reconciler: 5,       // 5 minutes (FIX-6: catches PR merges plan-merge-tracker missed)
   persistent_stale_pause_resume: 5,    // 5 minutes
   persistent_heartbeat_stale_minutes: 5, // 5 minutes

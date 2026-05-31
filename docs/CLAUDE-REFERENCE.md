@@ -10,7 +10,7 @@ Extracted reference sections from [CLAUDE.md](../CLAUDE.md). Each section is lin
 
 | Target | Ownership | Permissions | Rationale |
 |--------|-----------|-------------|-----------|
-| Critical hook files (pre-commit-review.js, protected-action-gate.js, authorization-audit-spawner.js, etc.) | root:wheel | 644 | Prevents agent modification; linked projects use copy-on-protect (`.claude/hooks-protected/`) to avoid root-owning framework source |
+| Critical hook files (pre-commit-review.js, block-no-verify.js, gate-confirmation-enforcer.js, signal-compliance-gate.js, etc.) | root:wheel | 644 | Prevents agent modification; linked projects use copy-on-protect (`.claude/hooks-protected/`) to avoid root-owning framework source |
 | `.claude/hooks/` directory | user:staff | 755 | Git needs write access for checkout/merge/stash |
 | `.claude/` directory | user:staff | 755 | Git needs write access for stash/checkout/merge; symlink target verification replaces directory ownership |
 | `.husky/` directory | root:wheel | 1755 | Prevents deletion of the pre-commit entry point |
@@ -191,33 +191,8 @@ Force-spawns the deputy-CTO triage cycle immediately, bypassing the hourly autom
 **Investigation-before-escalation**: When the deputy-CTO decides to escalate a report to the CTO queue, it first spawns an `INVESTIGATOR & PLANNER` task and links it to the escalation via `investigation_task_id`. A `[Investigation Follow-up]` task (assigned `system-followup`) is auto-created when the investigation completes. The follow-up picks up the escalation and either resolves it (calling `mcp__deputy-cto__resolve_question`) if the issue was already fixed, or enriches it with findings (calling `mcp__deputy-cto__update_question`) before the CTO reviews it. This reduces noise in the CTO queue by filtering out self-resolving issues.
 
 **Investigation tools on the deputy-cto MCP server:**
-- `update_question` — Appends timestamped investigation findings to a pending escalation's context field (append-only, 10KB cap). Blocked on `bypass-request` and `protected-action-request` types.
+- `update_question` — Appends timestamped investigation findings to a pending escalation's context field (append-only, 10KB cap).
 - `resolve_question` — Resolves and archives a pending escalation atomically (answer + archive to `cleared_questions` + delete from active queue). Valid resolution types: `fixed`, `not_reproducible`, `duplicate`, `workaround_applied`, `no_longer_relevant`. CTO never sees resolved escalations, but they remain in `cleared_questions` for audit and deduplication.
-
-**Protected action approval tools on the deputy-cto MCP server** (legacy; deprecated in Phase 2):
-
-> **DEPRECATED.** This entire section describes the legacy 6-character `APPROVE <PHRASE> <CODE>` HMAC system. It was superseded in Phase 2 of the **Unified CTO Authorization System** (see "Deferred Protected Actions" and "The Unified CTO Authorization System" in `CLAUDE.md`). The current flow uses `record_cto_decision` with the CTO's verbatim natural-language approval — no 6-char code is generated and no `APPROVE <PHRASE> <CODE>` chat pattern is involved. The tools below remain in the codebase but are only used by the `/hotfix` slash command, which is preserved pending Phase 5 cleanup. **New code paths and agent prompts must not reference these tools or the 6-char code pattern.** Agents that tell the CTO "you'll get a 6-character code" are reading stale documentation.
-
-- `list_pending_action_requests` — (legacy) List all pending (non-expired) protected action requests. Shows code, server, tool, args, and approval mode for each. Used during triage to discover actions awaiting deputy-CTO sign-off.
-- `get_protected_action_request` — (legacy) Get details of a specific pending request by its 6-character approval code. Use to inspect a request before approving or denying.
-- `approve_protected_action` — (legacy) Approve a `deputy-cto` approval-mode request. Verifies `pending_hmac` against the protection key unconditionally when a key is present (G001 fail-closed: a missing `pending_hmac` is treated as a forgery, not a skip), then writes an HMAC-signed `approved_hmac` entry so the gate hook can confirm authenticity. Uses `O_CREAT|O_EXCL` advisory file locking (same algorithm as `approval-utils.js`) with exponential backoff (10 attempts, stale-lock cleanup at 10 s) to prevent concurrent read-modify-write races on `.claude/protected-action-approvals.json`. Only works for `approval_mode: "deputy-cto"` — CTO-mode actions must be escalated.
-- `deny_protected_action` — (legacy) Remove a pending protected action request, recording a reason. Also uses `O_CREAT|O_EXCL` advisory file locking to prevent concurrent writes. Applicable to any approval mode.
-
-**Pre-approved bypass tools on the deputy-cto MCP server:**
-- `request_preapproved_bypass` — Create a long-lived, burst-use pre-approval for a specific server+tool. Stores a pending entry in `protected-action-approvals.json` with HMAC signature (`preapproval-pending` domain, domain-separated from standard approval HMACs). Returns a 6-character code and instructions for CTO confirmation via AskUserQuestion. Constraints: max 5 active pre-approvals, one per server+tool combination, expiry 1–12 hours (default 8), max uses 1–5 (default 3).
-- `activate_preapproved_bypass` — Activate a pending pre-approval after CTO confirms interactively via AskUserQuestion. Verifies `pending_hmac`, sets `status: "approved"`, and writes `approved_hmac` (domain `preapproval-activated`). The activated entry can then be auto-consumed by any agent invoking the matching server+tool via the gate hook's Pass 2 path.
-- `list_preapproved_bypasses` — List all active (non-expired) pre-approvals with code, server, tool, reason, status, uses remaining, and hours until expiry.
-
-**Pre-approved bypass security model:**
-- HMAC domains are separated from standard approvals: `preapproval-pending` and `preapproval-activated` vs `pending` and `approved`. Cross-forging between standard approvals and pre-approvals is cryptographically blocked.
-- G001 fail-closed for pre-approvals: the gate hook's Pass 2 rejects any pre-approval if the protection key is missing, regardless of whether HMAC fields are present. This is stricter than Pass 1 (which allows legacy no-HMAC approvals) because pre-approvals are long-lived and higher risk.
-- Burst-use window: after the first consumption, subsequent uses must occur within 60 seconds (`burst_window_ms: 60000`). If the window elapses, remaining uses are expired. This constrains multi-step operations without creating an open-ended multi-use token.
-- Args-agnostic: matches ANY invocation of the server+tool regardless of arguments. Designed for operations where exact args are unpredictable at approval time (e.g., scheduled deployments).
-
-**`approval-utils.js` security model** (`.claude/hooks/lib/approval-utils.js`):
-- `validateApproval(phrase, code)` — called by the gate hook when an agent submits an approval phrase; verifies `pending_hmac` before marking approved; if protection key is present and `pending_hmac` is missing-or-invalid, rejects with `FORGERY` reason (G001 fail-closed); writes `approved_hmac` on success so `checkApproval()` can verify downstream
-- `checkApproval(server, tool, args)` — two-pass approval scan under file lock: Pass 1 checks standard exact-match approvals (args-bound, single-use, skips `is_preapproval` entries); Pass 2 checks pre-approved bypasses (args-agnostic, burst-use, requires protection key unconditionally). Both passes verify HMAC signatures and delete forged entries. Pre-approval entries identified by `is_preapproval: true` flag.
-- `saveApprovals()` in both `approval-utils.js` and `protected-action-gate.js` uses atomic write-via-rename (write to `.tmp.<pid>`, then `fs.renameSync`) to prevent partial writes from concurrent access leaving a corrupted approvals file; the tmp file is unlinked on rename failure
 
 ---
 
@@ -361,28 +336,9 @@ All agent spawning routes through `enqueueSession()` in `.claude/hooks/lib/sessi
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink; registered in `settings.json.template` under `UserPromptSubmit`
 - Tests at `.claude/hooks/__tests__/gentyr-sync-branch-drift.test.js` (runs via `node --test`)
 
-### Branch Checkout Guard
+### Git Wrapper (Merge Chain Enforcement)
 
-**Branch Checkout Guard** (two-layer defense — `.claude/hooks/branch-checkout-guard.js` + `.claude/hooks/git-wrappers/git`):
-
-Prevents branch drift by blocking `git checkout`/`git switch` in the main working tree. Complements the warn-only Branch Drift Check with a hard enforcement layer:
-
-- **Layer 1 — Git wrapper** (`.claude/hooks/git-wrappers/git`): POSIX shell script placed in `git-wrappers/` directory; injected into spawned agent environments via `PATH` prepending in `buildSpawnEnv()` (hourly-automation, urgent-task-spawner, session-reviver, force-spawn-tasks, force-triage-reports). Intercepts `git checkout`/`git switch` invocations (all sessions, recovery path to base branch always allowed). Also blocks `git add`/`git commit` on protected non-base branches (`main`/`preview`/`staging` but not the detected base) for ALL sessions — plus the full spawned-agent guard (`git add`/`git commit`/`git reset --hard`/`git stash`/`git clean`/`git pull` for `CLAUDE_SPAWNED_SESSION=true`). `GENTYR_PROMOTION_PIPELINE=true` exempts all guards. Exits 128 with a descriptive message on blocked operations. Zero-overhead fast path for all other git subcommands. Root-owned via `npx gentyr protect`.
-- **Layer 2 — PreToolUse hook** (`.claude/hooks/branch-checkout-guard.js`): Hard-blocking (`permissionDecision: "deny"`) Claude Code PreToolUse hook that catches checkout/switch at the tool-call level. Covers interactive sessions (where PATH injection is not active) and agents that invoke `/usr/bin/git` directly, bypassing the PATH wrapper. Uses the same quote-aware `tokenize()` + `splitOnShellOperators()` pattern from `credential-file-guard.js` for robust parsing of chained commands. Recovery path is dynamic: detects base branch via `detectBaseBranch()` (shared from `lib/feature-branch-helper.js`) so `git checkout preview` is allowed in target projects and `git checkout main` in the gentyr repo. `GENTYR_PROMOTION_PIPELINE=true` passes through.
-- **Both layers**: Skip silently in worktrees (`.git` file check — `.git` is a file in a worktree, not a directory), non-repo directories, and skip global git flags (`-C`, `--git-dir`, etc.) when locating the subcommand. Always allow checkout to the detected base branch and file restore invocations (`git checkout -- <file>`).
-- Registered in `settings.json.template` under `PreToolUse > Bash`. Root-owned and listed in `protection-state.json` `criticalHooks` array alongside `git-wrappers/git`. Included in the `husky/pre-commit` tamper-detection ownership loop.
-- Tests at `.claude/hooks/__tests__/branch-checkout-guard.test.js` (runs via `node --test`)
-
-### Main Tree Commit Guard Hook
-
-**Main Tree Commit Guard Hook** (`.claude/hooks/main-tree-commit-guard.js`):
-- Runs at `PreToolUse` for Bash tool calls; hard-blocking (`permissionDecision: "deny"`)
-- **Layer 1 (ALL sessions)**: Blocks `git add` and `git commit` when the main working tree is on a protected non-base branch (`main`, `preview`, or `staging`, but not the detected base branch). Fires for both interactive and spawned sessions. `GENTYR_PROMOTION_PIPELINE=true` exempted. Uses `detectBaseBranch()` and `PROTECTED_BRANCHES` from `lib/feature-branch-helper.js`. Provides a stash-then-switch recovery hint in the error message.
-- **Layer 2 (spawned agents only)**: Fires when ALL three conditions are true: `CLAUDE_SPAWNED_SESSION=true`, `.git` is a directory (main tree, not a worktree), and `GENTYR_PROMOTION_PIPELINE !== 'true'`. Blocked subcommands: `git add`, `git commit`, `git reset --hard`, `git stash` (push/pop/drop/clear/apply — `list`/`show` are read-only and allowed), `git clean`, `git pull`.
-- Uses the same quote-aware `tokenize()` + `splitOnShellOperators()` pattern from `branch-checkout-guard.js` for robust multi-command parsing
-- Complements the git wrapper (`git-wrappers/git`) which enforces the same rules via PATH injection; together they form a two-layer defense
-- Root-owned and listed in `protection-state.json` `criticalHooks` array; included in the `husky/pre-commit` tamper-detection ownership loop
-- Tests at `.claude/hooks/__tests__/main-tree-commit-guard.test.js` (runs via `node --test`)
+**Git wrapper** (`.claude/hooks/git-wrappers/git`): POSIX shell script placed in `git-wrappers/` directory; injected into spawned agent environments via `PATH` prepending in `buildSpawnEnv()` (hourly-automation, urgent-task-spawner, session-reviver, force-spawn-tasks, force-triage-reports). Blocks `git add`/`git commit` on protected non-base branches (`main`/`preview`/`staging` but not the detected base) for ALL sessions. `GENTYR_PROMOTION_PIPELINE=true` exempts all guards. Exits 128 with a descriptive message on blocked operations. Zero-overhead fast path for all other git subcommands. Root-owned via `npx gentyr protect`.
 
 ### Uncommitted Change Monitor Hook
 
@@ -424,18 +380,6 @@ Prevents branch drift by blocking `git checkout`/`git switch` in the main workin
 - **Vault-mappings backup/restore** (`lib/vault-mappings.js`): When vault-mappings.json has non-empty mappings, a backup is written to `.claude/state/vault-mappings.backup.json`. If vault-mappings.json is missing at `SessionStart`, the hook attempts to restore from backup before treating all keys as missing. `init` and `sync` also restore from backup when the primary file is absent or empty.
 - Auto-propagates to target projects via `.claude/hooks/` directory symlink
 - Shell sync validation also available via `scripts/setup-validate.js` `validateShellSync()` function, which checks the `# BEGIN GENTYR OP` / `# END GENTYR OP` block in `~/.zshrc` or `~/.bashrc`
-
-### Credential File Guard Hook
-
-**Credential File Guard Hook** (`.claude/hooks/credential-file-guard.js`):
-- Runs at `PreToolUse` for Read, Write, Edit, Grep, Glob, and Bash tool calls; hard-blocking (uses `permissionDecision: "deny"` — not just a warning)
-- Blocks access to `BLOCKED_BASENAMES` (`.env`, `.zshrc`, `.bashrc`, etc.) and `BLOCKED_PATH_SUFFIXES` (`.claude/protection-key`, `.mcp.json`, etc.)
-- For Bash commands, uses a quote-aware shell tokenizer (`tokenize()`) to extract redirection targets (including quoted targets like `echo hello > ".env"`), command arguments, and inline path references; `NON_FILE_COMMANDS` set exempts echo/printf/git/package managers to avoid false positives
-- Redirection scan covers `>`, `>>`, `<`, `2>`, `2>>`, `1>`, `1>>`, `0<` and operates on tokenized output so quoted bypasses (e.g. `> ".env"`) are caught; also detects protected basename references in path context (`/basename` or `~basename` patterns) to block deep-path variants
-- `ALWAYS_BLOCKED_SUFFIXES` and `ALWAYS_BLOCKED_BASENAMES` are hard-blocked with no approval escape hatch; other protected paths can be approved via `protected-action-approvals.json`
-- Blocks credential environment variable references (`$TOKEN`, etc.) sourced from `protected-actions.json` `credentialKeys` arrays; also blocks environment dump commands (`env`, `printenv`, `export -p`)
-- Root-ownership of credential files at the OS level is the primary defense; this hook is defense-in-depth
-- Tests at `.claude/hooks/__tests__/credential-file-guard.test.js` (165 tests, 24 skipped pending G027 B2 integration, runs via `node --test`)
 
 ### Playwright CLI Guard Hook
 

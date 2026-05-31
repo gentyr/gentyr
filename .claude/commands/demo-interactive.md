@@ -76,7 +76,7 @@ Call `mcp__playwright__run_demo({
   success_pause_ms: 5000
 })`.
 
-`local: true` forces local execution so the CTO can watch the demo live on their display with ScreenCaptureKit recording. This requires CTO authorization (the CTO is the one invoking this slash command, so authorization is implicit).
+`local: true` forces local execution so the CTO can watch the demo live on their display with ScreenCaptureKit recording.
 
 ### Step 7: Report
 
