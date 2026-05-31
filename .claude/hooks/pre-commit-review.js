@@ -143,64 +143,6 @@ function getBranchInfo() {
 }
 
 /**
- * Check for a valid emergency bypass decision (created by execute_bypass)
- * Returns true if there's a recent bypass that should allow the commit through
- */
-function hasValidBypassDecision() {
-  if (!Database || !fs.existsSync(DEPUTY_CTO_DB)) {
-    return false;
-  }
-
-  try {
-    const db = new Database(DEPUTY_CTO_DB, { readonly: true });
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-
-    // Check for recent bypass decisions (created by execute_bypass)
-    const bypass = db.prepare(`
-      SELECT id, rationale FROM commit_decisions
-      WHERE decision = 'approved'
-      AND rationale LIKE 'EMERGENCY BYPASS%'
-      AND question_id IS NOT NULL
-      AND created_timestamp > ?
-      ORDER BY created_timestamp DESC
-      LIMIT 1
-    `).get(fiveMinutesAgo);
-
-    if (bypass) {
-      db.close();
-      console.log('[deputy-cto] ✓ Emergency bypass active - commit allowed');
-      return true;
-    }
-
-    // Check for time-limited promotion bypass
-    const promotionBypass = db.prepare(`
-      SELECT id, rationale, created_timestamp FROM commit_decisions
-      WHERE decision = 'approved'
-      AND rationale LIKE 'PROMOTION BYPASS%'
-      ORDER BY created_timestamp DESC LIMIT 1
-    `).get();
-
-    db.close();
-
-    if (promotionBypass) {
-      const match = promotionBypass.rationale.match(/PROMOTION BYPASS \((\d+)min\)/);
-      const durationMin = match ? parseInt(match[1], 10) : 30;
-      const createdMs = new Date(promotionBypass.created_timestamp).getTime();
-      const expiresMs = createdMs + (durationMin * 60 * 1000);
-      if (Date.now() < expiresMs) {
-        const minutesLeft = Math.ceil((expiresMs - Date.now()) / 60000);
-        console.log(`[deputy-cto] ✓ Promotion bypass active (${minutesLeft}m remaining) - commit allowed`);
-        return true;
-      }
-    }
-
-    return false;
-  } catch (_) { /* cleanup - failure expected */
-    return false;
-  }
-}
-
-/**
  * Verify that git core.hooksPath hasn't been tampered with.
  * An agent could bypass hooks entirely by changing this setting.
  */
@@ -600,17 +542,6 @@ async function main() {
       console.error('[pre-commit-review] Warning:', err.message);
       // Non-fatal: if we can't determine branch age, allow the commit
     }
-  }
-
-  // ============================================================================
-  // BYPASSABLE CHECKS (emergency bypass can skip CTO review, but NOT lint)
-  // ============================================================================
-
-  // Check for emergency bypass (allows commit even with pending CTO items)
-  if (hasValidBypassDecision()) {
-    console.log('[deputy-cto] ✓ Emergency bypass active - skipping CTO review');
-    console.log('[deputy-cto] ✓ Lint passed - commit approved');
-    process.exit(0);
   }
 
   // G020 branch-aware commit blocking removed in Phase 2 of production promotion

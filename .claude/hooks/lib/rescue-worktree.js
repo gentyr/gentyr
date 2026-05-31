@@ -266,9 +266,9 @@ git merge origin/${baseDisplay} --no-edit
 
 - If merge succeeds cleanly: continue.
 - If merge fails with conflicts: do NOT attempt to resolve them blindly.
-  Run \`git merge --abort\`, then call
-  \`mcp__agent-tracker__submit_bypass_request\` with
-  \`category: "scope"\`, summary describing the conflict, and exit.
+  Run \`git merge --abort\`, then file a deputy-CTO report via
+  \`mcp__agent-reports__report_to_deputy_cto\` (priority: critical)
+  describing the conflict, and exit.
   Do NOT push, do NOT open a PR, do NOT auto-resolve.
 
 This step is non-negotiable — it surfaces the Case-B "stale orphan"

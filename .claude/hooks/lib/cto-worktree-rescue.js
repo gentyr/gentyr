@@ -184,7 +184,7 @@ export async function enqueueRescuer({ projectDir, worktreePath, detection, sour
     `  - never auto-merge`,
     `  - never force-push`,
     `  - never use --no-verify`,
-    `  - on any failure, submit_bypass_request and exit`,
+    `  - on any failure, file a deputy-CTO report (report_to_deputy_cto) and exit`,
   ].join('\n');
   const extraEnv = {
     GENTYR_RESCUE_WORKTREE_PATH: worktreePath,

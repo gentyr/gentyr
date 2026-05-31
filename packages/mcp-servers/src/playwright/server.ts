@@ -2683,40 +2683,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
     }
   }
 
-  // ── Spawned-session local execution enforcement ──
-  // Spawned agents (non-interactive sessions) MUST use remote execution (Fly.io
-  // or Steel) UNLESS the CTO approved a demo_local bypass request for their task.
-  // Structural local overrides (chrome-bridge / remote_eligible=false) are
-  // checked further down at the routing-resolver layer.
-  const isSpawnedSession = process.env.CLAUDE_SPAWNED_SESSION === 'true';
-  let hasLocalBypassApproval = false;
-  if (isSpawnedSession) {
-    // Check if CTO approved a demo_local bypass for this agent's task
-    try {
-      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-      if (fs.existsSync(bypassDbPath)) {
-        const bypassDb = new Database(bypassDbPath, { readonly: true });
-        try {
-          const approval = bypassDb.prepare(
-            "SELECT id FROM bypass_requests WHERE category = 'demo_local' AND status = 'approved' AND created_at > datetime('now', '-1 hour') LIMIT 1"
-          ).get();
-          if (approval) hasLocalBypassApproval = true;
-        } finally { bypassDb.close(); }
-      }
-    } catch { /* non-fatal — fail-closed (no approval) */ }
-
-    if (!hasLocalBypassApproval && args.local === true) {
-      // Spawned agent asked for local execution without CTO approval — block.
-      // The demo-local-guard hook should have caught this; this is defense in depth.
-      return {
-        success: false,
-        project,
-        message: 'Spawned agents are not allowed to request local demo execution without CTO approval. ' +
-          'File a bypass request via submit_bypass_request({ category: "demo_local", ... }) and summarize_work.',
-      };
-    }
-    // If hasLocalBypassApproval: respect the agent's local=true (CTO approved local execution)
-  }
+  // Local demo execution is unrestricted: any session (interactive or spawned)
+  // may pass local: true. Remote execution (Fly.io / Steel) remains the default
+  // routing for non-structural demos, resolved further down.
 
   // All demos run headed with video recording. The headless parameter is
   // deprecated — force headed mode regardless of what the caller passed.
@@ -3122,22 +3091,9 @@ async function runDemo(args: RunDemoArgs): Promise<RunDemoResult> {
         };
       }
 
-      // ── Post-routing spawned-agent local guard ──
-      // If the resolver routed to local for a spawned agent (e.g., remote_eligible=false),
-      // block unless CTO approved a demo_local bypass. This catches cases where
-      // remote_eligible=false or usesChromeBridge forced local routing.
-      if (isSpawnedSession && target.target === 'local' && !hasLocalBypassApproval) {
-        return {
-          success: false,
-          project,
-          message: `LOCAL DEMO BLOCKED: Execution routed to local (${target.reason}). ` +
-            `Spawned agents cannot run demos locally without CTO approval. ` +
-            `File a bypass request: submit_bypass_request({ task_type: 'todo', task_id: YOUR_TASK_ID, ` +
-            `category: 'demo_local', summary: 'Need local execution: ${target.reason}' }) then summarize_work and exit.`,
-          execution_target: 'local',
-          execution_target_reason: target.reason,
-        };
-      }
+      // Local execution is unrestricted for all sessions (the CTO-approval gate
+      // was removed). Local routing — including remote_eligible=false / chrome-bridge
+      // structural overrides — proceeds for spawned and interactive sessions alike.
 
       // ── STEEL EXECUTION PATH ──
       if (target.target === 'steel') {
@@ -8851,32 +8807,8 @@ async function runBatchSequence(state: DemoBatchState, args: RunDemoBatchArgs, s
  * Discovers scenarios, partitions into batches, and runs them sequentially in the background.
  */
 async function runDemoBatch(args: RunDemoBatchArgs): Promise<string> {
-  // ── Spawned-session remote enforcement ──
-  // Spawned agents MUST use remote Fly.io execution for batch demos too,
-  // UNLESS the CTO approved a demo_local bypass request.
-  const isBatchSpawnedSession = process.env.CLAUDE_SPAWNED_SESSION === 'true';
-  if (isBatchSpawnedSession) {
-    let hasBatchLocalBypass = false;
-    try {
-      const bypassDbPath = path.join(PROJECT_DIR, '.claude', 'state', 'bypass-requests.db');
-      if (fs.existsSync(bypassDbPath)) {
-        const bypassDb = new Database(bypassDbPath, { readonly: true });
-        try {
-          const approval = bypassDb.prepare(
-            "SELECT id FROM bypass_requests WHERE category = 'demo_local' AND status = 'approved' AND created_at > datetime('now', '-1 hour') LIMIT 1"
-          ).get();
-          if (approval) hasBatchLocalBypass = true;
-        } finally { bypassDb.close(); }
-      }
-    } catch { /* non-fatal */ }
-
-    if (!hasBatchLocalBypass && args.local === true) {
-      return JSON.stringify({
-        error: 'Spawned agents are not allowed to request local batch demo execution without CTO approval. ' +
-          'File a bypass request via submit_bypass_request({ category: "demo_local", ... }) and summarize_work.',
-      });
-    }
-  }
+  // Local batch demo execution is unrestricted (the CTO-approval gate was removed);
+  // remote Fly.io execution remains the default routing for non-structural demos.
 
   // All demos run headed with video recording. The headless parameter is
   // deprecated — force headed mode regardless of what the caller passed.

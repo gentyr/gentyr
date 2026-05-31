@@ -143,29 +143,9 @@ describe('pre-commit-review.js - G001 Fail-Closed Behavior', () => {
     });
   }
 
-  describe('Emergency Bypass', () => {
-    it('should have hasValidBypassDecision() function that checks commit_decisions table', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      assert.match(hookCode, /function hasValidBypassDecision/, 'Should define hasValidBypassDecision function');
-      assert.match(hookCode, /commit_decisions/, 'Should check commit_decisions table');
-      assert.match(hookCode, /EMERGENCY BYPASS/, 'Should check for EMERGENCY BYPASS rationale');
-      assert.match(hookCode, /decision = 'approved'/, 'Should check for approved decision');
-    });
-
-    it('should check for bypass in the main flow', () => {
-      const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-      // Verify bypass check exists in main flow
-      const bypassCheckIndex = hookCode.indexOf('if (hasValidBypassDecision())');
-      const ctoItemsCheckIndex = hookCode.indexOf('hasPendingCtoItems()');
-
-      assert.ok(bypassCheckIndex !== -1, 'hasValidBypassDecision() must be called in main');
-      assert.ok(ctoItemsCheckIndex !== -1, 'hasPendingCtoItems() must be called in main');
-      // Bypass check happens in the bypassable section, CTO items in branch-aware section
-      // Both are present in the code flow
-    });
-  });
+  // Note: the emergency-bypass commit escape hatch (hasValidBypassDecision) was
+  // removed with the CTO-bypass system. Commits are approved after lint/security
+  // checks; review happens at PR time.
 
   describe('Pending CTO Items Check - G001 Fail-Closed', () => {
     it('should have code structure to block commits on database errors', () => {
@@ -1142,25 +1122,6 @@ describe('G005: Regression Guard - no Unix epoch comparisons in SQL context', ()
     );
   });
 
-  it('should use fiveMinutesAgo ISO 8601 string as parameter to hasValidBypassDecision() emergency bypass query', () => {
-    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-    // The fiveMinutesAgo variable must be declared as an ISO 8601 string
-    assert.match(
-      hookCode,
-      /const fiveMinutesAgo = new Date\(Date\.now\(\)\s*-\s*5\s*\*\s*60\s*\*\s*1000\)\.toISOString\(\)/,
-      'hasValidBypassDecision(): fiveMinutesAgo must be computed as ISO 8601 string, not Unix epoch'
-    );
-  });
-
-  it('should use new Date(promotionBypass.created_timestamp).getTime() for promotion bypass expiry calculation', () => {
-    const hookCode = fs.readFileSync(HOOK_PATH, 'utf8');
-
-    // The promotion bypass expiry must parse the ISO 8601 created_timestamp via new Date()
-    assert.match(
-      hookCode,
-      /new Date\(promotionBypass\.created_timestamp\)\.getTime\(\)/,
-      'hasValidBypassDecision(): promotion bypass expiry must parse created_timestamp as ISO 8601 via new Date().getTime()'
-    );
-  });
+  // The hasValidBypassDecision() source-pattern assertions were removed along with
+  // the emergency-bypass function itself (CTO-bypass system removal).
 });
