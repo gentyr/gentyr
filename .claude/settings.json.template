@@ -3,6 +3,36 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/spawned-main-tree-edit-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/spawned-main-tree-edit-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PROJECT_DIR}/.claude/hooks/spawned-main-tree-edit-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "mcp__todo-db__complete_task,mcp__todo-db__summarize_work",
         "hooks": [
           {
