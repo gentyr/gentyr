@@ -297,9 +297,9 @@ describe('session-briefing — graceful degradation', () => {
 // ---------------------------------------------------------------------------
 
 describe('session-briefing — local mode notice', () => {
-  it('shows [LOCAL MODE] notice in interactive briefing when local-mode.json is enabled', () => {
+  it('does NOT show [LOCAL MODE] notice even when local-mode.json is enabled (feature removed)', () => {
     const tmpDir = createTempProjectDir();
-    // Write a local-mode.json file indicating local mode is active
+    // Local mode was removed — a stale local-mode.json must be ignored
     fs.writeFileSync(
       path.join(tmpDir, '.claude', 'state', 'local-mode.json'),
       JSON.stringify({ enabled: true, enabledAt: new Date().toISOString(), enabledBy: 'cto' }),
@@ -311,16 +311,12 @@ describe('session-briefing — local mode notice', () => {
     assert.ok(result.parsed, 'Must output valid JSON');
     const ctx = result.parsed.hookSpecificOutput?.additionalContext || '';
     assert.ok(
-      ctx.includes('[LOCAL MODE]'),
-      'Interactive briefing must include [LOCAL MODE] notice when local-mode.json is enabled',
-    );
-    assert.ok(
-      ctx.includes('/local-mode'),
-      'Local mode notice must mention /local-mode command to disable',
+      !ctx.includes('[LOCAL MODE]'),
+      'Local mode is removed — briefing must never include [LOCAL MODE] notice',
     );
   });
 
-  it('shows [LOCAL MODE] notice in spawned briefing when local-mode.json is enabled', () => {
+  it('does NOT show [LOCAL MODE] notice in spawned briefing (feature removed)', () => {
     const tmpDir = createTempProjectDir();
     fs.writeFileSync(
       path.join(tmpDir, '.claude', 'state', 'local-mode.json'),
@@ -336,8 +332,8 @@ describe('session-briefing — local mode notice', () => {
     assert.ok(result.parsed, 'Must output valid JSON');
     const ctx = result.parsed.hookSpecificOutput?.additionalContext || '';
     assert.ok(
-      ctx.includes('[LOCAL MODE]'),
-      'Spawned briefing must include [LOCAL MODE] notice when local-mode.json is enabled',
+      !ctx.includes('[LOCAL MODE]'),
+      'Local mode is removed — spawned briefing must never include [LOCAL MODE] notice',
     );
   });
 

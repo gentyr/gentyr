@@ -157,13 +157,12 @@ describe('auditor-prompt.js — AUDITOR_AGENT_TYPES export', () => {
     assert.match(auditorPromptSource, /export const AUDITOR_AGENT_TYPES/);
   });
 
-  it('AUDITOR_AGENT_TYPES is a Set containing the three auditor agent type strings', async () => {
+  it('AUDITOR_AGENT_TYPES is a Set containing the two auditor agent type strings', async () => {
     const mod = await import(AUDITOR_PROMPT_PATH);
     assert.ok(mod.AUDITOR_AGENT_TYPES instanceof Set, 'must be a Set');
     assert.ok(mod.AUDITOR_AGENT_TYPES.has('universal-auditor'));
     assert.ok(mod.AUDITOR_AGENT_TYPES.has('plan-auditor'));
-    assert.ok(mod.AUDITOR_AGENT_TYPES.has('authorization-auditor'));
-    assert.equal(mod.AUDITOR_AGENT_TYPES.size, 3);
+    assert.equal(mod.AUDITOR_AGENT_TYPES.size, 2);
   });
 
   it('AUDITOR_AGENT_TYPES does NOT contain task-runner', async () => {

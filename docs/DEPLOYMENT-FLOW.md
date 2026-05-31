@@ -176,7 +176,7 @@ When production is broken and a fix has already landed on staging, the CTO can t
 **Workflow:**
 1. CTO runs `git log origin/main..origin/staging --oneline` to see what will be promoted
 2. CTO creates a PR: `gh pr create --base main --head staging`
-3. CTO waits for CI: `gh pr checks <number> --watch --fail-on-fail`
+3. CTO waits for CI: `gh pr checks <number> --watch --fail-fast`
 4. CTO merges: `gh pr merge <number> --squash`
 
 **When to use:** Production incidents where the full `/promote-to-prod` quality pipeline cannot complete in time. Not for routine promotion.

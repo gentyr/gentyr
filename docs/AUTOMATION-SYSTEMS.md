@@ -141,7 +141,7 @@ Runs at `SessionStart` for interactive sessions (skipped for spawned `[Automatio
 
 ### Validation Steps
 
-1. **Load required keys**: Reads `protected-actions.json` to build the set of required credential keys
+1. **Load required keys**: Reads credential configuration to build the set of required keys
 2. **Check vault mappings**: Reads `vault-mappings.json`; counts configured keys (both `op://` refs and direct values)
 3. **Check `.mcp.json` env blocks**: Keys injected directly into `.mcp.json` (e.g. `OP_SERVICE_ACCOUNT_TOKEN`) count as configured even if absent from vault-mappings
 4. **OP token desync detection**: Compares the shell `OP_SERVICE_ACCOUNT_TOKEN` environment variable against the value in `.mcp.json`; if they differ, sets `opTokenDesync = true` and always overwrites `process.env` with the `.mcp.json` value (source of truth)
@@ -273,9 +273,6 @@ After committing and pushing a feature branch, the agent:
 3. The deputy-CTO reviews via `gh pr diff`, decides to approve+merge or request changes
 4. Merged branches trigger worktree cleanup (30-minute cycle)
 
-### Emergency Bypass
-
-A CTO-authorized emergency bypass writes a `commit_decisions` row with `rationale LIKE 'EMERGENCY BYPASS%'` and `question_id IS NOT NULL`. The hook detects this within a 5-minute window and allows the commit without requiring a deputy-CTO review cycle. The `question_id IS NOT NULL` constraint ensures only bypass decisions created via the `execute_bypass` MCP tool (which always links to the originating bypass-request question) are honored — bare `approve_commit` calls with "EMERGENCY BYPASS" prefix are blocked by the server-side guard.
 
 ### G020 Status (Informational Only)
 
@@ -292,37 +289,9 @@ This is exposed in the session briefing for CTO visibility but does **not** bloc
 
 ---
 
-## Deputy-CTO Server Security Guards (deputy-cto/server.ts)
-
-Defense-in-depth guards implemented across the deputy-cto and agent-reports MCP servers to prevent bypass-route exploitation.
-
-> **Note:** The `APPROVE BYPASS <code>` / `APPROVE HOTFIX <code>` chat patterns, the 6-character code, the `bypass-approval-token.json` file, and the `bypass-approval-hook.js` UserPromptSubmit hook have all been **removed**. The current paths are `submit_bypass_request` + CTO `resolve_bypass_request` (for general work pauses) and `record_cto_decision` (for protected actions / hotfix) — both verbatim-based, no codes, no chat phrase. See "CTO Bypass Request System" and "The Unified CTO Authorization System" in `CLAUDE.md`. The guards described below still execute and remain useful defense-in-depth even though the legacy path they originally protected has been deleted.
-
-### Phase 1: Tool Handler Guards
-
-Four `add_question` / `answer_question` / `clear_question` / `approve_commit` guards block agent-accessible loopholes:
-
-**`add_question` Guard** — Blocks creation of `bypass-request` or `protected-action-request` question types via `add_question`. These types have dedicated creation paths (`request_bypass` tool, protected-action hook) that enforce the CTO verification code flow. An agent cannot self-create a bypass request and then self-answer it.
-
-**`answer_question` Guard** — Blocks answering `bypass-request` questions via `answer_question`. The only valid answer path for bypass-requests is the CTO typing `APPROVE BYPASS <code>` in chat, which routes through the `execute_bypass` tool with cryptographic code verification.
-
-**`clear_question` Guard** — Blocks clearing a pending `bypass-request` or `protected-action-request` question via `clear_question`. Pending requests of these types can only be resolved through their designated approval flows. This prevents an agent from clearing a pending bypass-request to make it appear resolved.
-
-**`approve_commit` Guard** — Blocks any `approve_commit` call with a rationale beginning with `EMERGENCY BYPASS`. This prefix is reserved exclusively for the `execute_bypass` MCP tool, which validates a CTO-provided 6-character code before writing the bypass decision row. Direct use of this prefix via `approve_commit` would create a bypass-looking token without CTO verification.
-
-The SQL fix in `pre-commit-review.js` (`AND question_id IS NOT NULL`) ensures the hook only honors bypass decisions that were created by `execute_bypass` — which always links `question_id` to the originating bypass-request question — not arbitrary `approve_commit` calls with the "EMERGENCY BYPASS" prefix.
-
-### Phase 2: HMAC Verification and Rate Limits
-
-**`executeBypass` HMAC verification** — When the CTO types `APPROVE BYPASS <code>`, the UserPromptSubmit hook writes a `bypass-approval-token.json` file containing an HMAC-SHA256 signature over `code|request_id|expires_timestamp|bypass-approved`. The `execute_bypass` tool recomputes the expected HMAC using the protection key (`loadProtectionKey()`) and rejects tokens that fail verification with `FORGERY DETECTED: Invalid bypass approval token signature. Token deleted.` This matches the pattern used by `executeHotfixPromotion()` and prevents an agent from writing a forged approval token file (the key is root-owned and unreadable by agent processes).
-
-**`requestBypass` rate limit** — Maximum 3 pending bypass-request questions at a time. If the limit is reached, `request_bypass` returns an error asking the agent to wait for existing requests to be addressed. Prevents request flooding that could obscure legitimate bypass requests.
+## Deputy-CTO Server Guards (deputy-cto/server.ts)
 
 **`reportToCto` rate limit (agent-reports server)** — Maximum 5 untriaged reports per reporting agent at a time. If the limit is reached, `report_to_cto` returns an error message. Prevents a single agent from flooding the triage queue and hiding reports from other agents.
-
-**`get_pending_count` exposes `pending_triage_count`** — The `GetPendingCountResult` type now includes `pending_triage_count` alongside `pending_count` and `commits_blocked`. This lets the CTO see the split between pending questions and pending triage reports when understanding why `commits_blocked: true`.
-
-**`spawn_implementation_task` removed** — The `spawn_implementation_task` tool (which spawned background Claude instances directly from the deputy-cto server) was removed. Task spawning is now exclusively managed by the agent-tracker MCP server and hourly automation, which enforce concurrency limits, registration, and tracking.
 
 ---
 

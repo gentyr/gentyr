@@ -66,27 +66,12 @@ describe('husky/pre-commit structural verification', () => {
       'Must use $HOOKS_CHECK_DIR/$f (not hardcoded .claude/hooks/$f) in the ownership check');
   });
 
-  it('should include branch-checkout-guard.js in the ownership check loop', () => {
-    assert.ok(content.includes('branch-checkout-guard.js'),
-      'Ownership check loop must include branch-checkout-guard.js');
-  });
-
-  it('should include git-wrappers/git in the ownership check loop', () => {
-    assert.ok(content.includes('git-wrappers/git'),
-      'Ownership check loop must include git-wrappers/git wrapper binary');
-  });
-
-  it('should include all critical hook files in the ownership check loop', () => {
+  it('should include the surviving critical files in the ownership check loop', () => {
+    // The CTO-bypass / enforcement guard hooks were removed; the tamper-check
+    // loop now only covers the files that still exist and stay root-owned.
     const expectedHooks = [
       'pre-commit-review.js',
-      'block-no-verify.js',
-      'protected-action-gate.js',
-      'protected-action-approval-hook.js',
-      'credential-file-guard.js',
-      'secret-leak-detector.js',
       'protected-actions.json',
-      'branch-checkout-guard.js',
-      'git-wrappers/git',
     ];
     for (const hook of expectedHooks) {
       assert.ok(content.includes(hook),

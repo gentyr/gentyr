@@ -167,44 +167,9 @@ describe('handleQuotaCrashOnReap', () => {
     assert.equal(details.quota_reset_hint, '4h');
   });
 
-  it("files a bypass request with category='general' and '[quota_exhaustion]' summary prefix (Bug B-2 — closes the CHECK constraint gap)", () => {
-    const taskId = `pt-${crypto.randomBytes(4).toString('hex')}`;
-    insertPersistentTask(project.projectDir, { id: taskId, status: 'active' });
-
-    const result = handleQuotaCrashOnReap({
-      detection: { detected: true, resetHint: '2h', rawText: 'You hit your limit' },
-      metadata: { persistentTaskId: taskId, taskType: 'persistent' },
-      agentId: 'agent-test3',
-      projectDir: project.projectDir,
-    });
-
-    assert.ok(result.bypass_request_id, 'bypass_request_id returned');
-    assert.equal(result.error, undefined, 'no insert error');
-
-    const rows = readBypassRequests(project.projectDir);
-    assert.equal(rows.length, 1, 'one bypass request inserted');
-    const r = rows[0];
-    assert.equal(r.task_type, 'persistent');
-    assert.equal(r.task_id, taskId);
-    assert.equal(r.category, 'general', "category MUST be 'general' (CHECK constraint requires)");
-    assert.ok(r.summary.startsWith('[quota_exhaustion]'), 'summary must start with [quota_exhaustion] prefix');
-    assert.equal(r.status, 'pending');
-  });
-
-  it('dedups subsequent quota-crash calls for the same task (no duplicate bypass request)', () => {
-    const taskId = `pt-${crypto.randomBytes(4).toString('hex')}`;
-    insertPersistentTask(project.projectDir, { id: taskId, status: 'active' });
-
-    const detection = { detected: true, resetHint: '4h', rawText: 'You hit your limit' };
-    const meta = { persistentTaskId: taskId, taskType: 'persistent' };
-
-    const first = handleQuotaCrashOnReap({ detection, metadata: meta, agentId: 'a1', projectDir: project.projectDir });
-    const second = handleQuotaCrashOnReap({ detection, metadata: meta, agentId: 'a2', projectDir: project.projectDir });
-
-    assert.equal(first.bypass_request_id, second.bypass_request_id, 'dedup returns the same id');
-    const rows = readBypassRequests(project.projectDir);
-    assert.equal(rows.length, 1, 'only one bypass request row exists');
-  });
+  // Note: the bypass-request side-effect (and its dedup) was removed with the
+  // CTO-bypass system. handleQuotaCrashOnReap now only pauses the persistent
+  // task (covered by the two tests above); it no longer writes bypass-requests.db.
 
   it('returns gracefully when persistent task does not exist (best-effort)', () => {
     const result = handleQuotaCrashOnReap({
@@ -213,9 +178,8 @@ describe('handleQuotaCrashOnReap', () => {
       agentId: 'agent-x',
       projectDir: project.projectDir,
     });
-    // No pause (task missing), but bypass still files (task may exist elsewhere; matches existing behavior).
+    // Task missing — no pause performed, and the call must not throw.
     assert.equal(result.paused_persistent, undefined);
-    assert.ok(result.bypass_request_id, 'bypass request still filed when task not found in pt-db');
   });
 
   it('is a no-op when detection.detected is false', () => {
