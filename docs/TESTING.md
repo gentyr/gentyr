@@ -169,24 +169,7 @@ node .claude/hooks/cto-notification-hook.js
 ```
 **Expected:** JSON with `systemMessage` showing quota, token usage, pending items
 
-#### Test 2.3: CTO bypass via record_cto_decision
-**Natural Action:** CTO approves a deferred action
-**Steps:**
-```
-1. Agent calls a protected MCP tool → protected-action-gate.js creates a deferred
-   action and returns deferred_action_id in the denial.
-2. Agent shows context to CTO; CTO replies in their own words
-   (e.g., "yes, approve this").
-3. Agent calls mcp__agent-tracker__record_cto_decision({
-     decision_type: "<type>", decision_id: "<deferred_action_id>",
-     verbatim_text: "yes, approve this"
-   })
-4. authorization-audit-spawner.js inline-executes (lockdown/local-mode) or
-   spawns an authorization-auditor in the audit lane.
-5. On audit pass, deferred-action-audit-executor.js runs the originally
-   blocked action.
-```
-**Verify:** The deferred_actions row transitions pending → approved → completed; the cto_decisions row transitions verified → audit_passed; the blocked action executes.
+#### Test 2.3: (removed — authorization-audit chain has been removed)
 
 #### Test 2.4: Post-commit antipattern-hunter
 **Natural Action:** Commit code, hunters spawn

@@ -497,52 +497,9 @@ describe('propagatePauseToPlan()', () => {
     assert.strictEqual(plan.status, 'paused');
   });
 
-  // ---- Test 6: Creates blocking_queue record ----
-
-  it('creates a blocking_queue record in bypass-requests.db', () => {
-    const planId = insertPlan(testProject.plansDb, { title: 'Queue Test Plan', status: 'active' });
-    const phaseId = insertPhase(testProject.plansDb, { planId, gate: 0 });
-    const planTaskId = insertPlanTask(testProject.plansDb, { phaseId, planId, status: 'in_progress' });
-    const ptId = insertPersistentTask(testProject.ptDb, { planTaskId, planId });
-    const bypassReqId = 'bypass-req-' + generateId();
-
-    const result = propagatePauseToPlan(ptId, 'blocking queue test', bypassReqId);
-
-    assert.strictEqual(result.propagated, true);
-    assert.ok(result.blocking_queue_id, 'blocking_queue_id must be returned');
-    assert.ok(result.blocking_queue_id.startsWith('block-'), 'blocking_queue_id must start with "block-"');
-
-    // Verify the record was inserted
-    // Re-open bypass DB to check
-    const bDb = new Database(testProject.bypassDbPath, { readonly: true });
-    const row = bDb.prepare('SELECT * FROM blocking_queue WHERE id = ?').get(result.blocking_queue_id);
-    bDb.close();
-
-    assert.ok(row, 'blocking_queue row must exist');
-    assert.strictEqual(row.status, 'active');
-    assert.strictEqual(row.persistent_task_id, ptId);
-    assert.strictEqual(row.plan_id, planId);
-    assert.strictEqual(row.plan_task_id, planTaskId);
-    assert.strictEqual(row.bypass_request_id, bypassReqId);
-    assert.strictEqual(row.summary, 'blocking queue test');
-  });
-
-  it('creates blocking_queue record with default summary when pauseReason is omitted', () => {
-    const planId = insertPlan(testProject.plansDb, { status: 'active' });
-    const phaseId = insertPhase(testProject.plansDb, { planId });
-    const planTaskId = insertPlanTask(testProject.plansDb, { phaseId, planId, status: 'in_progress' });
-    const ptId = insertPersistentTask(testProject.ptDb, { planTaskId, planId });
-
-    const result = propagatePauseToPlan(ptId); // no pauseReason
-
-    assert.strictEqual(result.propagated, true);
-    const bDb = new Database(testProject.bypassDbPath, { readonly: true });
-    const row = bDb.prepare('SELECT * FROM blocking_queue WHERE id = ?').get(result.blocking_queue_id);
-    bDb.close();
-
-    assert.ok(row, 'blocking_queue row must exist');
-    assert.strictEqual(row.summary, 'Persistent task paused', 'default summary must be used when pauseReason omitted');
-  });
+  // Note: the blocking_queue / bypass-requests.db side-effect was removed when
+  // the CTO-bypass system was deleted. propagatePauseToPlan() now only updates
+  // plans.db / persistent-tasks.db; those behaviors are covered above.
 
 });
 
@@ -607,53 +564,8 @@ describe('propagateResumeToPlan()', () => {
     assert.ok(!result.error);
   });
 
-  // ---- Test 9: Resolves blocking_queue records ----
-
-  it('resolves active blocking_queue records in bypass-requests.db', () => {
-    const planId = insertPlan(testProject.plansDb, { status: 'paused' });
-    const phaseId = insertPhase(testProject.plansDb, { planId });
-    const planTaskId = insertPlanTask(testProject.plansDb, { phaseId, planId, status: 'paused' });
-    const ptId = insertPersistentTask(testProject.ptDb, { planTaskId, planId });
-
-    // Insert an active blocking_queue record manually.
-    // Ensure the table exists with the canonical schema (mirrors ensureBlockingQueueTable in
-    // pause-propagation.js). source_task_type is NOT NULL with no DEFAULT.
-    testProject.bypassDb.exec(`
-      CREATE TABLE IF NOT EXISTS blocking_queue (
-        id TEXT PRIMARY KEY,
-        bypass_request_id TEXT,
-        source_task_type TEXT NOT NULL,
-        source_task_id TEXT NOT NULL,
-        persistent_task_id TEXT,
-        plan_task_id TEXT,
-        plan_id TEXT,
-        plan_title TEXT,
-        blocking_level TEXT NOT NULL DEFAULT 'task',
-        impact_assessment TEXT,
-        summary TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        resolved_at TEXT,
-        resolution_context TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        CHECK (blocking_level IN ('task', 'persistent_task', 'plan')),
-        CHECK (status IN ('active', 'resolved', 'superseded'))
-      )
-    `);
-    const bqId = 'block-' + generateId();
-    testProject.bypassDb.prepare(`
-      INSERT INTO blocking_queue (id, source_task_type, source_task_id, persistent_task_id, plan_task_id, plan_id, blocking_level, summary, status)
-      VALUES (?, 'persistent', ?, ?, ?, ?, 'plan', 'test block', 'active')
-    `).run(bqId, ptId, ptId, planTaskId, planId);
-
-    const result = propagateResumeToPlan(ptId);
-
-    assert.strictEqual(result.propagated, true);
-    assert.ok(result.blocking_items_resolved >= 1, `expected at least 1 resolved, got ${result.blocking_items_resolved}`);
-
-    // The blocking_queue row must now be 'resolved'
-    const row = testProject.bypassDb.prepare('SELECT status FROM blocking_queue WHERE id = ?').get(bqId);
-    assert.strictEqual(row.status, 'resolved');
-  });
+  // Note: blocking_queue resolution was removed with the CTO-bypass system.
+  // propagateResumeToPlan() now only resumes plan/persistent state (covered below).
 
   // ---- Test 10: Resumes auto-paused plan when no other paused tasks remain ----
 
@@ -801,23 +713,9 @@ describe('assessPlanBlocking()', () => {
     assert.deepStrictEqual(assessPlanBlocking(undefined), safe);
   });
 
-  it('includes active blocking_items from bypass-requests.db', () => {
-    const planId = insertPlan(testProject.plansDb, { status: 'paused' });
-    const phaseId = insertPhase(testProject.plansDb, { planId });
-    const pausedTaskId = insertPlanTask(testProject.plansDb, { phaseId, planId, status: 'paused' });
-
-    // Insert an active blocking_queue record for this plan
-    const bqId = 'block-assess-' + generateId();
-    testProject.bypassDb.prepare(`
-      INSERT OR IGNORE INTO blocking_queue (id, source_task_type, source_task_id, persistent_task_id, plan_task_id, plan_id, blocking_level, summary, status)
-      VALUES (?, 'persistent', 'pt-x', 'pt-x', ?, ?, 'plan', 'assessment block test', 'active')
-    `).run(bqId, pausedTaskId, planId);
-
-    const result = assessPlanBlocking(planId);
-
-    assert.ok(Array.isArray(result.blocking_items));
-    assert.ok(result.blocking_items.some(bi => bi.id === bqId), 'active blocking_queue item must appear in blocking_items');
-  });
+  // Note: assessPlanBlocking() no longer surfaces blocking_queue / bypass-requests.db
+  // items — that side-channel was removed with the CTO-bypass system. It now assesses
+  // plan/phase state only (covered by the tests above).
 
 });
 

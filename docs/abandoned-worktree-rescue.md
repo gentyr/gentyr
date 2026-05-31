@@ -68,7 +68,7 @@ Both look identical: dirty worktree, no live session, no processes.
 
 Three structural changes, all in the rescue **prompt** + a new helper module (`.claude/hooks/lib/rescue-worktree.js`):
 
-1. **Mandatory pre-rescue base-sync.** The agent is now required to `git fetch origin <base> && git merge origin/<base> --no-edit` *before* it stages or pushes anything. If the merge conflicts (which is what Case B looks like — your stale files conflict with recent work on the base), the agent must `git merge --abort` and file a CTO bypass request instead of trying to resolve blindly. This converts the silent-overwrite failure into a loud "I need help" signal.
+1. **Mandatory pre-rescue base-sync.** The agent is now required to `git fetch origin <base> && git merge origin/<base> --no-edit` *before* it stages or pushes anything. If the merge conflicts (which is what Case B looks like — your stale files conflict with recent work on the base), the agent must `git merge --abort` and exit after writing a note for the CTO in `last_summary`, instead of trying to resolve blindly. This converts the silent-overwrite failure into a clear "I need help" signal.
 
 2. **No more auto-merge.** The PR is opened with `gh pr create --draft` and the agent exits. The "self-merge" step is gone entirely. A human or the deputy-CTO triage flow decides whether the PR is real work worth merging. Worst case is now a noisy PR queue, not corrupted base branches.
 

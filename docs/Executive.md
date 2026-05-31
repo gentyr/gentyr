@@ -15,7 +15,7 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 
 ### 2. Quality Sabotage
 - **Problem**: To achieve goals faster, AI disables tests, weakens linting rules, or skips verification steps.
-- **Solution**: Critical config files are root-owned (immutable to agents); hooks block any attempt to bypass verification.
+- **Solution**: Critical config files are root-owned (immutable to agents); pre-commit hooks enforce lint and test standards; task completion requires independent audit verification.
 
 ### 3. Context Fragmentation
 - **Problem**: Different tasks require different expertise, but a single agent can't be expert at everything.
@@ -31,7 +31,7 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 
 ### 6. Autonomous Overreach
 - **Problem**: Background agents making critical decisions without human input creates risk.
-- **Solution**: Deputy-CTO escalates ambiguous cases; critical decisions wait for human input; only humans can authorize emergency bypasses.
+- **Solution**: Deputy-CTO escalates ambiguous cases; critical decisions wait for human input; task-completion audit gates independently verify work before marking done.
 
 ---
 
@@ -44,7 +44,7 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 | **Multi-Agent Specialization** | 8 specialized agents ensure each task gets domain expertise rather than generalist guessing. |
 | **Task Orchestration** | Cross-agent todo system coordinates work across sessions, preventing duplicate effort and dropped tasks. |
 | **CTO Escalation Queue** | Agents bubble up questions and decisions to human CTO rather than guessing wrong. |
-| **Emergency Bypass** | Human-only approval mechanism for urgent situations, cryptographically tied to user input. |
+| **Audit Trail** | Independent auditors verify task completion before marking work done. |
 | **Background Automation** | Hourly task runner handles lint fixes, report triage, and plan execution without human prompting. |
 | **API Quota Management** | Multi-key rotation and usage optimization prevents quota exhaustion mid-task. |
 | **Audit Trail** | Every agent spawn, decision, and task completion is logged for accountability. |
@@ -121,7 +121,7 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 - **agent-tracker** - Logs all agent spawns
 - **plan-executor** - Runs approved implementation plans
 - **todo-maintenance** - Task list cleanup and updates
-- **protected-action-gate** + **authorization-audit-spawner** - Emergency bypass authorization (deferred-action + record_cto_decision pipeline)
+- **gate-confirmation-enforcer** + **universal-audit-spawner** - Task completion audit gate
 - **mapping-validator** - Spec-to-code mapping verification
 - **schema-mapper-hook** - Automatic spec mapping suggestions
 - **config-reader** - Centralized configuration access
@@ -130,11 +130,11 @@ AI coding agents hallucinate, cut corners, and make autonomous decisions that un
 
 ## Protection Model
 
-Critical hooks are root-owned, making them immutable to AI agents. Only human CTO can:
+Critical hooks are root-owned, making them immutable to AI agents. Root ownership ensures:
 
-- Approve emergency bypasses
-- Modify commit review logic
-- Disable protections
+- Lint and test enforcement cannot be weakened by agents
+- Commit review logic cannot be modified
+- The pre-commit entry point (`.husky/`) cannot be deleted
 
 This creates a trust hierarchy where agents operate within boundaries they cannot modify.
 
